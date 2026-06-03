@@ -44,8 +44,10 @@ import (
 // 默认 3 = 镜面 + 金属 + 玻璃各一；实测若多于 3 个建议复审 §4.A.5 镜像学习参数。
 const bathroomMaxGhostsPerPerson = 3
 
-// 规则 1 出生地距离阈值（cm）。30cm 取自决定 12 单入口约束 + cell 量化粒度（10cm cells，3-cell 距离）。
-const bathroomBirthEntryThresholdCm = 30
+// 规则 1 出生地距离阈值（cm）：newborn track 距最近 entry > 此值 → 判 ghost。
+// 70cm（2026-06-03 由 30 放大）：放宽"贴门合法出生"区，避免把"门口几步内才被雷达捕获的真人"
+// 误判 ghost（漏报真跌倒，宁可误报不可漏报）；镜面/金属 ghost 通常远在 >100cm，不受影响。
+const bathroomBirthEntryThresholdCm = 70
 
 // 规则 5 split-ghost 邻近距离阈值（cm）。默认 60cm；可调 50-80cm 范围（§4.A.3 注）。
 const bathroomSplitGhostDistCm = 60

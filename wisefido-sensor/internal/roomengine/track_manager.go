@@ -2,6 +2,7 @@ package roomengine
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -117,6 +118,10 @@ type TrackManager struct {
 	// lastNumberPeopleZeroMs：固件最近一次上报 number_people=0（"屋内空"断言）的 ts。
 	// 门区 exit 推断用：np=0 是离开的「确认证据」，须与最后帧门区位置合取才采信，单独不可信。
 	lastNumberPeopleZeroMs int64
+	// 占用账（enter/exit 权威的人数守恒）：房账"空" = lastExitMs > lastEnterMs（只信 ExitRoom，见 roomLedgerEmpty）。
+	// lost_fall 入池前查：房账为空 → 失锁 track 是"人走后残影"（冻住的反射）→ 抑制。不靠 ghost，靠 enter/exit。
+	lastEnterMs int64
+	lastExitMs  int64
 
 	// bedsideFallCfg：R4（床边晕倒）参数；PR-9 v1 R4 触发已删，字段保留供 PR-10/11 BathroomBedsideFall 复用。
 	// 全 0 = 用默认（180s / 100cm / 900s）。
@@ -200,6 +205,10 @@ type AIPayload struct {
 	// Evidence 证据 KV map（score / penalty / context 等审计字段，下游不解析）。
 	Evidence map[string]interface{}
 
+	// Event 决策事件类型（审计用，写 sensor_decision_log.event）：verdict_change /
+	// lostfall_pending / lostfall_cancel / lostfall_fire / lostfall_suppress。空 = 不是决策审计事件。
+	Event string
+
 	// EventStatus 事件生命周期阶段（"start" / "end" / "instant"）。空 = "instant"（默认）。
 	// 用于 firmware 撤销链路：qinglan 收到 Initialization (last_pose=2/7) → forward end →
 	// sensor 透传 → cardagg AlarmRouter 按 Registry[Fall/SittingOnGround].EndPolicy=AutoResolve 关 alarm。
@@ -214,6 +223,10 @@ type AIPayload struct {
 
 // CategoryTrackVerdict 是 track verdict 的 category 路由键（事件 TYPE，不是 verdict label）。
 const CategoryTrackVerdict = "track_verdict"
+
+// CategorySensorDecision 是 lost-fall 决策审计事件的 category（与 verdict 同流 ai:track:verdict:stream，
+// iot 落 sensor_decision_log；cardagg override 只认 track_verdict，按 category 跳过本类）。
+const CategorySensorDecision = "sensor_decision"
 
 // Reason 常量本地定义——目前 wisefido-sensor 是唯一 producer，下游 cardagg /
 // wisefido-data 透传字符串不解析。未来若出现第二个 AI producer（如健康风险
@@ -403,6 +416,59 @@ func (tm *TrackManager) SetAIPublisher(p AIPublisher) {
 // emitAIEvent / emitAIAlarm 内部 helper：仅当 aiPublisher 非 nil 时调用。
 // payloadFromTrack 从 TrackState 构造 AIPayload。
 
+// makeLogicID 出生时锚定的稳定逻辑身份 = uidlast4 + track_id + mmssms（分秒毫秒，UTC）。
+// uidHex 缺失（nil publisher）时退化为空前缀，仍含 track_id+时戳保唯一。
+func makeLogicID(uidHex string, trackID int, birthMs int64) string {
+	last4 := uidHex
+	if len(last4) > 4 {
+		last4 = last4[len(last4)-4:]
+	}
+	t := time.UnixMilli(birthMs).UTC()
+	return fmt.Sprintf("%s%d%02d%02d%03d", last4, trackID, t.Minute(), t.Second(), birthMs%1000)
+}
+
+// nearestAliveTrack 在当前存活 track 中找离 (x,y)（画布坐标）最近、且已有 logic_id 的一条。
+// 用于"无 enter 事件的新 track"继承同一逻辑身份（firmware track_id 重用/跳变/分裂的数据关联）。
+// 无候选返回 nil。调用时新 track 尚未加入 tm.tracks，故不会自指。
+func (tm *TrackManager) nearestAliveTrack(x, y int) *TrackState {
+	var best *TrackState
+	bestD := 1 << 30
+	for _, ts := range tm.tracks {
+		if ts.LogicID == "" || ts.Kalman == nil {
+			continue
+		}
+		px, py := ts.Kalman.Position()
+		if d := distInt(x, y, int(math.Round(px)), int(math.Round(py))); d < bestD {
+			bestD = d
+			best = ts
+		}
+	}
+	return best
+}
+
+// hasOtherLiveTrackWithLogicID 是否有"另一条存活 track 持同一 logic_id"。
+// 用于 lost_fall 的换ID守恒闸：某 track_id 失锁但其 logic_id 仍活在别的 track_id 上 =
+// 同一逻辑目标只是被 firmware 换了 ID（数量守恒，无人真消失）→ 不入 lost-fall pending。
+// 不依赖 ghost verdict（铁律：ghost 不进 Fall 决策路径），纯靠身份连续性。
+func (tm *TrackManager) hasOtherLiveTrackWithLogicID(logicID string, exceptTrackID int) bool {
+	if logicID == "" {
+		return false
+	}
+	for id, ts := range tm.tracks {
+		if id != exceptTrackID && ts.LogicID == logicID {
+			return true
+		}
+	}
+	return false
+}
+
+// roomLedgerEmpty 占用账是否为空：最近 ExitRoom 晚于最近 EnterRoom。
+// **只信 ExitRoom（过门的空间证据=确实离开），不信 np=0**——铁律：count=0≠离开
+// （人摔倒后雷达丢锁也会 np=0，用 np=0 抑制会漏真摔）。默认（无事件）=非空，保守不抑制。
+func (tm *TrackManager) roomLedgerEmpty() bool {
+	return tm.lastExitMs > tm.lastEnterMs
+}
+
 func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
 	conf := 100 - ts.GhostPenalty
 	if conf < 0 {
@@ -416,6 +482,7 @@ func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
 		RoomID:     ts.RoomID,
 		Track: observation.Track{
 			TrackID:         ts.TrackID,
+			LogicID:         ts.LogicID,
 			PositionX:       intPtr(ts.LastRawH),
 			PositionY:       intPtr(ts.LastRawV),
 			PositionZ:       intPtr(ts.LastRawZ),
@@ -461,7 +528,32 @@ func (tm *TrackManager) emitGhostVerdict(ts *TrackState, reason, context string,
 	if context != "" {
 		p.Evidence["context"] = context
 	}
+	p.Event = "verdict_change"
+	p.Evidence["verdict"] = int(ts.Verdict)
 	tm.emitAIEvent(p, CategoryTrackVerdict, nowMs)
+}
+
+// emitDecision 发布一条 lost-fall 决策审计事件到 ai:track:verdict:stream（category=sensor_decision）。
+// iot 落 sensor_decision_log；cardagg 按 category 跳过（不污染 override cache）。旁路审计，不在热路径。
+// event=lostfall_pending/lostfall_cancel/lostfall_fire/lostfall_suppress；reason 机器可分类；ev 是全量特征。
+func (tm *TrackManager) emitDecision(deviceAddr, logicID string, trackID, rawH, rawV, rawZ int, event, reason string, ev map[string]interface{}, nowMs int64) {
+	if tm.aiPublisher == nil {
+		return
+	}
+	tm.emitAIEvent(AIPayload{
+		DeviceAddr: deviceAddr,
+		RoomID:     tm.roomID,
+		Track: observation.Track{
+			TrackID:   trackID,
+			LogicID:   logicID,
+			PositionX: intPtr(rawH),
+			PositionY: intPtr(rawV),
+			PositionZ: intPtr(rawZ),
+		},
+		Event:    event,
+		Reason:   reason,
+		Evidence: ev,
+	}, CategorySensorDecision, nowMs)
 }
 
 // IsBathroomByRoomName 用 owl-common/roomutil.ClassifyRoomType 判定本房间是否 bathroom。
@@ -792,6 +884,13 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	if e.EventName == EventNameNumberPeople && e.NumberPeople == 0 && e.TMs > tm.lastNumberPeopleZeroMs {
 		tm.lastNumberPeopleZeroMs = e.TMs
 	}
+	// 占用账：EnterRoom→占用，ExitRoom→空（np=0 另在 lastNumberPeopleZeroMs）。np≥1 不计占用（镜面虚增）。
+	if e.EventName == alarm.EnterRoom && e.TMs > tm.lastEnterMs {
+		tm.lastEnterMs = e.TMs
+	}
+	if e.EventName == alarm.ExitRoom && e.TMs > tm.lastExitMs {
+		tm.lastExitMs = e.TMs
+	}
 	// ExitRoom 事件 → 取消所有挂起的 lost-fall（人正常走出房间，不再悬念）
 	// 注：silent fall 不取消（其语义是床上方遮挡，与 ExitRoom 无关）
 	if e.EventName == alarm.ExitRoom && len(tm.pendingLostFalls) > 0 {
@@ -804,6 +903,10 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 				zap.Int64("pending_age_ms", e.TMs-p.DisappearMs),
 				zap.Int64("exit_room_ms", e.TMs),
 			)
+			tm.emitDecision(p.DeviceAddr, p.LogicID, p.OriginalTrackID, p.LastRawH, p.LastRawV, p.LastRawZ,
+				"lostfall_cancel", "exit_room", map[string]interface{}{
+					"pending_age_ms": e.TMs - p.DisappearMs, "exit_room_ms": e.TMs,
+				}, e.TMs)
 			delete(tm.pendingLostFalls, pid)
 		}
 	}
@@ -1008,6 +1111,23 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			recoveredFromLost := tm.cancelPendingLostFallByBirth(f.X, f.Y, f.TMs)
 
 			ts = NewTrackState(f.TrackID, f.DeviceAddr, tm.roomID, f.X, f.Y, f.Z, f.TMs)
+			// logic_id：有 EnterRoom 配对 = 真新人进门 → 全新身份；无 enter = firmware
+			// 重用/跳变/分裂 → 继承最近存活 track 的 logic_id（跨 track_id 数据关联，
+			// 让"漂走/重编"的同一逻辑目标保持身份连续，供 ghost/lost-fall 按 logic_id 聚合）。
+			if !tm.hasRecentEnterRoom(f.TMs) {
+				if parent := tm.nearestAliveTrack(f.X, f.Y); parent != nil {
+					ts.LogicID = parent.LogicID
+					tm.logger.Info("logic_id_inherited_no_enter",
+						zap.String("device_uid", f.DeviceAddr),
+						zap.Int("track_id", f.TrackID),
+						zap.String("logic_id", parent.LogicID),
+						zap.Int("birth_x", f.X), zap.Int("birth_y", f.Y),
+					)
+				}
+			}
+			if ts.LogicID == "" {
+				ts.LogicID = makeLogicID(tm.devUIDHex(f.DeviceAddr), f.TrackID, f.TMs)
+			}
 
 			// PR-5.3 反 ghost: service startup 5min grace 内 first-seen → 默认 Real
 			isStartupGrace := tm.startupMs > 0 && (f.TMs-tm.startupMs) < 5*60*1000
@@ -1133,6 +1253,34 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 					zap.Int("track_id", ts.TrackID),
 					zap.Int64("ts_ms", nowMs),
 				)
+			} else if tm.hasOtherLiveTrackWithLogicID(ts.LogicID, id) {
+				// 换ID守恒闸：该 track_id 失锁，但其 logic_id 仍活在另一条 track 上 =
+				// 同一逻辑目标被 firmware 换了 ID（数量守恒，无人真消失，且非进出事件）→ 不入 pending。
+				// 铁律：不读 ghost verdict，纯靠身份连续性判"换ID游戏 vs 真消失"。
+				tm.lostFallPendingCancelled++
+				tm.logger.Info("lost_fall_skipped_id_swap",
+					zap.String("device_uid", ts.DeviceAddr),
+					zap.Int("track_id", ts.TrackID),
+					zap.String("logic_id", ts.LogicID),
+					zap.Int64("ts_ms", nowMs),
+				)
+				tm.emitDecision(ts.DeviceAddr, ts.LogicID, id, ts.LastRawH, ts.LastRawV, ts.LastRawZ,
+					"lostfall_suppress", "id_swap_logicid_alive", nil, nowMs)
+			} else if tm.roomLedgerEmpty() {
+				// 空房账闸：enter/exit 守恒下房间已空（最近 ExitRoom/np=0 晚于 EnterRoom）→
+				// 此刻失锁的 track 是"人走后残影"（如冻住的镜面反射）→ 抑制。治 D5F7 残影 ExitRoom 后才消失漏 cancel。
+				tm.lostFallPendingCancelled++
+				tm.logger.Info("lost_fall_skipped_room_empty",
+					zap.String("device_uid", ts.DeviceAddr),
+					zap.Int("track_id", ts.TrackID),
+					zap.String("logic_id", ts.LogicID),
+					zap.Int64("last_enter_ms", tm.lastEnterMs),
+					zap.Int64("last_exit_ms", tm.lastExitMs),
+					zap.Int64("last_np0_ms", tm.lastNumberPeopleZeroMs),
+					zap.Int64("ts_ms", nowMs),
+				)
+				tm.emitDecision(ts.DeviceAddr, ts.LogicID, id, ts.LastRawH, ts.LastRawV, ts.LastRawZ,
+					"lostfall_suppress", "room_ledger_empty", nil, nowMs)
 			} else if (ts.Verdict == VerdictReal || ts.Verdict == VerdictPending) && tm.checkLostFall(ts) {
 				// PR-9: v1 NumberPeople=0 ExitRoom 兜底（依赖 lastNumberPeopleZeroMs）已删除。
 				// PR-10 BathroomLostFall + PR-11 bedroom lost_fall 将以 SuiteCensus.BathroomCount
@@ -1146,10 +1294,12 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				if cell != nil {
 					cellArea = cell.Belief[0].Type
 				}
+				spatialJump := ts.MaxImpliedSpeedFromBirth > FallRulesParam.Lost.SuspectSpeedCm
 				tm.pendingLostFalls[id] = &PendingLostFall{
 					OriginalTrackID: id,
 					DeviceAddr:      ts.DeviceAddr,
 					RoomID:          ts.RoomID,
+					LogicID:         ts.LogicID,
 					LastX:           px,
 					LastY:           py,
 					LastZ:           ts.LastZ,
@@ -1161,9 +1311,14 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 					LastCellArea:    cellArea,
 					DisappearMs:     nowMs,
 					StillBoxStartMs: ts.StillBoxRunStart,
-					SpatialJump:     ts.MaxImpliedSpeedFromBirth > FallRulesParam.Lost.SuspectSpeedCm,
+					SpatialJump:     spatialJump,
 				}
 				tm.lostFallPendingCreated++
+				tm.emitDecision(ts.DeviceAddr, ts.LogicID, id, ts.LastRawH, ts.LastRawV, ts.LastRawZ,
+					"lostfall_pending", "track_lost", map[string]interface{}{
+						"verdict": int(ts.Verdict), "score": ts.Score, "cell_area": int(cellArea),
+						"spatial_jump": spatialJump, "still_box_start_ms": ts.StillBoxRunStart,
+					}, nowMs)
 			} else if ts.Verdict == VerdictReal {
 				pxF, pyF := ts.Kalman.Position()
 				px := int(math.Round(pxF))
@@ -1305,6 +1460,8 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				zap.String("room_id", p.RoomID),
 				zap.Int64("nowMs", nowMs),
 			)
+			tm.emitDecision(p.DeviceAddr, p.LogicID, p.OriginalTrackID, p.LastRawH, p.LastRawV, p.LastRawZ,
+				"lostfall_cancel", "multiple_real", nil, nowMs)
 			delete(tm.pendingLostFalls, pid)
 			continue
 		}
@@ -1319,11 +1476,41 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				zap.String("room_id", p.RoomID),
 				zap.Int64("nowMs", nowMs),
 			)
+			tm.emitDecision(p.DeviceAddr, p.LogicID, p.OriginalTrackID, p.LastRawH, p.LastRawV, p.LastRawZ,
+				"lostfall_cancel", "other_radar", nil, nowMs)
 			delete(tm.pendingLostFalls, pid)
 			continue
 		}
+		// 距离闸：丢轨点距雷达 > d_fall（≈500cm）→ 抑制。贴地/躺姿目标回波弱（加特兰 4T4R），
+		// 跌倒有效检测半径远小于人员检测半径；超出 d_fall 处即便真摔，firmware 也读不出地面态、
+		// 发不出 pose=5，lost_track 凭"消失"反推退化为结构性盲猜（治 D523 边缘 ~5.8m 丢轨误报）。
+		// 平面距 = √(LastRawH²+LastRawV²)（raw 雷达本地坐标，雷达在本地系原点）。依据 doc/AI_fall_detect.md §3.7。
+		if gate := FallRulesParam.Lost.DistanceGateCm; gate > 0 {
+			if distCm := distInt(p.LastRawH, p.LastRawV, 0, 0); distCm > gate {
+				tm.lostFallPendingCancelled++
+				tm.logger.Info("lost_fall_suppressed_by_distance_gate",
+					zap.String("device_uid", p.DeviceAddr),
+					zap.Int("track_id", p.OriginalTrackID),
+					zap.String("room_id", p.RoomID),
+					zap.Int("dist_cm", distCm),
+					zap.Int("gate_cm", gate),
+					zap.Int64("nowMs", nowMs),
+				)
+				tm.emitDecision(p.DeviceAddr, p.LogicID, p.OriginalTrackID, p.LastRawH, p.LastRawV, p.LastRawZ,
+					"lostfall_suppress", "distance_gate", map[string]interface{}{
+						"dist_cm": distCm, "gate_cm": gate,
+					}, nowMs)
+				delete(tm.pendingLostFalls, pid)
+				continue
+			}
+		}
 		// 超时 → MarkFallEvent + 写输出（kind=engine_lost_fall）
 		tm.lostFallReported++
+		tm.emitDecision(p.DeviceAddr, p.LogicID, p.OriginalTrackID, p.LastRawH, p.LastRawV, p.LastRawZ,
+			"lostfall_fire", "lost_track", map[string]interface{}{
+				"verdict": int(p.LastVerdict), "fall_score": p.LastScore, "cell_area": int(p.LastCellArea),
+				"spatial_jump": p.SpatialJump, "wait_ms": waitMs, "still_box_start_ms": p.StillBoxStartMs,
+			}, nowMs)
 		tm.grid.MarkFallEvent(p.LastX, p.LastY, nowMs)
 		// PR5c: 发布到 iot:alarm:stream，category=alarm.Fall（cardagg 现有 Fall handler 接管）。
 		// fall alarm 已是确认态——不再发 track_confidence/score（确信值无需信号），

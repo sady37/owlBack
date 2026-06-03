@@ -988,7 +988,7 @@ func (e *Engine) publishTrackStatuses(ctx context.Context, roomID string, bases 
 // 与审计追溯依据；mode=log 时 published=false 仅 log，mode=log&publish 时尝试推流。
 func (e *Engine) PublishAIEvent(ctx context.Context, p AIPayload, category string, nowMs int64) {
 	streamDef := rediscommon.StreamEvent
-	if category == "track_verdict" || category == "ghost" {
+	if category == "track_verdict" || category == "ghost" || category == CategorySensorDecision {
 		streamDef = rediscommon.StreamAITrackVerdict
 	}
 	e.publishAIMessage(ctx, p, category, "event",
@@ -1063,6 +1063,12 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	}
 	if p.Track.TrackConfidence != 0 {
 		fields[observation.FieldTrackConfidence] = p.Track.TrackConfidence
+	}
+	if p.Track.LogicID != "" {
+		fields[observation.FieldLogicID] = p.Track.LogicID
+	}
+	if p.Event != "" {
+		fields["decision_event"] = p.Event
 	}
 	// AI 派生 track_verdict 与床状态无关；仅 sleepad_radar_conflict 显式传 BedStatus 才保留。
 	if p.Track.BedStatus != nil {

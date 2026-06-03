@@ -58,6 +58,10 @@ type TrackState struct {
 	TrackID    int
 	DeviceAddr string
 	RoomID     string
+	// LogicID 出生时锚定的稳定逻辑身份（firmware track_id 不稳：复用/跳变/分裂）。
+	// 格式 uidlast4 + track_id + mmssms（出生时刻分秒毫秒）。无-enter 新 track 经最近邻
+	// 关联继承上一条的 LogicID（见 assignLogicID）。下游 ghost/verdict 按 LogicID 聚合。
+	LogicID string
 
 	// ---- 出生档案 ----
 	BirthPos    TimedPoint
@@ -241,6 +245,7 @@ type PendingLostFall struct {
 	OriginalTrackID int
 	DeviceAddr      string
 	RoomID          string
+	LogicID         string // 出生锚定的稳定逻辑身份（沿用自 TrackState.LogicID）
 	LastX, LastY    int // 画布坐标（grid 落点用）
 	LastZ           int
 	// firmware 直发的最后一帧 raw 雷达本地坐标 — alarm publish 时用，对外语义同 monitor_stream

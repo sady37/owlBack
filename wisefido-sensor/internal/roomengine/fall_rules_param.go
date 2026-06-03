@@ -101,6 +101,13 @@ type lostFallParam struct {
 	// 应正常入 lost_fall pending 池等待 recovery 取消，不能被 number_people=0 抑制）。
 	// 默认 60000ms：与用户设计语义对齐——"t1+60s 前收到 number_people=0 视为正常离房"。
 	NumberPeopleZeroFallbackMs int64
+
+	// 距离闸（cm，平面/俯视距）：丢轨点距雷达 > 此值则抑制 lost_fall。
+	// 跌倒检测半径 d_fall（贴地弱回波，~500cm）远小于人员检测半径（~700cm）——
+	// 超出 d_fall 处即便真摔，firmware 也读不出地面态、发不出 pose=5，lost_track 退化为
+	// 结构性盲猜（治 D523 边缘 5.8m 丢轨误报）。平面距 = √(RawH²+RawV²)（雷达在本地系原点）。
+	// 依据见 doc/AI_fall_detect.md §3.7。0 = 关闸。
+	DistanceGateCm int
 }
 
 // cellHistoryParam Cell History Integral（自适应阈值）参数
@@ -159,6 +166,7 @@ var FallRulesParam = fallRulesParam{
 		BirthFinalGraceMs:          2000,  // birth 终判延迟 2s
 		EffectiveWaitFloorSec:      60,    // 兜底最少等 60s
 		NumberPeopleZeroFallbackMs: 60000, // ExitRoom 缺失时 number_people=0 兜底窗口 60s（仅 non-frozen 时生效）
+		DistanceGateCm:             500,   // 丢轨点距雷达 >500cm（d_fall）抑制 lost_fall（贴地弱回波，见 §3.7）
 	},
 	CellHistory: cellHistoryParam{
 		FakeAlarmThreshold:      3,

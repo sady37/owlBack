@@ -117,8 +117,9 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg *owlredis.IoTStreamMess
 	}
 	deviceAddr := msg.DeviceAddr.String()
 	trackID := resolveTrackID(fields)
+	isNoTarget := trackID == observation.TrackInvalid // 88 = firmware 无人心跳
 	if h.aiOverrides != nil {
-		if trackID == observation.TrackInvalid {
+		if isNoTarget {
 			// firmware no-target heartbeat：当前 device 无 track，旧 verdict 全清
 			h.aiOverrides.ClearDevice(deviceAddr)
 		} else {
@@ -132,6 +133,16 @@ func (h *MonitorHandler) Handle(ctx context.Context, msg *owlredis.IoTStreamMess
 		if owner := h.cache.LookupCardByDevice(msg.DeviceAddr); owner.IsValid() {
 			cardID = owner.String()
 		}
+	}
+	// 88 无人心跳：人已不在 → 立即清掉该 device 旧 track（否则 card:realtime 用新 ts_ms 把旧位置一直
+	// 重发，前端残影 >60s），且 88 本身不入 buffer。device online 心跳仍维护（88 是 online 信号）。
+	// 前端 6s presence 窗会平滑帧间偶发 88，不闪；持续 88（人真走）→ 6s 后前端自然清。
+	if isNoTarget {
+		if cardID != "" {
+			h.buffer.ClearDeviceTracks(cardID, deviceAddr)
+		}
+		h.devTouch.TouchLastSeen(ctx, deviceAddr, msg.DeviceType)
+		return nil
 	}
 	if cardID == "" {
 		// 未绑卡（pool 设备、unbound）— monitor 数据无 card 可归属，跳 buffer.Write。

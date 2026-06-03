@@ -83,6 +83,11 @@ func (h *AIVerdictHandler) handleRaw(raw map[string]interface{}) {
 	if !msg.DeviceAddr.IsValid() {
 		return
 	}
+	// 同流上还有 sensor_decision（lost-fall 决策审计，iot 落 sensor_decision_log）——
+	// 那类无 realtime override 语义、且常无 track_confidence，会把 cache 置 0。按 category 跳过。
+	if msg.Category != "track_verdict" {
+		return
+	}
 	deviceAddr := msg.DeviceAddr.String()
 	data := rediscommon.FirstDataValue(msg.DataValue)
 	if data == nil {

@@ -123,6 +123,22 @@ func (b *MonitorBuffer) Write(cardID, deviceAddr, trackID string, fields map[str
 	}
 }
 
+// ClearDeviceTracks 清空某 device 在 buffer 里的全部 track（保留 device 条目本身）。
+// 用途：firmware 发 track_id=88（无人心跳）时调用——人已不在，旧 track 位置必须立即清掉，
+// 否则 card:realtime 会用新 ts_ms 把旧位置一直重发，前端残影 >60s。device online 心跳由 88 单独维护，不受影响。
+func (b *MonitorBuffer) ClearDeviceTracks(cardID, deviceAddr string) {
+	if cardID == "" || deviceAddr == "" {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if cb := b.cards[cardID]; cb != nil {
+		if db := cb.Devices[deviceAddr]; db != nil {
+			db.Tracks = make(map[string]*TrackBuffer)
+		}
+	}
+}
+
 // DeviceSnapshot is the flush output for one device: per-track fields (track_id -> fields+ts).
 type DeviceSnapshot struct {
 	DeviceAddr string                    // device_addr canonical IPv6 text

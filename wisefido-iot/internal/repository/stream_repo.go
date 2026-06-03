@@ -102,6 +102,73 @@ func (r *StreamRepo) InsertEvent(ctx context.Context, msg *owlredis.IoTStreamMes
 	return nil
 }
 
+// InsertSensorDecision 写一条 sensor_decision_log（旁路审计：ghost verdict / lost-fall 决策；见 dbv2/66_）。
+// 来源 ai:track:verdict:stream；仅落带 decision_event 的消息（verdict 流上其它消息跳过）。
+func (r *StreamRepo) InsertSensorDecision(ctx context.Context, msg *owlredis.IoTStreamMessage) error {
+	if r.db == nil {
+		return nil
+	}
+	if !msg.DeviceAddr.IsValid() {
+		return fmt.Errorf("device_addr invalid")
+	}
+	data := owlredis.FirstDataValue(msg.DataValue)
+	if data == nil {
+		return nil
+	}
+	event := decStr(data["decision_event"])
+	if event == "" {
+		return nil // 非决策审计事件（如纯 realtime override），不落库
+	}
+	var verdict, conf, evidenceJSON interface{}
+	if c, ok := data["track_confidence"]; ok {
+		conf = decInt(c)
+	}
+	if ev, ok := data["evidence"].(map[string]interface{}); ok {
+		if v, ok2 := ev["verdict"]; ok2 {
+			verdict = decInt(v)
+		}
+		if b, err := json.Marshal(ev); err == nil {
+			evidenceJSON = string(b)
+		}
+	}
+	traceID := buildTraceID(msg.Producer, msg.SequenceNumber)
+	ts := tsFromMs(msg.Timestamp)
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO sensor_decision_log (
+			ts, device_addr, track_id, logic_id, event,
+			verdict, track_confidence, reason, evidence, trace_id
+		) VALUES ($1, $2::INET, $3, NULLIF($4, ''), $5,
+		          $6, $7, NULLIF($8, ''), $9::JSONB, NULLIF($10, ''))
+		ON CONFLICT (device_addr, ts, track_id, event) DO NOTHING
+	`, ts, msg.DeviceAddr.String(), decInt(data["track_id"]), decStr(data["logic_id"]), event,
+		verdict, conf, decStr(data["reason"]), evidenceJSON, traceID)
+	if err != nil {
+		return fmt.Errorf("insert sensor_decision_log: %w", err)
+	}
+	return nil
+}
+
+// decInt / decStr：从 JSON-decoded（数值多为 float64）的 dataValue map 取值。
+func decInt(v interface{}) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	}
+	return 0
+}
+
+func decStr(v interface{}) string {
+	s, _ := v.(string)
+	return s
+}
+
 // subjectAddr 只在 SubjectEntity 是合法 INET（sensor 派生的 spatial prefix /88·/96·/128）时
 // 落 subject_addr；device-gateway 发的 device_uid（vendor MAC 串）非 INET → NULL（匿名事件，
 // device 身份已在 device_addr，device_uid 可由 device_addr 反查 dfm）。空串 → NULL。

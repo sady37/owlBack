@@ -88,6 +88,7 @@ func (c *StreamConsumer) Start(ctx context.Context) error {
 	streams := []string{
 		c.config.Streams.Monitor,
 		c.config.Streams.Event,
+		rediscommon.StreamAITrackVerdict.Name, // 旁路审计：sensor 决策 → sensor_decision_log
 	}
 
 	for _, stream := range streams {
@@ -115,8 +116,9 @@ func (c *StreamConsumer) Start(ctx context.Context) error {
 		default:
 			monitorErr := c.consumeStream(ctx, c.config.Streams.Monitor)
 			eventErr := c.consumeStream(ctx, c.config.Streams.Event)
+			verdictErr := c.consumeStream(ctx, rediscommon.StreamAITrackVerdict.Name)
 
-			if monitorErr != nil && eventErr != nil {
+			if monitorErr != nil && eventErr != nil && verdictErr != nil {
 				c.logger.Error("all streams failed", zap.Duration("backoff", backoff))
 				select {
 				case <-ctx.Done():
@@ -135,6 +137,9 @@ func (c *StreamConsumer) Start(ctx context.Context) error {
 			}
 			if eventErr != nil {
 				c.logger.Error("event stream consume failed", zap.Error(eventErr))
+			}
+			if verdictErr != nil {
+				c.logger.Error("verdict stream consume failed", zap.Error(verdictErr))
 			}
 		}
 	}
@@ -182,6 +187,8 @@ func (c *StreamConsumer) processMessage(ctx context.Context, streamName string, 
 		return c.streamRepo.InsertMonitor(ctx, msg)
 	case c.config.Streams.Event:
 		return c.streamRepo.InsertEvent(ctx, msg)
+	case rediscommon.StreamAITrackVerdict.Name:
+		return c.streamRepo.InsertSensorDecision(ctx, msg)
 	default:
 		return nil
 	}

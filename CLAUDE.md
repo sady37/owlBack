@@ -76,7 +76,7 @@
 | **离散持久化报警**（actionable，需要事后追责）<br>confirmed `Fall` / `LeftBed` / `Offline` | `iot:alarm:stream`（广播总线）| iot → `alarm_events` 7y HIPAA |
 | **高频 raw 监控**<br>1Hz track XY / HR / RR | `iot:monitor:stream`（广播总线）| iot → `monitor_stream` 90d |
 | **瞬态状态翻转**（投影 / 中间产物，无审计价值）<br>`zone.bed.occupied/leaving/vacant` / `zone.room.people=N` | 专用流 (e.g., `sensor:zone:state:stream`)| **不入库** |
-| **AI 派生判定**<br>track ghost verdict | 专用流 `ai:track:verdict:stream` | **不入库** |
+| **AI 派生判定 + 决策审计**<br>track ghost verdict / lost-fall 进-取消-触发-抑制 | 专用流 `ai:track:verdict:stream`（realtime → cardagg override 内存 cache）| **旁路入库** `sensor_decision_log`（66_，30d，iot 第二消费者写）<br>2026-06-03 反转原"不入库"：DBN 复盘需"决策+特征"层 trail（负决策"为什么没报"原仅在 journal 会轮转）。仍是旁路审计，不在热路径 |
 | **维护型实时流**（producer 持续 maintain）<br>card:realtime 1s snapshot | 专用流 `card:realtime:stream` | 不入库 |
 
 ### 2.2 分配决策树
