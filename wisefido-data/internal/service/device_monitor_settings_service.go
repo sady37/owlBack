@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"owl-common/alarm"
@@ -591,6 +592,17 @@ func (s *deviceMonitorSettingsService) pushSleepadToHardware(
 	// SleepadSetting / MaterialSetting 各项辅助参数（best-effort：单项失败 warn 但不阻断主结果）
 	s.pushSleepadSettings(ctx, deviceUID, deviceCode, alarmItems)
 
+	// timezone 在 Sleep Monitoring Config 由人设置（不在 bind 处），所以 save 时必须把设备 unit 时区
+	// 的当前偏移（含 DST）重 bind 到 sleepace —— 驱动厂家侧 ResetTime/leftbed 判窗与报告 startTime。
+	// best-effort：失败 warn 不阻断主结果。
+	if iana, off, err := s.ResyncDeviceTimezone(ctx, tenantID, deviceAddr); err != nil {
+		s.logger.Warn("resync device timezone on settings save",
+			zap.String("device_addr", deviceAddr), zap.Error(err))
+	} else {
+		s.logger.Info("device timezone re-bound on settings save",
+			zap.String("device_addr", deviceAddr), zap.String("iana", iana), zap.Int("offset_seconds", off))
+	}
+
 	if progressCallback != nil {
 		progressCallback(100, "device push completed")
 	}
@@ -670,8 +682,58 @@ func (s *deviceMonitorSettingsService) CheckDeviceOnlineStatus(ctx context.Conte
 
 // ---- 以下 9 个方法暂不实现（OTA / firmware / resync wiring 待接） ----
 
+// ResyncDeviceTimezone 把设备所在 unit 的 IANA 时区在「当前时刻」的 UTC 偏移（含 DST）重新 bind 到 sleepace。
+//
+// 背景：timezone 在 /sleepace/bind 设（秒偏移），驱动厂家侧 ResetTime / leftbed 判窗与报告 startTime。
+// 初始 bind 曾用全局 cfg.Timezone（一刀切 Denver），导致非 Denver 的 unit（如深圳）行为全错。这里改用
+// 设备 unit 的真实 IANA → 当前 offset 重 bind。DST 由调用方（save / 每日 today!=yesterday 检测）触发，
+// IANAToOffsetSeconds 用 time.Now() 取当下偏移，切换日自然得到新值。
+//
+// 返回 (iana, offsetSeconds, error)。
 func (s *deviceMonitorSettingsService) ResyncDeviceTimezone(ctx context.Context, tenantID, deviceAddr string) (string, int, error) {
-	return "", 0, errNotImplemented("ResyncDeviceTimezone")
+	if s.sleepaceGateway == nil {
+		return "", 0, fmt.Errorf("sleepace gateway not wired")
+	}
+	if tenantID == "" || deviceAddr == "" {
+		return "", 0, fmt.Errorf("tenant_id and device_addr are required")
+	}
+
+	// IANA 时区级联 unit → branch → tenant（与 GetDeviceMonitorSettings 同源；tenant.timezone NOT NULL）。
+	var tz sql.NullString
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(NULLIF(u.timezone,''), NULLIF(br.timezone,''), NULLIF(t.timezone,''))
+		  FROM devices d
+		  LEFT JOIN units    u  ON u.unit_id    = network(set_masklen(d.device_addr, 80))
+		  LEFT JOIN branches br ON br.branch_id = network(set_masklen(d.device_addr, 56))
+		  LEFT JOIN tenants  t  ON t.tenant_id  = network(set_masklen(d.device_addr, 48))
+		 WHERE d.device_addr = $1::INET
+	`, deviceAddr).Scan(&tz); err != nil {
+		return "", 0, fmt.Errorf("resolve unit timezone: %w", err)
+	}
+	iana := strings.TrimSpace(tz.String)
+	if iana == "" {
+		return "", 0, fmt.Errorf("no IANA timezone for device %s", deviceAddr)
+	}
+	offset := IANAToOffsetSeconds(iana) // 当前偏移，含 DST
+
+	deviceCode, err := s.resolveDeviceCode(ctx, deviceAddr)
+	if err != nil {
+		return "", 0, fmt.Errorf("resolve device_code: %w", err)
+	}
+	deviceUID, err := s.resolveDeviceUID(ctx, deviceAddr)
+	if err != nil {
+		return "", 0, fmt.Errorf("resolve device_uid: %w", err)
+	}
+
+	if _, err := s.sleepaceGateway.InitializeDevice(ctx, deviceCode, deviceUID, &offset); err != nil {
+		return "", 0, fmt.Errorf("sleepace re-bind timezone: %w", err)
+	}
+	s.logger.Info("ResyncDeviceTimezone done",
+		zap.String("tenant_id", tenantID),
+		zap.String("device_addr", deviceAddr),
+		zap.String("iana", iana),
+		zap.Int("offset_seconds", offset))
+	return iana, offset, nil
 }
 
 // ResyncDeviceReportTime 把 tenant 配的 sleepreport_time (unit local hour 1-24) 下发到 sleepace 设备。
