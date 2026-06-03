@@ -51,11 +51,12 @@ var ErrDeviceTokenInvalid = fmt.Errorf("apns: device token invalid (410 Gone)")
 // ── APNSSender ────────────────────────────────────────────────────────
 
 type APNSSender struct {
-	keyID    string
-	teamID   string
-	bundleID string
-	privKey  *ecdsa.PrivateKey
-	client   *http.Client // HTTP/2，APNs 强制要求
+	keyID         string
+	teamID        string
+	bundleID      string // iOS topic
+	watchBundleID string // watchOS topic（独立 App，bundle 不同 → apns-topic 必须分流）
+	privKey       *ecdsa.PrivateKey
+	client        *http.Client // HTTP/2，APNs 强制要求
 
 	mu        sync.Mutex
 	jwtToken  string
@@ -64,7 +65,8 @@ type APNSSender struct {
 
 // NewAPNSSender 从 base64 编码的 .p8 私钥创建发送器
 // p8Base64：去掉 -----BEGIN/END PRIVATE KEY----- 行后的纯 base64 内容
-func NewAPNSSender(keyID, teamID, bundleID, p8Base64 string) (*APNSSender, error) {
+// watchBundleID 为空时回落 bundleID + ".watch"
+func NewAPNSSender(keyID, teamID, bundleID, watchBundleID, p8Base64 string) (*APNSSender, error) {
 	// 兼容带 padding 和不带 padding 的 base64
 	raw, err := base64.StdEncoding.DecodeString(p8Base64)
 	if err != nil {
@@ -93,19 +95,33 @@ func NewAPNSSender(keyID, teamID, bundleID, p8Base64 string) (*APNSSender, error
 		return nil, fmt.Errorf("apns: key is not ECDSA (got %T)", pk)
 	}
 
+	if watchBundleID == "" {
+		watchBundleID = bundleID + ".watch"
+	}
+
 	transport := &http2.Transport{}
 	return &APNSSender{
-		keyID:    keyID,
-		teamID:   teamID,
-		bundleID: bundleID,
-		privKey:  ecKey,
-		client:   &http.Client{Transport: transport, Timeout: 10 * time.Second},
+		keyID:         keyID,
+		teamID:        teamID,
+		bundleID:      bundleID,
+		watchBundleID: watchBundleID,
+		privKey:       ecKey,
+		client:        &http.Client{Transport: transport, Timeout: 10 * time.Second},
 	}, nil
 }
 
+// topicFor 按平台选 apns-topic：watchOS App 是独立 bundle，用 iPhone topic 推会被
+// APNs 拒为 400 DeviceTokenNotForTopic。
+func (s *APNSSender) topicFor(platform string) string {
+	if platform == "watchos" {
+		return s.watchBundleID
+	}
+	return s.bundleID
+}
+
 // Send 向单个设备发送推送
-// env: "production" | "sandbox"
-func (s *APNSSender) Send(ctx context.Context, deviceToken, env string, payload APNSPayload) error {
+// env: "production" | "sandbox"；platform: "ios" | "watchos"（决定 apns-topic）
+func (s *APNSSender) Send(ctx context.Context, deviceToken, env, platform string, payload APNSPayload) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("apns: marshal payload: %w", err)
@@ -128,7 +144,7 @@ func (s *APNSSender) Send(ctx context.Context, deviceToken, env string, payload 
 	}
 
 	req.Header.Set("Authorization", "bearer "+token)
-	req.Header.Set("apns-topic", s.bundleID)
+	req.Header.Set("apns-topic", s.topicFor(platform))
 	req.Header.Set("apns-push-type", "alert")
 	req.Header.Set("Content-Type", "application/json")
 	if payload.APS.InterruptionLevel == "critical" {

@@ -91,23 +91,23 @@ type AlarmNotification struct {
 //   - u.tenant_id = $1::INET    限定租户
 //   - u.status = 'active'        见 should_notify_user 内部检查
 //   - d.is_active                token 未被 410 失效
-//   - d.platform = 'ios'         当前 APNs 仅 iOS（Android 走 FCM 不复用此发送器）
+//   - d.platform IN (ios,watchos) APNs 平台（apns-topic 按行分流）；Android 走 FCM 不复用此发送器
 //   - should_notify_user(...)    统一 forever/off/login_only/work_time 时间窗 + 节假日
 func (s *APNSDeviceService) SendAlarmPush(ctx context.Context, n AlarmNotification) {
 	if s.sender == nil {
 		return
 	}
 
-	type row struct{ token, env, userID string }
+	type row struct{ token, env, platform, userID string }
 	var devices []row
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT d.push_token, d.environment, d.user_id::TEXT
+		SELECT d.push_token, d.environment, d.platform, d.user_id::TEXT
 		FROM   apns_devices d
 		JOIN   users u ON u.user_id = d.user_id
 		WHERE  u.tenant_id = $1::INET
 		  AND  d.is_active = TRUE
-		  AND  d.platform  = 'ios'
+		  AND  d.platform IN ('ios', 'watchos')
 		  AND  should_notify_user(d.user_id, NOW())
 	`, n.TenantID)
 	if err != nil {
@@ -117,7 +117,7 @@ func (s *APNSDeviceService) SendAlarmPush(ctx context.Context, n AlarmNotificati
 	defer rows.Close()
 	for rows.Next() {
 		var d row
-		if err := rows.Scan(&d.token, &d.env, &d.userID); err == nil && d.token != "" {
+		if err := rows.Scan(&d.token, &d.env, &d.platform, &d.userID); err == nil && d.token != "" {
 			devices = append(devices, d)
 		}
 	}
@@ -126,7 +126,7 @@ func (s *APNSDeviceService) SendAlarmPush(ctx context.Context, n AlarmNotificati
 	}
 
 	for _, d := range devices {
-		go func(token, env, staffUserID string) {
+		go func(token, env, platform, staffUserID string) {
 			sendCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			badge := 1
@@ -139,7 +139,7 @@ func (s *APNSDeviceService) SendAlarmPush(ctx context.Context, n AlarmNotificati
 				}
 			}
 			payload := s.buildPayload(n, badge)
-			err := s.sender.Send(sendCtx, token, env, payload)
+			err := s.sender.Send(sendCtx, token, env, platform, payload)
 			if err == nil {
 				s.logger.Info("[APNS] push sent",
 					zap.String("token_prefix", tokenPrefix(token)),
@@ -155,7 +155,7 @@ func (s *APNSDeviceService) SendAlarmPush(ctx context.Context, n AlarmNotificati
 					zap.String("token_prefix", tokenPrefix(token)),
 					zap.Error(err))
 			}
-		}(d.token, d.env, d.userID)
+		}(d.token, d.env, d.platform, d.userID)
 	}
 }
 

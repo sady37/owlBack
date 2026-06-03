@@ -449,7 +449,7 @@ func main() {
 
 		var apnsSender *notify.APNSSender
 		if kid := strings.TrimSpace(os.Getenv("APNS_KEY_ID")); kid != "" {
-			s, err := notify.NewAPNSSender(kid, os.Getenv("APNS_TEAM_ID"), os.Getenv("APNS_BUNDLE_ID"), os.Getenv("APNS_P8_KEY"))
+			s, err := notify.NewAPNSSender(kid, os.Getenv("APNS_TEAM_ID"), os.Getenv("APNS_BUNDLE_ID"), os.Getenv("APNS_WATCH_BUNDLE_ID"), os.Getenv("APNS_P8_KEY"))
 			if err != nil {
 				logger.Warn("APNS sender init failed", zap.Error(err))
 			} else {

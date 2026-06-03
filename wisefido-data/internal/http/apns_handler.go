@@ -35,6 +35,7 @@ func (h *APNSHandler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DeviceToken string `json:"device_token"`
 		Environment string `json:"environment"` // "sandbox" | "production"
+		Platform    string `json:"platform"`    // "ios" | "watchos"，缺省回落 ios（兼容旧版 iOS App）
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceToken == "" {
 		writeJSON(w, http.StatusBadRequest, Fail("device_token required"))
@@ -42,6 +43,13 @@ func (h *APNSHandler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Environment == "" {
 		req.Environment = "production"
+	}
+	if req.Platform == "" {
+		req.Platform = "ios"
+	}
+	if req.Platform != "ios" && req.Platform != "watchos" {
+		writeJSON(w, http.StatusBadRequest, Fail("platform must be ios or watchos"))
+		return
 	}
 
 	// 报警推送仅面向 staff，避免住户/联系人接收带来的责任边界问题
@@ -51,7 +59,7 @@ func (h *APNSHandler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// v2 apns_devices 无 tenant_id/user_type 列；tenant 派生自 users.tenant_id (JOIN)
-	if err := h.apnsSvc.Register(ctx, userID, req.DeviceToken, "ios", req.Environment); err != nil {
+	if err := h.apnsSvc.Register(ctx, userID, req.DeviceToken, req.Platform, req.Environment); err != nil {
 		h.logger.Error("[APNS] register device failed",
 			zap.String("user_id", userID),
 			zap.String("tenant_id", tenantID),
@@ -63,6 +71,7 @@ func (h *APNSHandler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("[APNS] device registered",
 		zap.String("user_id", userID),
 		zap.String("tenant_id", tenantID),
+		zap.String("platform", req.Platform),
 		zap.String("env", req.Environment))
 	writeJSON(w, http.StatusOK, Ok(map[string]string{"status": "registered"}))
 }

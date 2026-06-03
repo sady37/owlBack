@@ -31,7 +31,13 @@ func main() {
 	tokenArg := flag.String("token", "", "device token hex (skips DB pick)")
 	envArg := flag.String("env", "", "sandbox|production (required with -token; optional with -tenant to override DB column)")
 	tryBoth := flag.Bool("try-both", true, "on BadDeviceToken retry opposite env")
+	platformArg := flag.String("platform", "ios", "ios|watchos (selects apns-topic)")
 	flag.Parse()
+
+	platform := strings.TrimSpace(*platformArg)
+	if platform != "ios" && platform != "watchos" {
+		log.Fatal("-platform must be ios or watchos")
+	}
 
 	cfg := config.Load()
 	if !cfg.DBEnabled {
@@ -51,6 +57,7 @@ func main() {
 		kid,
 		strings.TrimSpace(os.Getenv("APNS_TEAM_ID")),
 		strings.TrimSpace(os.Getenv("APNS_BUNDLE_ID")),
+		strings.TrimSpace(os.Getenv("APNS_WATCH_BUNDLE_ID")),
 		os.Getenv("APNS_P8_KEY"),
 	)
 	if err != nil {
@@ -121,7 +128,7 @@ func main() {
 	send := func(e string) error {
 		c, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		return sender.Send(c, token, e, payload)
+		return sender.Send(c, token, e, platform, payload)
 	}
 
 	err = send(env)
