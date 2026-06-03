@@ -1,6 +1,8 @@
 package roomengine
 
 import (
+	"math"
+
 	"owl-common/alarm"
 	"owl-common/card"
 	"owl-common/observation"
@@ -25,6 +27,12 @@ const (
 	// radar 位置量化重（走动也常报 median=0），per-frame 走速不可靠，still-box(spread) 才 robust。
 	beliefLostTTLMs         = 4_000 // track 超此无帧 = 丢失
 	beliefLostWaitWindowSec = 30    // 丢失后 ObsLostWhileMoving ramp 到满龄的时长
+	// P2 absence 发射的可达退场（reachable-exit）参数（doc/belief_p2_absence_emission §3）。
+	beliefExitDistScaleCm  = 80   // f_dist = exp(-d/scale) 软距离尺度（≈1 步；替 30cm 硬 cutoff）
+	beliefReportIntervalMs = 1000 // radar 1Hz 上报间隔 = reachability 的 Δt
+	// mobility-tier 步速先验默认：行动不便 0.6 m/s = 最慢档 = 保守（少抑制、少漏真跌倒）。
+	// 观测走速（固件 walk_distance/walk_duration）接入后覆盖此先验；per-resident tier 经 PHI 边界派生注入（§4）。
+	beliefPriorWalkSpeedCmS = 60
 )
 
 // geomFromArea cell AreaType → belief.Geom。
@@ -125,6 +133,23 @@ func isGhostJump(dCm float64, dtMs int64) bool {
 // engine/replay 在 track 消失后每 tick 调（ramp 抬 P(Fallen)），exit/返回经各自似然对冲取消。
 func lostWhileMovingToObs(ageFrac float64, g belief.Geom, nowMs int64) belief.Observation {
 	return belief.Observation{Kind: belief.ObsLostWhileMoving, Value: clampUnit(ageFrac), Conf: 0.8, Ts: nowMs, Fresh: true, Geom: g}
+}
+
+// reachableExitObs 丢失点的"可达退场"证据 e = f_dist(d) · f_reach(v,d) ∈ [0,1]，与 lostWhileMovingToObs
+// 同 tick 发出对冲：e 高（近门 + 单帧可达）→ 偏 Left 压 Fallen；e≈0（远离门/不可达）→ identity 不干预真跌倒。
+// 替 30cm 硬门闸的悬崖（CABB 73cm 落悬崖外被误报；doc/belief_p2_absence_emission §3）。
+// speedCmS = 步速（观测走速‖mobility-tier 先验，缺则用 beliefPriorWalkSpeedCmS 兜底）。
+func reachableExitObs(distCm int, speedCmS float64, g belief.Geom, nowMs int64) belief.Observation {
+	d := float64(distCm)
+	if d < 1 {
+		d = 1
+	}
+	if speedCmS <= 0 {
+		speedCmS = beliefPriorWalkSpeedCmS
+	}
+	fDist := math.Exp(-d / beliefExitDistScaleCm)
+	fReach := clampUnit(speedCmS * float64(beliefReportIntervalMs) / 1000 / d)
+	return belief.Observation{Kind: belief.ObsReachableExit, Value: fDist * fReach, Conf: 0.8, Ts: nowMs, Fresh: true, Geom: g}
 }
 
 // radarEventToObs 离散 radar 事件 → Observation（EnterRoom/ExitRoom/Fall）。

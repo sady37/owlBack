@@ -19,6 +19,7 @@ const (
 	ObsNeighbor                       // §5.5.2 弱耦合：邻居 room P(占用) [0,1]
 	ObsTimeContext                    // 夜/昼 + 房型，调 prior 非硬观测
 	ObsLostWhileMoving                // 走动中突然消失（前置=消失前60s在走动）→ 候选倒地（Value=丢失后时长归一）
+	ObsReachableExit                  // 丢失点可达退场证据 e=f_dist·f_reach [0,1]（P2 软门：近门+单帧可达→偏 Left 压 Fallen）
 )
 
 // Geom 位置语义标签——由 device 坐标 ∩ layout polygon 现算（belief_input_normalization.md §1）。

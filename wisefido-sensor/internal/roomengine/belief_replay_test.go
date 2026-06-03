@@ -40,7 +40,7 @@ func loadFixture(t *testing.T, rel string) []fxRecord {
 	return recs
 }
 
-func buildGridFromLayout(t *testing.T, rel string) *RoomGrid {
+func buildGridFromLayout(t *testing.T, rel string) (*RoomGrid, radarutils.RadarMount) {
 	b, err := os.ReadFile(filepath.Join(casesDir, rel))
 	if err != nil {
 		t.Skipf("layout 缺失 %s: %v", rel, err)
@@ -69,6 +69,7 @@ func buildGridFromLayout(t *testing.T, rel string) *RoomGrid {
 	for _, m := range radars {
 		grid.StampRadar(m)
 	}
+	mount := radars[0] // device-level fixture：单雷达，track 坐标按其 mount 转画布（同 track_parse.go:65）
 	grid.StampEnters(cfg.Enters, cfg.EnterTargets)
 	for _, r := range cfg.Enters {
 		grid.SetPrior(r, AreaEnter, 99, SourceHuman)
@@ -85,7 +86,7 @@ func buildGridFromLayout(t *testing.T, rel string) *RoomGrid {
 	for _, r := range cfg.Chairs {
 		grid.SetPrior(r, AreaSit, 80, SourceHuman)
 	}
-	return grid
+	return grid, mount
 }
 
 func mi(m map[string]interface{}, k string) (int, bool) {
@@ -128,7 +129,7 @@ type rtrk struct {
 }
 
 // replay 驱动 belief：track 帧 → adapter；走动中突然消失 → lostWhileMovingToObs；exit/返回取消。
-func replay(t *testing.T, recs []fxRecord, grid *RoomGrid) replayResult {
+func replay(t *testing.T, recs []fxRecord, grid *RoomGrid, mount radarutils.RadarMount) replayResult {
 	be := belief.New(belief.DefaultModel())
 	var decider belief.Decider
 	tracks := map[int]*rtrk{}
@@ -146,9 +147,14 @@ func replay(t *testing.T, recs []fxRecord, grid *RoomGrid) replayResult {
 					continue
 				}
 				exited = false // 有真 track 帧 → 取消 exit 抑制
-				x, _ := mi(dv, "position_x")
-				y, _ := mi(dv, "position_y")
-				z, _ := mi(dv, "position_z")
+				rawX, _ := mi(dv, "position_x")
+				rawY, _ := mi(dv, "position_y")
+				rawZ, _ := mi(dv, "position_z")
+				// monitor_stream 是雷达局部坐标；按 device mount 转画布坐标（忠实复刻 production
+				// track_parse.go:65 RadarToCanvas）。之前 harness 漏转 → track 与 grid-Enter 跨帧差 2-3m，
+				// 致 reachableExit/geom 全错。grid 的 Enter/Bed 等都是画布坐标。
+				canvas := radarutils.RadarToCanvas(radarutils.RadarPoint{H: rawX, V: rawY, Z: rawZ}, mount)
+				x, y, z := canvas.X, canvas.Y, canvas.Z
 				pose, _ := mi(dv, "pose")
 				conf, _ := mi(dv, "track_confidence")
 
@@ -265,6 +271,10 @@ func replay(t *testing.T, recs []fxRecord, grid *RoomGrid) replayResult {
 			}
 			age := float64(now-k.lostAnchor) / 1000 / beliefLostWaitWindowSec
 			obs = append(obs, lostWhileMovingToObs(age, k.lastGeom, now))
+			// P2：reachable-exit 同 tick 对冲（近门 + 单帧可达 → 压 Fallen 偏 Left）。grid 在 scope。
+			if grid != nil {
+				obs = append(obs, reachableExitObs(grid.NearestEntryDist(k.lastX, k.lastY), beliefPriorWalkSpeedCmS, k.lastGeom, now))
+			}
 			res.lostStillObs++
 		}
 		be.Step(now, obs)
@@ -339,9 +349,25 @@ func TestReplayOracle(t *testing.T) {
 		// 噪声 → still-box 被击穿 → replay 误报。**production engine 用 Verdict 完整 ghost 检测+止血会挡住**
 		// （production 实测其 still-box≥60s）。属 replay 保真局限（非 belief 模型错），仅诊断不断言。
 		{"Hunzi-0530(ghost-heavy,replay局限)", "hunzi-cabb-lost-0530-FP/window.json", "hunzi-cabb-lost-0530-FP/room_layout.json", false, false},
+		// 2026-06-02 用户确认 ground-truth 的 4 条止血后残留 lost_track FP（still-box=0 / 走动中消失，
+		// MovingPreconditionMs=60s 止血闸故意不挡）。全部应**不确认**。
+		// CABB-2247：无 ExitRoom，仅 number_people 1→0（+335s，正当 vanish）= np=0 corroboration 类。
+		// belief confirm=false 来自 np=0 likelihood 压住已 ramp 到 0.993 的 Fallen。但 np=0 likelihood 正是
+		// memory 标的"过度信任·待重标定"（铁律：np=0 是 corroboration 非 substitution，ghost/水气会假报 np=0）
+		// → 此 case 的抑制依赖未定稿标定，故仅诊断（maxP=0.993 离确认仅一帧时序之遥，是 P2 absence/np=0 重标定的残留洞样本）。
+		{"CABB浴室FP(0601,np=0走出)", "hunzi-cabb-lost-0601-2247-FP/window.json", "hunzi-cabb-lost-0601-2247-FP/room_layout.json", false, false},
+		// MoM-2311：窗内**有** ExitRoom 却仍误报 lost_track —— 比 mom-0953（无 exit）更强的对抗 case；
+		// belief exit-cancel 干净挡住（maxP=0.015）→ assert。
+		{"MoM浴室FP(0601,有exit仍误报)", "mom-bathroom-lost-0601-2311-FP/window.json", "mom-bathroom-lost-0601-2311-FP/room_layout.json", false, true},
+		// D5F7-0114：ghost 类（track 持续到 fire = ghost 非真人）。裸 replay 无 verdict → 过确认（保真局限，
+		// 同 Hunzi-0530）；待建 window_ghostadj.json（注入 production ghost verdict）后才可 assert。
+		{"D5F7浴室FP(0602,ghost)", "d5f7-bathroom-lost-0602-0114-ghost-FP/window.json", "d5f7-bathroom-lost-0602-0114-ghost-FP/room_layout.json", false, false},
+		// D5F7-1045：ExitRoom 取消干净（maxP=0.020）→ assert。
+		{"D5F7浴室FP(0602,走出)", "d5f7-bathroom-lost-0602-1045-exit-FP/window.json", "d5f7-bathroom-lost-0602-1045-exit-FP/room_layout.json", false, true},
 	}
 	for _, c := range cases {
-		res := replay(t, loadFixture(t, c.win), buildGridFromLayout(t, c.layout))
+		g, mount := buildGridFromLayout(t, c.layout)
+		res := replay(t, loadFixture(t, c.win), g, mount)
 		confirmed := res.confirmedFireTs != 0
 		t.Logf("%-32s confirm=%-5v maxP=%.3f endP=%.3f minPAfterFire=%.3f maxStill=%.0fs lostStill=%d",
 			c.name, confirmed, res.maxFallenP, res.endFallenP, res.minPAfterFire, res.maxStillSec, res.lostStillObs)
@@ -375,9 +401,16 @@ func TestTrackLayerOracle(t *testing.T) {
 		{"D523卧室FP(9h同型,静止)", "d523-bedroom-lost-0933/window.json", "d523-bedroom-lost-0933/room_layout.json", false, 0.2, false},
 		{"Hunzi-CABB-0529FP(站立静止)", "hunzi-cabb-lost-0529-FP/window.json", "hunzi-cabb-lost-0529-FP/room_layout.json", false, 0.2, false},
 		{"D5F7浴室FP(0601裸replay,无adjudicator)", "d5f7-bathroom-fp-0601/window.json", "d5f7-bathroom-fp-0601/room_layout.json", false, 0.2, false},
+		// 2026-06-02 4 条用户标定 FP 过 DBN P1 Track 层。预期:有 ExitRoom 的(MoM-2311/D5F7-1045)→ JustLeft 不 Lost(assert);
+		// 无 exit 仅 np=0 的(CABB-2247)+ ghost 无 verdict(D5F7-0114)→ Track 层仍真 Lost(P1 不分,FP 性在 P2/P3,诊断)。
+		{"MoM浴室FP(0601,有exit)", "mom-bathroom-lost-0601-2311-FP/window.json", "mom-bathroom-lost-0601-2311-FP/room_layout.json", false, 0.2, true},
+		{"D5F7浴室FP(0602,走出exit)", "d5f7-bathroom-lost-0602-1045-exit-FP/window.json", "d5f7-bathroom-lost-0602-1045-exit-FP/room_layout.json", false, 0.2, true},
+		{"CABB浴室FP(0601,np=0无exit)", "hunzi-cabb-lost-0601-2247-FP/window.json", "hunzi-cabb-lost-0601-2247-FP/room_layout.json", false, 0.2, false},
+		{"D5F7浴室FP(0602,ghost无verdict)", "d5f7-bathroom-lost-0602-0114-ghost-FP/window.json", "d5f7-bathroom-lost-0602-0114-ghost-FP/room_layout.json", false, 0.2, false},
 	}
 	for _, c := range cases {
-		res := replay(t, loadFixture(t, c.win), buildGridFromLayout(t, c.layout))
+		g, mount := buildGridFromLayout(t, c.layout)
+		res := replay(t, loadFixture(t, c.win), g, mount)
 		// maxTLost = "Track 层是否曾判定真人丢失"——peak 是喂 Room 层候选的触发信号；
 		// 之后的衰减（真跌倒被重新检出为 lying / 人返回 recapture）属 dwell 轴（P3），不在 P1。
 		gotLost := res.maxTLost >= c.thresh

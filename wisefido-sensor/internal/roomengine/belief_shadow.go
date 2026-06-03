@@ -28,6 +28,7 @@ type beliefShadowTrack struct {
 	lastSeenMs    int64
 	stillBoxAgeMs int64 // 最后一帧时的 still-box 时长（消失前是否走动的依据）
 	geom          belief.Geom
+	lastX, lastY  int // 最后一帧位置 → 算丢失点离门距离 d（P2 reachable-exit）
 	lostAnchor    int64
 }
 
@@ -158,6 +159,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		st.lastSeenMs = nowMs
 		st.lostAnchor = 0
 		st.geom = geomFromArea(b.CellAreaType)
+		st.lastX, st.lastY = b.X, b.Y
 		if ts != nil && ts.StillBoxRunStart > 0 {
 			st.stillBoxAgeMs = nowMs - ts.StillBoxRunStart
 		} else {
@@ -170,9 +172,6 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		if _, alive := cur[tid]; alive || nowMs-st.lastSeenMs <= beliefShadowLostTTLMs {
 			continue
 		}
-		if st.geom == belief.GeomInEnter {
-			continue // 门区消失 = 正常走出
-		}
 		if st.stillBoxAgeMs >= int64(FallRulesParam.Lost.MovingPreconditionMs) {
 			continue // 静止态消失 → Still-fall 域
 		}
@@ -180,7 +179,11 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			st.lostAnchor = st.lastSeenMs
 		}
 		age := float64(nowMs-st.lostAnchor) / 1000 / beliefShadowWaitSec
+		// P2：门区不再硬 continue；改软门——lost(抬 Fallen) 与 reachable-exit(近门+可达→压 Fallen) 同 tick 对冲。
 		obs = append(obs, lostWhileMovingToObs(age, st.geom, nowMs))
+		if grid != nil {
+			obs = append(obs, reachableExitObs(grid.NearestEntryDist(st.lastX, st.lastY), beliefPriorWalkSpeedCmS, st.geom, nowMs))
+		}
 	}
 
 	// DBN P1 Track 层 absent 扫掠 + log：超 TTL 无帧喂 absent（不 skip ghost——A_T 自处理）。

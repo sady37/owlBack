@@ -58,10 +58,12 @@ func rawLikelihood(o Observation) Vector {
 		}
 		return lk(nil)
 	case ObsNumberPeople:
-		if o.Value < 0.5 { // number_people=0 强证据空房
+		if o.Value < 0.5 { // number_people=0：弱倾向空/离，**不反驳已倒地**（铁律：np=0 是 corroboration 非
+			// substitution——金属垃圾桶/镜子→ghost、淋浴水气→衰减都会假报 np=0；真倒地证据须仍能竞争）。
+			// 强 Empty 拉力交 ObsEnterExit<0(SLeft:8) + ObsReachableExit。详 doc/belief_p2_absence_emission §3.3 (#14)。
 			return lk(map[State]float64{
-				SEmpty: 6, SLeft: 2,
-				SBedLying: 0.3, SBedRestless: 0.3, SSit: 0.3, SStandWalk: 0.3, SFallen: 0.3,
+				SEmpty: 1.5, SLeft: 2,
+				SSit: 0.5, SStandWalk: 0.5, SFallen: 1.0,
 			})
 		}
 		return lk(map[State]float64{SEmpty: 0.3}) // 有人
@@ -100,6 +102,16 @@ func rawLikelihood(o Observation) Vector {
 			SStandWalk: 1 - 0.3*a,
 			SEmpty:     1 - 0.3*a,
 			SLeft:      1 - 0.3*a,
+		})
+	case ObsReachableExit:
+		// 可达退场证据 e=f_dist·f_reach。高（近门 + 单帧可达）→ 人很可能从门口走出（Left），不是倒地 →
+		// 压 Fallen。e≈0（远离门/不可达，如真跌倒在开阔地板）→ 各因子→1 = identity，不干预。
+		// 替 30cm 硬门闸的悬崖（#2/#8 软化）。详 doc/belief_p2_absence_emission §3.1-3.2。
+		e := clamp01(o.Value)
+		return lk(map[State]float64{
+			SLeft:   1 + 6*e,
+			SEmpty:  1 + 2*e,
+			SFallen: 1 - 0.9*e,
 		})
 	case ObsTimeContext:
 		return lk(nil) // 调 prior / θ_fire，不在 diag 更新（见 Model.prior）
