@@ -1,0 +1,83 @@
+[
+    {
+        "payload": {
+            "reason": "lost_track",
+            "source": "fd00:0:fff1::1",
+            "evidence": {
+                "context": "track_lost_no_exit_room_no_recovery",
+                "wait_ms": 300000,
+                "fall_score": 100,
+                "last_verdict": 1,
+                "spatial_jump": false,
+                "cell_area_type": 4,
+                "engine_fire_ms": 1780473826803,
+                "replay_anchor_ms": 1780473496803,
+                "still_box_start_ms": 0
+            },
+            "heart_rate": -1,
+            "position_x": -60,
+            "position_y": 10,
+            "position_z": 0,
+            "event_since": 1780473826803,
+            "event_status": "instant",
+            "incident_ts_ms": 1780473496803,
+            "trigger_seq_num": 20948,
+            "respiratory_rate": -1
+        },
+        "trig_sh": "06-03 15:58:16"
+    },
+    {
+        "payload": {
+            "reason": "lost_track",
+            "source": "fd00:0:fff1::1",
+            "evidence": {
+                "context": "track_lost_no_exit_room_no_recovery",
+                "wait_ms": 221000,
+                "fall_score": 86,
+                "last_verdict": 1,
+                "spatial_jump": false,
+                "cell_area_type": 4,
+                "engine_fire_ms": 1780460145094,
+                "replay_anchor_ms": 1780459764568,
+                "still_box_start_ms": 1780459764568
+            },
+            "heart_rate": -1,
+            "position_x": 0,
+            "position_y": -20,
+            "position_z": 0,
+            "event_since": 1780460145094,
+            "event_status": "instant",
+            "incident_ts_ms": 1780459764568,
+            "trigger_seq_num": 75422,
+            "respiratory_rate": -1
+        },
+        "trig_sh": "06-03 12:09:24"
+    },
+    {
+        "payload": {
+            "reason": "lost_track",
+            "source": "fd00:0:fff1::1",
+            "evidence": {
+                "context": "track_lost_no_exit_room_no_recovery",
+                "wait_ms": 300000,
+                "fall_score": 93,
+                "last_verdict": 1,
+                "spatial_jump": false,
+                "cell_area_type": 0,
+                "engine_fire_ms": 1780382403605,
+                "replay_anchor_ms": 1780382073605,
+                "still_box_start_ms": 0
+            },
+            "heart_rate": -1,
+            "position_x": -10,
+            "position_y": -30,
+            "position_z": 0,
+            "event_since": 1780382403605,
+            "event_status": "instant",
+            "incident_ts_ms": 1780382073605,
+            "trigger_seq_num": 46,
+            "respiratory_rate": -1
+        },
+        "trig_sh": "06-02 14:34:33"
+    }
+]
