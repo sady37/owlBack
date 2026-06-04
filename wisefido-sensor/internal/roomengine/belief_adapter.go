@@ -76,6 +76,40 @@ func geomFromGrid(g *RoomGrid, x, y int) belief.Geom {
 	return belief.GeomUnknown
 }
 
+// geomTrustFromSource cell Source → geom 信任权重（provenance）。只对抑制跌倒的 rest geom 有意义。
+// FE 画(SourceHuman)=1.0 全信(保现有 full 抑制)；feedback=0.6；纯自学=0.4 —— 越暂定抑制越弱。
+func geomTrustFromSource(s Source) float64 {
+	switch s {
+	case SourceFeedback:
+		return 0.6
+	case SourceLearned, SourceGeometry:
+		return 0.4
+	default: // SourceHuman / SourceUnset
+		return 1.0
+	}
+}
+
+// geomConfFromGrid 该 (x,y) geom 的 provenance 信任 [0,1]，喂 belief Observation.GeomConf。
+// 仅 rest-suppress geom(InBed/InToilet)按 cell Source 打折；Enter/开阔地板/Unknown 全信(1.0)。
+func geomConfFromGrid(g *RoomGrid, x, y int) float64 {
+	if g == nil {
+		return 1.0
+	}
+	if g.NearestEntryDist(x, y) <= beliefEnterMarginCm {
+		return 1.0 // Enter 是几何，全信
+	}
+	c := g.CellAt(x, y)
+	if c == nil || len(c.Belief) == 0 {
+		return 1.0
+	}
+	switch c.Belief[0].Type {
+	case AreaBed, AreaToilet, AreaShower: // 抑制跌倒的 rest geom → 按 provenance 给信任
+		return geomTrustFromSource(c.Belief[0].Source)
+	default:
+		return 1.0
+	}
+}
+
 // radarFrameAdapter 一帧 radar track → []Observation（pose / 运动学 / vital / track-present）。
 // 命门：长冻 track 的 pose/kinematics/vital 置 Fresh=false（Conf=0 不更新），即便 LastObservedMs 仍新
 // （firmware 冻结期持续 1Hz 推同帧）。ghost-ness 不受冻结影响（verdict 仍有效）。
@@ -91,6 +125,7 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 		z = *t.PositionZ
 	}
 	g := geomFromGrid(grid, x, y)
+	gc := geomConfFromGrid(grid, x, y) // geom provenance 信任（FE 画=1 / feedback=.6 / 自学=.4）
 
 	tsFresh := nowMs-ts.LastObservedMs <= beliefRadarTTLMs
 	stillBox := ts.StillBoxRunStart > 0 && nowMs-ts.StillBoxRunStart >= beliefStillBoxStaleMs
@@ -119,7 +154,7 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 	}
 
 	out := []belief.Observation{
-		{Source: t.LogicID, Kind: belief.ObsPose, Value: float64(t.Pose), Conf: poseConf, Ts: nowMs, Fresh: motionFresh, Geom: g},
+		{Source: t.LogicID, Kind: belief.ObsPose, Value: float64(t.Pose), Conf: poseConf, Ts: nowMs, Fresh: motionFresh, Geom: g, GeomConf: gc},
 		{Source: t.LogicID, Kind: belief.ObsKinematics, Value: f, Conf: 0.7, Ts: nowMs, Fresh: motionFresh, Geom: g},
 		{Source: t.LogicID, Kind: belief.ObsVitalPresent, Value: vitalVal, Conf: 0.6, Ts: nowMs, Fresh: motionFresh, Geom: g},
 		{Source: t.LogicID, Kind: belief.ObsTrackPresent, Value: ghost, Conf: 0.8, Ts: nowMs, Fresh: tsFresh, Geom: g},

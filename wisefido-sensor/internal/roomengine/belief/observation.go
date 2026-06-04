@@ -53,6 +53,10 @@ type Observation struct {
 	Ts     int64   // 观测时刻 unix ms
 	Fresh  bool    // 在 TTL 内；stale → 当缺失（Conf 视为 0）
 	Geom   Geom    // 位置语义（grid 交集算）
+	// GeomConf geom 可靠度 [0,1]——provenance 信任权重（cell Source：FE 画=1 / feedback=0.6 / 自学=0.4）。
+	// 0 或未设=1.0（全信 geom，向后兼容）。<1 时把 geom 条件似然向 geom-中性(Unknown) blend——
+	// 软先验替硬闸：暂定 rest-zone(InBed/InToilet) 抑制跌倒更弱，强跌倒证据仍能盖过，不漏真摔。
+	GeomConf float64
 }
 
 // effConf 有效置信度：stale 观测当缺失。

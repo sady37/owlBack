@@ -9,7 +9,13 @@ import "owl-common/observation"
 func rawLikelihood(o Observation) Vector {
 	switch o.Kind {
 	case ObsPose:
-		return poseLikelihood(int(o.Value), o.Geom)
+		// provenance 加权：GeomConf<1 时把 geom 条件似然向 geom-中性(Unknown) blend。
+		// = 暂定 rest-zone 的跌倒抑制按信任打折(软先验替硬 exempt 闸)；FE 画 bed(GeomConf=1)全抑制不变。
+		gc := o.GeomConf
+		if gc <= 0 || gc >= 1 {
+			return poseLikelihood(int(o.Value), o.Geom)
+		}
+		return lerpVec(poseLikelihood(int(o.Value), GeomUnknown), poseLikelihood(int(o.Value), o.Geom), gc)
 	case ObsKinematics:
 		// 跌倒运动学签名 [0,1]：z 骤降 + 随后静止。高 → S5；中等运动 → S4。
 		f := clamp01(o.Value)
@@ -163,6 +169,15 @@ func poseLikelihood(pose int, g Geom) Vector {
 		return lk(map[State]float64{SBedRestless: 4, SBedLying: 1.5})
 	}
 	return lk(nil)
+}
+
+// lerpVec 线性插值 a→b（t∈[0,1]）：out = a + t·(b−a)。geom provenance 加权用。
+func lerpVec(a, b Vector, t float64) Vector {
+	var out Vector
+	for i := range out {
+		out[i] = a[i] + t*(b[i]-a[i])
+	}
+	return out
 }
 
 func clamp01(x float64) float64 {

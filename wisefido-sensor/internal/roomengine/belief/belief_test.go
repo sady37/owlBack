@@ -165,6 +165,22 @@ func TestStaleEvidenceIsLinchpin(t *testing.T) {
 	}
 }
 
+// TestGeomProvenanceWeighting：GeomConf(Source 信任) 越低，rest-geom 对跌倒的抑制越弱（软先验替硬闸）。
+func TestGeomProvenanceWeighting(t *testing.T) {
+	mk := func(gc float64) Observation {
+		return Observation{Kind: ObsPose, Value: float64(observation.PoseFallen), Geom: GeomInBed, GeomConf: gc, Conf: 0.8, Fresh: true, Ts: 1000}
+	}
+	full := rawLikelihood(mk(1.0))      // FE 画 bed：全抑制（SFallen 最低）
+	tentative := rawLikelihood(mk(0.4)) // 自学 bed：抑制打折
+	unset := rawLikelihood(mk(0))       // 未设=全信=同 full（向后兼容）
+	if tentative[SFallen] <= full[SFallen] {
+		t.Fatalf("暂定 bed 应抑制更弱(SFallen 更高): full=%.2f tentative=%.2f", full[SFallen], tentative[SFallen])
+	}
+	if unset[SFallen] != full[SFallen] {
+		t.Fatalf("GeomConf=0 应=全信(向后兼容): unset=%.2f full=%.2f", unset[SFallen], full[SFallen])
+	}
+}
+
 // TestFallGeomRouting #3：**可观测**跌倒的几何路由（设计意图回归锁，非真机验证——真机靠 shadow + 201 测试）。
 // 仅覆盖"radar 看得到跌倒姿/运动学"的子情形；occluded fall-off-bed（雷达完全看不到，靠 LeftBed+不重捕推断）
 // 不在此测，留给 201 真机 fixture 驱动 LeftBed-armed 推断设计。
