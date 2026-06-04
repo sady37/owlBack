@@ -91,17 +91,21 @@ func rawLikelihood(o Observation) Vector {
 			SBedLying:  1 - 0.4*n,
 			SStandWalk: 1 - 0.4*n,
 		})
-	case ObsLostWhileMoving:
-		// 走动中突然消失 → 候选倒地（走动→跌倒+遮挡→丢 track）。前置（消失前60s在走动）由
-		// engine/adapter 把关；此处只管似然：抬 P(Fallen)、压走动/空/离场。
-		// neighbor/exit/返回 证据通过各自似然压低 Fallen 对冲——无对冲 → fire；有对冲（走出/返回）→ 不 fire。
-		// Value = 丢失后时长归一 [0,1]（ramp，非帧率依赖）。
-		a := clamp01(o.Value)
+	case ObsNoDetect:
+		// P(no-detect|s)：本 tick "看了没测到" 的状态条件似然（非时长斜坡）。
+		// 机理：**可检测态（站/走/坐）凭空消失是坏解释 → 压低**；可合理消失态（倒地贴地遮挡、空房、
+		// 已离、ghost 闪灭、床上被遮）保留/略升。走动者突然消失又不在 Empty/Left → Fallen 来解释它。
+		// **关键：固定强度、不含时长项**——时长（要维持多久才确认）归 Decider/P3 HSMM，非本发射（P2/P3 切割）。
+		// 方向仲裁交其它观测：reachableExit→Left、np=0→Empty/Left、ExitRoom→Left、verdict→Artifact；
+		// 且 A 禁 StandWalk→Empty 直达（Empty 必经 Left）→ 无退场证据时 Fallen 胜出，有则被压回。
+		// 每 tick 施加，"消失越久 Fallen 越高" 由重复观测 × Fallen 近吸收涌现，非手调 gain。
 		return lk(map[State]float64{
-			SFallen:    1 + lostMovingFallGain*a,
-			SStandWalk: 1 - 0.3*a,
-			SEmpty:     1 - 0.3*a,
-			SLeft:      1 - 0.3*a,
+			SStandWalk:   0.3,
+			SSit:         0.4,
+			SBedRestless: 0.6,
+			SBedLying:    0.8,
+			SFallen:      1.6, // 略升：贴地遮挡是"走动者凭空消失"的典型物理因
+			// SEmpty/SLeft/STransition/SArtifact 默认 1.0 中性，留给其它观测/转移仲裁
 		})
 	case ObsReachableExit:
 		// 可达退场证据 e=f_dist·f_reach。高（近门 + 单帧可达）→ 人很可能从门口走出（Left），不是倒地 →
@@ -118,10 +122,6 @@ func rawLikelihood(o Observation) Vector {
 	}
 	return lk(nil)
 }
-
-// lostMovingFallGain ObsLostWhileMoving 满龄（Value=1）时对 Fallen 的似然增益。
-// 标定：open-floor 冻结无对冲 → 越过 θ_fire；有 neighbor(occ .9) 对冲 → 压回 θ_fire 下。
-const lostMovingFallGain = 3.0
 
 // poseLikelihood radar pose × Geom 条件似然。
 // 关键二义性：pose=Lying 在 InBed → Bed-Lying；在 OpenFloor → 倒地候选。Geom 是命门。

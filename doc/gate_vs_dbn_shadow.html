@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>False Fall：当前 Gate vs DBN Shadow — 差异与进展</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#171d26; --panel2:#1d2530; --line:#2a3340;
+    --fg:#e6edf3; --dim:#9aa7b5; --accent:#6ea8fe; --warn:#f0a04b;
+    --good:#5ec98a; --bad:#e5707e; --ghost:#b08cf0; --shadow:#7fd1d8;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    line-height:1.65;font-size:15px}
+  .wrap{max-width:1060px;margin:0 auto;padding:40px 28px 90px}
+  h1{font-size:30px;margin:0 0 6px;letter-spacing:.3px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:30px}
+  h2{font-size:21px;margin:46px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:26px 0 10px;color:var(--accent)}
+  p{margin:10px 0}
+  code{font-family:var(--mono);background:#0b0f14;padding:1px 6px;border-radius:4px;
+    font-size:13px;color:#cbd5e1;border:1px solid var(--line)}
+  .tag{display:inline-block;font-size:12px;padding:2px 9px;border-radius:20px;
+    font-weight:600;vertical-align:middle;margin-left:6px}
+  .tag.prod{background:rgba(94,201,138,.16);color:var(--good);border:1px solid rgba(94,201,138,.4)}
+  .tag.shadow{background:rgba(127,209,216,.14);color:var(--shadow);border:1px solid rgba(127,209,216,.4)}
+  .tag.todo{background:rgba(240,160,75,.14);color:var(--warn);border:1px solid rgba(240,160,75,.4)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:18px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+  .card.prod{border-top:3px solid var(--good)}
+  .card.shadow{border-top:3px solid var(--shadow)}
+  .card h3{margin-top:2px}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:5px 0}
+  .mono{font-family:var(--mono);font-size:12.5px}
+  table{border-collapse:collapse;width:100%;margin:16px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--fg);font-weight:600}
+  td.c{text-align:center}
+  tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+  .pill{font-family:var(--mono);font-size:11.5px;padding:1px 7px;border-radius:5px;white-space:nowrap}
+  .p-real{background:rgba(94,201,138,.15);color:var(--good)}
+  .p-ghost{background:rgba(176,140,240,.15);color:var(--ghost)}
+  .p-lost{background:rgba(229,112,126,.15);color:var(--bad)}
+  .p-none{background:rgba(154,167,181,.12);color:var(--dim)}
+  .p-left{background:rgba(110,168,254,.15);color:var(--accent)}
+  .note{background:var(--panel2);border-left:3px solid var(--accent);
+    padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0;font-size:14px}
+  .note.warn{border-left-color:var(--warn)}
+  .note.good{border-left-color:var(--good)}
+  pre{background:#0b0f14;border:1px solid var(--line);border-radius:9px;
+    padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.5}
+  .matrix{font-family:var(--mono);font-size:12px}
+  .matrix td,.matrix th{text-align:center;padding:6px 8px}
+  .hi{background:rgba(229,112,126,.18)!important;color:#ffd0d6;font-weight:700}
+  .lo{background:rgba(94,201,138,.12)!important;color:#a9e6c2}
+  .timeline{position:relative;margin:20px 0;padding-left:28px}
+  .timeline::before{content:"";position:absolute;left:7px;top:6px;bottom:6px;width:2px;background:var(--line)}
+  .ev{position:relative;margin:14px 0}
+  .ev::before{content:"";position:absolute;left:-25px;top:5px;width:11px;height:11px;
+    border-radius:50%;background:var(--bg);border:2px solid var(--accent)}
+  .ev.done::before{background:var(--good);border-color:var(--good)}
+  .ev.now::before{background:var(--shadow);border-color:var(--shadow)}
+  .ev.todo::before{background:var(--bg);border-color:var(--warn)}
+  .ev .t{font-weight:600;font-size:15px}
+  .ev .d{color:var(--dim);font-size:13.5px}
+  .legend{font-size:12.5px;color:var(--dim);margin:10px 0}
+  .commit{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
+  .foot{margin-top:60px;padding-top:18px;border-top:1px solid var(--line);color:var(--dim);font-size:12.5px}
+  .big{font-size:17px;font-weight:600}
+  .vs{text-align:center;color:var(--dim);font-size:13px;margin:6px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>False Fall：Gate（生产）vs DBN Shadow</h1>
+  <div class="sub">lost_track 误报治理 · 双轨架构与 DBN 进展 · 2026-06-03</div>
+
+  <div class="note">
+    <b>一句话：</b>当前真正在 fire 的是 <b>gate-list（生产）</b>——今天加固了 4 道闸 + 同房对账；
+    <b>DBN 是 shadow（只 log 不 fire）</b>，今天把"同房对账"也同构落进了 DBN 的 Track 层（<code>TObsPeerLive</code>）。
+    两条轨道<b>逻辑同构、目的不同</b>：gate 当下止血，DBN 为将来 <b>cutover 替换 gate-list</b> 备款。
+  </div>
+
+  <!-- ============ 问题 ============ -->
+  <h2>0 · 问题：lost_track 为什么会误报</h2>
+  <p>
+    雷达跌倒判定里最难的一类是 <b>lost_track</b>（走动中目标突然消失 → 推断"可能倒地"）。
+    根本困境：<b>真摔</b>（人倒地、贴地弱回波丢锁）与 <b>良性消失</b>（走出门 / ghost 闪灭 / 站定被冻结 / 换 track-ID）
+    在雷达原始数据里<b>几乎不可分</b>——都是"track 没了"。
+  </p>
+  <p>
+    本会话所有修复的本质，是给"消失"这个事件补上<b>它到底是哪种消失</b>的判别证据。
+    问题在于：判别逻辑过去是一条条 <code>if</code> 手补在 adapter 里（gate-list），缺一个统一的隐状态信念层。
+  </p>
+
+  <!-- ============ 双轨对比 ============ -->
+  <h2>1 · 两条轨道并列</h2>
+  <div class="grid2">
+    <div class="card prod">
+      <h3>当前 Gate-list <span class="tag prod">生产 · 真 fire</span></h3>
+      <p class="d">位置：<code>track_manager.go</code> / <code>bathroom_fall.go</code> 里的离散守卫。</p>
+      <p>本质：<b>≈100 条 if 规则</b>，每条针对一类已知 FP 手补一个条件。</p>
+      <ul>
+        <li>命中即 <b>取消 / 抑制 / 放行</b> lost-fall pending</li>
+        <li>确定性、可单测、fixture 可回归</li>
+        <li>缺点：规则之间无共享状态，<b>打地鼠</b>——新 FP 类型 = 新 if；多套时钟需要协调规则</li>
+      </ul>
+    </div>
+    <div class="card shadow">
+      <h3>DBN Shadow <span class="tag shadow">影子 · 只 log</span></h3>
+      <p class="d">位置：<code>belief/</code> 包 + <code>belief_shadow.go</code> 旁路。</p>
+      <p>本质：<b>(Track × Room) 两层贝叶斯滤波</b>，每帧 Predict+Observe，维护后验信念分布。</p>
+      <ul>
+        <li>每帧把 gate 的输入翻成<b>观测</b>喂进似然，跑 forward</li>
+        <li><b>绝不 fire</b>——把 DBN 判定 <code>log</code> 出来与 gate alarm 离线对账</li>
+        <li>目标：等 shadow 证明与 gate 等价/更优，<b>cutover</b> 替换 gate-list</li>
+      </ul>
+    </div>
+  </div>
+  <div class="vs">▲ 同一份输入，两套判定并行跑；用户只看到 gate 的 alarm，DBN 在日志里"陪跑"</div>
+
+  <!-- ============ 核心差异 ============ -->
+  <h2>2 · 核心差异：if 守卫 ↔ 转移概率</h2>
+  <p>
+    DBN 蓝图（<code>doc/belief_dbn_completeness.md</code>）的关键论断：
+    <b>每一条打地鼠 gate，实质都是一条"缺失的隐状态转移"被手补成了 if。</b>
+    把这些 if 内化成 DBN 的转移阵 / 发射 / 驻留，规则就不再相互打架——相反证据在同一个信念向量 <code>b</code> 上加权，贝叶斯自动仲裁。
+  </p>
+
+  <table>
+    <thead><tr>
+      <th>#</th><th>现存 Gate（生产 if）</th><th>它实为哪条 DBN 结构</th><th>DBN 现状</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td class="c">1</td>
+        <td>method-2「失锁前全 ghost 不 fire」</td>
+        <td>A_T：<span class="pill p-ghost">Ghost</span>→<span class="pill p-lost">Lost</span> ≈ 0（floor），ghost 消散走 →<span class="pill p-none">None</span></td>
+        <td class="c"><span class="tag shadow">已落 shadow</span></td>
+      </tr>
+      <tr>
+        <td class="c">2</td>
+        <td>门区 exit 推断（门区 + np=0 → exit）</td>
+        <td>A_T：<span class="pill p-real">Real</span>(门区)→<span class="pill p-left">JustLeft</span>；np=0 = <code>P(no-detect|JustLeft)</code> 发射</td>
+        <td class="c"><span class="tag shadow">已落 shadow</span></td>
+      </tr>
+      <tr>
+        <td class="c">3</td>
+        <td>空房账闸 <code>lastExitMs &gt; lastEnterMs</code></td>
+        <td>TObsExit 强推 →<span class="pill p-left">JustLeft</span>，压 <span class="pill p-lost">Lost</span></td>
+        <td class="c"><span class="tag shadow">已落 shadow</span></td>
+      </tr>
+      <tr>
+        <td class="c">4</td>
+        <td><b>同房对等雷达见真人 → 抑制 lost-fall</b> <span class="commit">（今天 824ab70/e663d69）</span></td>
+        <td><b>TObsPeerLive</b>：压 <span class="pill p-lost">Lost</span>，偏 <span class="pill p-ghost">Ghost</span>/<span class="pill p-none">None</span> <span class="commit">（今天 0ddfcf9）</span></td>
+        <td class="c"><span class="tag shadow">今日新增 shadow</span></td>
+      </tr>
+      <tr>
+        <td class="c">5</td>
+        <td>距离闸 <code>DistanceGateCm=500</code>（d_fall&lt;d_person）</td>
+        <td>Geom 作 P(o|s) 条件 + 几何似然</td>
+        <td class="c"><span class="tag todo">仅 gate，未内化</span></td>
+      </tr>
+      <tr>
+        <td class="c">6</td>
+        <td>id-swap 守恒闸（logic_id 仍活在另一 track）</td>
+        <td>缺：跨 track 数据关联（需 T 层 track 间耦合）</td>
+        <td class="c"><span class="tag todo">未建模</span></td>
+      </tr>
+      <tr>
+        <td class="c">7</td>
+        <td>still-fall 站立时长门 / confirmMs=90s</td>
+        <td>驻留时长 → 应 <b>HSMM</b> 状态时长分布替代 ramp+timer</td>
+        <td class="c"><span class="tag todo">P3 未开工</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <b>差异收敛点：</b>gate #1–4 已经在 DBN shadow 里有<b>同构对应物</b>（今天补齐了 #4，4 道主力闸全到位）；
+    #5–7 仍只活在 gate 里，是 DBN 下一步要吃进来的部分。
+  </div>
+
+  <!-- ============ DBN 结构 ============ -->
+  <h2>3 · DBN 结构：为什么是两层</h2>
+  <pre>Track 层  T_t ∈ {None, Real, Ghost, JustLeft, Lost}      ← 今天主战场（P1）
+            └ 自带转移阵 A_T + 由 verdict/几何/事件/缺测 发射驱动
+            └ 回答"这条 blip 是真人/反射？在不在场？"——每条 track 自己的隐过程
+
+Room  层  S_t ∈ {Empty, BedLying, BedRestless, Sit, StandWalk,
+                 Fallen★, Transition, Left, Artifact}        ← P0 已落
+            └ 9 态房间级姿态；Fallen 是唯一 fire Fall 的目标态
+            └ 条件于 Track 层
+
+每帧：  b ← normalize( diag(w^conf) · (Aᵀ · b) )
+        Predict(A·b)  +  Observe(似然更新)；Conf=0 → 不更新（缺证据命门）</pre>
+  <p>
+    关键设计（<code>model.go</code>）：<b>→Fallen 的转移概率刻意取极小</b>（站走→倒 0.2，床上→倒 0.05）。
+    进 Fallen 的"灵敏度"全来自<b>观测似然</b>（firmware fall ×10 / kinematics ×8），<b>不来自时间转移</b>——
+    否则缺证据期纯 Predict 会把信念慢慢渗进 Fallen，<b>从沉默里凭空造跌倒</b>（正是 CABB / John.Y 那类 FP）。
+  </p>
+
+  <h3>A_T：Track 层转移阵（今天的核心）</h3>
+  <p class="legend">行=上一态，列=本态，值=相对倾向（行内归一）。<span class="pill p-lost">红</span>=进 Lost 的关键格，刻意压成 floor。</p>
+  <table class="matrix">
+    <thead><tr><th>A_T</th>
+      <th>→None</th><th>→Real</th><th>→Ghost</th><th>→JustLeft</th><th>→Lost</th></tr></thead>
+    <tbody>
+      <tr><th class="p-none" style="text-align:left">None</th><td>85</td><td>7</td><td>7</td><td>0.5</td><td>0.5</td></tr>
+      <tr><th class="p-real" style="text-align:left">Real</th><td>0</td><td>88</td><td>1</td><td>5</td><td>6</td></tr>
+      <tr><th class="p-ghost" style="text-align:left">Ghost</th><td>33</td><td>1</td><td>63</td><td>0</td><td class="lo">0.1 ←gate#1</td></tr>
+      <tr><th class="p-left" style="text-align:left">JustLeft</th><td>88</td><td>6</td><td>0</td><td>6</td><td>0</td></tr>
+      <tr><th class="p-lost" style="text-align:left">Lost</th><td>2</td><td>7</td><td>0</td><td>11</td><td class="hi">80（近吸收）</td></tr>
+    </tbody>
+  </table>
+  <p class="legend">
+    · <b>Ghost→Lost = floor(0.1)</b>：ghost 闪灭绝不变"丢失候选倒地"（method-2 结构化，靠状态记忆而非 if）。<br>
+    · <b>Lost 近吸收(80)</b>：真人丢失不自愈；只有 recapture→Real / 门事件→JustLeft 等<b>主动反证</b>才出。<br>
+    · <b>absent 发射不区分 Lost vs None</b>——谁是 Lost 谁是 None，只由<b>消失前的 T 先验</b>经 A_T 决定（Real 先验通 Lost，Ghost 先验通 None）。
+  </p>
+
+  <h3>今天新增的发射：TObsPeerLive</h3>
+  <pre>case TObsPeerLive:   // 同房（单床）对等雷达此刻见真人
+    // → 房里那个真人是别台的 track，本 track 更可能是它的重影/重复，绝非独自倒地
+    return tlk(map[TState]float64{
+        TLost: 0.15,   // ↓↓ 强压"丢失候选倒地"
+        TGhost: 2,     // ↑   偏向重影
+        TNone:  2,     // ↑
+        TReal:  0.5,
+    })</pre>
+  <div class="note good">
+    <b>单床闸在 adapter 把关</b>（<code>belief_shadow.go:205</code>）：仅当 <code>bedCount==1 &amp;&amp; otherDeviceRealTrackRecent()</code> 才发射此观测。
+    双床/双人病房<b>不发</b>——避免把另一位老人当"对等"误压（A 摔 + B 在场会变漏报）。
+    belief 模型只认观测，门控纪律留在 adapter，与生产 gate 的 <code>bedCount==1</code> 守卫<b>同源</b>。
+  </div>
+
+  <!-- ============ 进展 ============ -->
+  <h2>4 · DBN 进展：从单层 HMM 到 (Track×Room) DBN + HSMM</h2>
+  <div class="timeline">
+    <div class="ev done">
+      <div class="t">P0 · Room 层单层 HMM <span class="tag shadow">shadow 已落</span></div>
+      <div class="d">9 态 <code>state.go</code> + 转移阵 <code>model.go</code> + 似然 <code>likelihood.go</code> + forward <code>belief.go</code>。
+      gate→矩阵对照账本 <code>belief_gate_to_matrix.md</code>（≈100 条规则逐条映射）。Empty/Left 是第一类公民。</div>
+    </div>
+    <div class="ev now">
+      <div class="t">P1 · Track 层 T_t 隐链（A_T）<span class="tag shadow">本会话进行中 · 今天推进</span></div>
+      <div class="d">
+        补上"最大的那段缺失"——per-track 存在/真伪隐过程。<code>belief/track.go</code> 建成显式 HMM：
+        5 态 + A_T + 4 类观测（Present / Absent / Exit / <b>PeerLive←今天</b>）。
+        shadow 在 absent 扫掠按单床闸发射 TObsPeerLive。<span class="commit">commit 0ddfcf9</span>
+      </div>
+    </div>
+    <div class="ev todo">
+      <div class="t">P2 · 缺测发射 P(no-detect|s) + 可达退场 <span class="tag todo">部分设计</span></div>
+      <div class="d">"这帧没测到"本身带似然（贴地遮挡 vs 走出门 vs 空房）。
+      <code>ObsReachableExit</code>（丢失点近门+单帧可达→偏 Left 压 Fallen）已有观测种类，
+      文档 <code>belief_p2_absence_emission.md</code>。距离闸(#5)/id-swap(#6)待内化。</div>
+    </div>
+    <div class="ev todo">
+      <div class="t">P3 · HSMM 驻留时长 <span class="tag todo">未开工</span></div>
+      <div class="d">lost ramp / confirmMs=90s / still-fall 时长门 / MovingPreconditionMs=60s 全是驻留时钟。
+      HMM 的几何分布装不下"维持数分钟才算真"，需半马尔可夫 HSMM 状态时长分布替代 ramp+timer。</div>
+    </div>
+    <div class="ev todo">
+      <div class="t">Cutover · DBN 替换 gate-list <span class="tag todo">目标</span></div>
+      <div class="d">等 shadow 在影子模式下证明与 gate 等价/更优（确定性角点 + fixture oracle 对账），
+      再把 fire 路径从 gate-list 切到 DBN。对应 memory <code>belief_state_rule_engine_reframe</code>。</div>
+    </div>
+  </div>
+
+  <div class="note warn">
+    <b>注意进展的真实边界：</b>DBN 现在<b>全程 shadow，一行都没 fire</b>。
+    今天 false-fall 的真正止血全靠生产 gate（#1–6 那几道闸 + 同房对账）。
+    DBN 今天的进展 = <b>把第 4 道闸（同房对账）也补进了 Track 层</b>，使 4 道主力闸在 shadow 里全部有了同构对应物——
+    这是为 cutover 攒"能力齐套"的证据，<b>不是</b>把判定权交给了 DBN。
+  </div>
+
+  <!-- ============ 今天提交 ============ -->
+  <h2>5 · 今天的提交清单</h2>
+  <table>
+    <thead><tr><th>Commit</th><th>归属</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td class="commit">824ab70</td><td><span class="tag prod">gate</span></td><td>同房多雷达占用对账 → 别台见真人则抑制 lost-fall（生产 fire 路径）</td></tr>
+      <tr><td class="commit">e663d69</td><td><span class="tag prod">gate</span></td><td>同房对账加单床闸——仅 <code>bedCount==1</code> 房启用（双人病房宁报勿漏）</td></tr>
+      <tr><td class="commit">0ddfcf9</td><td><span class="tag shadow">DBN</span></td><td>Track 层加 <code>TObsPeerLive</code> 观测，shadow 同构落地</td></tr>
+      <tr><td class="commit">f5e89a2</td><td><span class="tag prod">gate</span></td><td>lost_track 治本 4 闸（距离/logic_id/id-swap/空房账）+ 决策审计 + 残影修复</td></tr>
+      <tr><td class="commit">5ef744d</td><td>归档</td><td>CABB 浴室 frozen-static FP fixture（硬件局限，决定不抑制不降级）</td></tr>
+    </tbody>
+  </table>
+
+  <div class="foot">
+    源：<code>wisefido-sensor/internal/roomengine/belief/{state,model,track,observation}.go</code>、
+    <code>belief_shadow.go</code>、<code>track_manager.go</code>；
+    文档 <code>doc/belief_dbn_completeness.md</code> · <code>belief_gate_to_matrix.md</code> · <code>AI_fall_detect.md §3.7</code>。
+    生成于 2026-06-03。本页仅说明架构差异与进展，不含 PHI。
+  </div>
+
+</div>
+</body>
+</html>

@@ -8,6 +8,43 @@
 
 ---
 
+## 0. 实施记录（2026-06-03，与下文原设计的关键订正）
+
+已落地（shadow-only，build/vet/test 全绿）：
+
+- **absence 发射本体重构（P2 头条，替 §2.1 合成 ramp）**：`ObsLostWhileMoving`（按"消失多久"线性抬 Fallen 的
+  时间斜坡 + 手调 `lostMovingFallGain=3`）→ **`ObsNoDetect`：状态条件 `P(no-detect|s)`**。可检测态压低
+  （StandWalk 0.3 / Sit 0.4），可合理消失态保留/略升（Fallen 1.6 贴地遮挡 / Empty/Left/Artifact 1.0 中性 /
+  BedLying 0.8 遮挡）。**每 tick 固定强度、不含时长项**——"消失越久 Fallen 越高"由重复观测 × Fallen 近吸收
+  涌现，**时长（确认窗）归 Decider/P3，非发射**（P2/P3 切割落地）。方向仲裁交 reachableExit→Left /
+  np=0→Empty/Left / ExitRoom→Left / verdict→Artifact；A 禁 StandWalk→Empty 直达 → 无退场证据时 Fallen 胜出。
+  `lostMovingFallGain` 魔数退役。oracle 零回归（真跌倒仍 confirm，FP 仍不 confirm；maxP 略降如 D5F7 0.999→0.994
+  仅诊断量变，confirm 决策不变）。
+- **速度来源订正（替 §3.2/§4）**：放弃 firmware 分钟聚合走速（时间错位 + 循环：firmware 若有确信态就轮不到
+  lost_track）与 PHI mobility-tier（age→tier→下发整条链作废）。改为 **A：丢失前 5s 窗口的实测定向逼近**——
+  `approachSpeedTowardExit` 取 track History 在 `[loss-5s, last_frame]` 的"离门最远点 − 末帧"距离差（朝门净逼近）
+  /帧跨时。**定向是命门**：背门走 / 原地晃 / 倒地抽搐 → 逼近 ≤0 → v=0 → 不抑制（真跌倒挣扎不被误压）。
+- **P2.1 per-device 学习封顶（替 §4 PHI tier）**：雷达自测本住户走动段速度（`DisplacementWithinMs` EWMA，
+  非 PHI/非 age），个性化"可达天花板" = 1.5×EWMA 夹 [30,150]；样本<30 → 全局兜底 60。独居老人步态慢 →
+  封顶自然低 → 绝不给"他本可走出去"虚高信用 → 不漏报。per-device（per-room 雷达）刻画"这个空间通常谁在动"，
+  绕开身份/PHI，双人 suite 亦适用。
+- **C3 共享算子**：`reachableExitScore(d, v)` 同时喂 Room 层 `ObsReachableExit` 与 Track 层新增
+  `TObsReachableExit`，两层离场判别不漂移；完整 T→S 耦合留独立一步（DBN-join）。
+- **#14 np=0 重标定**：已落（`SEmpty 6→1.5、SFallen 0.3→1.0`，§3.3）。
+
+**CABB-2247 重新归类（订正 §9 期望）**：原设计期望 P2 三因子把它翻成 assert 不确认。实测**做不到也不该做**——
+该 case 人走到洗手台（离门 73cm）**站住后才消失**，丢失前无朝门位移 → 定向法诚实弃权（maxP 仍 0.994，未抑制）。
+**根因 = 可观测性极限**：小浴室 d 处处小、enter/left 可在 <1s 完成 → 朝门那段落在 1Hz 采样间隙，定向轨迹无从捕捉；
+且小浴室里"真退场"与"门口倒地"在单雷达 1Hz 下数据同形。归 **frozen-static / 小空间快速过门不可观测类**，
+与 [[feedback_signal_loss_lost_track_not_suppressible]]（2026-06-03）一致：**保留告警，不抑制不降级**。
+降此类 FP 的杠杆不在房内运动学（P2 够不着），只有 ① firmware ExitRoom 可靠化 ② 跨房重现（suite/P5），均在 P2 外。
+故 **CABB-2247 不再作 P2 oracle 翻转目标**；reachable-exit 的适用域 = 能被采样到的"明确朝门走一段再消失"。
+
+代码：`belief_adapter.go`（approachSpeedTowardExit / reachableExitScore / deviceSpeedStat / sampleWalkSpeed）、
+`belief/track.go`（TObsReachableExit）、`belief_shadow.go`（present 学习+stash、两层 absent 扫掠）、`belief_replay_test.go`。
+
+---
+
 ## 1. 目的
 
 P2 = 把「这帧没测到 track」当成**带似然的观测**来建模，而不是当成空白。

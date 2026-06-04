@@ -68,17 +68,19 @@ func (v TVector) P(t TState) float64 { return v[t] }
 type TObsKind int
 
 const (
-	TObsPresent  TObsKind = iota // 本帧有 track 检出（带 ghostness + geom）
-	TObsAbsent                   // 本帧无检出（缺测发射，带 last-geom）
-	TObsExit                     // firmware ExitRoom 事件（强推 →JustLeft）
-	TObsPeerLive                 // 同房（单床）对等雷达此刻见真人 → 本 track 更可能是重影/重复（压 Lost）
+	TObsPresent       TObsKind = iota // 本帧有 track 检出（带 ghostness + geom）
+	TObsAbsent                        // 本帧无检出（缺测发射，带 last-geom）
+	TObsExit                          // firmware ExitRoom 事件（强推 →JustLeft）
+	TObsPeerLive                      // 同房（单床）对等雷达此刻见真人 → 本 track 更可能是重影/重复（压 Lost）
+	TObsReachableExit                 // 可达退场分 e（C3 与 Room 层 ObsReachableExit 同源）→ 偏 JustLeft 压 Lost
 )
 
-// TObservation track 层观测。Ghostness/Geom 仅对 TObsPresent；Geom（last）对 TObsAbsent。
+// TObservation track 层观测。Ghostness/Geom 仅对 TObsPresent；Geom（last）对 TObsAbsent；Value=e 仅对 TObsReachableExit。
 type TObservation struct {
 	Kind      TObsKind
 	Ghostness float64 // [0,1]，仅 TObsPresent：0=纯真人 1=纯 ghost
 	Geom      Geom    // TObsPresent=当前 geom；TObsAbsent=消失前 last geom
+	Value     float64 // 仅 TObsReachableExit：可达退场分 e ∈ [0,1]
 	Conf      float64
 	Ts        int64
 	Fresh     bool
@@ -196,6 +198,21 @@ func rawTLikelihood(o TObservation) TVector {
 		// 双床房不发，避免把另一位老人当"对等"误压（漏报）。固件确认跌倒走 Room 层 ObsFirmwareFall，不受此影响。
 		return tlk(map[TState]float64{
 			TLost: 0.15, TGhost: 2, TNone: 2, TReal: 0.5,
+		})
+
+	case TObsReachableExit:
+		// 可达退场分 e=f_dist·f_reach（C3 与 Room 层 ObsReachableExit 同源算子）：近门 + 定向逼近
+		// → 偏 JustLeft 压 Lost。e≈0（远门 / 不逼近 = 真跌倒）→ 各权→1 = identity 不干预。
+		e := o.Value
+		if e < 0 {
+			e = 0
+		} else if e > 1 {
+			e = 1
+		}
+		return tlk(map[TState]float64{
+			TJustLeft: 1 + 4*e,
+			TNone:     1 + e,
+			TLost:     1 - 0.85*e,
 		})
 	}
 	return tlk(nil)

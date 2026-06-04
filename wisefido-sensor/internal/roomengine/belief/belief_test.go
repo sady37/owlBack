@@ -164,3 +164,60 @@ func TestStaleEvidenceIsLinchpin(t *testing.T) {
 			drifted[SStandWalk], pinned[SStandWalk])
 	}
 }
+
+// TestFallGeomRouting #3：**可观测**跌倒的几何路由（设计意图回归锁，非真机验证——真机靠 shadow + 201 测试）。
+// 仅覆盖"radar 看得到跌倒姿/运动学"的子情形；occluded fall-off-bed（雷达完全看不到，靠 LeftBed+不重捕推断）
+// 不在此测，留给 201 真机 fixture 驱动 LeftBed-armed 推断设计。
+// 设计意图：床=躺非摔 → Fallen@InBed 降权（多为躺姿误读）；下床摔在床边地板=OpenFloor 不压；桶区塌陷默认不压。
+func TestFallGeomRouting(t *testing.T) {
+	enter := func() (*Belief, int64) {
+		be := New(DefaultModel())
+		ts := int64(1000)
+		be.Step(ts, []Observation{ob(ts, ObsEnterExit, +1, 0.9, GeomInEnter)})
+		return be, ts
+	}
+
+	// (a) FP 向：床上某帧被误读 pose=Fallen → BedLying 解释胜出，不该判主假设 Fallen。
+	be, ts := enter()
+	for i := 0; i < 5; i++ {
+		ts += 1000
+		be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseLying, 0.8, GeomInBed)})
+	}
+	ts += 1000
+	be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomInBed)})
+	if arg, _ := be.Vector().Max(); arg == SFallen {
+		t.Fatalf("床上 pose=Fallen 不该判主假设 Fallen（床=躺非摔）: b=%v", be.Vector())
+	}
+
+	// (b) FN 向：下床摔在床边地板（OpenFloor）→ 必须能 fire（不因身处卧室就被压）。
+	be, ts = enter()
+	for i := 0; i < 3; i++ {
+		ts += 1000
+		be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseWalking, 0.8, GeomOpenFloor)})
+	}
+	ts += 1000
+	be.Step(ts, []Observation{
+		ob(ts, ObsKinematics, 0.95, 0.85, GeomOpenFloor),
+		ob(ts, ObsFirmwareFall, 1, 0.9, GeomOpenFloor),
+		ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomOpenFloor),
+	})
+	if be.Decide() != DecisionFall {
+		t.Fatalf("床边地板真跌倒被几何路由漏报: b=%v", be.Vector())
+	}
+
+	// (c) FN 向：马桶区塌陷（InToilet）→ 默认不被特殊压制，应能 fire。
+	be, ts = enter()
+	for i := 0; i < 3; i++ {
+		ts += 1000
+		be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseWalking, 0.8, GeomInToilet)})
+	}
+	ts += 1000
+	be.Step(ts, []Observation{
+		ob(ts, ObsKinematics, 0.95, 0.85, GeomInToilet),
+		ob(ts, ObsFirmwareFall, 1, 0.9, GeomInToilet),
+		ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomInToilet),
+	})
+	if be.Decide() != DecisionFall {
+		t.Fatalf("马桶区塌陷被几何路由漏报: b=%v", be.Vector())
+	}
+}

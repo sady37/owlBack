@@ -25,14 +25,25 @@ const (
 	// lost-fall（走动中突然消失）：消失前 still-box < MovingPreconditionMs(60s) = 走动中（对齐 gate-list 止血）。
 	// 走速只用于 ghost-filter（>ImpossibleSpeedCm 的 track-swap 假跳先剔除），不做"走速判走动"——
 	// radar 位置量化重（走动也常报 median=0），per-frame 走速不可靠，still-box(spread) 才 robust。
-	beliefLostTTLMs         = 4_000 // track 超此无帧 = 丢失
-	beliefLostWaitWindowSec = 30    // 丢失后 ObsLostWhileMoving ramp 到满龄的时长
+	beliefLostTTLMs = 4_000 // track 超此无帧 = 丢失
 	// P2 absence 发射的可达退场（reachable-exit）参数（doc/belief_p2_absence_emission §3）。
 	beliefExitDistScaleCm  = 80   // f_dist = exp(-d/scale) 软距离尺度（≈1 步；替 30cm 硬 cutoff）
 	beliefReportIntervalMs = 1000 // radar 1Hz 上报间隔 = reachability 的 Δt
-	// mobility-tier 步速先验默认：行动不便 0.6 m/s = 最慢档 = 保守（少抑制、少漏真跌倒）。
-	// 观测走速（固件 walk_distance/walk_duration）接入后覆盖此先验；per-resident tier 经 PHI 边界派生注入（§4）。
-	beliefPriorWalkSpeedCmS = 60
+	// A（走速来源）：丢失前 5s 窗口的**实测**定向逼近，而非 firmware 分钟聚合（时间错位 +
+	// 循环：firmware 若有确信态就轮不到 lost_track）。窗口取 track History（30 帧滚动，丢失后不清）。
+	beliefReachWindowMs = 5_000 // [loss-5s, last_frame] 逼近测速窗（对齐 trigger_at ±5s）
+	// B（安全偏置）：逼近速度慢速封顶 = 老人保守（越弱越易摔且难恢复 → 宁少抑制少漏报）。
+	// A 实测本设备运动已是"本设备值"最强形态；A 测不出 → v=0 → 不抑制（最安全，非假设 slow 走出去）。
+	beliefReachSpeedCapCmS = 60 // P2.1 学习未足时的全局兜底封顶
+	// P2.1：per-device 学习封顶。雷达自测本住户走速（非 PHI/非 age），个性化"可达天花板"——
+	// 独居老人步态慢 → 封顶自然低 → 绝不给"他本可走出去"虚高信用 → 不漏报。
+	beliefSpeedSampleWinMs   = 2_000 // 采样窗：DisplacementWithinMs(2s) 当一次走速观测
+	beliefSpeedMoveMinCmS    = 15    // 低于此 = 站立/抖动，不采样（只学走动段）
+	beliefSpeedEwmaAlpha     = 0.05  // EWMA 平滑（抗单帧量化噪声）
+	beliefSpeedMinSamples    = 30    // 学习样本不足 → 用全局兜底（短 fixture 自然走兜底，不扰 oracle）
+	beliefSpeedCapFactor     = 1.5   // 封顶 = 1.5×EWMA 走速（mean→ceiling 余量）
+	beliefSpeedCapFloorCmS   = 30    // 封顶下限（防学得过低误压真退场）
+	beliefSpeedCapCeilCmS    = 150   // 封顶上限（生理：挡噪声伪造超人速度）
 )
 
 // geomFromArea cell AreaType → belief.Geom。
@@ -114,8 +125,8 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 		{Source: t.LogicID, Kind: belief.ObsTrackPresent, Value: ghost, Conf: 0.8, Ts: nowMs, Fresh: tsFresh, Geom: g},
 	}
 
-	// 注：lost-fall **不在逐帧 adapter 里发**。它是「走动中突然消失」的**消失事件**，由 engine/replay
-	// 在 track 丢失时调 lostWhileMovingToObs 发出（前置=消失前 60s 在走动 / still-box<60s，见 replay 扫掠逻辑）。
+	// 注：no-detect **不在逐帧 adapter 里发**。它是「走动中突然消失」的**消失事件**，由 engine/replay
+	// 在 track 丢失时每 tick 调 noDetectObs 发出（前置=消失前 60s 在走动 / still-box<60s，见 replay 扫掠逻辑）。
 	// 不再用"静止时长 ramp"(判反)、不再用 pose 门控(radar pose 不可靠,2026-06-01 用户实证)。
 	return out
 }
@@ -129,27 +140,125 @@ func isGhostJump(dCm float64, dtMs int64) bool {
 	return dCm*1000/float64(dtMs) > float64(FallRulesParam.Lost.ImpossibleSpeedCm)
 }
 
-// lostWhileMovingToObs track 丢失（走动前置已满足）→ 候选倒地观测。ageFrac=丢失后时长归一 [0,1]。
-// engine/replay 在 track 消失后每 tick 调（ramp 抬 P(Fallen)），exit/返回经各自似然对冲取消。
-func lostWhileMovingToObs(ageFrac float64, g belief.Geom, nowMs int64) belief.Observation {
-	return belief.Observation{Kind: belief.ObsLostWhileMoving, Value: clampUnit(ageFrac), Conf: 0.8, Ts: nowMs, Fresh: true, Geom: g}
+// noDetectObs track 丢失（走动前置已满足）→ P(no-detect|s) 发射。每 tick 固定强度（无时长项，时长→P3）；
+// exit/返回/reachableExit/np=0 经各自似然仲裁方向。geom 留作未来 geom 条件 no-detect（床/桶遮挡）扩展位。
+func noDetectObs(g belief.Geom, nowMs int64) belief.Observation {
+	return belief.Observation{Kind: belief.ObsNoDetect, Conf: 0.8, Ts: nowMs, Fresh: true, Geom: g}
 }
 
-// reachableExitObs 丢失点的"可达退场"证据 e = f_dist(d) · f_reach(v,d) ∈ [0,1]，与 lostWhileMovingToObs
-// 同 tick 发出对冲：e 高（近门 + 单帧可达）→ 偏 Left 压 Fallen；e≈0（远离门/不可达）→ identity 不干预真跌倒。
+// deviceSpeedStat per-device 走速学习（P2.1）。雷达自测本住户走动段速度的 EWMA → 个性化封顶。
+// 非 PHI：来自 radar 观测，不涉 age/DOB。per-room shadow 持有（device→room 稳定），跨 track 生死累积。
+type deviceSpeedStat struct {
+	ewmaCmS float64
+	samples int
+}
+
+// observe 喂一次走速样本（仅走动段，调用方已过滤站立/抖动）。
+func (d *deviceSpeedStat) observe(s float64) {
+	if s <= 0 {
+		return
+	}
+	if d.samples == 0 {
+		d.ewmaCmS = s
+	} else {
+		d.ewmaCmS += beliefSpeedEwmaAlpha * (s - d.ewmaCmS)
+	}
+	d.samples++
+}
+
+// capCmS 个性化可达封顶。样本不足 → 全局兜底；够则 1.5×EWMA 夹在 [floor, ceil]。
+func (d *deviceSpeedStat) capCmS() float64 {
+	if d == nil || d.samples < beliefSpeedMinSamples {
+		return beliefReachSpeedCapCmS
+	}
+	c := d.ewmaCmS * beliefSpeedCapFactor
+	if c < beliefSpeedCapFloorCmS {
+		c = beliefSpeedCapFloorCmS
+	}
+	if c > beliefSpeedCapCeilCmS {
+		c = beliefSpeedCapCeilCmS
+	}
+	return c
+}
+
+// sampleWalkSpeed 从 track 近 beliefSpeedSampleWinMs 的位移箱估一次走速（cm/s）；站立/抖动返回 0。
+func sampleWalkSpeed(ts *TrackState, nowMs int64) float64 {
+	if ts == nil {
+		return 0
+	}
+	box := ts.DisplacementWithinMs(beliefSpeedSampleWinMs, nowMs)
+	v := float64(box) / (float64(beliefSpeedSampleWinMs) / 1000)
+	if v < beliefSpeedMoveMinCmS {
+		return 0
+	}
+	return v
+}
+
+// approachSpeedTowardExit 估算 track 丢失前朝最近 Enter 的**定向逼近速度**（cm/s，≥0）。
+// A：取 History 在 [nowMs-windowMs, nowMs] 的帧，算"窗口内离门最远点 − 末帧"的距离差 = 朝门净逼近量，
+// 除以帧跨时。**定向**是命门：背门走 / 原地晃 / 倒地抽搐 → 逼近量 ≤0 → 返回 0（不抑制真跌倒）。
+// 用 box 极值（最远→末帧）而非逐帧路径，对 firmware XY 量化抖动 robust（jitter 不灌水）。
+// 离门距离用 grid.NearestEntryDist（已含"哪个门最近"+ 多边形几何）；速度按 capCmS（P2.1 个性化）封顶。
+func approachSpeedTowardExit(ts *TrackState, grid *RoomGrid, windowMs, nowMs int64, capCmS float64) float64 {
+	if ts == nil || grid == nil {
+		return 0
+	}
+	cutoff := nowMs - windowMs
+	firstTs, lastTs := int64(-1), int64(-1)
+	maxDist, finalDist, count := -1, -1, 0
+	for _, p := range ts.History {
+		if p.TMs < cutoff {
+			continue
+		}
+		count++
+		if firstTs < 0 {
+			firstTs = p.TMs
+		}
+		lastTs = p.TMs
+		d := grid.NearestEntryDist(p.X, p.Y)
+		if d > maxDist {
+			maxDist = d
+		}
+		finalDist = d // History 时序递增，末次循环即末帧
+	}
+	closingCm := float64(maxDist - finalDist) // 朝门逼近量
+	if count < 2 || closingCm <= 0 {
+		return 0 // 帧不足 / 没靠近门（背门、原地）→ 无逼近证据
+	}
+	spanSec := float64(lastTs-firstTs) / 1000
+	if spanSec < 0.5 {
+		spanSec = 0.5 // 防短窗放大
+	}
+	v := closingCm / spanSec
+	if capCmS <= 0 {
+		capCmS = beliefReachSpeedCapCmS
+	}
+	if v > capCmS {
+		v = capCmS // B/P2.1：个性化慢速封顶
+	}
+	return v
+}
+
+// reachableExitScore 可达退场分 e = f_dist(d) · f_reach(v,d) ∈ [0,1]。
+// C3 共享算子：Room 层 ObsReachableExit 与 Track 层 TObsReachableExit 同源调用，杜绝两层离场判别漂移。
+// v = approachSpeedTowardExit（定向逼近，已慢速封顶）；v≤0 → f_reach=0 → e=0 → 不干预真跌倒。
 // 替 30cm 硬门闸的悬崖（CABB 73cm 落悬崖外被误报；doc/belief_p2_absence_emission §3）。
-// speedCmS = 步速（观测走速‖mobility-tier 先验，缺则用 beliefPriorWalkSpeedCmS 兜底）。
-func reachableExitObs(distCm int, speedCmS float64, g belief.Geom, nowMs int64) belief.Observation {
+func reachableExitScore(distCm int, approachSpeedCmS float64) float64 {
+	if approachSpeedCmS <= 0 {
+		return 0
+	}
 	d := float64(distCm)
 	if d < 1 {
 		d = 1
 	}
-	if speedCmS <= 0 {
-		speedCmS = beliefPriorWalkSpeedCmS
-	}
 	fDist := math.Exp(-d / beliefExitDistScaleCm)
-	fReach := clampUnit(speedCmS * float64(beliefReportIntervalMs) / 1000 / d)
-	return belief.Observation{Kind: belief.ObsReachableExit, Value: fDist * fReach, Conf: 0.8, Ts: nowMs, Fresh: true, Geom: g}
+	fReach := clampUnit(approachSpeedCmS * float64(beliefReportIntervalMs) / 1000 / d)
+	return fDist * fReach
+}
+
+// reachableExitObs Room 层（S）可达退场观测，与 noDetectObs 同 tick 对冲。
+func reachableExitObs(distCm int, approachSpeedCmS float64, g belief.Geom, nowMs int64) belief.Observation {
+	return belief.Observation{Kind: belief.ObsReachableExit, Value: reachableExitScore(distCm, approachSpeedCmS), Conf: 0.8, Ts: nowMs, Fresh: true, Geom: g}
 }
 
 // radarEventToObs 离散 radar 事件 → Observation（EnterRoom/ExitRoom/Fall）。

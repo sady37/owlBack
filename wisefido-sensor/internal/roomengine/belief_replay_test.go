@@ -122,18 +122,20 @@ type rtrk struct {
 	lastY       int
 	lastZ       int
 	hasLast     bool
-	lastFrameTs int64
-	lastGeom    belief.Geom
-	lostAnchor  int64               // 丢失 ramp 起点（=最后帧 ts；0=未丢失/已返回）
-	tb          *belief.TrackBelief // DBN P1 Track 层 T_t（只读 shadow，不驱动 Room 层）
+	lastFrameTs      int64
+	lastGeom         belief.Geom
+	approachSpeedCmS float64             // A：丢失前朝门定向逼近速度（present 时算好 stash，复刻 production shadow）
+	lostAnchor       int64               // 丢失 ramp 起点（=最后帧 ts；0=未丢失/已返回）
+	tb               *belief.TrackBelief // DBN P1 Track 层 T_t（只读 shadow，不驱动 Room 层）
 }
 
-// replay 驱动 belief：track 帧 → adapter；走动中突然消失 → lostWhileMovingToObs；exit/返回取消。
+// replay 驱动 belief：track 帧 → adapter；走动中突然消失 → noDetectObs(P(no-detect|s))；exit/返回取消。
 func replay(t *testing.T, recs []fxRecord, grid *RoomGrid, mount radarutils.RadarMount) replayResult {
 	be := belief.New(belief.DefaultModel())
 	var decider belief.Decider
 	tracks := map[int]*rtrk{}
-	exited := false // ExitRoom 后抑制 lost-fall ramp（人走出去了），新 track 帧重置
+	var ds deviceSpeedStat // P2.1：fixture 单设备，一个学习封顶即可（复刻 production per-device）
+	exited := false        // ExitRoom 后抑制 lost-fall ramp（人走出去了），新 track 帧重置
 	res := replayResult{}
 
 	for _, r := range recs {
@@ -198,6 +200,8 @@ func replay(t *testing.T, recs []fxRecord, grid *RoomGrid, mount radarutils.Rada
 				k.lastGeom = geomFromGrid(grid, x, y)
 				k.lastFrameTs = now
 				k.lastX, k.lastY, k.lastZ, k.hasLast = x, y, z, true
+				ds.observe(sampleWalkSpeed(k.st, now))                                                          // P2.1：学本设备走速
+				k.approachSpeedCmS = approachSpeedTowardExit(k.st, grid, beliefReachWindowMs, now, ds.capCmS()) // A：track 仍活时算好 stash
 				k.lostAnchor = 0 // 在场/返回 → 清丢失
 
 				// DBN P1 Track 层：present 发射（ghostness 由 verdict/penalty，geom 当前帧）。
@@ -248,7 +252,14 @@ func replay(t *testing.T, recs []fxRecord, grid *RoomGrid, mount radarutils.Rada
 			if k.tb == nil || now-k.lastFrameTs <= beliefLostTTLMs {
 				continue
 			}
-			k.tb.Step(now, []belief.TObservation{{Kind: belief.TObsAbsent, Geom: k.lastGeom, Conf: 0.9, Ts: now, Fresh: true}})
+			tobs := []belief.TObservation{{Kind: belief.TObsAbsent, Geom: k.lastGeom, Conf: 0.9, Ts: now, Fresh: true}}
+			// C3 共享算子：reachable-exit 同源喂 Track 层（与 Room 层 ObsReachableExit 同一 e）。
+			if grid != nil && k.st.Verdict != VerdictGhost {
+				if rex := reachableExitScore(grid.NearestEntryDist(k.lastX, k.lastY), k.approachSpeedCmS); rex > 0 {
+					tobs = append(tobs, belief.TObservation{Kind: belief.TObsReachableExit, Value: rex, Conf: 0.8, Ts: now, Fresh: true})
+				}
+			}
+			k.tb.Step(now, tobs)
 		}
 
 		// 丢失扫掠：track 超 TTL 无帧 + 消失前60s在走动（still-box<60s）+ 未走出 → 发 lost-fall（ramp）。
@@ -269,11 +280,10 @@ func replay(t *testing.T, recs []fxRecord, grid *RoomGrid, mount radarutils.Rada
 			if k.lostAnchor == 0 {
 				k.lostAnchor = k.lastFrameTs
 			}
-			age := float64(now-k.lostAnchor) / 1000 / beliefLostWaitWindowSec
-			obs = append(obs, lostWhileMovingToObs(age, k.lastGeom, now))
-			// P2：reachable-exit 同 tick 对冲（近门 + 单帧可达 → 压 Fallen 偏 Left）。grid 在 scope。
+			obs = append(obs, noDetectObs(k.lastGeom, now))
+			// P2：reachable-exit 同 tick 对冲（近门 + 定向逼近 → 压 Fallen 偏 Left）。grid 在 scope。
 			if grid != nil {
-				obs = append(obs, reachableExitObs(grid.NearestEntryDist(k.lastX, k.lastY), beliefPriorWalkSpeedCmS, k.lastGeom, now))
+				obs = append(obs, reachableExitObs(grid.NearestEntryDist(k.lastX, k.lastY), k.approachSpeedCmS, k.lastGeom, now))
 			}
 			res.lostStillObs++
 		}

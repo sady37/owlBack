@@ -19,17 +19,15 @@ import (
 
 const beliefShadowEnabled = true
 
-const (
-	beliefShadowLostTTLMs = 60_000 // track 超此无帧 = 丢失（对齐 trackLostAnchorMs）
-	beliefShadowWaitSec   = 30     // 丢失后 lost-fall ramp 到满龄
-)
+const beliefShadowLostTTLMs = 60_000 // track 超此无帧 = 丢失（对齐 trackLostAnchorMs）
 
 type beliefShadowTrack struct {
-	lastSeenMs    int64
-	stillBoxAgeMs int64 // 最后一帧时的 still-box 时长（消失前是否走动的依据）
-	geom          belief.Geom
-	lastX, lastY  int // 最后一帧位置 → 算丢失点离门距离 d（P2 reachable-exit）
-	lostAnchor    int64
+	lastSeenMs       int64
+	stillBoxAgeMs    int64 // 最后一帧时的 still-box 时长（消失前是否走动的依据）
+	geom             belief.Geom
+	lastX, lastY     int     // 最后一帧位置 → 算丢失点离门距离 d（P2 reachable-exit）
+	approachSpeedCmS float64 // A：丢失前朝门定向逼近速度（在 track 仍活时算好 stash，丢失后 ts 可能已销毁）
+	lostAnchor       int64
 }
 
 // beliefShadowTLayer DBN P1 Track 层（per-track T_t）。与 Room 层 tracks 刻意分离：
@@ -44,11 +42,13 @@ type beliefShadowTLayer struct {
 }
 
 type beliefShadow struct {
-	b       *belief.Belief
-	decider belief.Decider
-	tracks  map[int]*beliefShadowTrack
-	fired   bool                        // 已 log 过本次 confirm（防 confirm 持续期重复 log）
-	tlayer  map[int]*beliefShadowTLayer // DBN P1 Track 层
+	b           *belief.Belief
+	decider     belief.Decider
+	tracks      map[int]*beliefShadowTrack
+	fired       bool                         // 已 log 过本次 confirm（防 confirm 持续期重复 log）
+	tlayer       map[int]*beliefShadowTLayer // DBN P1 Track 层
+	deviceSpeed  map[string]*deviceSpeedStat // P2.1：per-device 学习走速封顶（device→room 稳定，跨 track 累积）
+	lastLostGeom belief.Geom                 // #3：最近一次丢失点 geom（fall log 辨床/桶区误报用）
 }
 
 // tLostLogThresh Track 层 P(TLost) 超此即 log（对照 gate-list lost_track 报警）。
@@ -58,9 +58,10 @@ func (e *Engine) beliefShadowFor(roomID string) *beliefShadow {
 	sh := e.beliefShadows[roomID]
 	if sh == nil {
 		sh = &beliefShadow{
-			b:      belief.New(belief.DefaultModel()),
-			tracks: map[int]*beliefShadowTrack{},
-			tlayer: map[int]*beliefShadowTLayer{},
+			b:           belief.New(belief.DefaultModel()),
+			tracks:      map[int]*beliefShadowTrack{},
+			tlayer:      map[int]*beliefShadowTLayer{},
+			deviceSpeed: map[string]*deviceSpeedStat{},
 		}
 		e.beliefShadows[roomID] = sh
 	}
@@ -162,6 +163,23 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		st.lostAnchor = 0
 		st.geom = geomFromArea(b.CellAreaType)
 		st.lastX, st.lastY = b.X, b.Y
+		// P2.1：track 仍活时学本设备走速 → 个性化封顶。A：算好朝门定向逼近（丢失后 ts 可能已销毁）。
+		ds := sh.deviceSpeed[b.DeviceAddr]
+		if ds == nil {
+			ds = &deviceSpeedStat{}
+			sh.deviceSpeed[b.DeviceAddr] = ds
+		}
+		before := ds.samples
+		ds.observe(sampleWalkSpeed(ts, nowMs))
+		if before < beliefSpeedMinSamples && ds.samples >= beliefSpeedMinSamples {
+			e.logger.Info("belief_shadow_speed_learned", // P2.1：本设备走速学满 → 个性化封顶生效
+				zap.String("room_id", roomID),
+				zap.String("device_addr", b.DeviceAddr),
+				zap.Float64("walk_ewma_cms", ds.ewmaCmS),
+				zap.Float64("reach_cap_cms", ds.capCmS()),
+			)
+		}
+		st.approachSpeedCmS = approachSpeedTowardExit(ts, grid, beliefReachWindowMs, nowMs, ds.capCmS())
 		if ts != nil && ts.StillBoxRunStart > 0 {
 			st.stillBoxAgeMs = nowMs - ts.StillBoxRunStart
 		} else {
@@ -180,11 +198,11 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		if st.lostAnchor == 0 {
 			st.lostAnchor = st.lastSeenMs
 		}
-		age := float64(nowMs-st.lostAnchor) / 1000 / beliefShadowWaitSec
-		// P2：门区不再硬 continue；改软门——lost(抬 Fallen) 与 reachable-exit(近门+可达→压 Fallen) 同 tick 对冲。
-		obs = append(obs, lostWhileMovingToObs(age, st.geom, nowMs))
+		// P2：门区不再硬 continue；改软门——no-detect(状态条件抬 Fallen) 与 reachable-exit(近门+定向逼近→压 Fallen) 同 tick 对冲。
+		obs = append(obs, noDetectObs(st.geom, nowMs))
+		sh.lastLostGeom = st.geom // #3：记最近丢失点 geom，供 fall log 辨别床/桶区
 		if grid != nil {
-			obs = append(obs, reachableExitObs(grid.NearestEntryDist(st.lastX, st.lastY), beliefPriorWalkSpeedCmS, st.geom, nowMs))
+			obs = append(obs, reachableExitObs(grid.NearestEntryDist(st.lastX, st.lastY), st.approachSpeedCmS, st.geom, nowMs))
 		}
 	}
 
@@ -205,6 +223,21 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		if tm.bedCount == 1 && tm.otherDeviceRealTrackRecent(tl.device, nowMs) {
 			tobs = append(tobs, belief.TObservation{Kind: belief.TObsPeerLive, Conf: 0.9, Ts: nowMs, Fresh: true})
 		}
+		// C3 共享算子：reachable-exit 同源喂 Track 层（近门 + 定向逼近 → 偏 JustLeft 压 Lost）。
+		// ghost track 在 Room 层被 delete（sh.tracks 无），A_T 自走 Ghost→None，无需此观测。
+		exitDist, approachV, reachE := -1, 0.0, 0.0
+		reachCap := float64(beliefReachSpeedCapCmS)
+		if ds := sh.deviceSpeed[tl.device]; ds != nil {
+			reachCap = ds.capCmS()
+		}
+		if st := sh.tracks[tid]; st != nil && grid != nil {
+			exitDist = grid.NearestEntryDist(st.lastX, st.lastY)
+			approachV = st.approachSpeedCmS
+			reachE = reachableExitScore(exitDist, approachV)
+			if reachE > 0 {
+				tobs = append(tobs, belief.TObservation{Kind: belief.TObsReachableExit, Value: reachE, Conf: 0.8, Ts: nowMs, Fresh: true})
+			}
+		}
 		tl.tb.Step(nowMs, tobs)
 		v := tl.tb.Vector()
 		pLost := v.P(belief.TLost)
@@ -212,12 +245,17 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			argT, argP := v.Max()
 			e.logger.Info("belief_shadow_track_lost", // 仅 log，无 alarm
 				zap.String("room_id", roomID),
+				zap.String("device_addr", tl.device),
 				zap.Int("track_id", tid),
 				zap.Int64("ts_ms", nowMs),
 				zap.Float64("p_tlost", pLost),
 				zap.String("argmax_tstate", argT.String()),
 				zap.Float64("argmax_p", argP),
 				zap.String("last_geom", tl.geom.String()),
+				zap.Int("exit_dist_cm", exitDist),       // P2 诊断：丢失点离最近门距离
+				zap.Float64("approach_v_cms", approachV), // A：实测朝门定向逼近速度（0=未逼近/测不出）
+				zap.Float64("reach_cap_cms", reachCap),   // P2.1：本设备学习封顶（学习未足=全局 60）
+				zap.Float64("reach_e", reachE),           // 可达退场分 e=f_dist·f_reach（0=不抑制）
 			)
 		}
 		tl.loggedLo = pLost >= tLostLogThresh
@@ -234,6 +272,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			zap.Float64("p_fallen", v.P(belief.SFallen)),
 			zap.String("argmax_state", argS.String()),
 			zap.Float64("argmax_p", argP),
+			zap.String("last_lost_geom", sh.lastLostGeom.String()), // #3：InBed/InToilet=床/桶区误确认嫌疑
 		)
 	}
 	sh.fired = confirmed
