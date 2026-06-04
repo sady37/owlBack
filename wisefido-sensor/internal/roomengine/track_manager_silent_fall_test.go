@@ -410,8 +410,8 @@ func TestAreaSitAutoLearn_FromActive(t *testing.T) {
 	if cell.Belief[0].Type != AreaSit {
 		t.Errorf("expected AreaSit auto-learned, got %v", cell.Belief[0].Type)
 	}
-	if cell.Belief[0].Source != SourceHuman {
-		t.Errorf("expected SourceHuman after lock, got %v", cell.Belief[0].Source)
+	if cell.Belief[0].Source != SourceFeedback {
+		t.Errorf("expected SourceFeedback after lock, got %v", cell.Belief[0].Source)
 	}
 }
 
@@ -478,8 +478,8 @@ func TestAreaSitAutoLearn_PoseSitTriggersRegionStatic(t *testing.T) {
 	}
 
 	cell := tm.grid.CellAt(100, 100)
-	if cell.Belief[0].Type != AreaSit || cell.Belief[0].Source != SourceHuman {
-		t.Errorf("PR-13: pose=Sit 13min static should auto-learn AreaSit, got type=%v source=%v",
+	if cell.Belief[0].Type != AreaSit || cell.Belief[0].Source != SourceFeedback {
+		t.Errorf("PR-13: pose=Sit 13min static should auto-learn AreaSit(SourceFeedback), got type=%v source=%v",
 			cell.Belief[0].Type, cell.Belief[0].Source)
 	}
 }

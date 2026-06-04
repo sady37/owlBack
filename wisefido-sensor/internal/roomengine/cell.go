@@ -31,9 +31,10 @@ type Source uint8
 
 const (
 	SourceUnset    Source = 0
-	SourceHuman    Source = 1
-	SourceLearned  Source = 2
+	SourceHuman    Source = 1 // FE 刻意画(layout SetPrior)/ interactive-confirmed lying —— 神圣，AI 不覆盖、verified 真摔不擦
+	SourceLearned  Source = 2 // 纯自动学(mirror/static-reflector/AutoDeny) —— 可被 Feedback 覆盖、verified 真摔擦
 	SourceGeometry Source = 3
+	SourceFeedback Source = 4 // alarm feedback / 观测刷新确认的 rest-zone(sit 等) —— 信任 > Learned，但 verified 真摔擦(非 FE 画，可作废)
 )
 
 // CorePose 核心姿态（从雷达 13 种 pose 还原到 4 种）。
@@ -455,20 +456,21 @@ func (c *Cell) IncrRealFallCount() {
 //   AreaBed     — Sofa / Lounge chair（蓝色躺姿）+ lying ≥4h on bed 持续观测刷新
 //   AreaToilet  — sit ≥5min on toilet 持续观测刷新
 //   AreaShower  — 待加（暂同 toilet）
-// Confidence=95, Source=SourceHuman；依靠 Decay() 自然衰减。
+// Confidence=95, Source=SourceFeedback（非 FE 画，verified 真摔可擦；FE 画的走 SetPrior+SourceHuman 神圣）。
 //
 // 保护规则（不覆盖；防止降级）：
 //   - AreaDeny / AreaEnter  layout 锁定（墙/门洞）
 //   - AreaBed 不被 AreaSit 降级（lying 信息更精确）
 //   - AreaToilet/Shower 不被 AreaBed/Sit 降级（卫浴更具体）
-//   - 已是 SourceHuman + 同 target  幂等不 reset
+//   - 已是 SourceHuman（FE 画）不被 feedback 覆盖
+//   - 已是 SourceFeedback + 同 target  幂等不 reset
 func (c *Cell) MarkRestZoneByFeedback(target AreaType) bool {
 	cur := c.Belief[0].Type
 	// 不覆盖 layout 物理锁定（墙/门）
 	if cur == AreaDeny || cur == AreaEnter {
 		return false
 	}
-	// AreaBed 不被 AreaSit 降级（lying 信息更具体）
+	// AreaBed 不被 AreaSit 降级（lying 信息更精确）
 	if cur == AreaBed && target == AreaSit {
 		return false
 	}
@@ -476,12 +478,36 @@ func (c *Cell) MarkRestZoneByFeedback(target AreaType) bool {
 	if (cur == AreaToilet || cur == AreaShower) && (target == AreaSit || target == AreaBed) {
 		return false
 	}
-	// 幂等：已是 SourceHuman + 同 target
-	if cur == target && c.Belief[0].Source == SourceHuman {
+	// FE 画的（SourceHuman）神圣，feedback 不覆盖
+	if c.Belief[0].Source == SourceHuman {
 		return false
 	}
-	c.Belief[0] = BeliefState{Type: target, Confidence: 95, Source: SourceHuman}
+	// 幂等：已是 SourceFeedback + 同 target
+	if cur == target && c.Belief[0].Source == SourceFeedback {
+		return false
+	}
+	c.Belief[0] = BeliefState{Type: target, Confidence: 95, Source: SourceFeedback}
 	c.AreaType = target
+	return true
+}
+
+// ClearNonHumanLearnedZone verified 真摔时擦除该 cell 的**非 FE 画**(SourceFeedback/Learned/Geometry)
+// rest/deny 分类 → 回 Unknown（相当于没学过）。真摔证明该处的抑制/deny 分类是错的（有真人在此倒地）。
+// FE 画的（SourceHuman）不擦——由调用方 IncrRealFallCount 记录，反复真摔触发人工复审（[[feedback_lying_learning_and_layout_authority]] §3.1）。
+func (c *Cell) ClearNonHumanLearnedZone() bool {
+	b := c.Belief[0]
+	if b.Source == SourceHuman || b.Source == SourceUnset {
+		return false
+	}
+	switch b.Type {
+	case AreaBed, AreaSit, AreaToilet, AreaShower, AreaDeny:
+	default:
+		return false
+	}
+	c.Belief[0] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
+	c.Belief[1] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
+	c.Belief[2] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
+	c.AreaType = AreaUnknown
 	return true
 }
 

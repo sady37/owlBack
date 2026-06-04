@@ -4,6 +4,33 @@ import (
 	"testing"
 )
 
+// TestClearNonHumanLearnedZone verified 真摔擦非 FE 画的 rest/deny，保 FE 画 bed。
+func TestClearNonHumanLearnedZone(t *testing.T) {
+	// SourceFeedback sit → 擦
+	c := &Cell{}
+	c.Belief[0] = BeliefState{Type: AreaSit, Confidence: 95, Source: SourceFeedback}
+	c.AreaType = AreaSit
+	if !c.ClearNonHumanLearnedZone() || c.Belief[0].Type != AreaUnknown || c.AreaType != AreaUnknown {
+		t.Errorf("SourceFeedback AreaSit 应被擦回 Unknown, got %+v / area=%v", c.Belief[0], c.AreaType)
+	}
+
+	// SourceLearned deny(金属)→ 擦（真摔证明该处不是 deny）
+	c = &Cell{}
+	c.Belief[0] = BeliefState{Type: AreaDeny, Confidence: 70, Source: SourceLearned}
+	c.AreaType = AreaDeny
+	if !c.ClearNonHumanLearnedZone() || c.Belief[0].Type != AreaUnknown {
+		t.Errorf("SourceLearned AreaDeny 应被擦回 Unknown, got %+v", c.Belief[0])
+	}
+
+	// SourceHuman FE 画 bed → 不擦（神圣，仅记录+人工复审）
+	c = &Cell{}
+	c.Belief[0] = BeliefState{Type: AreaBed, Confidence: 99, Source: SourceHuman}
+	c.AreaType = AreaBed
+	if c.ClearNonHumanLearnedZone() || c.Belief[0].Type != AreaBed || c.Belief[0].Source != SourceHuman {
+		t.Errorf("SourceHuman AreaBed 不该被擦, got %+v", c.Belief[0])
+	}
+}
+
 // TestMarkRestZoneByFeedback PR-7.1：人类反馈即时锁 AreaType
 func TestMarkRestZoneByFeedback_LocksAreaSit(t *testing.T) {
 	c := &Cell{}
@@ -16,8 +43,8 @@ func TestMarkRestZoneByFeedback_LocksAreaSit(t *testing.T) {
 	if c.AreaType != AreaSit {
 		t.Errorf("AreaType expected AreaSit, got %v", c.AreaType)
 	}
-	if c.Belief[0].Source != SourceHuman || c.Belief[0].Confidence != 95 {
-		t.Errorf("Belief[0] should be SourceHuman/95, got %+v", c.Belief[0])
+	if c.Belief[0].Source != SourceFeedback || c.Belief[0].Confidence != 95 {
+		t.Errorf("Belief[0] should be SourceFeedback/95, got %+v", c.Belief[0])
 	}
 }
 

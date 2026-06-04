@@ -86,8 +86,32 @@ cell engine 学 lying/sit 会**抑制该处跌倒报警** → 不能自动学，
 
 ---
 
-## 5. 决策记录（2026-06-04 用户拍板）
+## 5. Source 分级（gate-list 实施 2026-06-04）
+
+`Source` 加 `SourceFeedback=4`，信任序 **Human > Feedback > Learned**：
+| Source | 来源 | verified 真摔 | 可被覆盖 |
+|---|---|---|---|
+| `SourceHuman` | FE 刻意画(SetPrior) / interactive-confirmed lying | **不擦**(+RealFallCount++ 记录, 反复→人工复审) | 否(神圣) |
+| `SourceFeedback` | alarm feedback / 观测刷新(MarkRestZoneByFeedback: sit / auto-learn AreaSit) | **擦回 Unknown** | 可被 Human 覆盖 |
+| `SourceLearned` | 纯自动(mirror/static-reflector/AutoDeny) | **擦回 Unknown** | 可被 Human/Feedback 覆盖 |
+
+落地：`MarkRestZoneByFeedback→SourceFeedback`(原 SourceHuman);`Cell.ClearNonHumanLearnedZone()` verified 真摔擦
+非 Human 的 {AreaBed/Sit/Toilet/Shower/Deny};`feedback.go` verified 分支调它(route `cleared_non_human_zone`);
+MarkMirrorBounce 晋升不覆盖 SourceFeedback。**exempt 行为零变**(`fall_exempt` 要 SourceHuman+Conf99，feedback
+本就 Conf95 不 exempt)。`fall_exempt` 的 Conf99-hack 现可由 SourceFeedback 简化(留 backlog，本次不动避风险)。
+
+## 6. belief 侧后续（gate-list 完成后做，用户 2026-06-04 定序）
+
+把 `Source` provenance 带进 belief **输入层**作 **Conf/信任权重**(非硬标签)——`geomFromGrid` 的 InBed/InToilet 观测
+Conf 按 Source 缩放(Human~0.95 / Feedback~0.6 / Learned~0.4)。理由：
+- DBN-native 表达 Human>Feedback>Learned，**软先验替硬 exempt 闸**——强跌倒证据(kinematics/firmware)能盖过弱学习先验，不漏真摔;
+- **不违 [[feedback_no_dynamic_threshold_modulation]]**：是已有几何输入(InBed)的**可靠度元数据**，非派生风险调制器;
+- cutover 时 DBN 用此**吸收** gate-list 的 `fall_exempt` 硬 Source 判定(一处表达)。
+落点：`belief_input_normalization.md` 的 `ObsBedOccupied`/geom 观测 Conf。**本次 gate-list 不含此项**。
+
+## 7. 决策记录（2026-06-04 用户拍板）
 - 人工 bed 不擦；verified fall 记录 `RealFallCount++`（反复真摔触发人工复审，不自动擦）。
 - AI 新生成 fall-affecting object 不下发（overlay+DBN）；几何外扩可下发（只 enlarge）。
 - 坐类渐进自学；躺类（Lounge/Long Sofa）人确认 permanent 才学 lying，临时走 2H 抑制。
-- 本工作在分支 `feat/feedback-lying-learning`，FE 部分另开。
+- Source 三分(+SourceFeedback)；verified 真摔擦非 Human rest/deny，保 FE bed。
+- gate-list 在 main 实施(本次)；belief Conf 加权(§6)gate-list 后做；FE 部分另开新会话。

@@ -378,11 +378,21 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 	case "verified":
 		// verified + ☑ Fall 是 ground truth；其它单 condition 也视为真 fall（admin 标了 verified 就是认 fall）
 		if pc.OCFall || pc.OCAwake || pc.OCVerbal || pc.OCUnresponsive || pc.OCBleeding {
-			if apply(func(c *Cell) { c.IncrRealFallCount() }) {
+			cleared := false
+			if apply(func(c *Cell) {
+				c.IncrRealFallCount()
+				// 真摔擦该处非 FE 画的 rest/deny 分类（feedback/自学的抑制被真摔证伪）；FE 画 bed 不擦（仅记录+人工复审）。
+				if c.ClearNonHumanLearnedZone() {
+					cleared = true
+				}
+			}) {
 				if pc.OCFall {
 					routes = append(routes, "real_fall")
 				} else {
 					routes = append(routes, "real_fall_implicit")
+				}
+				if cleared {
+					routes = append(routes, "cleared_non_human_zone")
 				}
 			}
 		}
