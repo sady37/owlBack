@@ -165,6 +165,10 @@ type TrackManager struct {
 	mirrorBuffer     map[mirrorPairKey]*mirrorPairBuffer
 	mirrorCooldownMs int64 // 单 pair 命中后 60s 内不重复 paint + 加 penalty（防同一 pair 持续命中刷分）
 
+	// 静止金属反射体自学习（static_reflector.go）：wallPolygon 判近墙；staticReflectorLastMark 去抖。
+	wallPolygon             []radarutils.Point
+	staticReflectorLastMark map[int]int64
+
 	// startupMs：TrackManager 创建时间。用于"service 启动 5min grace"反 ghost 兜底
 	// （grace 内 first-seen 的 track 视为已存在，birth filter 不打 ghost）。
 	startupMs int64
@@ -293,24 +297,32 @@ var defaultBedsideFallCfg = BedsideFallConfig{
 // NewTrackManager 创建 track 管理器
 func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 	return &TrackManager{
-		roomID:                roomID,
-		grid:                  grid,
-		tracks:                make(map[int]*TrackState),
-		outputs:               make(map[int]*TrackOutput),
-		pendingLostFalls:      make(map[int]*PendingLostFall),
-		lastRealTrackByDevice: make(map[string]int64),
-		bedSessions:           make(map[string]*BedSession),
-		sleepadStates:         make(map[string]*SleepadObservation),
-		moveSpeedCms:          20, // 默认值（与 DefaultLearnParams.MoveSpeedCms 一致）
-		bedsideFallCfg:        defaultBedsideFallCfg,
-		recentRadarAlarms:     make(map[int64]*RadarFallAlarm),
-		recentRadarEvents:     make(map[int64]*RadarTrackEvent),
-		recentBufferMs:        5 * 60 * 1000, // 5 min
-		logger:                zap.NewNop(),
-		startupMs:             time.Now().UnixMilli(),
-		mirrorBuffer:          make(map[mirrorPairKey]*mirrorPairBuffer),
-		mirrorCooldownMs:      60_000,
+		roomID:                  roomID,
+		grid:                    grid,
+		tracks:                  make(map[int]*TrackState),
+		outputs:                 make(map[int]*TrackOutput),
+		pendingLostFalls:        make(map[int]*PendingLostFall),
+		lastRealTrackByDevice:   make(map[string]int64),
+		bedSessions:             make(map[string]*BedSession),
+		sleepadStates:           make(map[string]*SleepadObservation),
+		moveSpeedCms:            20, // 默认值（与 DefaultLearnParams.MoveSpeedCms 一致）
+		bedsideFallCfg:          defaultBedsideFallCfg,
+		recentRadarAlarms:       make(map[int64]*RadarFallAlarm),
+		recentRadarEvents:       make(map[int64]*RadarTrackEvent),
+		recentBufferMs:          5 * 60 * 1000, // 5 min
+		logger:                  zap.NewNop(),
+		startupMs:               time.Now().UnixMilli(),
+		mirrorBuffer:            make(map[mirrorPairKey]*mirrorPairBuffer),
+		mirrorCooldownMs:        60_000,
+		staticReflectorLastMark: make(map[int]int64),
 	}
+}
+
+// SetWallPolygon 注入本房间墙多边形（cfg.WallPolygon），静止反射体检测判"近墙"用。
+func (tm *TrackManager) SetWallPolygon(poly []radarutils.Point) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.wallPolygon = append([]radarutils.Point(nil), poly...)
 }
 
 // SetRadarMount 注入本房间雷达安装坐标（cfg.Radar），用于 L1 mirror pair tiebreaker
@@ -1594,6 +1606,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	// 跨 track 几何对称检测（无 layout 镜面坐标先验），命中 → ghost 端 GhostPenalty +50
 	// + 5 帧 bounce 点 grid.MarkMirrorBounce（2×2 微块累 MBC，≥3 升 AreaDeny+SourceLearned）。
 	tm.scanMirrorGhostPairs(nowMs)
+
+	// ========== 段 4e: 静止金属反射体自学习（near-wall + 长期静止 + z≈0 + 游走真人共存）==========
+	// Phase A：仅累计 StaticReflectorCount + log static_reflector_candidate，不改 verdict。详 static_reflector.go。
+	tm.scanStaticReflectors(nowMs)
 
 	// PR-9: v1 段 5 Bed-Fall 物理矛盾检测整段删除（依赖 totalBedPeople / bedPersonCount）。
 	// PR-11 silent_fall 重写时用 BedSession + SuiteCensus 重新表达"床上方矛盾"语义，

@@ -384,6 +384,22 @@ func (g *RoomGrid) MarkMirrorBounce(x, y int, nowMs int64) {
 	}
 }
 
+// StaticReflectorPromoteThreshold 静止反射体 cell 晋升 AreaDeny+SourceLearned 的独立 episode 阈值。
+const StaticReflectorPromoteThreshold = 3
+
+// MarkStaticReflector 静止金属反射体累加（static_reflector.go 检测命中调）。
+// **Phase A：仅累计 + 时戳，不晋升 AreaDeny / 不改 verdict**（log-only 验证标点是否正确）。
+// 验证后 Phase B 再放开：≥ StaticReflectorPromoteThreshold 升 AreaDeny（SourceHuman 不覆盖）+ 该 cell 出生即 ghost。
+func (g *RoomGrid) MarkStaticReflector(x, y int, nowMs int64) {
+	c := g.CellAt(x, y)
+	if c == nil {
+		return
+	}
+	c.StaticReflectorCount++
+	c.LastStaticReflectorMs = nowMs
+	c.LastUpdateMs = nowMs
+}
+
 // MarkSleepadInBed Sleepad 压床事件（HR/RR/InBed）
 func (g *RoomGrid) MarkSleepadInBed(x, y int, nowMs int64) {
 	c := g.CellAt(x, y)

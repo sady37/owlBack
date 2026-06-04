@@ -1311,7 +1311,8 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetLogger(e.logger)
 	tm.SetRoomName(cfg.RoomName)
 	tm.SetInterferes(cfg.Interferes)
-	tm.SetRadarMount(cfg.Radar) // L1 mirror pair 检测用 radar 中心做 ghost tiebreaker
+	tm.SetRadarMount(cfg.Radar)        // L1 mirror pair 检测用 radar 中心做 ghost tiebreaker
+	tm.SetWallPolygon(cfg.WallPolygon) // 静止反射体检测判"近墙"
 	// PR-8: 注入 AI 派生事件 / 告警发布器（engine 实现 AIPublisher 接口）
 	tm.SetAIPublisher(e)
 	// A 风险放大消费者: WeakBio≥80 force real 短路 source（engine 在 SetWeakBioSource 时

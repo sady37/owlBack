@@ -208,6 +208,13 @@ type Cell struct {
 	MirrorBounceCount int
 	LastMirrorMs      int64
 
+	// StaticReflectorCount: 静止金属反射体自学习（运动镜像之外的另一类）——一条 track 长期钉死在
+	// 此 cell（金属把手/淋浴架直射回波）+ 同时另一真人 track 在别处游走（corroboration）时累加。
+	// 跨多次独立 episode ≥ StaticReflectorPromoteThreshold 升 AreaDeny（Phase B；Phase A 仅累计+log）。
+	// 这类点人工标不了（幻影坐标依赖雷达角度/材质/多径，非肉眼可预知），只能自动学。
+	StaticReflectorCount  int
+	LastStaticReflectorMs int64
+
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
 
@@ -537,6 +544,8 @@ func (c *Cell) Decay(dtSec float64, p DecayParams) {
 	// L1 mirror bounce 同 EventSec 半衰期；持续累不到 promote 阈值的 cell 自然衰退归零，
 	// 避免一次性误报永久污染 grid。
 	c.MirrorBounceCount = scaleInt(c.MirrorBounceCount, fEv)
+	// 静止反射体同半衰期：偶发一次静止伪迹自然衰退，需跨多次独立 episode 才累到 promote。
+	c.StaticReflectorCount = scaleInt(c.StaticReflectorCount, fEv)
 
 	// PR-11: Belief[0].Confidence 按 AreaType 分档衰减（半衰期 BeliefHalfLifeByType[type]）
 	// 衰减后 Confidence < 10 → 降级 AreaUnknown + Source=Unset（不再贡献 IsRestZone 等判定）。
