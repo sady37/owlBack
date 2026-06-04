@@ -393,8 +393,9 @@ func main() {
 			intervalScheduler = service.NewSleepaceIntervalScheduler(db, redisClient, sleepaceGateway, alarmCloudRepo, logger)
 			go intervalScheduler.Start(context.Background())
 
-			// SleepaceDstRebindScheduler — 每日 0 点检测 DST 切换日，用切换后偏移重 bind（一年 2 天）。
-			go service.NewSleepaceDstRebindScheduler(db, sleepaceGateway, logger).Start(context.Background())
+			// SleepaceDstRebindScheduler — 启动即纠偏（恢复错过的 DST 切换）+ 每日 0 点检测 DST 切换日。
+			// 执行动作 = 与手动 Setting save 同一份 ResyncDeviceTimezone（自动/手动只是触发，动作一致）。
+			go service.NewSleepaceDstRebindScheduler(db, deviceMonitorSettingsService, logger).Start(context.Background())
 		} else {
 			logger.Warn("Sleepace gateway client not initialized (SLEEPACE_GATEWAY_API_BASE_URL not set)")
 		}
