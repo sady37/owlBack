@@ -45,7 +45,7 @@ sleepace:
   realtime_interval: 10
   leave_sensibility: 1
   report_upload_type: 0
-  report_upload_time: 10
+  report_upload_time: 8
 
 services:
   user: "http://localhost:9001/wisefido/user/api/v1"
