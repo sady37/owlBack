@@ -200,6 +200,14 @@ func main() {
 	// （如「OOR 29h」残留显示）。详 initial_publish.go。
 	publishInitialResetState(ctx, engineDB, zone.StreamPublisher, zone.Spatial, logger)
 
+	// 5.3 veto HTTP 端点：wisefido-data 在 layout save diff 出被删的 source='Feedback' object 后
+	// 直调 POST /roomengine/cell/veto → 该 cell ClearNonHumanLearnedZone + MarkLearnBlocked。
+	vetoAddr := os.Getenv("SENSOR_HTTP_ADDR")
+	if vetoAddr == "" {
+		vetoAddr = ":8087" // :8083 已被 sleepace 占用
+	}
+	startVetoHTTPServer(ctx, vetoAddr, engine, logger)
+
 	// 6. 等待信号（优雅关闭）
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

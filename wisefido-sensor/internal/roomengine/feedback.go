@@ -302,6 +302,12 @@ func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
 		return false
 	}
 
+	// §3.3 Permanent：除 cell mark（routeFeedback 已做 AreaBed）外，再把这块躺区作为
+	// source='Feedback' object 浮到 layout canvas，让人在 RadarCanvas 看见/编辑/否决（方案 X）。
+	if operation == "false_alarm" && pc.FALoungeLongSofa && pc.LoungePermanent {
+		i.appendFeedbackLoungeObject(ctx, deviceAddr, canvas.X, canvas.Y, eventID)
+	}
+
 	i.logger.Info("alarm_feedback_marked",
 		zap.String("event_id", eventID),
 		zap.String("device_addr", deviceAddr),
@@ -315,6 +321,68 @@ func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
 		zap.Int("local_h", loX), zap.Int("local_v", loY), zap.Int("local_z", loZ),
 	)
 	return true
+}
+
+// appendFeedbackLoungeObject 把 Permanent 躺区作为 source='Feedback' 的 LongSofa object
+// 并发安全 append 进该 /128 device 的 room_visual_layout.canvas.objects[]（[[layout_authority_ai_correction_model]]）。
+//   - 并发安全：DB 端 jsonb `||` 原子追加，不在 app 层读-改-写（FE 同时存 Human object 不冲突）。
+//   - 幂等：同 event 的 object id 已存在则不重复 append。
+//   - canvas_hash 置 NULL：让下次 FE save 必写（不误跳过）；engine snapshot 用自身 geometry hash，不受影响。
+//   - 形状对齐 FE BaseObject：typeName=LongSofa（lying）+ source=Feedback（drawObjects 渲染琥珀虚线、
+//     updateRadarAreas 过滤不下发）；几何 = fall 点周边小方块（默认 40cm，人可 resize 到真实沙发）。
+//   - LongSofa 不被 sensor layout_parser 消费（display-only），抑制仍由 cell mark 提供（方案 X 不双算）。
+func (i *AlarmFeedbackIngester) appendFeedbackLoungeObject(ctx context.Context, deviceAddr string, x, y int, eventID string) {
+	if i.db == nil || deviceAddr == "" {
+		return
+	}
+	const half = 20 // 40×40cm 默认标记
+	objID := "feedback_lounge_" + eventID
+	obj := map[string]interface{}{
+		"id":        objID,
+		"name":      "Lounge (learned)",
+		"typeName":  "LongSofa",
+		"typeValue": 0,
+		"source":    "Feedback",
+		"geometry": map[string]interface{}{
+			"type": "rectangle",
+			"data": map[string]interface{}{
+				// 顺序对齐 FE Rectangle：[左上, 右上, 左下, 右下]
+				"vertices": []map[string]int{
+					{"x": x - half, "y": y - half},
+					{"x": x + half, "y": y - half},
+					{"x": x - half, "y": y + half},
+					{"x": x + half, "y": y + half},
+				},
+			},
+		},
+		"visual":      map[string]interface{}{"color": "#c19a6b", "transparent": false, "reflectivity": 30},
+		"interactive": map[string]interface{}{"selected": false, "locked": false},
+		"device":      map[string]interface{}{"category": "furniture", "type": "LongSofa"},
+		"height":      40,
+	}
+	objJSON, err := json.Marshal(obj)
+	if err != nil {
+		i.logger.Warn("appendFeedbackLoungeObject: marshal", zap.Error(err))
+		return
+	}
+	res, err := i.db.ExecContext(ctx, `
+		UPDATE room_visual_layout
+		SET canvas      = jsonb_set(canvas, '{objects}',
+		                    COALESCE(canvas->'objects', '[]'::jsonb) || $2::jsonb),
+		    canvas_hash = NULL,
+		    version     = version + 1,
+		    updated_at  = NOW()
+		WHERE spatial_prefix = $1::inet
+		  AND NOT (COALESCE(canvas->'objects', '[]'::jsonb) @> $3::jsonb)
+	`, deviceAddr, string(objJSON), `[{"id":"`+objID+`"}]`)
+	if err != nil {
+		i.logger.Warn("appendFeedbackLoungeObject: update layout", zap.String("device_addr", deviceAddr), zap.Error(err))
+		return
+	}
+	n, _ := res.RowsAffected()
+	i.logger.Info("feedback_lounge_object_appended",
+		zap.String("device_addr", deviceAddr), zap.String("object_id", objID),
+		zap.Int("canvas_x", x), zap.Int("canvas_y", y), zap.Int64("rows", n))
 }
 
 // routeFeedback 根据 operation + parsed conditions 把 cell counter 增量。

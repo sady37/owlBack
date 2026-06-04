@@ -384,12 +384,14 @@ func (s *RadarInstall) SaveRoomLayout(ctx context.Context, tenantID, roomID stri
 
 	canvasHash := sha256HexString(configData)
 
-	// 比对 hash：与已存一致则跳过（不增 version、不更新 updated_at）
+	// 比对 hash：与已存一致则跳过（不增 version、不更新 updated_at）。
+	// 同时取旧 canvas，用于 diff 出被删的 source='Feedback' object（人否决学习区 → 通知 sensor）。
 	var existingHash sql.NullString
+	var existingCanvas []byte
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT canvas_hash FROM room_visual_layout WHERE spatial_prefix = $1::INET`,
+		`SELECT canvas_hash, canvas FROM room_visual_layout WHERE spatial_prefix = $1::INET`,
 		spatialPrefix,
-	).Scan(&existingHash); err == nil && existingHash.Valid && existingHash.String == canvasHash {
+	).Scan(&existingHash, &existingCanvas); err == nil && existingHash.Valid && existingHash.String == canvasHash {
 		s.logger.Debug("SaveRoomLayout: canvas unchanged, skip", zap.String("spatial_prefix", spatialPrefix))
 		return nil
 	}
@@ -411,6 +413,10 @@ func (s *RadarInstall) SaveRoomLayout(ctx context.Context, tenantID, roomID stri
 	}
 	s.logger.Info("SaveRoomLayout: upserted",
 		zap.String("spatial_prefix", spatialPrefix), zap.String("canvas_hash", canvasHash))
+
+	// 人在 RadarCanvas 删掉 source='Feedback' object = 否决该处自动学习 →
+	// diff 旧/新 canvas，对每个被删 Feedback object 直调 sensor /roomengine/cell/veto。
+	s.detectAndNotifyFeedbackVetoes(ctx, spatialPrefix, existingCanvas, configData)
 	return nil
 }
 

@@ -507,6 +507,25 @@ func (e *Engine) ApplyToCell(roomID string, x, y int, nowMs int64, fn func(*Cell
 	return true
 }
 
+// VetoCell 人否决某 Feedback 学习区（删了 canvas 上的 source='Feedback' object 触发）：
+// 该 cell 擦掉非 Human 抑制/deny（ClearNonHumanLearnedZone）+ 永久封自动学习（MarkLearnBlocked，跨重启）。
+// deviceAddr=/128 device host text；x,y=canvas cm。返回 (cleared, blocked, ok=cell 在 grid)。
+func (e *Engine) VetoCell(deviceAddr string, x, y int, nowMs int64) (cleared, blocked, ok bool) {
+	roomID := e.RoomForDevice(deviceAddr)
+	if roomID == "" {
+		return false, false, false
+	}
+	ok = e.ApplyToCell(roomID, x, y, nowMs, func(c *Cell) {
+		if c.ClearNonHumanLearnedZone() {
+			cleared = true
+		}
+		if c.MarkLearnBlocked() {
+			blocked = true
+		}
+	})
+	return cleared, blocked, ok
+}
+
 func (e *Engine) MapDeviceToRoom(deviceKey, roomID string) {
 	e.mu.Lock()
 	e.deviceRoom[deviceKey] = roomID
