@@ -7,12 +7,13 @@
 // 与 mirror_detect 的分工：mirror 抓**跟着真人同步运动**的反射对；本检测抓**静止直射**伪迹。
 //
 // 学习判据（全部满足才记一次 candidate，Phase A 仅累计 + log，不改 verdict）：
-//   1. 近墙          ——金属螺墙上；真人不会长期贴墙里，真摔在开阔地板（强安全判据）
+//   1. 近墙          ——金属支架螺墙上；真人不会长期贴墙里，真摔在开阔地板（强安全判据）
 //   2. 长期静止       ——StillBox 起点 ≥ staticReflectorMinStillMs（金属永远不动）
-//   3. z≈0           ——金属直射回波贴地投影；站/坐的人 z>0（区分贴墙洗漱的真人）
-//   4. 有游走真人共存  ——另一条 Real track 在别处移动 = 真人在别处，本静止 track 才更可能是幻影
+//   3. 有游走真人共存  ——另一条 Real track 在别处移动 = 真人在别处，本静止 track 才更可能是幻影
 //                       （独居者自己贴墙静止时无 corroborator → 不学，防误学洗漱位）
-// 跨多次独立 episode 累 ≥ StaticReflectorPromoteThreshold → 升 AreaDeny（Phase B）；
+// **不**用 z≈0 判据：金属支架(把手/淋浴架)多装在墙上有高度，反射点 z 可能 >0，卡 z≈0 会漏。
+// 防"贴墙洗漱真人"误学靠 corroborator + 跨多次独立 episode 复现 + demote 兜底。
+// 跨独立 episode 累 ≥ StaticReflectorPromoteThreshold → 升 AreaDeny（Phase B）；
 // demote 仍由 cell_learning hasRealActivity 兜底（真人真走过 → 自动退回 Unknown）。
 
 package roomengine
@@ -28,7 +29,6 @@ import (
 const (
 	staticReflectorMinStillMs     = 120_000 // 长期静止门槛（2min）
 	staticReflectorWallMarginCm   = 40      // 近墙：到 wall 多边形边 ≤ 此
-	staticReflectorMaxZCm         = 20      // z≈0：金属贴地投影
 	staticReflectorRoamMinCm      = 40      // corroborator：另一 Real track 近 30s 位移 ≥ 此 = 游走真人
 	staticReflectorMarkIntervalMs = 60_000  // 同一 track 去抖：每 60s 最多记一次（=独立 episode 计数）
 )
@@ -60,9 +60,6 @@ func (tm *TrackManager) scanStaticReflectors(nowMs int64) {
 		}
 		if ts.StillBoxRunStart == 0 || nowMs-ts.StillBoxRunStart < staticReflectorMinStillMs {
 			continue // 非长期静止
-		}
-		if len(ts.History) == 0 || ts.History[len(ts.History)-1].Z > staticReflectorMaxZCm {
-			continue // z 非贴地（站/坐的真人）
 		}
 		pxF, pyF := ts.Kalman.Position()
 		px, py := int(math.Round(pxF)), int(math.Round(pyF))

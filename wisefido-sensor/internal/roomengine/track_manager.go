@@ -1607,7 +1607,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	// + 5 帧 bounce 点 grid.MarkMirrorBounce（2×2 微块累 MBC，≥3 升 AreaDeny+SourceLearned）。
 	tm.scanMirrorGhostPairs(nowMs)
 
-	// ========== 段 4e: 静止金属反射体自学习（near-wall + 长期静止 + z≈0 + 游走真人共存）==========
+	// ========== 段 4e: 静止金属反射体自学习（near-wall + 长期静止 + 游走真人共存）==========
 	// Phase A：仅累计 StaticReflectorCount + log static_reflector_candidate，不改 verdict。详 static_reflector.go。
 	tm.scanStaticReflectors(nowMs)
 
