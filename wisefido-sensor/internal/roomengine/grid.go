@@ -378,7 +378,7 @@ func (g *RoomGrid) MarkMirrorBounce(x, y int, nowMs int64) {
 	c.MirrorBounceCount++
 	c.LastMirrorMs = nowMs
 	c.LastUpdateMs = nowMs
-	if c.MirrorBounceCount >= MirrorPromoteThreshold &&
+	if c.MirrorBounceCount >= MirrorPromoteThreshold && !c.LearnBlocked &&
 		c.Belief[0].Source != SourceHuman && c.Belief[0].Source != SourceFeedback {
 		c.Belief[0] = BeliefState{Type: AreaDeny, Confidence: 70, Source: SourceLearned}
 		c.AreaType = AreaDeny

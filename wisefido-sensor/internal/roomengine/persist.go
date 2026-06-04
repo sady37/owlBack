@@ -34,7 +34,8 @@ import (
 // v6 (2026-04-29): Counters 加 AutoDenyQualifiedSinceMs（ADS）— PR-15.3 Auto-Deny 15 天时间门控状态
 // v7 (2026-05-18): sensor_v2 决定 15+20 — Cell 加 EnterTarget 字符串 + InsideEnterEvidenceN + InsideEnterLearned
 // v8 (2026-05-19): L1 mirror pair 自学习 — Cell 加 MirrorBounceCount + LastMirrorMs
-const SnapshotSchemaVersion = 8
+// v9 (2026-06-04): sticky 否决 — Cell 加 LearnBlocked（verified 真摔人勾"永不在此自动学抑制"，跨重启保留）
+const SnapshotSchemaVersion = 9
 
 // CellSnapshot 单 cell 的可持久化字段（紧凑 JSON，short keys 节省空间）
 type CellSnapshot struct {
@@ -76,6 +77,7 @@ type Counters struct {
 	// L1 mirror pair 自学习 (schema_v ≥ 8):
 	MBC int   `json:"mbc,omitempty"` // MirrorBounceCount
 	LMM int64 `json:"lmm,omitempty"` // LastMirrorMs
+	LB  bool  `json:"lb,omitempty"`  // LearnBlocked (schema_v ≥ 9) — sticky 否决
 }
 
 // GridSnapshot 顶层 payload 结构（写入 JSONB 字段）
@@ -182,6 +184,7 @@ func buildCounters(c *Cell) *Counters {
 		IEL: c.InsideEnterLearned,
 		MBC: c.MirrorBounceCount,
 		LMM: c.LastMirrorMs,
+		LB:  c.LearnBlocked,
 	}
 	if ct.RD == 0 && ct.GD == 0 &&
 		ct.AT == [4]uint16{} &&
@@ -189,7 +192,7 @@ func buildCounters(c *Cell) *Counters {
 		ct.SIB == 0 && ct.SLB == 0 && ct.DE == 0 && ct.FX == 0 && ct.FY == 0 && ct.DW == 0 &&
 		ct.FA == 0 && ct.TS == 0 && ct.BSR == 0 && ct.ADS == 0 &&
 		ct.ET == "" && ct.IEN == 0 && !ct.IEL &&
-		ct.MBC == 0 && ct.LMM == 0 {
+		ct.MBC == 0 && ct.LMM == 0 && !ct.LB {
 		return nil
 	}
 	return &ct
@@ -270,6 +273,7 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 			c.InsideEnterLearned = cs.C.IEL
 			c.MirrorBounceCount = cs.C.MBC
 			c.LastMirrorMs = cs.C.LMM
+			c.LearnBlocked = cs.C.LB
 		}
 	}
 	return nil

@@ -203,6 +203,12 @@ type Cell struct {
 	// 写入路径 PR 接线后实施；当前仅 verifier 拦截点已就绪。
 	FallSuppressUntilMs int64
 
+	// LearnBlocked: sticky 否决（[[feedback_lying_learning_and_layout_authority]] §1）——
+	// verified 真摔时人勾"永不在此自动学跌倒抑制"。置位后该 cell 的自动/反馈抑制学习
+	// （MarkRestZoneByFeedback / MarkMirrorBounce / AutoDeny / UpdateBelief 翻抑制类）永久跳过，
+	// 跨重启保留（persist）。SourceHuman FE 画不受影响（本就神圣、绕过这些路径）。
+	LearnBlocked bool
+
 	// MirrorBounceCount: L1 mirror pair 检测命中后在 bounce point 周围 2×2 微块累加。
 	// ≥ MirrorPromoteThreshold (3) 即升 Belief[0]=AreaDeny+SourceLearned（人工 SourceHuman 不覆盖）。
 	// LastMirrorMs: 最近一次累加时戳，Decay 用。
@@ -466,6 +472,10 @@ func (c *Cell) IncrRealFallCount() {
 //   - 已是 SourceFeedback + 同 target  幂等不 reset
 func (c *Cell) MarkRestZoneByFeedback(target AreaType) bool {
 	cur := c.Belief[0].Type
+	// sticky 否决：永不在此自动/反馈学抑制区
+	if c.LearnBlocked {
+		return false
+	}
 	// 不覆盖 layout 物理锁定（墙/门）
 	if cur == AreaDeny || cur == AreaEnter {
 		return false
@@ -509,6 +519,26 @@ func (c *Cell) ClearNonHumanLearnedZone() bool {
 	c.Belief[2] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
 	c.AreaType = AreaUnknown
 	return true
+}
+
+// MarkLearnBlocked sticky 否决（§1）：置 LearnBlocked，永久阻止该 cell 自动/反馈学习跌倒抑制区。
+// 由 feedback verified 分支在人勾 sticky veto 时调（配合 ClearNonHumanLearnedZone 先擦后封）。
+// 返回是否新置位（已置位返回 false，便于日志区分）。
+func (c *Cell) MarkLearnBlocked() bool {
+	if c.LearnBlocked {
+		return false
+	}
+	c.LearnBlocked = true
+	return true
+}
+
+// isSuppressiveArea 该 AreaType 是否会抑制/拒绝跌倒报警（rest/卫浴/deny）。sticky 否决用。
+func isSuppressiveArea(t AreaType) bool {
+	switch t {
+	case AreaBed, AreaSit, AreaToilet, AreaShower, AreaDeny:
+		return true
+	}
+	return false
 }
 
 // ========================================================================
@@ -647,6 +677,10 @@ func (c *Cell) UpdateBelief(g int, p ParamSet) {
 		}
 
 	case c.Belief[g].Confidence < p.FlipTh:
+		// sticky 否决：vetoed cell 不自动翻成抑制类（防 verified 真摔擦回 Unknown 后又自学回 bed/deny 重新抑制）
+		if c.LearnBlocked && isSuppressiveArea(bestType) {
+			break
+		}
 		c.Belief[g].Type = bestType
 		c.Belief[g].Confidence = int(math.Round(bestL * 50))
 		c.Belief[g].Source = SourceLearned

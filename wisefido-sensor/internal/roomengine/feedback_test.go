@@ -81,6 +81,61 @@ func TestMarkRestZoneByFeedback_NoDoubleSet(t *testing.T) {
 	}
 }
 
+// TestMarkLearnBlocked sticky 否决：置位后 feedback/自动抑制学习全部跳过；UpdateBelief 也不翻抑制类。
+func TestMarkLearnBlocked(t *testing.T) {
+	c := &Cell{}
+	if !c.MarkLearnBlocked() || !c.LearnBlocked {
+		t.Errorf("expected MarkLearnBlocked to set flag")
+	}
+	if c.MarkLearnBlocked() {
+		t.Errorf("second MarkLearnBlocked should report no-op (already set)")
+	}
+	// feedback sit/lying 被永久封
+	if c.MarkRestZoneByFeedback(AreaSit) || c.MarkRestZoneByFeedback(AreaBed) {
+		t.Errorf("LearnBlocked cell must not accept feedback rest-zone")
+	}
+	if c.AreaType != AreaUnknown {
+		t.Errorf("AreaType should stay Unknown, got %v", c.AreaType)
+	}
+}
+
+// TestLearnBlocked_BlocksBeliefFlipToSuppressive vetoed cell 即使累积大量 lie 观测也不自动翻成 AreaBed。
+func TestLearnBlocked_BlocksBeliefFlipToSuppressive(t *testing.T) {
+	c := &Cell{LearnBlocked: true}
+	c.Belief[0] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
+	// 强 lying 证据（Lie 60s + Sleepad）本应翻 AreaBed
+	c.ActiveType[ActiveIdxLie] = 600
+	c.SleepadInBedCount = 3
+	c.UpdateBelief(0, ParamSet{Alpha: 0.3, Beta: 0.3, FlipTh: 40})
+	if isSuppressiveArea(c.Belief[0].Type) {
+		t.Errorf("LearnBlocked cell should not flip to suppressive type, got %v", c.Belief[0].Type)
+	}
+
+	// 对照：未 veto 的同样证据应能翻成 AreaBed
+	c2 := &Cell{}
+	c2.ActiveType[ActiveIdxLie] = 600
+	c2.SleepadInBedCount = 3
+	c2.UpdateBelief(0, ParamSet{Alpha: 0.3, Beta: 0.3, FlipTh: 40})
+	if c2.Belief[0].Type != AreaBed {
+		t.Errorf("control cell should flip to AreaBed, got %v", c2.Belief[0].Type)
+	}
+}
+
+// TestLearnBlocked_Persists snapshot round-trip 保留 LearnBlocked（跨重启）。
+func TestLearnBlocked_Persists(t *testing.T) {
+	g := NewRoomGrid(400, 500, 10)
+	g.Cells[7].LearnBlocked = true
+	snap := EncodeSnapshot(g)
+
+	g2 := NewRoomGrid(400, 500, 10)
+	if err := DecodeSnapshot(snap, g2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !g2.Cells[7].LearnBlocked {
+		t.Errorf("LearnBlocked should survive snapshot round-trip")
+	}
+}
+
 // PR-11: BeliefHalfLifeByType 分档衰减 + 降级
 // AreaSit: 半衰期 2.1d → 2.1 天衰到 50 ✓
 func TestBeliefDecay_AreaSit_HalfLife(t *testing.T) {
@@ -204,10 +259,10 @@ func TestBoostNeighborSameType_CapAt100(t *testing.T) {
 	}
 }
 
-// 测试 PR-6 notes parser
+// notes parser（label 对齐 owlFront/src/utils/alarm.ts）
 func TestParseConditions_FalseAlarmReason(t *testing.T) {
 	notes := `False Alarm Reason:
-☑ Sit on Chair / behind Chair
+☑ Sit on Chair / Short Sofa
 
 [2026-04-29 01:27:00] admin (event:abc-1234)`
 
@@ -215,45 +270,64 @@ func TestParseConditions_FalseAlarmReason(t *testing.T) {
 	if !pc.HasFalseAlarmBlock {
 		t.Errorf("expected HasFalseAlarmBlock=true")
 	}
-	if !pc.FAChair {
-		t.Errorf("expected FAChair=true")
+	if !pc.FASitChairShortSofa || !pc.anySitClass() {
+		t.Errorf("expected FASitChairShortSofa + anySitClass; got %+v", pc)
 	}
-	if pc.FASofa || pc.FAGhostInterference || pc.FAWheelchair || pc.FAOther {
-		t.Errorf("only FAChair should be true; got %+v", pc)
+	if pc.FALoungeLongSofa || pc.FAElectricAC || pc.FAWheelchair || pc.FAUnknown {
+		t.Errorf("only Sit on Chair / Short Sofa should be true; got %+v", pc)
 	}
-	if !pc.AnyFASelected() {
-		t.Errorf("AnyFASelected should be true")
+	if !pc.anyFASelected() {
+		t.Errorf("anyFASelected should be true")
 	}
 }
 
-func TestParseConditions_FAGhostInterference(t *testing.T) {
+func TestParseConditions_ElectricAC(t *testing.T) {
 	notes := `False Alarm Reason:
-☑ NoPerson / Electric / AC Interference
+☑ Electric / AC Interference
 `
 	pc := parseConditions(notes)
-	if !pc.FAGhostInterference {
-		t.Errorf("expected FAGhostInterference=true")
+	if !pc.FAElectricAC {
+		t.Errorf("expected FAElectricAC=true")
 	}
-	if pc.FAChair {
-		t.Errorf("FAChair should be false")
+	if pc.anySitClass() {
+		t.Errorf("anySitClass should be false")
 	}
 }
 
 func TestParseConditions_FAMultipleSelected(t *testing.T) {
 	notes := `False Alarm Reason:
-☑ Sit on Chair / behind Chair
+☑ Behind Chair / Table
 ☑ Sit in Wheelchair
 `
 	pc := parseConditions(notes)
-	if !pc.FAChair || !pc.FAWheelchair {
-		t.Errorf("expected both Chair + Wheelchair selected: %+v", pc)
+	if !pc.FABehindChairTable || !pc.FAWheelchair {
+		t.Errorf("expected both Behind Chair/Table + Wheelchair selected: %+v", pc)
 	}
 }
 
-func TestParseConditions_VerifiedFall(t *testing.T) {
+func TestParseConditions_LoungePlacement(t *testing.T) {
+	permanent := `False Alarm Reason:
+☑ Lying Lounge Chair / Long Sofa
+↳ Lounge placement: Permanent (update layout)`
+	pc := parseConditions(permanent)
+	if !pc.FALoungeLongSofa || !pc.LoungePermanent || pc.LoungeTemporary {
+		t.Errorf("expected lounge permanent; got %+v", pc)
+	}
+
+	temporary := `False Alarm Reason:
+☑ Lying Lounge Chair / Long Sofa
+↳ Lounge placement: Temporary (suppress 2h)`
+	pc2 := parseConditions(temporary)
+	if !pc2.FALoungeLongSofa || !pc2.LoungeTemporary || pc2.LoungePermanent {
+		t.Errorf("expected lounge temporary; got %+v", pc2)
+	}
+}
+
+func TestParseConditions_VerifiedStickyVeto(t *testing.T) {
 	notes := `Observed Conditions:
-☑ Fall / Sitting on the Ground
-☑ Visible Bleeding
+Response: Awake and Responsive
+☑ Found on Floor
+↳ Sticky veto: never auto-learn fall suppression here
 
 [2026-04-26 22:15:36] admin (event:xyz)`
 
@@ -261,38 +335,26 @@ func TestParseConditions_VerifiedFall(t *testing.T) {
 	if !pc.HasObservedBlock {
 		t.Errorf("expected HasObservedBlock=true")
 	}
-	if !pc.OCFall {
-		t.Errorf("expected OCFall=true")
-	}
-	if !pc.OCBleeding {
-		t.Errorf("expected OCBleeding=true")
-	}
-	if pc.OCAwake || pc.OCVerbal || pc.OCUnresponsive {
-		t.Errorf("only Fall + Bleeding expected: %+v", pc)
+	if !pc.StickyVeto {
+		t.Errorf("expected StickyVeto=true")
 	}
 }
 
 func TestParseConditions_EmptyNotes(t *testing.T) {
 	pc := parseConditions("")
-	if pc.AnyFASelected() || pc.HasObservedBlock || pc.HasFalseAlarmBlock {
+	if pc.anyFASelected() || pc.HasObservedBlock || pc.HasFalseAlarmBlock || pc.StickyVeto {
 		t.Errorf("empty notes should yield zero ParsedConditions: %+v", pc)
 	}
 }
 
-func TestParseConditions_OtherOnlyInFalseAlarmBlock(t *testing.T) {
-	// Other 关键字仅在 FA block 才算 FAOther（避免 verified block 中 "Other something" 误中）
-	notes := `Observed Conditions:
-☑ Fall / Sitting on the Ground
-Other freeform comment`
+func TestParseConditions_UnknownFallback(t *testing.T) {
+	notes := `False Alarm Reason:
+☑ Unknown`
 	pc := parseConditions(notes)
-	if pc.FAOther {
-		t.Errorf("FAOther should be false when block is Observed Conditions; got %+v", pc)
+	if !pc.FAUnknown {
+		t.Errorf("expected FAUnknown=true; got %+v", pc)
 	}
-
-	notes2 := `False Alarm Reason:
-☑ Other`
-	pc2 := parseConditions(notes2)
-	if !pc2.FAOther {
-		t.Errorf("FAOther should be true in FA block; got %+v", pc2)
+	if pc.anySitClass() || pc.FAElectricAC {
+		t.Errorf("only Unknown should be set; got %+v", pc)
 	}
 }

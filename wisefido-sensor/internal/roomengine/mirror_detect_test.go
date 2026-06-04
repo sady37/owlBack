@@ -279,8 +279,8 @@ func TestPersist_MBC_LMM_RoundTrip(t *testing.T) {
 		g.MarkMirrorBounce(100, 100, 1_700_000_000_000)
 	}
 	snap := EncodeSnapshot(g)
-	if snap.SchemaVer != 8 {
-		t.Errorf("snapshot schema version should be 8, got %d", snap.SchemaVer)
+	if snap.SchemaVer != SnapshotSchemaVersion {
+		t.Errorf("snapshot schema version should be %d, got %d", SnapshotSchemaVersion, snap.SchemaVer)
 	}
 	// 找命中 cell
 	col, row := 35, 10

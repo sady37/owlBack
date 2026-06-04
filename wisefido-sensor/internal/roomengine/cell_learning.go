@@ -237,6 +237,7 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams, nowMs int64) {
 
 		qualifies := (dist[i] >= 2 || dist[i] == -1) &&
 			t == AreaUnknown &&
+			!c.LearnBlocked && // sticky 否决：vetoed cell 不自动升 AreaDeny
 			fiveCellSoftConsensus(g, i, p.AutoDenyTraverseTolerate)
 
 		if hasRealActivity {

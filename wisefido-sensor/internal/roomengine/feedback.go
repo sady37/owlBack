@@ -4,17 +4,19 @@
 //
 // 反馈源（cardagg 前端 admin 标记 → alarm_events.notes）：
 //
-//   operation='false_alarm' (PR-6 新格式):
-//     False Alarm Reason:
-//     ☑ NoPerson / Electric / AC Interference  → cell.GhostCount++
-//     ☑ Sit on Chair / behind Chair             → cell.RestZoneConfirmed++
-//     ☑ Lying/Sit in Sofa or Lounge chair       → cell.RestZoneConfirmed++
-//     ☑ Sit in Wheelchair                        → cell.RestZoneConfirmed++ (mobile decay 自滤)
-//     ☑ Other / 无勾选                            → cell.FakeAlarmCount++ (PR-4 兜底)
+//   operation='false_alarm' (False Alarm Reason；label 镜像 owlFront/src/utils/alarm.ts):
+//     ☑ Sit on Chair / Short Sofa · Behind Chair / Table · Sit in Wheelchair
+//                                          → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaSit)
+//     ☑ Lying Lounge Chair / Long Sofa     → 二次问询 ↳ Lounge placement:
+//         "Permanent (update layout)"      → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaBed) 永久学 lying
+//         "Temporary (suppress 2h)"        → cell.FallSuppressUntilMs = handTime + 2h
+//         (无 ↳ 行)                         → 不动 layout
+//     ☑ Electric / AC Interference         → GhostCount++（ghost 学习，非 lying）
+//     ☑ Error Pose Detection / Out of Detection Range → 不进任何 counter（传感误差，非空间属性）
+//     ☑ Unknown / 无勾选                    → FakeAlarmCount++（兜底容忍）
 //
-//   operation='verified' (Observed Conditions):
-//     ☑ Fall / Sitting on the Ground             → cell.RealFallCount++
-//     ☑ Awake/Verbal/Unresponsive/Bleeding       → 严重程度 metadata（不直接喂 cell）
+//   operation='verified' (人确认真摔):       → RealFallCount++ + ClearNonHumanLearnedZone（擦非 Human 抑制/deny）
+//     ↳ Sticky veto: ...                   → 额外 MarkLearnBlocked（永久禁该 cell 自动/反馈学抑制）
 //
 // 流程：
 //  1. 从 engine_alarm_feedback_cursor 读 last_hand_time
@@ -66,34 +68,65 @@ func NewAlarmFeedbackIngester(db *sql.DB, engine *Engine, logger *zap.Logger) *A
 	}
 }
 
-// ParsedConditions 从 notes 解析的 checkbox 状态。
-type ParsedConditions struct {
-	// False Alarm Reason: 5 项
-	FAGhostInterference bool // ☑ NoPerson / Electric / AC Interference
-	FAChair             bool // ☑ Sit on Chair / behind Chair
-	FASofa              bool // ☑ Lying/Sit in Sofa or Lounge chair
-	FAWheelchair        bool // ☑ Sit in Wheelchair
-	FAOther             bool // ☑ Other
+// False Alarm Reason / Lounge placement / Sticky veto 标记字符串——契约真相源 =
+// owlFront/src/utils/alarm.ts（FALL_RADAR_REASONS / LOUNGE_PLACEMENT_MARKER / STICKY_VETO_MARKER）。
+// FE 把勾选写成 remarks 里的 "☑ <label>" 行 + "↳ <marker>" 子行，这里按 substring 反解。改这些常量必须与 alarm.ts 同步。
+const (
+	faSitChairShortSofa = "Sit on Chair / Short Sofa"
+	faLoungeLongSofa    = "Lying Lounge Chair / Long Sofa"
+	faBehindChairTable  = "Behind Chair / Table"
+	faWheelchair        = "Sit in Wheelchair"
+	faElectricAC        = "Electric / AC Interference"
+	faErrorPose         = "Error Pose Detection"
+	faOutOfRange        = "Out of Detection Range"
+	faUnknown           = "Unknown"
 
-	// Observed Conditions: 5 项 (verified)
-	OCFall         bool // ☑ Fall / Sitting on the Ground
-	OCAwake        bool // ☑ Awake and Responsive
-	OCVerbal       bool // ☑ Responding Verbally
-	OCUnresponsive bool // ☑ Unresponsive
-	OCBleeding     bool // ☑ Visible Bleeding
+	loungePlacementPermanent = "Lounge placement: Permanent (update layout)"
+	loungePlacementTemporary = "Lounge placement: Temporary (suppress 2h)"
+	stickyVetoMark           = "Sticky veto: never auto-learn fall suppression here"
+)
+
+// fallSuppressTemporaryMs 躺类"临时 2H 禁报"窗口长度。
+const fallSuppressTemporaryMs int64 = 2 * 3600 * 1000
+
+// ParsedConditions 从 notes 解析的勾选/标记状态（label 见上方常量）。
+type ParsedConditions struct {
+	// 坐类（→ AreaSit 学习）
+	FASitChairShortSofa bool
+	FABehindChairTable  bool
+	FAWheelchair        bool
+	// 躺类（→ 二次问询 Lounge placement）
+	FALoungeLongSofa bool
+	// 传感误差/干扰
+	FAElectricAC bool
+	FAErrorPose  bool
+	FAOutOfRange bool
+	FAUnknown    bool
+
+	// Lounge placement 二次问询（仅 FALoungeLongSofa 勾选时有意义）
+	LoungePermanent bool // ↳ permanent → MarkRestZoneByFeedback(AreaBed)
+	LoungeTemporary bool // ↳ temporary → FallSuppressUntilMs = now+2h
+
+	// verified
+	StickyVeto bool // ↳ sticky veto → MarkLearnBlocked
 
 	// True 表示 notes 里有 "False Alarm Reason:" 或 "Observed Conditions:" 块
 	HasFalseAlarmBlock bool
 	HasObservedBlock   bool
 }
 
-// AnyFASelected 是否有任一 false_alarm checkbox 勾选。
-func (p ParsedConditions) AnyFASelected() bool {
-	return p.FAGhostInterference || p.FAChair || p.FASofa || p.FAWheelchair || p.FAOther
+// anyFASelected 是否有任一 false_alarm 勾选。
+func (p ParsedConditions) anyFASelected() bool {
+	return p.FASitChairShortSofa || p.FABehindChairTable || p.FAWheelchair ||
+		p.FALoungeLongSofa || p.FAElectricAC || p.FAErrorPose || p.FAOutOfRange || p.FAUnknown
 }
 
-// parseConditions 从 alarm_events.notes 提取 ☑ checkbox 状态。
-// 用 prefix-based substring 匹配；标签文字与前端 cardagg UI 严格对齐。
+// anySitClass 坐类（Chair/ShortSofa/Behind/Wheelchair → AreaSit）。
+func (p ParsedConditions) anySitClass() bool {
+	return p.FASitChairShortSofa || p.FABehindChairTable || p.FAWheelchair
+}
+
+// parseConditions 从 alarm_events.notes 提取勾选/标记状态；label 严格对齐 owlFront alarm.ts。
 func parseConditions(notes string) ParsedConditions {
 	out := ParsedConditions{}
 	if notes == "" {
@@ -102,48 +135,22 @@ func parseConditions(notes string) ParsedConditions {
 	out.HasFalseAlarmBlock = strings.Contains(notes, "False Alarm Reason:")
 	out.HasObservedBlock = strings.Contains(notes, "Observed Conditions:")
 
-	// 用 prefix-based 检查；同标签的别名 / 标点变体在前端可能不一致，列若干兼容写法
-	hasMark := func(label string) bool {
-		return strings.Contains(notes, "☑ "+label)
-	}
+	hasMark := func(label string) bool { return strings.Contains(notes, "☑ "+label) }
 
-	// ----- False Alarm Reason 5 项 -----
-	if hasMark("NoPerson / Electric / AC Interference") ||
-		hasMark("No Person / Electric / AC Interference") ||
-		hasMark("NoPerson") ||
-		hasMark("No Person") {
-		out.FAGhostInterference = true
-	}
-	if hasMark("Sit on Chair / behind Chair") || hasMark("Sit on Chair") {
-		out.FAChair = true
-	}
-	if hasMark("Lying/Sit in Sofa or Lounge chair") || hasMark("Lying/Sit in Sofa") {
-		out.FASofa = true
-	}
-	if hasMark("Sit in Wheelchair") {
-		out.FAWheelchair = true
-	}
-	// Other 在 FA 段和 Observed 段都没有别的同名项；只在 FA 段有 "Other" 选项 → 直接 prefix 匹配
-	if out.HasFalseAlarmBlock && hasMark("Other") {
-		out.FAOther = true
-	}
+	out.FASitChairShortSofa = hasMark(faSitChairShortSofa)
+	out.FALoungeLongSofa = hasMark(faLoungeLongSofa)
+	out.FABehindChairTable = hasMark(faBehindChairTable)
+	out.FAWheelchair = hasMark(faWheelchair)
+	out.FAElectricAC = hasMark(faElectricAC)
+	out.FAErrorPose = hasMark(faErrorPose)
+	out.FAOutOfRange = hasMark(faOutOfRange)
+	out.FAUnknown = hasMark(faUnknown)
 
-	// ----- Observed Conditions 5 项 -----
-	if hasMark("Fall / Sitting on the Ground") {
-		out.OCFall = true
-	}
-	if hasMark("Awake and Responsive") {
-		out.OCAwake = true
-	}
-	if hasMark("Responding Verbally") {
-		out.OCVerbal = true
-	}
-	if hasMark("Unresponsive") {
-		out.OCUnresponsive = true
-	}
-	if hasMark("Visible Bleeding") {
-		out.OCBleeding = true
-	}
+	// 二次问询 / veto 是 "↳ <marker>" 子行（非 ☑），直接 substring
+	out.LoungePermanent = strings.Contains(notes, loungePlacementPermanent)
+	out.LoungeTemporary = strings.Contains(notes, loungePlacementTemporary)
+	out.StickyVeto = strings.Contains(notes, stickyVetoMark)
+
 	return out
 }
 
@@ -311,17 +318,18 @@ func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
 }
 
 // routeFeedback 根据 operation + parsed conditions 把 cell counter 增量。
-// 返回触发的 route 名称列表（用于日志可观测）。
+// 返回触发的 route 名称列表（用于日志可观测）。nowMs = hand_time（人处理时刻），临时禁报窗以此为锚。
 //
-// 路由规则：
+// 路由规则（设计 §3.2/§3.3/§1，label 见上方常量）：
 //   operation=false_alarm:
-//     ☑ NoPerson/Electric/AC Interference → cell.GhostCount++       route="ghost"
-//     ☑ Sit on Chair / Sofa / Wheelchair  → cell.RestZoneConfirmed++ route="rest_zone"
-//     ☑ Other 或无任何勾选                  → cell.FakeAlarmCount++   route="fake_generic"
-//   operation=verified:
-//     ☑ Fall / Sitting on the Ground       → cell.RealFallCount++    route="real_fall"
-//     仅 5 项里勾了非 Fall 的（如 Bleeding 单独）→ 也算 real fall（毕竟 verified） route="real_fall_implicit"
-//     完全无勾选 → 不进 cell（admin 没填 condition，作为 noise 跳过）
+//     坐类(Chair/ShortSofa/Behind/Wheelchair) → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaSit)
+//     躺类(Lounge/LongSofa) + ↳ Permanent     → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaBed)
+//     躺类 + ↳ Temporary                       → cell.FallSuppressUntilMs = nowMs + 2h
+//     Electric/AC                              → GhostCount++
+//     Error Pose / Out of Range                → 不进 counter（传感误差）
+//     Unknown 或全无勾选                        → FakeAlarmCount++
+//   operation=verified:                         → RealFallCount++ + ClearNonHumanLearnedZone
+//     + ↳ Sticky veto                          → MarkLearnBlocked（永久封自动/反馈学抑制）
 func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int64,
 	operation string, pc ParsedConditions) []string {
 
@@ -334,14 +342,8 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 
 	switch operation {
 	case "false_alarm":
-		// 多选：每个勾选独立累计（同 cell 多个 counter 同时 +1）
-		if pc.FAGhostInterference {
-			if apply(func(c *Cell) { c.IncrGhostCount() }) {
-				routes = append(routes, "ghost")
-			}
-		}
-		// PR-9.2: 拆分 target — Chair/Wheelchair → AreaSit；Sofa → AreaBed (lying)
-		if pc.FAChair || pc.FAWheelchair {
+		// 坐类 → AreaSit（wheelchair mobile decay 自滤）
+		if pc.anySitClass() {
 			locked := false
 			if apply(func(c *Cell) {
 				c.IncrRestZoneConfirmed()
@@ -349,54 +351,75 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 					locked = true
 				}
 			}) {
-				routes = append(routes, "rest_zone_chair")
+				routes = append(routes, "rest_zone_sit")
 				if locked {
-					routes = append(routes, "rest_zone_locked_AreaSit")
+					routes = append(routes, "locked_AreaSit")
 				}
 			}
 		}
-		if pc.FASofa {
-			locked := false
-			if apply(func(c *Cell) {
-				c.IncrRestZoneConfirmed()
-				if c.MarkRestZoneByFeedback(AreaBed) {
-					locked = true
+		// 躺类 → 二次问询：permanent 永久学 lying / temporary 临时 2H 禁报 / 无选不动
+		if pc.FALoungeLongSofa {
+			switch {
+			case pc.LoungePermanent:
+				locked := false
+				if apply(func(c *Cell) {
+					c.IncrRestZoneConfirmed()
+					if c.MarkRestZoneByFeedback(AreaBed) {
+						locked = true
+					}
+				}) {
+					routes = append(routes, "lounge_permanent_bed")
+					if locked {
+						routes = append(routes, "locked_AreaBed")
+					}
 				}
-			}) {
-				routes = append(routes, "rest_zone_sofa")
-				if locked {
-					routes = append(routes, "rest_zone_locked_AreaBed")
+			case pc.LoungeTemporary:
+				if apply(func(c *Cell) {
+					if until := nowMs + fallSuppressTemporaryMs; until > c.FallSuppressUntilMs {
+						c.FallSuppressUntilMs = until
+					}
+				}) {
+					routes = append(routes, "lounge_temporary_2h_suppress")
 				}
+			default:
+				routes = append(routes, "lounge_no_action")
 			}
 		}
-		// Other 或全无勾选 → 通用 fake alarm（PR-4 兜底）
-		if pc.FAOther || !pc.AnyFASelected() {
+		// Electric/AC → ghost 学习（非 lying）
+		if pc.FAElectricAC {
+			if apply(func(c *Cell) { c.IncrGhostCount() }) {
+				routes = append(routes, "ghost")
+			}
+		}
+		// Error Pose / Out of Range：传感误差，不进任何 counter（§3.2，不污染 lying/sit/ghost）。
+		// Unknown 或全无勾选 → 兜底 fake alarm 容忍。
+		if pc.FAUnknown || !pc.anyFASelected() {
 			if apply(func(c *Cell) { c.IncrFakeAlarm() }) {
 				routes = append(routes, "fake_generic")
 			}
 		}
 	case "verified":
-		// verified + ☑ Fall 是 ground truth；其它单 condition 也视为真 fall（admin 标了 verified 就是认 fall）
-		if pc.OCFall || pc.OCAwake || pc.OCVerbal || pc.OCUnresponsive || pc.OCBleeding {
-			cleared := false
-			if apply(func(c *Cell) {
-				c.IncrRealFallCount()
-				// 真摔擦该处非 FE 画的 rest/deny 分类（feedback/自学的抑制被真摔证伪）；FE 画 bed 不擦（仅记录+人工复审）。
-				if c.ClearNonHumanLearnedZone() {
-					cleared = true
-				}
-			}) {
-				if pc.OCFall {
-					routes = append(routes, "real_fall")
-				} else {
-					routes = append(routes, "real_fall_implicit")
-				}
-				if cleared {
-					routes = append(routes, "cleared_non_human_zone")
-				}
+		// 人确认真摔：RealFallCount++ + 擦非 Human 抑制/deny；勾 sticky veto 再永久封该 cell 自动学习。
+		// verdict 本身即 ground truth，不再要求具体 Observed 勾选（FE Observed 标签已 per-type 化）。
+		cleared := false
+		blocked := false
+		if apply(func(c *Cell) {
+			c.IncrRealFallCount()
+			if c.ClearNonHumanLearnedZone() {
+				cleared = true
+			}
+			if pc.StickyVeto && c.MarkLearnBlocked() {
+				blocked = true
+			}
+		}) {
+			routes = append(routes, "real_fall")
+			if cleared {
+				routes = append(routes, "cleared_non_human_zone")
+			}
+			if blocked {
+				routes = append(routes, "sticky_veto_learn_blocked")
 			}
 		}
-		// 全无勾选 → 不进 cell（admin 没具体描述，跳过，避免噪声）
 	}
 
 	return routes
