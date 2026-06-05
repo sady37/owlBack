@@ -816,6 +816,18 @@ func (e *Engine) applyBedBayesianLocked(z *zoneInstance, nowMs int64) *ZoneEvent
 	z.state.BayesianProb = z.bedBayesian.Probability()
 	z.state.BayesianGamma = z.bedBayesian.Gamma(nowMs)
 
+	if e.logger != nil {
+		d := z.bedBayesian.Debug(nowMs)
+		e.logger.Info("bed_decision_trace",
+			zap.String("bed", z.key.ZoneID), zap.String("decision", decisionName(decision)),
+			zap.String("prev", prevStatus.String()), zap.String("new", newStatus.String()),
+			zap.Float64("L", d.L), zap.Float64("P", d.P), zap.Float64("in_bed_thresh", d.InBedThresh),
+			zap.Float64("gamma", d.Gamma), zap.Float64("sleepad_lr", d.SleepadLR),
+			zap.Float64("radar_lr", d.RadarLR), zap.Float64("covers_w", d.CoversWeight),
+			zap.Float64("shadow_l", d.ShadowL), zap.String("shadow_decision", d.ShadowDecision),
+			zap.Int64("ts_ms", nowMs))
+	}
+
 	if newStatus == prevStatus {
 		return nil
 	}

@@ -91,18 +91,18 @@ const (
 // supervisor 独立维护，不入 engine —— engine 只关心"是否被占用 + 多少人 +
 // 何时翻转"，把派生属性留给观察者模式。
 type ZoneState struct {
-	ZoneType    ZoneType   `json:"zone_type"`
-	ZoneID      string     `json:"zone_id"` // CIDR text，e.g. "fd00:0:3:111:3:101::/96" (bed) / /88 (room)
-	Status      ZoneStatus `json:"status"`           // Vacant / Occupied / Leaving 三态
-	Occupied    bool       `json:"occupied"`         // 兼容字段：== (Status != Vacant)，下游消费者保留无感
-	Count       int        `json:"count"`            // Room: total_people；Bed: 0/1
-	Score       int        `json:"score"`            // 累积 confidence，正向 occupied / 负向 vacant
-	SinceTs     int64      `json:"since_ts"`         // 进入当前状态的时间戳 ms
-	LastEnterTs int64      `json:"last_enter_ts,omitempty"`
-	LastExitTs  int64      `json:"last_exit_ts,omitempty"`
-	LeavingSince int64     `json:"leaving_since,omitempty"` // Status==Leaving 时记录进入时间，timer 用
-	LastSource  string     `json:"last_source,omitempty"`   // 最近翻转的决定信号源
-	UpdatedAt   int64      `json:"updated_at"`
+	ZoneType     ZoneType   `json:"zone_type"`
+	ZoneID       string     `json:"zone_id"`  // CIDR text，e.g. "fd00:0:3:111:3:101::/96" (bed) / /88 (room)
+	Status       ZoneStatus `json:"status"`   // Vacant / Occupied / Leaving 三态
+	Occupied     bool       `json:"occupied"` // 兼容字段：== (Status != Vacant)，下游消费者保留无感
+	Count        int        `json:"count"`    // Room: total_people；Bed: 0/1
+	Score        int        `json:"score"`    // 累积 confidence，正向 occupied / 负向 vacant
+	SinceTs      int64      `json:"since_ts"` // 进入当前状态的时间戳 ms
+	LastEnterTs  int64      `json:"last_enter_ts,omitempty"`
+	LastExitTs   int64      `json:"last_exit_ts,omitempty"`
+	LeavingSince int64      `json:"leaving_since,omitempty"` // Status==Leaving 时记录进入时间，timer 用
+	LastSource   string     `json:"last_source,omitempty"`   // 最近翻转的决定信号源
+	UpdatedAt    int64      `json:"updated_at"`
 
 	// AloneContinuousTs — engine 内部独居锚点（Count==1 起点 ms）；Count 变到 1 时 set，
 	// Count!=1 时 0。translator/publisher 读此 anchor 派生 RoomState.AloneContinuousMin。
@@ -131,13 +131,21 @@ func (s ZoneState) IsPresent() bool { return s.Status != StatusVacant }
 type SignalEvidence struct {
 	ZoneType    ZoneType               `json:"zone_type"`
 	ZoneID      string                 `json:"zone_id"`
-	Source      string                 `json:"source"` // "sleepace" / "radar" / "polygon" / "hr_rr" / "number_people" ...
-	Kind        string                 `json:"kind"`   // "enter" / "leave" / "sustain" / "count_change"
-	Delta       int                    `json:"delta"`  // 签名 confidence delta；+ 推 occupied / - 推 vacant
+	Source      string                 `json:"source"`          // "sleepace" / "radar" / "polygon" / "hr_rr" / "number_people" ...
+	Kind        string                 `json:"kind"`            // "enter" / "leave" / "sustain" / "count_change"
+	Delta       int                    `json:"delta"`           // 签名 confidence delta；+ 推 occupied / - 推 vacant
 	Count       int                    `json:"count,omitempty"` // 显式 count override（NumberPeople 走这条）
 	LatchSec    int                    `json:"latch_sec,omitempty"`
 	Ts          int64                  `json:"ts"`
 	TriggerData map[string]interface{} `json:"trigger,omitempty"` // 供 trace / replay
+
+	// RadarCoversWeight MM covers 置信 [0,1]：这台 radar 盖不盖这张床的结构权重，bed_bayesian 用之
+	// 给 radar 簇贡献加权（候选 0.5 → 半权）。0/未设 → scorer 保持默认 1.0（不打折，向后兼容）。
+	RadarCoversWeight float64 `json:"-"`
+
+	// SourceDevice 触发本 evidence 的源设备 /128 文本（radar/sleepad）。bed_decision 审计用之
+	// 作 device_addr 写 sensor_decision_log；空 = 非设备触发（不落决策审计）。
+	SourceDevice string `json:"-"`
 }
 
 // ZoneEvent 引擎输出：zone 状态翻转沿（下游派生消费 + RedisAdapter 投影）。
@@ -166,7 +174,7 @@ type ZoneEvent struct {
 type FeedbackEvent struct {
 	ZoneType    ZoneType `json:"zone_type"`
 	ZoneID      string   `json:"zone_id"`
-	Reason      string   `json:"reason"` // "self_contradiction" / "subset_invariant"
+	Reason      string   `json:"reason"`                 // "self_contradiction" / "subset_invariant"
 	Affected    []string `json:"affected,omitempty"`     // 受影响的信号源
 	Penalty     int      `json:"penalty,omitempty"`      // confidence 降权
 	DurationMin int      `json:"duration_min,omitempty"` // 降权持续时长

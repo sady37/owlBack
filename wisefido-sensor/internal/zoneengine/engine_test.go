@@ -552,9 +552,9 @@ func TestEngine_P1_1_RepairDropsStaleBed(t *testing.T) {
 func TestEngine_P1_1_RepairDoesNotRunWithinInterval(t *testing.T) {
 	e := newTestEngine()
 	now := int64(1_000_000_000_000)
-	e.Tick(now)        // 首次跑（lastInvariantRepairTs 从 0 起）
+	e.Tick(now) // 首次跑（lastInvariantRepairTs 从 0 起）
 	first := e.lastInvariantRepairTs
-	e.Tick(now + 500)  // 0.5s 后再 Tick → 应不触发巡检（间隔 10s 未到）
+	e.Tick(now + 500) // 0.5s 后再 Tick → 应不触发巡检（间隔 10s 未到）
 	second := e.lastInvariantRepairTs
 	if first != second {
 		t.Errorf("repair should not re-run within interval; first=%d second=%d", first, second)

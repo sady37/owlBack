@@ -10,11 +10,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"go.uber.org/zap"
 
 	"wisefido-sensor/internal/roomengine"
+	"wisefido-sensor/internal/zoneengine/wiring"
 )
 
 type cellVetoRequest struct {
@@ -25,8 +27,24 @@ type cellVetoRequest struct {
 
 // startVetoHTTPServer 在 addr 起 mux，POST /roomengine/cell/veto → engine.VetoCell。
 // 进程退出（ctx done）时优雅关闭。
-func startVetoHTTPServer(ctx context.Context, addr string, engine *roomengine.Engine, logger *zap.Logger) {
+func startVetoHTTPServer(ctx context.Context, addr string, engine *roomengine.Engine, matrix *wiring.MatrixCache, logger *zap.Logger) {
 	mux := http.NewServeMux()
+
+	// GET /matrix?unit=<prefix> → dump MM 关系方阵（debug 验证 covers/samebed）。
+	mux.HandleFunc("/matrix", func(w http.ResponseWriter, r *http.Request) {
+		unit, err := netip.ParsePrefix(r.URL.Query().Get("unit"))
+		if err != nil {
+			http.Error(w, "bad unit prefix", http.StatusBadRequest)
+			return
+		}
+		d := matrix.Dump(unit)
+		if d == nil {
+			http.Error(w, "unit not in matrix", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(d)
+	})
 
 	mux.HandleFunc("/roomengine/cell/veto", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

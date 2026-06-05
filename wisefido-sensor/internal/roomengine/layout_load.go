@@ -12,6 +12,8 @@ import (
 	"context"
 	"database/sql"
 
+	"owl-common/radarutils"
+
 	"go.uber.org/zap"
 )
 
@@ -59,6 +61,8 @@ func LoadRoomCanvases(ctx context.Context, db *sql.DB, logger *zap.Logger) (map[
 func BuildRoomConfigFromCanvases(roomID string, canvases []DeviceCanvas, logger *zap.Logger) (RoomConfig, bool) {
 	var merged RoomConfig
 	merged.RoomID = roomID
+	merged.DeviceBeds = make(map[string][]radarutils.Rect)
+	merged.DeviceBedHeights = make(map[string][]int)
 	parsed := 0
 	for _, dc := range canvases {
 		cfg, err := ParseLayoutConfig(dc.DeviceAddr, []byte(dc.Canvas))
@@ -68,6 +72,9 @@ func BuildRoomConfigFromCanvases(roomID string, canvases []DeviceCanvas, logger 
 			continue
 		}
 		parsed++
+		// per-device 床：留住每台自己 canvas 的床（covers 只用本台 layout，不跨系借别台的床）
+		merged.DeviceBeds[dc.DeviceAddr] = cfg.Beds
+		merged.DeviceBedHeights[dc.DeviceAddr] = cfg.BedHeights
 		merged.Radars = append(merged.Radars, cfg.Radar)
 		merged.RadarAddrs = append(merged.RadarAddrs, dc.DeviceAddr)
 		if len(merged.WallPolygon) == 0 {

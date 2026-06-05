@@ -55,15 +55,20 @@ const (
 	evidenceWindowMs = 60_000
 	// vital (HR/RR/pose 等派生数据) 35s 窗——匹配 vital_source 30s freshness + 5s 缓冲。
 	// 用 evidenceWindowMs 会让 sleepad 停发后还"幻觉"vital 活着，违反物理（无输入则 vital 应立即 stale）。
-	vitalWindowMs = 35_000
-	minuteMs      = 60_000 // 1 contribution per minute per cluster
-	gammaPhase1EndMs       = 60_000  // 0-60s: γ=1.0
-	gammaPhase2EndMs       = 120_000 // 60-120s: γ=0.5；≥120s: γ=0.0
-	maintainZoneTimeoutMs  = 120_000 // 维持区 2min 强制 LeftBed
-	priorNightHourStart    = 21
-	priorNightHourEndExcl  = 7
-	priorLogOddsNight      = +1.39 // ln(0.8/0.2)
-	priorLogOddsDay        = -0.85 // ln(0.3/0.7)
+	vitalWindowMs         = 35_000
+	minuteMs              = 60_000  // 1 contribution per minute per cluster
+	gammaPhase1EndMs      = 60_000  // 0-60s: γ=1.0
+	gammaPhase2EndMs      = 120_000 // 60-120s: γ=0.5；≥120s: γ=0.0
+	maintainZoneTimeoutMs = 120_000 // 维持区 2min 强制 LeftBed
+	priorNightHourStart   = 21
+	priorNightHourEndExcl = 7
+	priorLogOddsNight     = +1.39 // ln(0.8/0.2)
+	priorLogOddsDay       = -0.85 // ln(0.3/0.7)
+
+	// shadow：陈旧 LeftBed 不再永久否决 fresh InBed。无 fresh 贡献的分钟指数 leak。producer-first，不入生产 Decision。
+	shadowDecayFactor     = 0.63    // floor → |L|<0.5 约 5min
+	shadowStandbyBandL    = 0.5     // |shadowL|<此 → bed_status=8
+	shadowRefreshWindowMs = 60_000  // sustain 刷新窗
 
 	// neverTs：uninitialized *LastTs sentinel；构造时填，保证 nowMs - neverTs > 任何 freshness 窗（含 nowMs=0）。
 	neverTs = int64(-evidenceWindowMs - 1)
@@ -77,6 +82,17 @@ const (
 	BedDecisionInBed
 	BedDecisionLeftBed
 )
+
+func decisionName(d BedDecision) string {
+	switch d {
+	case BedDecisionInBed:
+		return "InBed"
+	case BedDecisionLeftBed:
+		return "LeftBed"
+	default:
+		return "Maintain"
+	}
+}
 
 // clusterContribState 每个证据簇的 per-minute 贡献记账。
 //
@@ -106,6 +122,11 @@ type BedBayesianScorer struct {
 	sleepadContrib clusterContribState
 	radarContrib   clusterContribState
 
+	// radarCoversWeight MM covers 结构权重 [0,1]：这台 radar 盖不盖本床。radar 簇贡献乘此，
+	// 候选(0.5)半权 / 确定(1.0)全权。与 γ(时间冲突)正交：covers=空间结构，γ=时间退让。
+	// 默认 1.0；radar evidence 携 RadarCoversWeight>0 时更新。
+	radarCoversWeight float64
+
 	// γ 冲突 tracker
 	conflictStartedTs int64 // 0 = 无冲突
 
@@ -117,15 +138,24 @@ type BedBayesianScorer struct {
 	// Hysteresis maintain 区超时计时
 	maintainStartedTs int64       // 0 = 不在维持区
 	lastDecision      BedDecision // 上一次有效决策 (InBed/LeftBed)
+
+	// shadow（producer-first，不入生产 Decision）：陈旧 event 指数衰减回中性 + 床区 track 刷新。
+	shadowL              float64
+	shadowLastMin        int64
+	shadowRadarSign      int
+	shadowRadarFreshTs   int64
+	shadowSleepadSign    int
+	shadowSleepadFreshTs int64
 }
 
 // NewBedBayesianScorer 默认 facility 模式 + L_0=0（中性）。
 // 调 SetMode + InitPriorByHour 配对完成初始化。
 func NewBedBayesianScorer() *BedBayesianScorer {
 	return &BedBayesianScorer{
-		mode:         BedModeFacility,
-		L:            0,
-		lastDecision: BedDecisionLeftBed, // 默认假定离床，首次 evidence 翻
+		mode:              BedModeFacility,
+		L:                 0,
+		radarCoversWeight: 1.0,                // 默认全权；MM covers 经 evidence 注入后打折
+		lastDecision:      BedDecisionLeftBed, // 默认假定离床，首次 evidence 翻
 		// lastMin = -1 sentinel：currentMin epoch ms / 60000 永远 ≥ 0，-1 保证首次评估必 fresh contribute
 		sleepadContrib:       clusterContribState{lastMin: -1},
 		radarContrib:         clusterContribState{lastMin: -1},
@@ -136,6 +166,9 @@ func NewBedBayesianScorer() *BedBayesianScorer {
 		radarLeftBedLastTs:   neverTs,
 		radarVitalLastTs:     neverTs,
 		radarPoseLyingLastTs: neverTs,
+		shadowLastMin:        -1,
+		shadowRadarFreshTs:   neverTs,
+		shadowSleepadFreshTs: neverTs,
 	}
 }
 
@@ -182,6 +215,36 @@ func (s *BedBayesianScorer) Gamma(nowMs int64) float64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.gammaLocked(nowMs)
+}
+
+// BedDebug bed_bayesian 决策点的全特征快照（trace + 未来持久化决策日志用）。
+type BedDebug struct {
+	L            float64 // 当前 log-odds
+	P            float64 // sigmoid(L)
+	Gamma        float64 // 时间冲突 tempering
+	SleepadLR    float64 // sleepad 簇 LR（+ 在床 / - 离床 / 0 无）
+	RadarLR      float64 // radar 簇 LR（未乘 γ/covers）
+	CoversWeight float64 // MM covers 结构权重
+	InBedThresh  float64 // 翻 InBed 的 P 阈（facility 0.70 / home 0.75）
+
+	ShadowL        float64 // shadow log-odds（陈旧衰减）
+	ShadowDecision string  // InBed / LeftBed / Standby / maintain
+}
+
+// Debug 返回决策点全特征快照。决策不翻转时也能看清"差在哪"（radar 单源 P 没过阈等）。
+func (s *BedBayesianScorer) Debug(nowMs int64) BedDebug {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	th := pInBedThresholdFacility
+	if s.mode == BedModeHome {
+		th = pInBedThresholdHome
+	}
+	return BedDebug{
+		L: s.L, P: sigmoidLogit(s.L), Gamma: s.gammaLocked(nowMs),
+		SleepadLR: s.sleepadClusterLRLocked(nowMs), RadarLR: s.radarClusterLRLocked(nowMs),
+		CoversWeight: s.radarCoversWeight, InBedThresh: th,
+		ShadowL: s.shadowL, ShadowDecision: s.shadowDecisionNameLocked(),
+	}
 }
 
 // LastEvidenceTs 7 类证据时间戳的最大值；neverTs / 全空 → 0。subset_invariant stale_bed 用。
@@ -235,6 +298,11 @@ func (s *BedBayesianScorer) IngestEvidence(ev SignalEvidence) bool {
 			return true
 		}
 	case "radar":
+		if ev.RadarCoversWeight > 0 {
+			s.mu.Lock()
+			s.radarCoversWeight = ev.RadarCoversWeight
+			s.mu.Unlock()
+		}
 		switch ev.Kind {
 		case "enter":
 			s.OnRadarInBed(nowMs)
@@ -268,6 +336,7 @@ func (s *BedBayesianScorer) OnSleepadInBed(nowMs int64) {
 	s.sleepadInBedLastTs = nowMs
 	s.sleepadLeftBedLastTs = neverTs
 	s.multiSourceLeftBedTs = 0
+	s.shadowPulseSleepadLocked(+1, nowMs)
 	s.evaluateAndContributeLocked(nowMs)
 }
 
@@ -283,6 +352,7 @@ func (s *BedBayesianScorer) OnSleepadLeftBed(nowMs int64) {
 	if nowMs-s.radarLeftBedLastTs <= evidenceWindowMs {
 		s.multiSourceLeftBedTs = nowMs
 	}
+	s.shadowPulseSleepadLocked(-1, nowMs)
 	s.evaluateAndContributeLocked(nowMs)
 }
 
@@ -300,6 +370,9 @@ func (s *BedBayesianScorer) OnSleepadVital(nowMs int64) {
 		return
 	}
 	s.sleepadVitalLastTs = nowMs
+	if s.shadowSleepadSign > 0 {
+		s.shadowSleepadFreshTs = nowMs
+	}
 	s.evaluateAndContributeLocked(nowMs)
 }
 
@@ -311,6 +384,7 @@ func (s *BedBayesianScorer) OnRadarInBed(nowMs int64) {
 	s.radarInBedLastTs = nowMs
 	s.radarLeftBedLastTs = neverTs
 	s.multiSourceLeftBedTs = 0
+	s.shadowPulseRadarLocked(+1, nowMs)
 	s.evaluateAndContributeLocked(nowMs)
 }
 
@@ -327,6 +401,7 @@ func (s *BedBayesianScorer) OnRadarLeftBed(nowMs int64) {
 	if nowMs-s.sleepadLeftBedLastTs <= evidenceWindowMs {
 		s.multiSourceLeftBedTs = nowMs
 	}
+	s.shadowPulseRadarLocked(-1, nowMs)
 	s.evaluateAndContributeLocked(nowMs)
 }
 
@@ -415,12 +490,15 @@ func (s *BedBayesianScorer) evaluateAndContributeLocked(nowMs int64) {
 	// Sleepad 簇：γ 不应用
 	s.contributeClusterLocked(currentMin, sleepadLR, &s.sleepadContrib)
 
-	// Radar 簇：γ 仅应用到正向（负向 LeftBed event 不打折）
-	radarContrib := radarLR
-	if radarLR > 0 {
-		radarContrib = radarLR * gamma
+	// Radar 簇：先乘 covers 结构权重（两向都打折——盖不盖这床决定证据可信度），
+	// 再对正向乘 γ（时间冲突退让；负向 LeftBed event 不打 γ）。
+	radarContrib := radarLR * s.radarCoversWeight
+	if radarContrib > 0 {
+		radarContrib *= gamma
 	}
 	s.contributeClusterLocked(currentMin, radarContrib, &s.radarContrib)
+
+	s.shadowTickLocked(nowMs)
 }
 
 // contributeClusterLocked 按 per-minute dedup 贡献。
@@ -528,6 +606,56 @@ func (s *BedBayesianScorer) gammaLocked(nowMs int64) float64 {
 	default:
 		return 0.0
 	}
+}
+
+// === shadow (producer-first，不入生产 Decision) ===
+
+func (s *BedBayesianScorer) shadowPulseRadarLocked(sign int, nowMs int64) {
+	mag := lrRadarInBedEvt
+	s.shadowL = clampLogOdds(s.shadowL + float64(sign)*mag)
+	s.shadowRadarSign = sign
+	s.shadowRadarFreshTs = nowMs
+}
+
+func (s *BedBayesianScorer) shadowPulseSleepadLocked(sign int, nowMs int64) {
+	mag := lrSleepadFacility
+	if s.mode == BedModeHome {
+		mag = lrSleepadHome
+	}
+	s.shadowL = clampLogOdds(s.shadowL + float64(sign)*mag)
+	s.shadowSleepadSign = sign
+	s.shadowSleepadFreshTs = nowMs
+}
+
+func (s *BedBayesianScorer) shadowTickLocked(nowMs int64) {
+	currentMin := nowMs / minuteMs
+	if currentMin <= s.shadowLastMin {
+		return
+	}
+	s.shadowLastMin = currentMin
+	rFresh := s.shadowRadarSign != 0 && nowMs-s.shadowRadarFreshTs <= shadowRefreshWindowMs
+	sFresh := s.shadowSleepadSign != 0 && nowMs-s.shadowSleepadFreshTs <= shadowRefreshWindowMs
+	if !rFresh && !sFresh {
+		s.shadowL = clampLogOdds(s.shadowL * shadowDecayFactor)
+	}
+}
+
+func (s *BedBayesianScorer) shadowDecisionNameLocked() string {
+	if math.Abs(s.shadowL) < shadowStandbyBandL {
+		return "Standby"
+	}
+	th := pInBedThresholdFacility
+	if s.mode == BedModeHome {
+		th = pInBedThresholdHome
+	}
+	p := sigmoidLogit(s.shadowL)
+	if p > th {
+		return "InBed"
+	}
+	if p < pLeftBedThreshold {
+		return "LeftBed"
+	}
+	return "maintain"
 }
 
 // === helpers ===

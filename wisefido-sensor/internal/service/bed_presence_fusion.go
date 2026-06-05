@@ -6,14 +6,15 @@ package service
 // （静卧低 RCS / 床边遮挡 / 极慢动 microdoppler），但 sleepad 压感对在床稳定。
 // 反之 radar 看到的 bed-area track 在 NumberPeople 已计入。
 //
-// 推导公式（与 [[radar_activity_stats_on_event_stream]] presence 路径同源）：
+// 推导公式（2026-06-05 修：旧的 Z + Σ(X && !Y) 加法在两个相位翻车——占用期 radar room
+// count 掉 0 漏数静卧人、离床期 radar 还 track + 床垫未清双计 → 改 max）：
 //
-//	Z = radar NumberPeople (room 总数)
-//	X = sleepad InBed (per-bed bool, 0/1)
-//	Y = radar bed-area InBed (per-bed bool, 0/1)
-//	publishTotalPeople = Z + Σ(X for bed where X && !Y)
+//	radar_np = radar NumberPeople (room 总数, GetZ)
+//	bed_np   = 房内"有人在床"的床数 (sleepad ∪ radar InBed)  ← OccupiedBedsInRoom
+//	publishTotalPeople = max(radar_np, bed_np)
 //
-// 即只对"sleepad 看到 radar 漏数的床位"补偿，不影响其他床位。
+// max 两头都对：占用期 max(0,1)=1（radar 漏静卧人取 bed_np）、离床期 max(1,0)=1（走出
+// 的人只 radar 见取 radar_np，不与床垫双计）、正常 max(1,1)=1（床上人两源都看到取 1 不加 2）。
 //
 // 不引入 zoneengine 内：BedZone FSM 把 sleepad/radar 两源融合成单一 enter/leave，
 // 源信息丢失。这里旁路记账，供 stream_publisher 在 publish 前查询。
@@ -92,11 +93,10 @@ func (f *BedPresenceFusion) SetRadar(bedCIDR string, inBed bool, ts int64) {
 	e.radarAt = ts
 }
 
-// ExtraPeopleInRoom 在 /88 roomCIDR 下扫所有已记录的 /96 bed，累加
-// "sleepad InBed && !radar InBed" 的床数（每床贡献 1 个 radar 漏数的人）。
-// stale entries（sleepad 心跳超 10min）跳过，避免久未上报的 sleepad 长期挂"InBed"
-// 导致 phantom +1。
-func (f *BedPresenceFusion) ExtraPeopleInRoom(roomCIDR string) int {
+// OccupiedBedsInRoom 在 /88 roomCIDR 下数"有人在床"的 /96 bed 数（sleepad ∪ radar InBed，
+// 任一 fresh 即算占用）。max(radar_np, bed_np) dedup 的 bed_np。
+// stale entries（信号超 10min 未更新）跳过，避免久未上报的源长期挂"InBed"导致 phantom 占用。
+func (f *BedPresenceFusion) OccupiedBedsInRoom(roomCIDR string) int {
 	if roomCIDR == "" {
 		return 0
 	}
@@ -107,14 +107,8 @@ func (f *BedPresenceFusion) ExtraPeopleInRoom(roomCIDR string) int {
 	now := f.now()
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	extra := 0
+	n := 0
 	for bedCIDR, e := range f.entries {
-		if !e.sleepadInBed {
-			continue
-		}
-		if now-e.sleepadAt > bedPresenceFreshMs {
-			continue
-		}
 		bedPfx, err := netip.ParsePrefix(bedCIDR)
 		if err != nil {
 			continue
@@ -122,12 +116,11 @@ func (f *BedPresenceFusion) ExtraPeopleInRoom(roomCIDR string) int {
 		if !roomPfx.Contains(bedPfx.Addr()) {
 			continue
 		}
-		// radar fresh 时信 Y；stale 时视作 Y=0（保守，倾向补偿——避免 radar 漏数后无人发声）
-		radarFresh := e.radarAt > 0 && now-e.radarAt <= bedPresenceFreshMs
-		if radarFresh && e.radarInBed {
-			continue
+		sleepadOcc := e.sleepadInBed && now-e.sleepadAt <= bedPresenceFreshMs
+		radarOcc := e.radarInBed && e.radarAt > 0 && now-e.radarAt <= bedPresenceFreshMs
+		if sleepadOcc || radarOcc {
+			n++
 		}
-		extra++
 	}
-	return extra
+	return n
 }

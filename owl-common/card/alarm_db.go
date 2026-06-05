@@ -41,6 +41,7 @@ type AlarmInsertParams struct {
 	AlertedAt   time.Time       // 系统决策上抛时刻；零值 → 默认 = TriggeredAt（producer 拆参后再实拍）
 	TriggerData json.RawMessage // 映射 payload
 	Metadata    json.RawMessage // 映射 evidence
+	Reason      string          // 映射 alarm_events.reason（Fall 子类型：sleepad_radar_conflict / track_lost_... / firmware_radar_fall；空=不写）
 	RoomID      string
 	UnitID      string
 	// 北极星 envelope（详 alarm_events.producer / parent_span / trace_id 列注释）
@@ -184,7 +185,14 @@ func alarmLevelToInt(s string) int16 {
 	return int16(alarm.AlarmLevelIntErr)
 }
 
-// findActiveAlarmEventID dedup 检查：同 device_addr + event_type 已存在 active alarm → 返回其 event_id；否则 ""
+// findActiveAlarmEventID dedup 检查：同 device_addr + event_type 在 **最近 5min 内** 有 active alarm
+// → 返回其 event_id；否则 ""。
+//
+// 5min 窗口（2026-06-05）：DedupWhileActive 本意是"同一次正在发生的告警 5min 内不重复报"，
+// 不是"永久压制"。原 SQL 无时间窗 → 撞上**任意时间**的 active 就 dedup：engine Fall（silent/lost）
+// 禁止 auto-resolve（radar 看不到的摔倒只能人工取消，见设计）→ 永久 active → 把这台之后**新一次**
+// 摔倒(新 incident)也全 dedup 掉(实测 13 天前的僵尸 Fall 挡住 04:28 新 Fall)。加 5min 窗后：
+// 进行中的同一告警仍 dedup(防刷屏)，>5min 的旧 active 不再压制新 incident → 新 Fall 正常入库。
 func findActiveAlarmEventID(ctx context.Context, db *sql.DB, addr netip.Addr, eventType string) (string, error) {
 	var id string
 	err := db.QueryRowContext(ctx, `
@@ -193,6 +201,7 @@ func findActiveAlarmEventID(ctx context.Context, db *sql.DB, addr netip.Addr, ev
 		WHERE device_addr = $1::INET
 		  AND event_type = $2
 		  AND alarm_status = 'active'
+		  AND triggered_at > now() - interval '5 minutes'
 		ORDER BY triggered_at DESC
 		LIMIT 1
 	`, addr.String(), eventType).Scan(&id)
@@ -272,14 +281,14 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 		  resident_nickname, device_uid,
 		  resident_id, card_id,
 		  trace_id, parent_span, producer,
-		  alarm_status, payload, evidence
+		  alarm_status, reason, payload, evidence
 		) VALUES (
 		  $1::INET, $2, $3, $4, $5, $6,
 		  $7, $8, $9, $10, $11,
 		  $12, $13,
 		  NULLIF($14, '')::INET, NULLIF($15, '')::INET,
 		  NULLIF($16, ''), NULLIF($17, ''), NULLIF($18, '')::INET,
-		  'active', $19::JSONB, $20::JSONB
+		  'active', NULLIF($19, ''), $20::JSONB, $21::JSONB
 		)
 		RETURNING event_id::text, triggered_at
 	`
@@ -293,7 +302,7 @@ func InsertAlarmAndUpdateCard(ctx context.Context, db *sql.DB, cardID string, pa
 		snap.ResidentNickname, snap.DeviceUID,
 		residentIDStr, cardID,
 		params.TraceID, params.ParentSpan, params.Producer,
-		string(payload), string(evidence),
+		params.Reason, string(payload), string(evidence),
 	).Scan(&eventID, &triggeredAt)
 	if err != nil {
 		return nil, nil, fmt.Errorf("insert alarm_events: %w", err)

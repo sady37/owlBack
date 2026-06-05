@@ -7,7 +7,7 @@ package service
 // 失去"radar 原值"语义；dedup 必须用 raw Z 否则双计数。
 //
 // 与 [[bed_presence_fusion]] 配套：adapter_radar applyCount 写入 cache；
-// stream_publisher OnZoneEvent ZoneTypeRoom 读 cache 得 Z，再 +ExtraPeopleInRoom 即 publish 值。
+// stream_publisher OnZoneEvent ZoneTypeRoom 读 cache 得 Z，再 max OccupiedBedsInRoom 即 publish 值。
 
 import (
 	"sync"

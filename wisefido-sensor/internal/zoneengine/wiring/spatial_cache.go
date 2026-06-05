@@ -215,6 +215,30 @@ func (c *SpatialCache) BedMode(bedZoneID string) zoneengine.BedMode {
 	return zoneengine.BedModeFacility
 }
 
+// ResolveSingleBed /88 room 内若恰有 1 张注册床，返回其 /96；否则 ""（多床/0 床）。
+// MatrixCache.ResolveBed 的 parity fallback：covers 几何给不出时（radar mount 未配/不可达）退回此，
+// 保单床房不回归。多床房解析交 MM covers 边（待 DBN 把候选推到解析阈）。
+func (c *SpatialCache) ResolveSingleBed(roomPrefix string) string {
+	rp, err := netip.ParsePrefix(roomPrefix)
+	if err != nil || rp.Bits() != 88 {
+		return ""
+	}
+	ud := c.ensureUnit(maskToUnit(rp))
+	if ud == nil {
+		return ""
+	}
+	found := ""
+	for bedPfx := range ud.Beds {
+		if rp.Contains(bedPfx.Addr()) {
+			if found != "" {
+				return "" // 多床房 → 不解析
+			}
+			found = bedPfx.String()
+		}
+	}
+	return found
+}
+
 // SetFitness 注入 radar fit/unfit 运行期判定（DeviceFitnessTracker）。
 // 未注入时 HasRadarInRoom 退化为 DB-only 检查（仅 access 字段）。
 func (c *SpatialCache) SetFitness(f RadarFitnessChecker) {

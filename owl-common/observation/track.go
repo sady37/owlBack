@@ -11,7 +11,7 @@ type Track struct {
 	PositionX       *int   `json:"position_x"`
 	PositionY       *int   `json:"position_y"`
 	PositionZ       *int   `json:"position_z"`
-	AreaType        string `json:"area_type"`
+	AreaID          int    `json:"area_id,omitempty"` // firmware 区域号；255=声明区域之外。0=无声明区/设备无区域概念(sleepad)
 	Event         int    `json:"event"`          // 事件类型: 0=无, 1=进房, 2=离房, 3=进区, 4=离区
 	TrackConfidence int    `json:"track_confidence,omitempty"`
 
@@ -25,8 +25,8 @@ type Track struct {
 	VitalConfidence  int     `json:"vital_confidence,omitempty"`
 
 	// 周期≤5min 上报视为实时；Sleepad 持续更新。
-	// nil = 未知 / 不适用（雷达无床概念时即如此）；*0 = 在床；*1 = 离床。
-	BedStatus *int `json:"bed_status,omitempty"`
+	// 取值 BedStatusInBed=0 / BedStatusLeftBed=1 / BedStatusUnchanged=8（无床概念设备如 radar 即此）。
+	BedStatus int `json:"bed_status,omitempty"`
 
 	// 次数（int），非动作枚举：body_move 适用于 BM8701-2 固件≥5.x 及 M901L；turn_over 适用于 BM8701-2 固件≤2.x
 	BodyMove int `json:"body_move,omitempty"` // 体动次数
@@ -56,6 +56,9 @@ func (t *Track) FromFieldMap(m map[string]any) {
 	if v, ok := intVal(m, FieldEvent); ok {
 		t.Event = v
 	}
+	if v, ok := intVal(m, FieldAreaID); ok {
+		t.AreaID = v
+	}
 	if v, ok := intVal(m, FieldPose); ok {
 		t.Pose = v
 	}
@@ -75,7 +78,9 @@ func (t *Track) FromFieldMap(m map[string]any) {
 		t.VitalConfidence = v
 	}
 	if v, ok := intVal(m, FieldBedStatus); ok {
-		t.BedStatus = &v
+		t.BedStatus = v
+	} else {
+		t.BedStatus = BedStatusUnchanged
 	}
 	if v, ok := intVal(m, FieldBodyMove); ok {
 		t.BodyMove = v
@@ -107,6 +112,9 @@ func (t *Track) ToFieldMap() map[string]any {
 	if t.Event != 0 {
 		m[FieldEvent] = t.Event
 	}
+	if t.AreaID != 0 {
+		m[FieldAreaID] = t.AreaID
+	}
 	if t.Pose != 0 {
 		m[FieldPose] = t.Pose
 	}
@@ -125,9 +133,9 @@ func (t *Track) ToFieldMap() map[string]any {
 	if t.VitalConfidence != 0 {
 		m[FieldVitalConfidence] = t.VitalConfidence
 	}
-	// bed_status：nil = 未知 / 不适用 → omit；*0=在床 / *1=离床 → 写出 *value。
-	if t.BedStatus != nil {
-		m[FieldBedStatus] = *t.BedStatus
+	// bed_status：Unchanged(8) = 无床数据 → omit；InBed(0) / LeftBed(1) → 写出。
+	if t.BedStatus != BedStatusUnchanged {
+		m[FieldBedStatus] = t.BedStatus
 	}
 	if t.BodyMove != 0 {
 		m[FieldBodyMove] = t.BodyMove

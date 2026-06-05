@@ -34,19 +34,26 @@ type RoomCountReader interface {
 	GetZ(roomCIDR string) (int, bool)
 }
 
-// BedDedupQuery publisher 查 room 范围内 sleepad InBed && !radar InBed 的 bed 数。
-// service.BedPresenceFusion 实现。
+// BedDedupQuery publisher 查 room 范围内"有人在床"的 bed 数（sleepad ∪ radar InBed）。
+// service.BedPresenceFusion 实现。total = max(radar_np, bed_np) 的 bed_np。
 type BedDedupQuery interface {
-	ExtraPeopleInRoom(roomCIDR string) int
+	OccupiedBedsInRoom(roomCIDR string) int
+}
+
+// RealPeopleLookup publisher 查 room 的非 ghost track 数（roomengine.Engine 实现）。
+// radar_np 优先用它（已去 owl 判出的 ghost），替 firmware number_people(含 ghost)。
+// 返回 <0 表示房未注册 → 退回 firmware Z。
+type RealPeopleLookup interface {
+	RealPeopleInRoom(roomCIDR string) int
 }
 
 // StreamPublisher 实现 ZoneEventListener 把 ZoneEvent 翻译并发 sensor:derived:stream。
 //
 // 现在两条触发路径（都走 publishCardState 单一出口，单 writer 不破）：
 //
-//	1) OnZoneEvent       — zoneengine state machine 触发 bed.state / room.state
-//	2) Run 60s ticker    — 主动 pull TargetStateAggregator 拿 LastActiveTs / StandingMin /
-//	                       WeakBioScore，per-entity 发 target.state（dirty 检查跳过无变化）
+//  1. OnZoneEvent       — zoneengine state machine 触发 bed.state / room.state
+//  2. Run 60s ticker    — 主动 pull TargetStateAggregator 拿 LastActiveTs / StandingMin /
+//     WeakBioScore，per-entity 发 target.state（dirty 检查跳过无变化）
 //
 // 详 [[target_state_aggregator]] design doc：aggregator 是纯 state holder，
 // publisher 是唯一发往 sensor:derived:stream 的 writer。
@@ -68,6 +75,7 @@ type StreamPublisher struct {
 	// 两者都 nil 时退化为 e.NewState.Count（兼容未 wire）。
 	roomCount RoomCountReader
 	bedDedup  BedDedupQuery
+	realCount RealPeopleLookup // 优先 radar_np 源（非 ghost track 数）；nil → 退回 roomCount.GetZ
 
 	// lastRoomState / lastBedState 缓存最近一次 publish 的 state（按 spatial CIDR）。
 	// 用途：
@@ -100,10 +108,11 @@ type RoomStateSnapshot struct {
 // 同 v2 实现里 cardID 也是 spatial_prefix 字符串，cardagg projector 自然能写到 card:state Hash。
 //
 // 返回值:
-//   target      Target.LastActiveTs / WeakBiometricSignal / Visitor* — 写到 card.target Hash
-//   standingMin RoomState.StandingContinuousMin —— 写到 card.room_state Hash
-//   dirty       自上次 MarkPublished 是否变化（false → publisher skip 该实体 publish）
-//   ok          实体是否有 accumulator entry（false → 跳过）
+//
+//	target      Target.LastActiveTs / WeakBiometricSignal / Visitor* — 写到 card.target Hash
+//	standingMin RoomState.StandingContinuousMin —— 写到 card.room_state Hash
+//	dirty       自上次 MarkPublished 是否变化（false → publisher skip 该实体 publish）
+//	ok          实体是否有 accumulator entry（false → 跳过）
 type AggregatorPuller interface {
 	ActiveSpatialPrefixes() []string
 	GetSnapshot(spatialPrefix string) (target *card.TargetState, standingMin int, dirty bool, ok bool)
@@ -160,6 +169,15 @@ func (p *StreamPublisher) SetRoomDedup(z RoomCountReader, dedup BedDedupQuery) {
 	}
 	p.roomCount = z
 	p.bedDedup = dedup
+}
+
+// SetRealPeopleLookup main wiring 注入 roomengine 非 ghost track 计数（radar_np 优先源）。
+// 不调时 radar_np 退回 firmware Z（含 ghost，多人场景会高估）。
+func (p *StreamPublisher) SetRealPeopleLookup(r RealPeopleLookup) {
+	if p == nil {
+		return
+	}
+	p.realCount = r
 }
 
 // SetAggregator 注入 aggregator（main wiring 调）。可选；不调时 Run ticker 跳过 pull。
@@ -243,7 +261,7 @@ func (p *StreamPublisher) tickPullAndPublish(ctx context.Context) {
 // 丢包后无法恢复）。本 tick 周期 re-emit 最近一次 publish 过的 state（state-change-anchored
 // 语义下：值/ts 不变 → cardagg merge no-op，仅保活 hash + display rebuild loop）。
 //
-// 对 RoomState 还顺带 re-apply dedup（roomCount.GetZ + bedDedup.ExtraPeopleInRoom 可能
+// 对 RoomState 还顺带 re-apply dedup（roomCount.GetZ 与 bedDedup.OccupiedBedsInRoom 取 max
 // 在两次 transition 之间漂移）；BedState 无 dedup 直接重发。
 //
 // 与 [[maintained_stream_producer_owns_maintenance]] 一致：sensor 是 sensor:derived:stream
@@ -382,7 +400,7 @@ func (p *StreamPublisher) applyAloneAndRisk(rs, prev *card.RoomState, roomType i
 	}
 }
 
-// applyRoomDedupInPlace 把 raw Z + ExtraPeopleInRoom 覆写到 rs.TotalPeople。
+// applyRoomDedupInPlace 把 max(radar_np, bed_np) 覆写到 rs.TotalPeople。
 // roomCount/bedDedup 未注入时退化为 no-op（保留 TranslateRoomState 给出的 e.NewState.Count）。
 //
 // **Vacant trust 守卫**：rs.TotalPeople == 0 表示 engine 刚跑 Vacant transition 或 count_change to 0
@@ -392,23 +410,45 @@ func (p *StreamPublisher) applyAloneAndRisk(rs, prev *card.RoomState, roomType i
 //
 // 取数顺序（仅 TotalPeople > 0 时）：
 //  1. Z = roomCount.GetZ()，ok 时用之；否则用 rs.TotalPeople（fallback，含 subset_invariant lift）
-//  2. extras = bedDedup.ExtraPeopleInRoom()
+//  2. bed_np = bedDedup.OccupiedBedsInRoom()
 //  3. rs.TotalPeople = Z + extras
 func (p *StreamPublisher) applyRoomDedupInPlace(roomCIDR string, rs *card.RoomState) {
-	if rs == nil || rs.TotalPeople == 0 {
+	if rs == nil {
 		return
 	}
-	z := rs.TotalPeople
-	if p.roomCount != nil {
-		if cached, ok := p.roomCount.GetZ(roomCIDR); ok {
-			z = cached
+	// 不再 `if TotalPeople==0 return`：占用期 radar room count 会掉 0，早退会把床上人(bed_np)漏掉。
+	rs.TotalPeople = p.dedupedTotalPeople(roomCIDR, rs.TotalPeople)
+}
+
+// dedupedTotalPeople = max(radar_np, bed_np)。radar_np = GetZ(有 cache)否则 fallback；
+// bed_np = 房内在床人数(sleepad ∪ radar)。取 max 而非相加：占用期 radar 漏静卧人取 bed_np、
+// 离床期 radar track 走出的人不与床垫双计、正常床上人两源都见取 1。
+func (p *StreamPublisher) dedupedTotalPeople(roomCIDR string, fallback int) int {
+	// radar 与 sleepad 都是 room 的**子集**观测：各看自己覆盖区，单个子集=0 不代表房空。
+	// 故只取 union 上界 max(各子集),绝不用某子集=0 去否定全集（房空判定归 room 进/出+超时 FSM，
+	// 不在此）。radar_np 用 roomengine 非 ghost track 数去掉 owl 判出的 ghost；未注册/未 wire 退回 firmware Z。
+	radarNp := fallback
+	if p.realCount != nil {
+		if rp := p.realCount.RealPeopleInRoom(roomCIDR); rp >= 0 {
+			radarNp = rp
+		} else if p.roomCount != nil {
+			if z, ok := p.roomCount.GetZ(roomCIDR); ok {
+				radarNp = z
+			}
+		}
+	} else if p.roomCount != nil {
+		if z, ok := p.roomCount.GetZ(roomCIDR); ok {
+			radarNp = z
 		}
 	}
-	extras := 0
+	bedNp := 0
 	if p.bedDedup != nil {
-		extras = p.bedDedup.ExtraPeopleInRoom(roomCIDR)
+		bedNp = p.bedDedup.OccupiedBedsInRoom(roomCIDR)
 	}
-	rs.TotalPeople = z + extras
+	if bedNp > radarNp {
+		return bedNp
+	}
+	return radarNp
 }
 
 // cacheLastRoom 保存最近一次 publish 的 RoomState（深拷贝），bed event 后 re-publish 用。
@@ -462,19 +502,7 @@ func (p *StreamPublisher) republishRoomAfterBed(ctx context.Context, e ZoneEvent
 	rs := *prev
 	// Re-apply dedup with current cache + fusion state；TotalPeopleTs 在值变化时刷新
 	prevCount := prev.TotalPeople
-	rs.TotalPeople = 0
-	if p.roomCount != nil {
-		if z, ok := p.roomCount.GetZ(roomCIDR); ok {
-			rs.TotalPeople = z
-		} else {
-			rs.TotalPeople = prev.TotalPeople
-		}
-	} else {
-		rs.TotalPeople = prev.TotalPeople
-	}
-	if p.bedDedup != nil {
-		rs.TotalPeople += p.bedDedup.ExtraPeopleInRoom(roomCIDR)
-	}
+	rs.TotalPeople = p.dedupedTotalPeople(roomCIDR, prev.TotalPeople)
 	if rs.TotalPeople == prevCount {
 		return // 无变化跳过 publish 防风暴
 	}

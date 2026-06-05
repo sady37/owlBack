@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# 导出一个 case fixture（room_layout + iot_timeseries 时间窗）到 doc/cases/<name>/，
-# 格式与 doc/cases/d5f7-ghost/ 完全一致。
+# 导出一个 case fixture（room_layout + 时序时间窗）到 doc/cases/<name>/。
+# owl_v2 schema：track 帧取 monitor_stream（设备级），事件取 event_log（房级，含 sleepad
+# InBed/LeftBed —— bed-fall fixture 必需）；layout 取 room_visual_layout.canvas。
+# 输出 record 形如 {device_uid,timestamp(ms),topic_type,category,data_value}，
+# category='track' 对齐 belief_replay_test 的 case "track"。
 #
 # 用法:
 #   ./export_case.sh <device_uid> <start> <end> --tz <IANA_TZ> [<case_name>]
@@ -21,10 +24,9 @@
 #
 # 输出:
 #   doc/cases/<case_name>/
-#     room_layout.json         整行 rooms 行 (room_id/room_name/layout_config)
-#     <range>.json             iot_timeseries 行数组，字段同 d5f7-ghost fixture
-#                              (id, device_uid, device_id, timestamp, topic_type,
-#                               category, data_value)
+#     room_layout.json         {room_id, room_name, layout_config:canvas}（/128 设备级优先，回落 /88）
+#     <range>.json             record 数组 {device_uid, timestamp(ms), topic_type, category, data_value}
+#                              track 帧 category='track'；事件 category=event_kind（InBed/LeftBed/...）
 
 set -euo pipefail
 
@@ -63,7 +65,7 @@ PGHOST="${DB_HOST:-127.0.0.1}"
 PGPORT="${DB_PORT:-5432}"
 PGUSER="${DB_USER:-postgres}"
 PGPASSWORD="${DB_PASSWORD:-postgres}"
-PGDATABASE="${DB_NAME:-owlrd}"
+PGDATABASE="${DB_NAME:-owl_v2}"
 export PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE
 
 RUN_PSQL() {
@@ -103,51 +105,76 @@ echo "tz        : $TZ_ARG"
 echo "window    : $START_ARG -> $END_ARG  ($START_MS -> $END_MS ms)"
 echo "out_dir   : $OUT_DIR"
 
-ROOM_ID=$(RUN_PSQL -t -A -c "
-  SELECT bound_room_id FROM devices WHERE device_uid='$UID_ARG' LIMIT 1;
+# owl_v2: devices 无 bound_room_id；device_addr(/128) 反查所属 /88 room（IPv6 前缀包含）。
+DEV_ADDR=$(RUN_PSQL -t -A -c "
+  SELECT host(device_addr) FROM devices WHERE device_uid='$UID_ARG' LIMIT 1;
 " | tr -d '[:space:]')
-
-if [[ -z "$ROOM_ID" ]]; then
-  echo "ERROR: device_uid=$UID_ARG not found in devices, or no bound_room_id" >&2
+if [[ -z "$DEV_ADDR" ]]; then
+  echo "ERROR: device_uid=$UID_ARG not found in devices" >&2
   exit 2
 fi
+ROOM_ID=$(RUN_PSQL -t -A -c "
+  SELECT room_id FROM rooms WHERE masklen(room_id)=88 AND '${DEV_ADDR}'::inet <<= room_id LIMIT 1;
+" | tr -d '[:space:]')
+if [[ -z "$ROOM_ID" ]]; then
+  echo "ERROR: no /88 room contains device $DEV_ADDR" >&2
+  exit 2
+fi
+echo "dev_addr  : $DEV_ADDR"
 echo "room_id   : $ROOM_ID"
 
+# owl_v2: layout 在 room_visual_layout.canvas（按 spatial_prefix）；优先 /128 设备级（playback 口径），
+# 回落 /88 房级。包成 {room_id,room_name,layout_config} 与 buildGridFromLayout 的解壳一致。
 RUN_PSQL -t -A -c "
   SELECT json_build_object(
-    'room_id',     room_id,
-    'room_name',   room_name,
-    'layout_config', layout_config
+    'room_id',   r.room_id,
+    'room_name', r.room_name,
+    'layout_config', COALESCE(
+      (SELECT canvas FROM room_visual_layout WHERE spatial_prefix='${DEV_ADDR}'::inet),
+      (SELECT canvas FROM room_visual_layout WHERE spatial_prefix=r.room_id)
+    )
   )::text
-  FROM rooms WHERE room_id='$ROOM_ID';
+  FROM rooms r WHERE r.room_id='$ROOM_ID';
 " > "$LAYOUT_FILE"
 echo "layout    : $(wc -c < "$LAYOUT_FILE") bytes -> $LAYOUT_FILE"
 
+# owl_v2: iot_timeseries 拆成 monitor_stream(track 帧,设备级,带坐标) + event_log(InBed/LeftBed/
+# Enter/Exit 等,房级 — 含 sleepad 事件,bed-fall fixture 必需)。映射成 replay fxRecord
+# {device_uid,timestamp(ms),topic_type,category,data_value}；category='track' 对齐 belief_replay 的 case "track"。
 RUN_PSQL -t -A -c "
-  SELECT COALESCE(
-    json_agg(
-      json_build_object(
-        'id',          id,
-        'device_uid',  device_uid,
-        'device_id',   device_id,
-        'timestamp',   timestamp,
-        'topic_type',  topic_type,
-        'category',    category,
-        'data_value',  data_value
-      )
-      ORDER BY timestamp, id
-    ),
-    '[]'::json
-  )::text
-  FROM iot_timeseries
-  WHERE device_uid='$UID_ARG'
-    AND timestamp >= $START_MS
-    AND timestamp <= $END_MS;
+  SELECT COALESCE(json_agg(rec ORDER BY ts_ms), '[]'::json)::text FROM (
+    SELECT (extract(epoch FROM m.ts)*1000)::bigint AS ts_ms,
+           json_build_object(
+             'device_uid', '$UID_ARG',
+             'timestamp',  (extract(epoch FROM m.ts)*1000)::bigint,
+             'topic_type', 'monitor',
+             'category',   replace(m.stream_type::text, 'radar.', ''),
+             'data_value', m.payload
+           ) AS rec
+      FROM monitor_stream m
+     WHERE m.device_addr='${DEV_ADDR}'::inet
+       AND m.ts BETWEEN to_timestamp($START_MS/1000.0) AND to_timestamp($END_MS/1000.0)
+    UNION ALL
+    SELECT (extract(epoch FROM e.ts)*1000)::bigint AS ts_ms,
+           json_build_object(
+             'device_uid', d.device_uid,
+             'timestamp',  (extract(epoch FROM e.ts)*1000)::bigint,
+             'topic_type', 'event',
+             'category',   e.event_kind,
+             'data_value', e.payload
+           ) AS rec
+      FROM event_log e JOIN devices d ON d.device_addr=e.device_addr
+     WHERE e.device_addr <<= '$ROOM_ID'::inet
+       AND e.ts BETWEEN to_timestamp($START_MS/1000.0) AND to_timestamp($END_MS/1000.0)
+  ) t;
 " > "$WINDOW_FILE"
 
 ROW_COUNT=$(RUN_PSQL -t -A -c "
-  SELECT count(*) FROM iot_timeseries
-  WHERE device_uid='$UID_ARG' AND timestamp BETWEEN $START_MS AND $END_MS;
+  SELECT
+    (SELECT count(*) FROM monitor_stream WHERE device_addr='${DEV_ADDR}'::inet
+       AND ts BETWEEN to_timestamp($START_MS/1000.0) AND to_timestamp($END_MS/1000.0))
+   +(SELECT count(*) FROM event_log WHERE device_addr <<= '$ROOM_ID'::inet
+       AND ts BETWEEN to_timestamp($START_MS/1000.0) AND to_timestamp($END_MS/1000.0));
 " | tr -d '[:space:]')
 echo "rows      : $ROW_COUNT  -> $WINDOW_FILE"
 echo "Done."

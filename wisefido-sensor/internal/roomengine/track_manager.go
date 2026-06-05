@@ -118,6 +118,10 @@ type TrackManager struct {
 	// lastNumberPeopleZeroMs：固件最近一次上报 number_people=0（"屋内空"断言）的 ts。
 	// 门区 exit 推断用：np=0 是离开的「确认证据」，须与最后帧门区位置合取才采信，单独不可信。
 	lastNumberPeopleZeroMs int64
+	// noTargetSinceMs：固件最近一次明示"无目标"（track_id=88 心跳 / 全零帧）起始 ts；收到真 track 帧即清 0。
+	// 供 88-加速驱逐：持续无目标 ≥ heartbeat88EvictMs 时陈旧 track 不必等满 MaxMissCount
+	// （稀疏心跳下要 >120s，见 Case2 142s）即可快速进 lost_fall/vanish。镜像 cardagg ClearDeviceTracks。
+	noTargetSinceMs int64
 	// 占用账（enter/exit 权威的人数守恒）：房账"空" = lastExitMs > lastEnterMs（只信 ExitRoom，见 roomLedgerEmpty）。
 	// lost_fall 入池前查：房账为空 → 失锁 track 是"人走后残影"（冻住的反射）→ 抑制。不靠 ghost，靠 enter/exit。
 	lastEnterMs int64
@@ -493,6 +497,7 @@ func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
 		DeviceAddr: ts.DeviceAddr,
 		RoomID:     ts.RoomID,
 		Track: observation.Track{
+			BedStatus:       observation.BedStatusUnchanged,
 			TrackID:         ts.TrackID,
 			LogicID:         ts.LogicID,
 			PositionX:       intPtr(ts.LastRawH),
@@ -556,6 +561,7 @@ func (tm *TrackManager) emitDecision(deviceAddr, logicID string, trackID, rawH, 
 		DeviceAddr: deviceAddr,
 		RoomID:     tm.roomID,
 		Track: observation.Track{
+			BedStatus: observation.BedStatusUnchanged,
 			TrackID:   trackID,
 			LogicID:   logicID,
 			PositionX: intPtr(rawH),
@@ -634,6 +640,8 @@ func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
 	// LeftBedMaxPeople 在 PR-9 阶段无 source（bedPersonCount 已删），保留字段值 0；
 	// PR-11 silent_fall 重写时改用 SuiteCensus 派生
 	s.LeftBedMaxPeople = 0
+	// Layer-1：LeftBed 时 latch 上床置信（radar 印证度），供 vanish-fire 门控
+	s.InBedConfidence = bedInBedConfidence(s)
 }
 
 // ProcessSleepadObservation 接收 sleepad 一帧观测，按设备 UID 保留最新状态。
@@ -682,6 +690,94 @@ func (tm *TrackManager) ProcessSleepadObservation(obs SleepadObservation) {
 // bedInBedConsistencyMs PR-11/PR-14：sleepad 与 radar InBed 事件视作"双源一致"的最大时差。
 // 同时用于 PR-11 HR/RR 即时锁 AreaBed 与 PR-14 BedSession 入场门控。
 const bedInBedConsistencyMs = int64(15_000)
+
+// 床态融合参数（2026-06-04，Layer-1）：sleepad 接触式为权威，radar 印证叠加，EMI 兜底地板。
+const (
+	bedConfSleepad   = 90 // 接触式上床基础置信
+	bedConfRadar     = 70 // radar InBed 印证增量 / radar 全程无 track 时的降权幅度
+	bedConfEMIFloor  = 30 // radar 全程无 track 时的置信地板（防震动/EMI 假上床；真人静卧雷达也可能无回波，故不归零）
+	bedVanishMinConf = 50 // vanish-fire 所需最低床态置信（低于此=可能假上床，不发跌倒）
+)
+
+// track 驱逐时间阈（2026-06-04，治 88 稀疏心跳下陈旧 track 拖 142s，Case2）：
+//
+//	trackEvictMaxMs：纯帧计数 MaxMissCount 之外的时间兜底——上次真观测超此值即驱逐（不受帧稀疏影响）。
+//	heartbeat88EvictMs：固件明示无目标(88 心跳)持续 ≥ 此值的加速驱逐窗（镜像 cardagg ClearDeviceTracks 6s 平滑窗）。
+const (
+	trackEvictMaxMs    = int64(12_000)
+	heartbeat88EvictMs = int64(6_000)
+)
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// bedInBedConfidence Layer-1 三档融合（确认同一张床后，于 LeftBed 时算）：
+//
+//	radar 印证在床（±15s 同事件 或 单床房 session 内 InBed） → min(sleepad+radar,100) 双确认冲顶
+//	radar 看到人但不在床（session 内有 track，无 InBed）       → sleepad（接触式权威）
+//	radar 全程无 track                                       → max(sleepad-radar,30) 抗震动/EMI 降权不归零
+func bedInBedConfidence(s *BedSession) int {
+	switch {
+	case s.RadarInBedConfirmedMs > 0 || s.RadarInBedInSessionMs > 0:
+		return minInt(bedConfSleepad+bedConfRadar, 100)
+	case s.RadarSawTrackMs > 0:
+		return bedConfSleepad
+	default:
+		return maxInt(bedConfSleepad-bedConfRadar, bedConfEMIFloor)
+	}
+}
+
+// ghostJudgable ghost≥2 闸：ghost 是真 track 的镜像/反射，需 ≥2 条 track（至少 1 条作母体）才可判 ghost。
+// 仅 1 条 track 时不判 ghost——单 track 判 ghost 会压制从盲区返回的真人/真摔。调用方持锁。
+func (tm *TrackManager) ghostJudgable() bool {
+	return len(tm.tracks) >= 2
+}
+
+// anyActiveTrack 房内是否有任一 active（非 ghost）track。调用方持锁。
+func (tm *TrackManager) anyActiveTrack() bool {
+	for _, ts := range tm.tracks {
+		if ts.Verdict != VerdictGhost {
+			return true
+		}
+	}
+	return false
+}
+
+// latchRadarTrackForBedSessions 每 Tick：对仍在床（未 LeftBed）的 session，
+// 若 radar 当前有 active（非 ghost）track，latch RadarSawTrackMs + 该雷达 addr。
+// 供 Layer-1 区分"看到人" vs "全程无 track"，并给 vanish-fire 提供报警归因。调用方持锁。
+func (tm *TrackManager) latchRadarTrackForBedSessions(nowMs int64) {
+	if len(tm.bedSessions) == 0 {
+		return
+	}
+	addr := ""
+	for _, ts := range tm.tracks {
+		if ts.Verdict != VerdictGhost {
+			addr = ts.DeviceAddr
+			break
+		}
+	}
+	if addr == "" {
+		return
+	}
+	for _, s := range tm.bedSessions {
+		if s.InBedSinceMs > 0 && s.LeftBedAtMs == 0 {
+			s.RadarSawTrackMs = nowMs
+			s.RadarDeviceAddr = addr
+		}
+	}
+}
 
 // markRadarInBedCell PR-14：radar 报 InBed 事件时，把对应 track 当前位置 cell 锁为 AreaBed。
 // 设计：radar 事件本身就是空间证据，不再依赖 sleepad+HR/RR 一致期；
@@ -838,8 +934,9 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 		RoomID:      tm.roomID,
 		EventStatus: emitStatus,
 		Track: observation.Track{
-			TrackID: a.TrackID,
-			Pose:    a.Pose,
+			BedStatus: observation.BedStatusUnchanged,
+			TrackID:   a.TrackID,
+			Pose:      a.Pose,
 		},
 		Reason: "firmware_radar_fall",
 		Evidence: map[string]interface{}{
@@ -875,19 +972,28 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 		tm.lastRadarInBedMs = e.TMs
 		// PR-14 副作用 1：mark 当前 track 位置 cell 为 AreaBed
 		tm.markRadarInBedCell(e)
-		// PR-14 副作用 2：若 sleepad InBed 在 ±15s 内已到，标记双源确认。
-		// PR-9: lastLeftBedAt 新鲜度守卫已删；delta ≤ 15s 已隐式保证 sleepad InBed 是最近的。
+		// PR-14 副作用 2 + Layer-0 床身份（2026-06-04）：
+		//   ±15s 同事件     → RadarInBedConfirmedMs（最高置信档；多床房=床身份关联器）
+		//   单床房 bedCount==1 → radar 与 sleepad 必同一张床，session 内 radar InBed 无视时差即记印证
+		within15s := false
 		if tm.lastSleepadInBedMs > 0 {
 			delta := e.TMs - tm.lastSleepadInBedMs
 			if delta < 0 {
 				delta = -delta
 			}
-			if delta <= bedInBedConsistencyMs {
-				for _, s := range tm.bedSessions {
-					if s.InBedSinceMs > 0 && s.RadarInBedConfirmedMs == 0 {
-						s.RadarInBedConfirmedMs = e.TMs
-					}
+			within15s = delta <= bedInBedConsistencyMs
+		}
+		for _, s := range tm.bedSessions {
+			if s.InBedSinceMs == 0 {
+				continue
+			}
+			if within15s {
+				if s.RadarInBedConfirmedMs == 0 {
+					s.RadarInBedConfirmedMs = e.TMs
 				}
+				s.RadarInBedInSessionMs = e.TMs
+			} else if tm.bedCount == 1 {
+				s.RadarInBedInSessionMs = e.TMs
 			}
 		}
 	}
@@ -964,6 +1070,20 @@ func (tm *TrackManager) Tick(ts int64) []TrackOutput {
 	if ts == 0 {
 		ts = time.Now().UnixMilli()
 	}
+	return tm.processFrameAt(nil, ts)
+}
+
+// NoTargetTick 固件无目标心跳（track_id=88 / 全零帧）专用 tick：标记"无目标起始"后推进。
+// 与普通 Tick 区分——alarm/event 到达触发的 Tick 不代表无目标，不应触发 88-加速驱逐。
+func (tm *TrackManager) NoTargetTick(ts int64) []TrackOutput {
+	if ts == 0 {
+		ts = time.Now().UnixMilli()
+	}
+	tm.mu.Lock()
+	if tm.noTargetSinceMs == 0 {
+		tm.noTargetSinceMs = ts
+	}
+	tm.mu.Unlock()
 	return tm.processFrameAt(nil, ts)
 }
 
@@ -1105,6 +1225,10 @@ func (tm *TrackManager) ProcessFrame(frames []TrackFrame) []TrackOutput {
 func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []TrackOutput {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
+
+	if len(frames) > 0 {
+		tm.noTargetSinceMs = 0 // 收到真 track 帧 → 清"无目标"标记
+	}
 
 	activeIDs := make(map[int]bool)
 
@@ -1251,7 +1375,14 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		ts.Kalman.PredictOnly(dt)
 		ts.LastUpdateMs = nowMs
 
-		if ts.Kalman.MissCount > MaxMissCount {
+		// 驱逐 = 帧计数(MaxMissCount) ∪ 时间兜底(trackEvictMaxMs) ∪ 88-加速(固件持续无目标≥6s)。
+		// 治"88 稀疏心跳下 MissCount 凑满 10 要 142s"（Case2）：LastObservedMs 是上次真观测，按真实时间判，
+		// 不受帧稀疏影响。88-加速：固件明示无目标且持续 ≥ heartbeat88EvictMs 时，6s 即驱逐进 lost_fall/vanish。
+		unseenMs := nowMs - ts.LastObservedMs
+		noTargetSustained := tm.noTargetSinceMs > 0 && nowMs-tm.noTargetSinceMs >= heartbeat88EvictMs
+		if ts.Kalman.MissCount > MaxMissCount ||
+			unseenMs > trackEvictMaxMs ||
+			(noTargetSustained && unseenMs >= heartbeat88EvictMs) {
 			// 消失判定：lost fall（按 cell areaType 分时长，verdict 未定也算）
 			// PR-14：旧 Path 1（track 消失 + 60s 复现窗口）已删除——
 			// silent fall 仅由 BedSession LeftBed 矛盾路径触发（见 scanSilentFallLeftBed）。
@@ -1360,8 +1491,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		if ts.Verdict != VerdictPending {
 			// PR-5.x 持续期 ghost factor：每帧重算 lifetime 因子（30s 静止等）
 			tm.applyLifetimeGhostFactors(ts, nowMs)
-			// 即使已是 Real verdict，penalty ≥ 80 也翻 Ghost（除非 LongSurvival 锚定）
-			if ts.GhostPenalty >= GhostPenaltyThreshold && !ts.LongSurvivalAnchored && !ts.StartupGrace {
+			// 即使已是 Real verdict，penalty ≥ 80 也翻 Ghost（除非 LongSurvival 锚定）。
+			// ghost≥2 闸（2026-06-05）：ghost = 真 track 的镜像/反射，无第二条 track 作母体不判 ghost
+			// （单 track 判 ghost 会压制从盲区返回的真人/真摔，见 [[longsurvival_anchor_ghost_gap]]）。
+			if ts.GhostPenalty >= GhostPenaltyThreshold && !ts.LongSurvivalAnchored && !ts.StartupGrace && tm.ghostJudgable() {
 				if ts.Verdict != VerdictGhost {
 					ts.Verdict = VerdictGhost
 					// PR5b: track_verdict（事后裁决）—— Real → Ghost 翻转
@@ -1381,7 +1514,8 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		tm.applyLifetimeGhostFactors(ts, nowMs)
 
 		// PR-5.x 主路径：累积 GhostPenalty ≥ 80 → Ghost（独立于 ProbationFrames）
-		if ts.GhostPenalty >= GhostPenaltyThreshold {
+		// ghost≥2 闸：单 track 不判 ghost（无母体可镜像；防压制盲区返回的真人/真摔）。
+		if ts.GhostPenalty >= GhostPenaltyThreshold && tm.ghostJudgable() {
 			ts.Verdict = VerdictGhost
 			reason := ts.BirthReason
 			if reason == "" {
@@ -1543,6 +1677,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			RoomID:     p.RoomID,
 			IncidentMs: replayAnchorMs,
 			Track: observation.Track{
+				BedStatus: observation.BedStatusUnchanged,
 				TrackID:   p.OriginalTrackID,
 				PositionX: intPtr(p.LastRawH),
 				PositionY: intPtr(p.LastRawV),
@@ -1600,6 +1735,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	// 触发：bedSession.LeftBedAtMs > 0，等待 60s（vital + 单人）/ 120s（其它），
 	//       超时仍有任一活 track 在 AreaBed ±BedNeighborhood cm 内 → 矛盾报警。
 	// 否则取消（人正常起床，radar 也离床区）。
+	tm.latchRadarTrackForBedSessions(nowMs) // Layer-1：在床期间持续记录 radar 是否看到人
 	results = append(results, tm.scanSilentFallLeftBed(nowMs)...)
 
 	// ========== 段 4d: L1 mirror pair 检测 + 自学习 ==========
@@ -1720,10 +1856,9 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 		if s.LeftBedAtMs == 0 || s.SilentFallAlerted {
 			continue
 		}
-		// PR-14 入场门控：未双源（sleepad+radar InBed ±15s）确认 → 不报
-		if s.RadarInBedConfirmedMs == 0 {
-			continue
-		}
+		// 武装放宽（2026-06-04）：sleepad InBed 单独即可进入等待窗（接触式正向证据，
+		// "sleepad 未报上床不否定上床"）。radar 印证度不再作硬闸，改由 InBedConfidence
+		// 在 vanish-fire 分支门控（radar 全程无 track 的低置信=可能 EMI 假上床 → 不发）。
 		waitSec := param.WaitNoVitalSec
 		if s.LeftBedHadHRRR && s.LeftBedMaxPeople == 1 {
 			waitSec = param.WaitVitalSec
@@ -1762,7 +1897,7 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 					PositionX: intPtr(rawH),
 					PositionY: intPtr(rawV),
 					PositionZ: intPtr(rawZ),
-					BedStatus: intPtr(1), // sleepad 报 LeftBed
+					BedStatus: observation.BedStatusLeftBed, // sleepad 报 LeftBed
 				},
 				Reason: ReasonSleepadRadarConflict,
 				Evidence: map[string]interface{}{
@@ -1807,18 +1942,84 @@ func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
 				Z:          z,
 				Source:     "engine_silent_leftbed",
 			})
-		} else {
-			// 取消：radar 也离开了 Bed 邻域 → 人正常起床
+		} else if tm.anyActiveTrack() {
+			// 人起身在房内走动，radar 看得见 = 已交代 → 取消
 			tm.silentFallLeftbedCancelled++
 			tm.logger.Info("silent_fall_leftbed_cancelled",
+				zap.String("reason", "active_track_in_room"),
 				zap.String("sleepad_uid", s.DeviceUID),
 				zap.Int64("leftbed_ms", s.LeftBedAtMs),
-				zap.Int64("nowMs", nowMs),
-				zap.Bool("had_hr_rr", s.LeftBedHadHRRR),
-				zap.Int("max_people", s.LeftBedMaxPeople),
 			)
-			s.SilentFallAlerted = true // 防重复
-			s.InBedSinceMs = 0         // session 结束，等待下次 InBed
+			s.SilentFallAlerted = true
+			s.InBedSinceMs = 0
+		} else if tm.roomLedgerEmpty() {
+			// 人过门走了（ExitRoom 空间证据）= 正常离开 → 取消
+			tm.silentFallLeftbedCancelled++
+			tm.logger.Info("silent_fall_leftbed_cancelled",
+				zap.String("reason", "exited_room"),
+				zap.String("sleepad_uid", s.DeviceUID),
+				zap.Int64("leftbed_ms", s.LeftBedAtMs),
+			)
+			s.SilentFallAlerted = true
+			s.InBedSinceMs = 0
+		} else if s.InBedConfidence >= bedVanishMinConf && s.RadarDeviceAddr != "" {
+			// vanish-fire：sleepad 证明离床 + 房内无 track + 未过门 + 床态置信足够
+			//   = 人离床后在房内消失（既没走出门、雷达也找不到）→ 摔进遮挡死角（床后/床下）。
+			// 治本 Case1 那类"干净摔进死角"：lost_fall 被静止前置守卫挡掉，唯有 sleepad
+			// LeftBed 正向证据能锚定。低置信（radar 全程没看到人=可能 EMI 假上床）走 else 不发。
+			s.SilentFallAlerted = true
+			tm.silentFallLeftbedReported++
+			tm.emitAIAlarm(AIPayload{
+				DeviceAddr: s.RadarDeviceAddr,
+				RoomID:     tm.roomID,
+				IncidentMs: s.LeftBedAtMs,
+				Track:      observation.Track{BedStatus: observation.BedStatusLeftBed},
+				Reason:     ReasonSleepadRadarConflict,
+				Evidence: map[string]interface{}{
+					"context":           "sleepad_leftbed_vanished_no_exit",
+					"in_bed_confidence": s.InBedConfidence,
+					"sleepad_uid":       s.DeviceUID,
+					"had_hr_rr":         s.LeftBedHadHRRR,
+					"wait_sec":          waitSec,
+					"leftbed_ms":        s.LeftBedAtMs,
+					"replay_anchor_ms":  s.LeftBedAtMs,
+					"engine_fire_ms":    nowMs,
+				},
+			}, alarm.Fall, nowMs)
+			tm.logger.Info("real_fall",
+				zap.String("device_uid", s.RadarDeviceAddr),
+				zap.String("kind", "engine_silent_leftbed_vanished"),
+				zap.String("sleepad_uid", s.DeviceUID),
+				zap.Int("in_bed_confidence", s.InBedConfidence),
+				zap.Int("risk", 100),
+				zap.String("reason", "sleepad_leftbed_vanished_no_exit"),
+				zap.Bool("had_hr_rr", s.LeftBedHadHRRR),
+				zap.Int("wait_sec", waitSec),
+				zap.Int64("leftbed_ms", s.LeftBedAtMs),
+				zap.Int64("anchor_ms", s.LeftBedAtMs),
+				zap.Int64("ts_ms", nowMs),
+				zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
+			)
+			out = append(out, TrackOutput{
+				DeviceAddr: s.RadarDeviceAddr,
+				RoomID:     tm.roomID,
+				Verdict:    VerdictReal,
+				Risk:       100,
+				Anomaly:    AnomalyFall,
+				Source:     "engine_silent_leftbed_vanished",
+			})
+			s.InBedSinceMs = 0
+		} else {
+			// 床态置信不足（radar 全程没看到人=可能震动/EMI 假上床）或无雷达归因 → 不发，取消
+			tm.silentFallLeftbedCancelled++
+			tm.logger.Info("silent_fall_leftbed_cancelled",
+				zap.String("reason", "low_confidence_or_no_radar"),
+				zap.Int("in_bed_confidence", s.InBedConfidence),
+				zap.String("sleepad_uid", s.DeviceUID),
+				zap.Int64("leftbed_ms", s.LeftBedAtMs),
+			)
+			s.SilentFallAlerted = true
+			s.InBedSinceMs = 0
 		}
 	}
 	return out
@@ -2939,6 +3140,21 @@ func (tm *TrackManager) realTrackCount() int {
 	n := 0
 	for _, t := range tm.tracks {
 		if t.Verdict == VerdictReal {
+			n++
+		}
+	}
+	return n
+}
+
+// NonGhostTrackCount 当前非 ghost track 数（排除 VerdictGhost，保留 Pending/Real/Anchored）。
+// zoneengine room total_people 用作 radar_np（替 firmware number_people，后者含 ghost）。
+// 保留 Pending：ghost 只在 ≥2 track 生效，单条新 track 不会被判 ghost，计入避免出生期少计。线程安全。
+func (tm *TrackManager) NonGhostTrackCount() int {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	n := 0
+	for _, t := range tm.tracks {
+		if t.Verdict != VerdictGhost {
 			n++
 		}
 	}

@@ -232,6 +232,68 @@ func TestSilentFallLeftBed_NoFireBelowMinInBed(t *testing.T) {
 	}
 }
 
+// TestSilentFallLeftBed_VanishFiresWhenNoTrackNoExit：Layer-2 vanish-fire。
+// LeftBed + radar 印证在床（±15s → 高置信）后雷达丢轨（人摔进遮挡死角）+ 房内无 track + 无 ExitRoom
+// → 判跌倒。治本"干净摔进死角"盲区（lost_fall 被静止前置守卫挡掉，唯 sleepad LeftBed 能锚定）。
+func TestSilentFallLeftBed_VanishFiresWhenNoTrackNoExit(t *testing.T) {
+	tm, g := newTestTM()
+	setupBedAt(g, 80, 80, 140, 140)
+	const dev = "sleepad-1"
+	const t0 = int64(1_000_000)
+	const tx, ty = 200, 100 // 床邻域内、非 human-bed cell
+
+	tm.ProcessSleepadBedEvent(SleepadBedEvent{DeviceUID: dev, IsInBed: true, TMs: t0, Status: "instant"})
+	tm.RecordRadarEvent(RadarTrackEvent{DeviceUID: "radar-1", TMs: t0 + 1_000, EventName: "InBed", TrackID: 0, Status: "instant"})
+	tms := t0
+	for i := 0; i < 15; i++ {
+		tm.processFrameAt([]TrackFrame{frameAt(0, tx, ty, 50, observation.PoseLying, tms)}, tms)
+		tms += 1000
+	}
+	if ts, ok := tm.tracks[0]; ok {
+		ts.Verdict = VerdictReal
+		ts.Score = ScoreConfirmTh
+	}
+	tms = t0 + int64(FallRulesParam.Silent.MinInBedSec+10)*1000
+	tm.processFrameAt([]TrackFrame{frameAt(0, tx, ty, 50, observation.PoseLying, tms)}, tms)
+	tm.ProcessSleepadBedEvent(SleepadBedEvent{DeviceUID: dev, IsInBed: false, TMs: tms, Status: "instant"})
+
+	delete(tm.tracks, 0) // 雷达丢轨：人摔进死角看不到
+
+	for i := 0; i < 130; i++ {
+		tms += 1000
+		tm.processFrameAt(nil, tms)
+	}
+	if got := tm.silentFallLeftbedReported; got != 1 {
+		t.Errorf("vanish (no track + no exit + high conf) should fire, got reported=%d", got)
+	}
+}
+
+// TestSilentFallLeftBed_VanishSuppressedByEMILowConfidence：抗震动/EMI。
+// sleepad 报 InBed/LeftBed 但雷达全程没看到人（无 radar InBed、无 track）→ 置信度=30（疑似假上床）
+// → vanish 不发，走 cancel。验证 Layer-1 EMI 降权一路流到 fall 决策。
+func TestSilentFallLeftBed_VanishSuppressedByEMILowConfidence(t *testing.T) {
+	tm, g := newTestTM()
+	setupBedAt(g, 80, 80, 140, 140)
+	const dev = "sleepad-1"
+	const t0 = int64(1_000_000)
+
+	tm.ProcessSleepadBedEvent(SleepadBedEvent{DeviceUID: dev, IsInBed: true, TMs: t0, Status: "instant"})
+	// 无 RecordRadarEvent、无 frames —— 雷达全程没看到人
+	tms := t0 + int64(FallRulesParam.Silent.MinInBedSec+10)*1000
+	tm.ProcessSleepadBedEvent(SleepadBedEvent{DeviceUID: dev, IsInBed: false, TMs: tms, Status: "instant"})
+
+	for i := 0; i < 130; i++ {
+		tms += 1000
+		tm.processFrameAt(nil, tms)
+	}
+	if got := tm.silentFallLeftbedReported; got != 0 {
+		t.Errorf("EMI-suspect low-confidence InBed must NOT fire vanish, got reported=%d", got)
+	}
+	if got := tm.silentFallLeftbedCancelled; got != 1 {
+		t.Errorf("low-confidence path should cancel once, got cancelled=%d", got)
+	}
+}
+
 // ============================================================================
 // Still Fall — bathroom + Stand 静止 ≥ 15/18min（PR-3）
 // ============================================================================

@@ -40,12 +40,22 @@ type SpatialInvalidator interface {
 	InvalidateAll()
 }
 
+// MatrixInvalidator MM 方阵失效：按 scope 精准失效受影响 unit，空 scope 兜底全清（wiring.MatrixCache 实现）。
+type MatrixInvalidator interface {
+	InvalidateAll()
+	InvalidateScope(prefixes []string)
+}
+
 type ConfigCardConsumer struct {
 	client   *redislib.Client
 	reloader ConfigChangedReloader
 	spatial  SpatialInvalidator
+	matrix   MatrixInvalidator // MM 关系方阵失效（config:card commit 后按受影响 scope 精准重建）；nil 时跳过
 	logger   *zap.Logger
 }
+
+// SetMatrixInvalidator 注入 MM MatrixCache 失效（按受影响 scope 精准重建）。
+func (c *ConfigCardConsumer) SetMatrixInvalidator(m MatrixInvalidator) { c.matrix = m }
 
 func NewConfigCardConsumer(
 	client *redislib.Client,
@@ -132,6 +142,16 @@ func (c *ConfigCardConsumer) handleRaw(ctx context.Context, raw map[string]inter
 	}
 	if c.spatial != nil {
 		c.spatial.InvalidateAll()
+	}
+	if c.matrix != nil {
+		scope := make([]string, 0, len(d.DeviceAddrs)+len(d.Cards))
+		scope = append(scope, d.DeviceAddrs...)
+		scope = append(scope, d.Cards...)
+		if len(scope) > 0 {
+			c.matrix.InvalidateScope(scope) // 只重建受影响 unit
+		} else {
+			c.matrix.InvalidateAll() // 无 scope 信息兜底全清
+		}
 	}
 
 	c.logger.Info("sensor config-card processed",

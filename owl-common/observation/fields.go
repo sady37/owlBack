@@ -222,6 +222,13 @@ const (
 	TrackInvalid       = 88
 )
 
+// BedStatus 取值（bed_status field；firmware + sensor 投影）。无床概念设备（radar）= Unchanged。
+const (
+	BedStatusInBed     = 0
+	BedStatusLeftBed   = 1
+	BedStatusUnchanged = 8
+)
+
 func IsKnownPerson(id int) bool   { return id >= 0 && id <= 8 }
 func IsUnknownPerson(id int) bool { return id == TrackUnknownPerson }
 func IsPerson(id int) bool        { return id >= 0 && id <= TrackUnknownPerson }

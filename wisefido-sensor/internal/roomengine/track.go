@@ -234,6 +234,12 @@ type BedSession struct {
 	LeftBedHadHRRR        bool   // LeftBed 时刻的 HasHRRR latch
 	LeftBedMaxPeople      int    // LeftBed 时刻的"多人床"latch；PR-9 阶段无 source 固定 0，PR-11 重写
 	SilentFallAlerted     bool   // 防重复触发
+
+	// 床态融合 Layer-0/1（2026-06-04）：sleepad 接触式权威 + radar 印证叠加 + 抗 EMI 降权。
+	RadarInBedInSessionMs int64  // 本次在床 session 内 radar 报过 InBed 的时刻（床印证；单床房无视 ±15s，多床房需 ±15s 同事件）
+	RadarSawTrackMs       int64  // 本次 session 内 radar 有过 active(非 ghost) track 的最近时刻（区分"看到人但不在床" vs "全程无 track"）
+	RadarDeviceAddr       string // session 内监视本房的雷达 /128（vanish-fire 无 track 时的报警归因）
+	InBedConfidence       int    // Layer-1 融合上床置信，LeftBed 时 latch；< bedVanishMinConf 抑制 vanish-fire（防震动/EMI 假上床）
 }
 
 // PendingLostFall 已消失但等待 cell-area-typed 时长复现窗口的 track（lost-fall 规则）。

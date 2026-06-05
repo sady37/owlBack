@@ -134,6 +134,11 @@ func (r *Router) RegisterBaselineRoutes(h *BaselineHandler) {
 	})
 }
 
+// RegisterRadarConfigInternalRoute 注册 sensor 取 radar 配置的内部端点（/internal/ 跳过 auth）。
+func (r *Router) RegisterRadarConfigInternalRoute(h *RadarHandler) {
+	r.Handle("/internal/radar-config/", h.GetRadarConfig)
+}
+
 // RegisterPlaybackRoutes 历史回放（防扫库：ValidatePlaybackWindow + PlaybackLookbackForRole 按 X-User-Role）
 func (r *Router) RegisterPlaybackRoutes(h *PlaybackHandler) {
 	r.Handle("/api/radar/playback", h.PostRadarPlayback)

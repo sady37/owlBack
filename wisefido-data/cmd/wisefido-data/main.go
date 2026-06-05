@@ -271,6 +271,7 @@ func main() {
 		// 将 dataStreamSubscriber 传给 RadarHandler（供 SSE 推送使用）
 		radarHandler.SetDataStreamSubscriber(dataStreamSubscriber)
 		router.RegisterRadarRoutes(radarHandler)
+		router.RegisterRadarConfigInternalRoute(radarHandler)
 
 		trackPlaybackSvc := service.NewTrackPlaybackService(devicesRepo, monitorPlaybackRepo, alarmPlaybackRepo, logger)
 		playbackHandler := httpapi.NewPlaybackHandler(trackPlaybackSvc, tenantsRepo, db, logger)
@@ -327,6 +328,7 @@ func main() {
 		configPublisher := publisher.NewConfigPublisher(redisClient, logger)
 		configPublisher.SetDB(db)
 		deviceService.SetConfigPublisher(configPublisher)
+		radarInstall.SetConfigPublisher(configPublisher) // layout save → config:card（刷 sensor engine 几何 + MM 方阵）
 		// alarm 配置变更链路：UI 改 device 级 setting → wisefido-data 写 alarm.device_config →
 		// publish config:alarmDevice:stream → sensor/cardagg alarmDeviceConsumer.Invalidate(deviceAddr)
 		//   → 下次 lookup lazy reload。tenant 级 alarm.cloud_config 仅 UI 模板用，不级联。

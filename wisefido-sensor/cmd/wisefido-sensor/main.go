@@ -17,8 +17,8 @@ import (
 	logpkg "owl-common/logger"
 	"owl-common/spatial"
 
-	_ "github.com/lib/pq"
 	"github.com/go-redis/redis/v8"
+	_ "github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -150,12 +150,22 @@ func main() {
 			zap.Error(err),
 			zap.String("hint", "sensor_v2_known_limitations.md L4 — zonealarm.Supervisor Stay rule is Warning 兜底"))
 	}
+	// 5.3.0' MM per-unit 关系方阵 maintainer：从 SpatialCache(前缀) + engine(covers 几何) Build；
+	// 启动全量 + config:card commit 失效 + 每天 1AM 全刷。BedResolver 真消费：radar 床事件按 covers
+	// 置信归床（单床房 1.0 解析 / 多床候选 0.5 留空待 DBN）。必须在 zone.Start 前注入避免与 adapter goroutine 竞态。
+	matrixCache := wiring.NewMatrixCache(zone.Spatial, engine, logger)
+	matrixCache.BuildAll(ctx)
+	zone.RadarAdapter.SetBedResolver(matrixCache)
 	zone.Start(ctx)
 
 	// 5.3.0 A 风险放大消费者: roomengine fall verifier 查 zone.TargetAggregator WeakBio≥80
 	// → 强制 verdict=real（短路三档评分）。WeakBio 30min 滑窗 score 由 S1 alarm consumer
 	// 累加；engine 转发给所有 TrackManager（已注册 + 新 RegisterRoom）。
 	engine.SetWeakBioSource(zone.TargetAggregator)
+
+	// room total_people 的 radar_np 用 roomengine 非 ghost track 数（去 owl 判出的 ghost），
+	// 替 firmware number_people（含 ghost，多人场景高估）。详 [[bed_presence_fusion]] max 公式。
+	zone.StreamPublisher.SetRealPeopleLookup(engine)
 
 	// 5.3.1 producer-side consumer wire (S1/S2/S4)
 	//   S1 alarm:    iot:alarm:stream WeakBio 关联 → aggregator score 累加
@@ -193,6 +203,7 @@ func main() {
 		&engineReloader{ctx: ctx, engine: engine, db: engineDB, logger: logger},
 		zone.Spatial,
 		logger)
+	configCardConsumer.SetMatrixInvalidator(matrixCache) // layout/bind 的 config:card commit 同时失效 MM 方阵
 	configCardConsumer.Start(ctx)
 
 	// 重启清残留：sensor 启动后主动 publish 所有 room/bed 的 vacant 初始态，
@@ -206,7 +217,7 @@ func main() {
 	if vetoAddr == "" {
 		vetoAddr = ":8087" // :8083 已被 sleepace 占用
 	}
-	startVetoHTTPServer(ctx, vetoAddr, engine, logger)
+	startVetoHTTPServer(ctx, vetoAddr, engine, matrixCache, logger)
 
 	// 6. 等待信号（优雅关闭）
 	sigChan := make(chan os.Signal, 1)
@@ -243,4 +254,3 @@ func openEngineDeps(cfg *config.Config) (*sql.DB, *redis.Client, error) {
 	}
 	return db, rdb, nil
 }
-

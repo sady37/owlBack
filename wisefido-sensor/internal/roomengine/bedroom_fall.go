@@ -442,6 +442,7 @@ func (r *BedroomFallRules) fireFall(
 		DeviceAddr: b.DeviceAddr,
 		RoomID:     roomID,
 		Track: observation.Track{
+			BedStatus: observation.BedStatusUnchanged,
 			TrackID:   b.TrackID,
 			PositionX: intPtr(b.RawH),
 			PositionY: intPtr(b.RawV),

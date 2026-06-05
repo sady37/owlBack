@@ -435,7 +435,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 				zap.Int("breath", d.Breath),
 				zap.Int("init_status", d.InitStatus))
 		} else if canIoT {
-			hb := observation.Track{TrackID: observation.TrackDevice, TrackConfidence: sleepaceTrackPoseConf}
+			hb := observation.Track{TrackID: observation.TrackDevice, TrackConfidence: sleepaceTrackPoseConf, BedStatus: observation.BedStatusUnchanged}
 			hbData := hb.ToFieldMap()
 			hbMsg := redis.NewIoTStreamMessageWithData(deviceAddr, deviceUID, deviceType, ts, "monitor", observation.CategoryHeart, hbData)
 			_ = c.publisher.PublishMonitor(ctx, hbMsg)

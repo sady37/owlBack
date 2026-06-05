@@ -66,8 +66,8 @@ func TestSM_OccupiedExitThresholdEntersLeaving(t *testing.T) {
 func TestSM_LeavingReturnsOnRecoveredScore(t *testing.T) {
 	sm := newBedSM()
 	now := int64(1_000_000_000_000)
-	sm.Evaluate(80, now)              // occupied
-	sm.Evaluate(-60, now+5_000)       // leaving
+	sm.Evaluate(80, now)        // occupied
+	sm.Evaluate(-60, now+5_000) // leaving
 	// score 回升到 +60 ≥ enter_threshold
 	r := sm.Evaluate(60, now+6_000)
 	if !r.Flipped {

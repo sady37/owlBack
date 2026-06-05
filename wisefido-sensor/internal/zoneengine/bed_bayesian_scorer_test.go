@@ -58,6 +58,31 @@ func TestBayesian_Case1_NormalInBed_Facility(t *testing.T) {
 	}
 }
 
+// TestBayesian_RadarCoversWeight — MM covers 权重把 radar 簇贡献按比例打折（#2 模型 A）。
+// 候选雷达(covers=0.5)的 InBed 证据只贡献全权的一半 log-odds；sleepad 不受影响。
+// 非 vacuous：去掉 evaluateAndContributeLocked 的 ·radarCoversWeight → half==full → FAIL。
+func TestBayesian_RadarCoversWeight(t *testing.T) {
+	now := int64(0)
+	full := NewBedBayesianScorer()
+	full.IngestEvidence(SignalEvidence{Source: "radar", Kind: "enter", Ts: now, RadarCoversWeight: 1.0})
+	half := NewBedBayesianScorer()
+	half.IngestEvidence(SignalEvidence{Source: "radar", Kind: "enter", Ts: now, RadarCoversWeight: 0.5})
+
+	lf, lh := full.LogOdds(), half.LogOdds()
+	if lf <= 0 {
+		t.Fatalf("全权 radar InBed 应推正 log-odds，got %.3f", lf)
+	}
+	if !approxEqual(lh, lf*0.5, 0.01) {
+		t.Errorf("候选(0.5)radar L=%.3f，应是全权 %.3f 的一半 ≈%.3f", lh, lf, lf*0.5)
+	}
+	// 默认（未设权重，走 On* 直调）= 全权，向后兼容
+	def := NewBedBayesianScorer()
+	def.OnRadarInBed(now)
+	if !approxEqual(def.LogOdds(), lf, 0.01) {
+		t.Errorf("默认权重应 = 全权 %.3f，got %.3f", lf, def.LogOdds())
+	}
+}
+
 // --- Case 2：home/twin 大床翻身假阳，应维持 InBed ---
 
 // TODO: 在 "自不否定" 新原则下重写：big bed roll 必须靠 radar 跨设备否定 sleepad LeftBed，
@@ -239,14 +264,14 @@ func TestBayesian_Case4_NormalLeave_Facility(t *testing.T) {
 
 func TestBayesian_PriorByHour(t *testing.T) {
 	tests := []struct {
-		hour    int
-		wantL   float64
-		wantP   float64
+		hour  int
+		wantL float64
+		wantP float64
 	}{
 		{22, +1.39, 0.80}, // 夜间 21-06
 		{2, +1.39, 0.80},
 		{6, +1.39, 0.80},
-		{7, -0.85, 0.30},  // 白天 7-20
+		{7, -0.85, 0.30}, // 白天 7-20
 		{12, -0.85, 0.30},
 		{20, -0.85, 0.30},
 		{21, +1.39, 0.80}, // 夜间起点

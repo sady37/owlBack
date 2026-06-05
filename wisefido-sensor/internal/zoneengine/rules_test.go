@@ -46,11 +46,11 @@ func TestBedSizeBucket(t *testing.T) {
 		kind string
 		want string
 	}{
-		{"", "small"},                  // 空字符串 = default = standard 走 small
+		{"", "small"}, // 空字符串 = default = standard 走 small
 		{"standard", "small"},
 		{"hospital", "small"},
 		{"twin", "small"},
-		{"unknown_kind", "small"},      // 未识别都走 small
+		{"unknown_kind", "small"}, // 未识别都走 small
 		{"full", "large"},
 		{"queen", "large"},
 		{"king", "large"},

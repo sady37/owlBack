@@ -58,15 +58,24 @@ type RadarRoomCountSink interface {
 	SetZ(roomCIDR string, count int, ts int64)
 }
 
+// BedResolver 按 radar 设备 + 所在 /88 room，用 MM covers 置信解析出该 radar 床事件该归的床 /96。
+// 让 radar 床事件喂到床的 /96（与 sleepad 同 zone），激活 bed_bayesian 双源融合（LR_S+LR_R+γ）。
+// 单床房 covers=1.0 → 解析；多床候选 0.5/0.5 几何分不清 → 返回 ""（退回 radar 自己 /96，待 DBN 把
+// covers 推到 0.95 后自动解析）。nil 或返回 "" 时退回 radar 自己的 /96（保持原行为）。
+type BedResolver interface {
+	ResolveBed(radarAddr, roomPrefix string) (bed string, coversConf float64)
+}
+
 type RadarAdapter struct {
-	client    *redislib.Client
-	engine    *Engine
-	bathroom  BathroomLookup
-	bedDedup  *BedEventDedup       // S5b: InBed/LeftBed per-device 10s 同类 dedup
-	fitness   DeviceFitnessChecker // S6: 设备类 alarm gate
-	presence  BedPresenceSink      // RoomState dedup：bed-area Y 跟踪
-	roomCount RadarRoomCountSink   // RoomState dedup：raw Z 缓存
-	logger    *zap.Logger
+	client      *redislib.Client
+	engine      *Engine
+	bathroom    BathroomLookup
+	bedDedup    *BedEventDedup       // S5b: InBed/LeftBed per-device 10s 同类 dedup
+	fitness     DeviceFitnessChecker // S6: 设备类 alarm gate
+	presence    BedPresenceSink      // RoomState dedup：bed-area Y 跟踪
+	roomCount   RadarRoomCountSink   // RoomState dedup：raw Z 缓存
+	bedResolver BedResolver          // MM covers 解析：radar 床事件按覆盖置信归到床 /96
+	logger      *zap.Logger
 }
 
 const (
@@ -104,6 +113,27 @@ func (a *RadarAdapter) SetRoomCountSink(s RadarRoomCountSink) {
 		return
 	}
 	a.roomCount = s
+}
+
+// SetBedResolver main wiring 注入 MM covers 床解析；不调时 radar 床事件用自己的 /96（原行为）。
+func (a *RadarAdapter) SetBedResolver(r BedResolver) {
+	if a == nil {
+		return
+	}
+	a.bedResolver = r
+}
+
+// resolveBedPref 用 MM covers 把 radar 床事件归到它覆盖的床 /96（与 sleepad 同 zone → bed_bayesian 双源融合）。
+// 无 resolver / 多床候选未定 / 无解析 → 退回 radar 自己的 /96（fallback，保持原行为）。
+// 返回 (床 /96, covers 结构权重)：解析到床带其 covers 置信（喂 bed_bayesian radar 加权）；
+// 退回 radar 自己 /96 时权重 1.0（自家 zone，全权）。
+func (a *RadarAdapter) resolveBedPref(radarAddr, roomPref, fallback string) (string, float64) {
+	if a.bedResolver != nil {
+		if b, conf := a.bedResolver.ResolveBed(radarAddr, roomPref); b != "" {
+			return b, conf
+		}
+	}
+	return fallback, 1.0
 }
 
 // Start 起独立 goroutine 跑读流循环，consumer group 与 cardagg/sensor 现有消费者隔离。
@@ -193,11 +223,13 @@ func (a *RadarAdapter) handleMsg(msg *rediscommon.IoTStreamMessage) {
 		a.applyCount(roomPref, count, msg.Timestamp, fields)
 	case alarm.InBed:
 		if a.bedDedup.Admit(msg.DeviceAddr.String(), "enter", msg.Timestamp) {
-			a.applyBed(bedPref, "enter", msg.Timestamp, fields)
+			bed, w := a.resolveBedPref(msg.DeviceAddr.String(), roomPref, bedPref)
+			a.applyBed(bed, msg.DeviceAddr.String(), w, "enter", msg.Timestamp, fields)
 		}
 	case alarm.LeftBed:
 		if a.bedDedup.Admit(msg.DeviceAddr.String(), "leave", msg.Timestamp) {
-			a.applyBed(bedPref, "leave", msg.Timestamp, fields)
+			bed, w := a.resolveBedPref(msg.DeviceAddr.String(), roomPref, bedPref)
+			a.applyBed(bed, msg.DeviceAddr.String(), w, "leave", msg.Timestamp, fields)
 		}
 	default:
 		// 忽略其它 event_name
@@ -239,17 +271,19 @@ func (a *RadarAdapter) applyCount(roomPref string, count int, ts int64, fields m
 	}
 }
 
-func (a *RadarAdapter) applyBed(bedPref, kind string, ts int64, fields map[string]interface{}) {
+func (a *RadarAdapter) applyBed(bedPref, radarAddr string, coversW float64, kind string, ts int64, fields map[string]interface{}) {
 	if bedPref == "" {
 		return
 	}
 	a.engine.Apply(SignalEvidence{
-		ZoneType:    ZoneTypeBed,
-		ZoneID:      bedPref,
-		Source:      "radar",
-		Kind:        kind,
-		Ts:          ts,
-		TriggerData: fields,
+		ZoneType:          ZoneTypeBed,
+		ZoneID:            bedPref,
+		Source:            "radar",
+		Kind:              kind,
+		Ts:                ts,
+		TriggerData:       fields,
+		RadarCoversWeight: coversW,
+		SourceDevice:      radarAddr,
 	})
 	if a.presence != nil {
 		a.presence.SetRadar(bedPref, kind == "enter", ts)

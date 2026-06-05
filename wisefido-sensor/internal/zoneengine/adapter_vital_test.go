@@ -7,7 +7,10 @@ import (
 
 // stubVitalSource 测试用 VitalSource，固定返回一组 (bedZoneID, ts)。
 type stubVitalSource struct {
-	readings []struct{ bedZoneID string; ts int64 }
+	readings []struct {
+		bedZoneID string
+		ts        int64
+	}
 }
 
 func (s *stubVitalSource) ScanActiveBedVitals(_, _ int64, emit func(string, int64)) {

@@ -19,8 +19,8 @@ func TestClassifyRoomType(t *testing.T) {
 		roomName string
 		want     int
 	}{
-		{card.RoomTypeBathroom, "", card.RoomTypeBathroom},   // 1 直判
-		{card.RoomTypeKitchen, "", card.RoomTypeKitchen},     // 2 直判
+		{card.RoomTypeBathroom, "", card.RoomTypeBathroom},               // 1 直判
+		{card.RoomTypeKitchen, "", card.RoomTypeKitchen},                 // 2 直判
 		{card.RoomTypeDefault, "Master Bathroom", card.RoomTypeBathroom}, // 0 + name 兜底
 		{card.RoomTypeDefault, "Toilet 2F", card.RoomTypeBathroom},
 		{card.RoomTypeDefault, "Living Room", card.RoomTypeDefault},

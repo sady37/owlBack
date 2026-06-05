@@ -826,7 +826,7 @@ func (c *MQTTConsumer) resolveDeviceIdentity(ctx context.Context, uid string) (t
 //
 // addr 是路由层主键；cid 是 SubjectEntity（unbound 时为空，cardagg LPM 反查兜底）。
 func (c *MQTTConsumer) publishRadarMonitorHeartbeat(ctx context.Context, addr netip.Addr, cid string, ts int64) error {
-	hb := observation.Track{TrackID: observation.TrackDevice, TrackConfidence: 80}
+	hb := observation.Track{TrackID: observation.TrackDevice, TrackConfidence: 80, BedStatus: observation.BedStatusUnchanged}
 	msg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "monitor", observation.CategoryHeart, hb.ToFieldMap())
 	return c.streamPublisher.PublishMonitor(ctx, msg)
 }
@@ -947,7 +947,7 @@ func TargetMergeVital(
 
 // radarTrackToData converts a decoded radar track item to observation standard field map.
 func radarTrackToData(tr map[string]interface{}) map[string]any {
-	t := observation.Track{}
+	t := observation.Track{BedStatus: observation.BedStatusUnchanged}
 	if v, ok := tr[observation.FieldTrackID]; ok {
 		t.TrackID = asInt(v)
 	}
@@ -969,12 +969,12 @@ func radarTrackToData(tr map[string]interface{}) map[string]any {
 	if v, ok := tr["event"]; ok {
 		t.Event = asInt(v)
 	}
+	if v, ok := tr["area_id"]; ok {
+		t.AreaID = asInt(v)
+	}
 	data := t.ToFieldMap()
 	if v, ok := tr["remaining_time"]; ok {
 		data[observation.FieldRemainingTime] = asInt(v)
-	}
-	if v, ok := tr["area_id"]; ok {
-		data[observation.FieldAreaID] = asInt(v)
 	}
 	// 雷达无 signal_quality，轨迹置信度固定 80（落在 owlfront ≥80 全饱和档；AI 判 ghost 时覆写到 ≤20）
 	data[observation.FieldTrackConfidence] = 80

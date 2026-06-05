@@ -184,7 +184,23 @@ func (r *AlarmRouter) Handle(ctx context.Context, msg *owlredis.IoTStreamMessage
 		return r.persist(ctx, msg, cardID, eventName, effectiveLevel, data)
 	}
 
-	if !enabled || level == "" {
+	if !enabled {
+		return nil
+	}
+	// level 兜底：producer 未带 level（如 sensor 旧版本 / enablement 缓存 stale 返回空）时
+	// 用 Registry.DefaultLevel，与上方 deviceClassOnset 分支同款。绝不因 level 缺失静默丢 alarm。
+	if level == "" {
+		if def := alarm.LookupAlarm(eventName); def != nil {
+			level = def.DefaultLevel
+		}
+	}
+	if level == "" {
+		// 走到这里说明 eventName 不在 Registry（未知 alarm 类型）——真要丢也必须留痕，
+		// 不再无声 return nil（此前的可观测性黑洞：dropped alarm 在 cardagg 无任何日志）。
+		r.logger.Warn("alarm dropped: no resolvable level",
+			zap.String("event", eventName),
+			zap.String("device_addr", resolvedAddr),
+			zap.String("card_id", cardID))
 		return nil
 	}
 	return r.persist(ctx, msg, cardID, eventName, level, data)
@@ -193,6 +209,7 @@ func (r *AlarmRouter) Handle(ctx context.Context, msg *owlredis.IoTStreamMessage
 func (r *AlarmRouter) persist(ctx context.Context, msg *owlredis.IoTStreamMessage, cardID, eventName, level string, data map[string]interface{}) error {
 	ac := service.AddrCtxFromMsg(msg)
 	triggerData, _ := json.Marshal(data)
+	reasonStr, _ := data["reason"].(string) // Fall 子类型 → alarm_events.reason（此前从不写，列全 null）
 	parentSpan := service.BuildParentSpan(msg.Producer, msg.SequenceNumber)
 
 	// alarm 触发时刻取报警设备 monitor 缓存（HR/RR/position/pose 等所有 raw 字段），
@@ -226,6 +243,7 @@ func (r *AlarmRouter) persist(ctx context.Context, msg *owlredis.IoTStreamMessag
 		AlertedAt:   alertedAt,
 		TriggerData: triggerData,
 		Metadata:    metadata,
+		Reason:      reasonStr,
 		RoomID:      ac.RoomPref,
 		Producer:    msg.Producer,
 		ParentSpan:  parentSpan,
@@ -239,8 +257,19 @@ func (r *AlarmRouter) persist(ctx context.Context, msg *owlredis.IoTStreamMessag
 			zap.Error(err))
 		return err
 	}
-	if result.Deduped || result.SkippedNotify {
+	if result.Deduped {
+		// 可观测性（2026-06-05）：dedup 不再无声 return（此前"被 dedup 丢"在 cardagg 无任何日志，
+		// 排查 Case2"报了没到 UI"时全靠人肉推。Debug 级避免 firmware 同一摔倒 1Hz 刷屏；
+		// active_event_id = 撞上的那条 5min 内 active 同类告警。
+		r.logger.Debug("alarm deduped",
+			zap.String("cid", cardID),
+			zap.String("type", eventName),
+			zap.String("level", level),
+			zap.String("active_event_id", result.EventID))
 		return nil
+	}
+	if result.SkippedNotify {
+		return nil // device-class：已落库审计、仅跳 pop/notify，非丢弃，不另记
 	}
 	r.logger.Info("alarm inserted",
 		zap.String("trace_id", parentSpan),

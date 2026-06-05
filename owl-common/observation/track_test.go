@@ -1,7 +1,7 @@
 // track_test.go — Track.ToFieldMap / FromFieldMap Tier1。
 //
-// BedStatus *int 三态：nil = 未知 / 不适用；*0 = 在床；*1 = 离床。
-// 雷达 / heartbeat 不填即 nil；sleepace InBed 写 *0；LeftBed/silent_fall 写 *1。
+// BedStatus int 三态：InBed(0) = 在床；LeftBed(1) = 离床；Unchanged(8) = 无床数据/不适用。
+// 雷达 / heartbeat 显式置 Unchanged；sleepace InBed 写 0；LeftBed/silent_fall 写 1。
 
 package observation
 
@@ -9,22 +9,22 @@ import "testing"
 
 func ptrInt(v int) *int { return &v }
 
-func TestTrack_ToFieldMap_OmitsNilBedStatus(t *testing.T) {
-	// 默认 BedStatus nil（雷达 heartbeat / radarTrackToData 路径）→ 不应出现 bed_status 键
-	tr := Track{TrackID: 11, TrackConfidence: 80}
+func TestTrack_ToFieldMap_OmitsUnchangedBedStatus(t *testing.T) {
+	// 无床概念设备（雷达 heartbeat / radarTrackToData 路径）显式置 Unchanged → 不应出现 bed_status 键
+	tr := Track{TrackID: 11, TrackConfidence: 80, BedStatus: BedStatusUnchanged}
 	m := tr.ToFieldMap()
 	if _, ok := m[FieldBedStatus]; ok {
-		t.Errorf("BedStatus=nil must be omitted; got map=%+v", m)
+		t.Errorf("BedStatus=Unchanged must be omitted; got map=%+v", m)
 	}
 }
 
 func TestTrack_ToFieldMap_WritesInBedZero(t *testing.T) {
-	// sleepace 在床 = *0 → 必须写出 0（区别于其它 int 字段的 omit-when-zero）
-	tr := Track{TrackID: 0, BedStatus: ptrInt(0)}
+	// sleepace 在床 = InBed(0) → 必须写出 0（区别于其它 int 字段的 omit-when-zero）
+	tr := Track{TrackID: 0, BedStatus: BedStatusInBed}
 	m := tr.ToFieldMap()
 	got, ok := m[FieldBedStatus]
 	if !ok {
-		t.Fatalf("BedStatus=*0 must be written; got map=%+v", m)
+		t.Fatalf("BedStatus=InBed must be written; got map=%+v", m)
 	}
 	if got != 0 {
 		t.Errorf("want bed_status=0, got %v", got)
@@ -32,61 +32,64 @@ func TestTrack_ToFieldMap_WritesInBedZero(t *testing.T) {
 }
 
 func TestTrack_ToFieldMap_WritesLeftBedOne(t *testing.T) {
-	// sleepace LeftBed / silent_fall alarm 写 *1
-	tr := Track{TrackID: 0, BedStatus: ptrInt(1)}
+	// sleepace LeftBed / silent_fall alarm 写 1
+	tr := Track{TrackID: 0, BedStatus: BedStatusLeftBed}
 	m := tr.ToFieldMap()
 	got, ok := m[FieldBedStatus]
 	if !ok {
-		t.Fatalf("BedStatus=*1 must be written; got map=%+v", m)
+		t.Fatalf("BedStatus=LeftBed must be written; got map=%+v", m)
 	}
 	if got != 1 {
 		t.Errorf("want bed_status=1, got %v", got)
 	}
 }
 
-func TestTrack_FromFieldMap_MissingKeyLeavesNil(t *testing.T) {
-	// 流里没 bed_status 键（雷达 heartbeat 等）→ BedStatus 留 nil
+func TestTrack_FromFieldMap_MissingKeyDefaultsUnchanged(t *testing.T) {
+	// 流里没 bed_status 键（雷达 heartbeat 等）→ BedStatus 默认 Unchanged(8)
 	var out Track
 	out.FromFieldMap(map[string]any{FieldTrackID: 11})
-	if out.BedStatus != nil {
-		t.Errorf("missing key must leave BedStatus nil, got *%d", *out.BedStatus)
+	if out.BedStatus != BedStatusUnchanged {
+		t.Errorf("missing key must default BedStatus=Unchanged, got %d", out.BedStatus)
 	}
 }
 
 func TestTrack_RoundTrip_InBedZero(t *testing.T) {
-	in := Track{TrackID: 0, BedStatus: ptrInt(0)}
+	in := Track{TrackID: 0, BedStatus: BedStatusInBed}
 	m := in.ToFieldMap()
 	var out Track
 	out.FromFieldMap(m)
-	if out.BedStatus == nil || *out.BedStatus != 0 {
-		t.Errorf("round-trip *0: want *0, got %v", out.BedStatus)
+	if out.BedStatus != BedStatusInBed {
+		t.Errorf("round-trip InBed: want 0, got %d", out.BedStatus)
 	}
 }
 
 func TestTrack_RoundTrip_LeftBedOne(t *testing.T) {
-	in := Track{TrackID: 0, BedStatus: ptrInt(1)}
+	in := Track{TrackID: 0, BedStatus: BedStatusLeftBed}
 	m := in.ToFieldMap()
 	var out Track
 	out.FromFieldMap(m)
-	if out.BedStatus == nil || *out.BedStatus != 1 {
-		t.Errorf("round-trip *1: want *1, got %v", out.BedStatus)
+	if out.BedStatus != BedStatusLeftBed {
+		t.Errorf("round-trip LeftBed: want 1, got %d", out.BedStatus)
 	}
 }
 
-func TestTrack_RoundTrip_NilUnknown(t *testing.T) {
-	// 雷达 Track{} 默认 BedStatus nil → encode 不写 → decode 仍 nil
-	in := Track{TrackID: 11}
+func TestTrack_RoundTrip_Unchanged(t *testing.T) {
+	// 无床概念设备显式置 Unchanged(8) → encode 不写 → decode 回 Unchanged
+	in := Track{TrackID: 11, BedStatus: BedStatusUnchanged}
 	m := in.ToFieldMap()
+	if _, ok := m[FieldBedStatus]; ok {
+		t.Errorf("Unchanged must be omitted from map; got %+v", m)
+	}
 	var out Track
 	out.FromFieldMap(m)
-	if out.BedStatus != nil {
-		t.Errorf("round-trip nil: want nil, got *%d", *out.BedStatus)
+	if out.BedStatus != BedStatusUnchanged {
+		t.Errorf("round-trip Unchanged: want 8, got %d", out.BedStatus)
 	}
 }
 
 func TestTrack_ToFieldMap_PreservesOtherZeroOmissions(t *testing.T) {
-	// 其它 int 字段维持 omit-when-zero（HeartRate=0 / Pose=0 / etc）
-	tr := Track{TrackID: 11}
+	// 其它 int 字段维持 omit-when-zero（HeartRate=0 / Pose=0 / etc）；BedStatus 用 Unchanged 同样省略
+	tr := Track{TrackID: 11, BedStatus: BedStatusUnchanged}
 	m := tr.ToFieldMap()
 	for _, k := range []string{FieldHeartRate, FieldRespiratoryRate, FieldPose, FieldEvent, FieldBodyMove, FieldTurnOver, FieldBedStatus} {
 		if _, ok := m[k]; ok {

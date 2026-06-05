@@ -149,7 +149,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		}
 		cur[b.TrackID] = struct{}{}
 		x, y, z := b.X, b.Y, b.Z
-		tr := observation.Track{Pose: b.Pose, PositionX: &x, PositionY: &y, PositionZ: &z}
+		tr := observation.Track{BedStatus: observation.BedStatusUnchanged, Pose: b.Pose, PositionX: &x, PositionY: &y, PositionZ: &z}
 		ts := tm.tracks[b.TrackID]
 		if ts != nil {
 			obs = append(obs, radarFrameAdapter(tr, ts, grid, nowMs)...)

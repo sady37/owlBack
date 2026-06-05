@@ -645,6 +645,7 @@ func (r *BathroomFallRules) fireFallCore(
 		DeviceAddr: b.DeviceAddr,
 		RoomID:     roomID,
 		Track: observation.Track{
+			BedStatus: observation.BedStatusUnchanged,
 			TrackID:   b.TrackID,
 			PositionX: intPtr(b.RawH),
 			PositionY: intPtr(b.RawV),

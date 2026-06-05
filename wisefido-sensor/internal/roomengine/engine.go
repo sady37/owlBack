@@ -79,6 +79,12 @@ type RoomConfig struct {
 	Radars     []radarutils.RadarMount
 	RadarAddrs []string
 
+	// DeviceBeds per-device(/128) 各自 canvas 画的床矩形 + 高度。多雷达房不合并：covers 计算
+	// 必须用**该雷达自己 layout** 的床（D523 自己没画床 → covers=0），不能借别台 canvas 的床
+	// （device-local 帧未配准，跨系判定无意义）。key = deviceAddr。
+	DeviceBeds       map[string][]radarutils.Rect
+	DeviceBedHeights map[string][]int
+
 	// Sleepad 位置（point 几何，可能多个）— 用于事件路由 + 可视化
 	Sleepads []radarutils.Point
 
@@ -153,6 +159,8 @@ type Engine struct {
 	grids        map[string]*RoomGrid             // roomID → Grid
 	deviceMounts map[string]radarutils.RadarMount // deviceAddr(/128) → 该 radar 安装参数（坐标转换用）；多雷达房每台一份
 	deviceRoom   map[string]string                // deviceAddr → roomID (sensor 唯一物理寻址)
+	deviceBeds   map[string][]radarutils.Rect     // deviceAddr(/128) → 该设备**自己 canvas** 的 bed 矩形（MM covers 只用本台 layout，不跨系借别台床）
+	deviceBedHs  map[string][]int                 // deviceAddr → 各 bed 高度（与 deviceBeds 同序）
 	// PR-8: AI publish 用 — 源 radar UUID 反查 deviceUID + room 反查 tenant/card
 	deviceAddrToUID  map[string]string // deviceAddr(UUID) → device_uid（IoTStreamMessage.DeviceUID）
 	deviceAddrToType map[string]string // deviceAddr(UUID) → 源 sensor 类型（"Radar"/"Sleepad"），AI publish 加 ".AI<node>" 后缀
@@ -318,6 +326,8 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		grids:               make(map[string]*RoomGrid),
 		deviceMounts:        make(map[string]radarutils.RadarMount),
 		deviceRoom:          make(map[string]string),
+		deviceBeds:          make(map[string][]radarutils.Rect),
+		deviceBedHs:         make(map[string][]int),
 		deviceAddrToUID:     make(map[string]string),
 		deviceAddrToType:    make(map[string]string),
 		roomTenants:         make(map[string]string),
@@ -476,6 +486,75 @@ func (e *Engine) MountForDevice(deviceAddr string) (radarutils.RadarMount, bool)
 	}
 	m, ok := e.deviceMounts[e.deviceRoom[deviceAddr]]
 	return m, ok
+}
+
+// RealPeopleInRoom 该房非 ghost track 数（去掉 owl 判出的 ghost）。zoneengine room total_people
+// 用作 radar_np（替 firmware number_people——后者含 ghost）。房未注册 → -1（caller 退回 firmware）。
+// roomID 用 netip 归一匹配，避免 zoneengine CIDR 文本 与 e.rooms key(DB room_id::text) 格式差异。
+func (e *Engine) RealPeopleInRoom(roomID string) int {
+	want, err := netip.ParsePrefix(roomID)
+	if err != nil {
+		return -1
+	}
+	e.mu.RLock()
+	var tm *TrackManager
+	if t, ok := e.rooms[roomID]; ok {
+		tm = t
+	} else {
+		for k, t := range e.rooms {
+			if kp, perr := netip.ParsePrefix(k); perr == nil && kp == want {
+				tm = t
+				break
+			}
+		}
+	}
+	e.mu.RUnlock()
+	if tm == nil {
+		return -1
+	}
+	return tm.NonGhostTrackCount()
+}
+
+// RadarBedReachCount 数本 radar 边界内有几张床——**只用该 radar 自己 canvas 画的床**(e.deviceBeds[addr])，
+// 取每张床矩形中心 + 床高判 SignalReachable。covers 谓词用之：m=本数 / n=房内 bed 前缀数。
+// 本台 layout 没画床(如 D523) → rects 空 → m=0 → covers=0，不会借别台(9e7)的床跨系误判。
+func (e *Engine) RadarBedReachCount(deviceAddr string) int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	roomID := e.deviceRoom[deviceAddr]
+	mount, ok := e.deviceMounts[deviceAddr]
+	if !ok {
+		mount, ok = e.deviceMounts[roomID]
+	}
+	if !ok {
+		return 0
+	}
+	rects := e.deviceBeds[deviceAddr]
+	hs := e.deviceBedHs[deviceAddr]
+	boundary := radarutils.BoundaryVertices(mount)
+	m := 0
+	for i, r := range rects {
+		r = r.Norm()
+		cx, cy := (r.X1+r.X2)/2, (r.Y1+r.Y2)/2
+		z := 0
+		if i < len(hs) {
+			z = hs[i]
+		}
+		reach := mount.SignalReachable(cx, cy, z)
+		if reach {
+			m++
+		}
+		e.logger.Info("covers_geom_trace",
+			zap.String("radar", deviceAddr), zap.String("room", roomID),
+			zap.Int("mount_cx", mount.Center.X), zap.Int("mount_cy", mount.Center.Y),
+			zap.Int("mount_z", mount.Center.Z), zap.Int("rotation", mount.Rotation),
+			zap.Int("install", int(mount.InstallModel)), zap.Int("boundary_verts", len(boundary)),
+			zap.Any("boundary", boundary),
+			zap.Int("bed_idx", i), zap.Int("bed_x1", r.X1), zap.Int("bed_y1", r.Y1),
+			zap.Int("bed_x2", r.X2), zap.Int("bed_y2", r.Y2),
+			zap.Int("bed_cx", cx), zap.Int("bed_cy", cy), zap.Bool("reachable", reach))
+	}
+	return m
 }
 
 // MarkFakeAlarmAt 在指定房间的 cell at (x, y) 累计 FakeAlarmCount + 1。
@@ -1070,6 +1149,14 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	if fields == nil {
 		fields = make(map[string]interface{})
 	}
+	// alarm 流必带 alarm_level：level 由 Registry.DefaultLevel 唯一定义（与 zonealarm
+	// alarm_back_channel.mergeTriggerData 同字段同源）。producer 自带 level 是 cardagg
+	// platform-agent trust 放行的前提——缺了会在 alarm_router 因 level=="" 静默丢弃。
+	if topicType == "alarm" {
+		if def := alarm.LookupAlarm(category); def != nil && def.DefaultLevel != "" {
+			fields["alarm_level"] = def.DefaultLevel
+		}
+	}
 	// sensor-specific 业务扩展字段平铺
 	if p.Track.PositionX != nil {
 		fields[observation.FieldPositionX] = *p.Track.PositionX
@@ -1090,8 +1177,8 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 		fields["decision_event"] = p.Event
 	}
 	// AI 派生 track_verdict 与床状态无关；仅 sleepad_radar_conflict 显式传 BedStatus 才保留。
-	if p.Track.BedStatus != nil {
-		fields[observation.FieldBedStatus] = *p.Track.BedStatus
+	if p.Track.BedStatus != observation.BedStatusUnchanged {
+		fields[observation.FieldBedStatus] = p.Track.BedStatus
 	}
 	// area_type engine 自己算（observation.Track 的 AreaType 是字符串，engine 这边类型不同）
 	if g != nil {
@@ -1314,6 +1401,12 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	}
 
 	e.grids[cfg.RoomID] = grid
+	// MM covers 几何：per-device 保留各台**自己 canvas** 的 bed 矩形（RadarBedReachCount 只数本台 layout
+	// 的床，不用合并后的房级床——多雷达房 device-local 帧未配准，借别台的床判定无意义）。
+	for addr, beds := range cfg.DeviceBeds {
+		e.deviceBeds[addr] = append([]radarutils.Rect(nil), beds...)
+		e.deviceBedHs[addr] = append([]int(nil), cfg.DeviceBedHeights[addr]...)
+	}
 	// per-device mount：每台 radar 的 deviceAddr → 自己 mount，handleMessage 按帧来源 device 取。
 	// 单雷达 / 老路径无 RadarAddrs 时回退把 roomID 当 key（与历史 e.mounts[roomID] 等价）。
 	if len(cfg.RadarAddrs) == len(radars) && len(cfg.RadarAddrs) > 0 {
@@ -1759,7 +1852,8 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 		if len(frames) == 0 {
 			// tid=88 heartbeat / 全零无效帧被 ParseRadarTracks 过滤后，仍要 tick 推进 MissCount，
 			// 否则之前活着的 track 永不进入消失判定 → silent/lost fall pending 不会创建。
-			tm.Tick(ts)
+			// NoTargetTick 标记"固件明示无目标"，触发 88-加速驱逐（治 Case2 142s 陈旧 track）。
+			tm.NoTargetTick(ts)
 			return
 		}
 		outputs := tm.ProcessFrame(frames)

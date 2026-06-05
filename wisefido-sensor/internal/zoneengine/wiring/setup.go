@@ -143,6 +143,7 @@ func Setup(opts SetupOptions) (*Subsystem, error) {
 
 	// 4) input adapters
 	radar := zoneengine.NewRadarAdapter(opts.Redis, engine, spatial, opts.Logger)
+	// BedResolver 由 main wiring 注入 MatrixCache（需 engine 几何，在 Setup 之后构造）；见 main.go。
 	sleepace := zoneengine.NewSleepaceAdapter(opts.Redis, engine, opts.Logger)
 	if opts.Fitness != nil {
 		radar.SetFitnessChecker(opts.Fitness)
