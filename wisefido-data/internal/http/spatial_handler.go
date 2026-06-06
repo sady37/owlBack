@@ -38,17 +38,31 @@ type SpatialHandler struct {
 	db     *sql.DB
 	ddns   *ddns.Client // 可选
 	logger *zap.Logger
+	// reconcile: room/bed CRUD 后按 unit /80 对账 cards + 发 config:card(= cardSyncService.ReconcileCards)；nil 跳过
+	reconcile func(ctx context.Context, unitScope string) error
 }
 
 // NewSpatialHandler 构造。
 // 注意：spatial RegisterDevice 只在 tenant 内移位（/48 永远不变），不触发 Sleepace bind/unbind；
 // Sleepace 厂家 bind 唯一时机 = tenant 边界转移（device_store_service.BatchUpdateDeviceStoresNotify）。
-func NewSpatialHandler(backend ipam.Backend, db *sql.DB, ddnsClient *ddns.Client, logger *zap.Logger) *SpatialHandler {
+func NewSpatialHandler(backend ipam.Backend, db *sql.DB, ddnsClient *ddns.Client, reconcile func(context.Context, string) error, logger *zap.Logger) *SpatialHandler {
 	return &SpatialHandler{
-		ipam:   backend,
-		db:     db,
-		ddns:   ddnsClient,
-		logger: logger,
+		ipam:      backend,
+		db:        db,
+		ddns:      ddnsClient,
+		reconcile: reconcile,
+		logger:    logger,
+	}
+}
+
+// reconcileUnitFor: 从 room/bed 前缀 mask 到 /80 unit，触发 card 对账 + config:card(通知 sensor 重建 MM)。
+func (h *SpatialHandler) reconcileUnitFor(ctx context.Context, prefix netip.Prefix) {
+	if h.reconcile == nil {
+		return
+	}
+	unit := netip.PrefixFrom(prefix.Addr(), 80).Masked()
+	if err := h.reconcile(ctx, unit.String()); err != nil {
+		h.logger.Warn("v2 spatial: reconcile after CRUD failed", zap.String("unit", unit.String()), zap.Error(err))
 	}
 }
 
@@ -1010,6 +1024,7 @@ func (h *SpatialHandler) allocRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.logger.Info("v2 spatial: room allocated", zap.String("prefix", prefix.String()))
+	h.reconcileUnitFor(r.Context(), prefix) // 对账 cards + 通知 MM
 	writeJSON(w, http.StatusOK, Ok(allocResp{Prefix: prefix.String()}))
 }
 
@@ -1271,6 +1286,7 @@ func (h *SpatialHandler) deleteRoom(w http.ResponseWriter, r *http.Request, pref
 		return
 	}
 	h.logger.Info("v2 spatial: room deleted", zap.String("prefix", prefix.String()))
+	h.reconcileUnitFor(r.Context(), prefix) // 对账 cards + 通知 MM
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"prefix": prefix.String(), "deleted": true}))
 }
 
@@ -1387,6 +1403,7 @@ func (h *SpatialHandler) allocBed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.logger.Info("v2 spatial: bed allocated", zap.String("prefix", prefix.String()))
+	h.reconcileUnitFor(r.Context(), prefix) // 对账 cards + 通知 MM
 	writeJSON(w, http.StatusOK, Ok(allocResp{Prefix: prefix.String()}))
 }
 
@@ -1635,6 +1652,7 @@ func (h *SpatialHandler) deleteBed(w http.ResponseWriter, r *http.Request, prefi
 		return
 	}
 	h.logger.Info("v2 spatial: bed deleted", zap.String("prefix", prefix.String()))
+	h.reconcileUnitFor(r.Context(), prefix) // 对账 cards + 通知 MM
 	writeJSON(w, http.StatusOK, Ok(map[string]any{"prefix": prefix.String(), "deleted": true}))
 }
 

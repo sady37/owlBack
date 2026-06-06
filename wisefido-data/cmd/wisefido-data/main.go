@@ -528,7 +528,12 @@ func main() {
 	// 注册 v2 spatial IPAM/DDNS API（owl_v2 IPv6 体系）— 独立于 v1
 	// owl-common/ipam.PGBackend 直接走 dbv2 spatial 表 + 可选 kea audit
 	if db != nil {
-		registerSpatial(router, db, ddnsClient, logger)
+		// v2 spatial room/bed CRUD 后按 unit 对账 cards + 发 config:card(通知 sensor 重建 MM)；cardSyncService 不可用时为 nil(跳过)
+		var spatialReconcile func(context.Context, string) error
+		if cardSyncService != nil {
+			spatialReconcile = cardSyncService.ReconcileCards
+		}
+		registerSpatial(router, db, ddnsClient, spatialReconcile, logger)
 	}
 
 	// 注册内部 baseline API（供 gate/cardagg 查询 device→card 映射，/internal/ 跳过 auth）
@@ -827,7 +832,7 @@ func subscribeDataStream(ctx context.Context, logger *zap.Logger, redisClient *r
 //   DDNS_ALGO     hmac-sha256
 //   DDNS_TSIG_SECRET  base64
 //   OWL_DOMAIN    owl.
-func registerSpatial(router *httpapi.Router, db *sql.DB, ddnsClient *ddns.Client, logger *zap.Logger) {
+func registerSpatial(router *httpapi.Router, db *sql.DB, ddnsClient *ddns.Client, reconcile func(context.Context, string) error, logger *zap.Logger) {
 	// kea audit (可选)
 	var keaClient *ipam.KeaClient
 	if url := os.Getenv("KEA_CTRL_URL"); url != "" {
@@ -847,7 +852,7 @@ func registerSpatial(router *httpapi.Router, db *sql.DB, ddnsClient *ddns.Client
 	}
 	backend := ipam.NewPGBackendWithKea(db, keaClient)
 
-	handler := httpapi.NewSpatialHandler(backend, db, ddnsClient, logger)
+	handler := httpapi.NewSpatialHandler(backend, db, ddnsClient, reconcile, logger)
 	router.RegisterSpatialRoutes(handler)
 	logger.Info("v2 spatial: API registered at /admin/api/v2/spatial/*")
 }

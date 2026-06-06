@@ -100,6 +100,14 @@ func (s *CardSyncService) ReconcileCards(ctx context.Context, scope string) erro
 		s.reconcileObserver(scope, diffs)
 	}
 	s.emitDiffs(ctx, scope, diffs)
+	// 任何 room/bed/unit CRUD 都经 syncCardsForUnit → 此处。即使无 card diff(如新增/删除空床)，
+	// 也无条件补发一条 unit-scope config:card，让 sensor 重建该 unit 的 MM 方阵(scoped invalidate)。
+	if s.publisher != nil {
+		if err := s.publisher.PublishConfigChanged(ctx, "update", []string{scope}, nil, nil); err != nil {
+			s.logger.Warn("ReconcileCards: publish unit-scope config:card failed",
+				zap.String("scope", scope), zap.Error(err))
+		}
+	}
 	s.ensureDDNSForExpected(ctx, scope, expected)
 	return nil
 }
