@@ -543,14 +543,11 @@ func (s *RadarInstall) CallDeviceFunction(ctx context.Context, uid string, dev i
 // uid 为 firmware MAC（不变量），handler 已通过 GetDeviceByUID 完成 scope check 后传入。
 // keys 为空时读全部；有则按序只查这些 key，wisefido-qinglan 内分笔 MQTT、指令间 50ms。
 // 返回 JSON 字符串，包含雷达配置参数
-func (s *RadarInstall) GetOriginalProperties(ctx context.Context, deviceAddr, uid string, keys []string) (string, error) {
+func (s *RadarInstall) GetOriginalProperties(ctx context.Context, uid string, keys []string) (string, error) {
 	properties, err := s.GetDeviceProperties(ctx, uid, keys)
 	if err != nil {
 		return "", err
 	}
-
-	// 设备已稳定时的固件实报值落 spatial_config radar.*，供 sensor 查库；脱敏前用原始 map。
-	s.persistRadarConfigSnapshot(ctx, deviceAddr, properties)
 
 	// 返回前对 ssid_password 脱敏：冒号后部分改为 *******（SSID:password 中的 password）
 	if v, ok := properties["ssid_password"]; ok && v != nil {
@@ -577,8 +574,7 @@ func (s *RadarInstall) GetOriginalPropertiesFromDB(ctx context.Context, tenantID
 // boundary_left/right/front/rear，可选 area_{i}_id/type/x1..y4；经 encode.EncodeV1ConfigToDeviceProps 转成
 // radar_install_style、rectangle、declare_area 等后通过 qinglan 写入（安装/边界/区域可能触发重启）。
 // 返回设备响应码（200=成功）和错误，供 HTTP 层透传 device_addr 给前端。
-// 下发成功后异步 verify 回读固件落 spatial_config radar.*（"保证写入"，详 radar_config_snapshot.go）。
-func (s *RadarInstall) UpdateConfig(ctx context.Context, deviceAddr, uid string, config map[string]interface{}) (deviceCode int, err error) {
+func (s *RadarInstall) UpdateConfig(ctx context.Context, uid string, config map[string]interface{}) (deviceCode int, err error) {
 	// 前端已完成格式转换（cm→dm、boundary→rectangle 等），此处透传
 	properties := config
 	encodeLogFields := []zap.Field{zap.String("uid", uid), zap.Int("config_keys", len(config)), zap.Int("properties_keys", len(properties))}
@@ -600,11 +596,7 @@ func (s *RadarInstall) UpdateConfig(ctx context.Context, deviceAddr, uid string,
 	}
 
 	// 3. 设置设备属性，透传设备响应码给发起端
-	deviceCode, err = s.SetDeviceProperties(ctx, uid, properties)
-	if err == nil {
-		go s.verifyRadarConfigActual(deviceAddr, uid)
-	}
-	return deviceCode, err
+	return s.SetDeviceProperties(ctx, uid, properties)
 }
 
 // BindDevice 绑定设备（标记订阅该设备数据）。当 vue-radar 画布中 bind 设备时调用。

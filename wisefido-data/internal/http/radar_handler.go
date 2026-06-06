@@ -536,7 +536,7 @@ func (h *RadarHandler) GetOriginalProperties(w http.ResponseWriter, r *http.Requ
 			}
 		}
 	}
-	propertiesJSON, err := h.radarInstall.GetOriginalProperties(r.Context(), device.DeviceAddr, deviceUID, keys)
+	propertiesJSON, err := h.radarInstall.GetOriginalProperties(r.Context(), deviceUID, keys)
 	if err != nil {
 		h.logger.Error("GetOriginalProperties failed",
 			zap.String("uid", deviceUID), zap.Error(err))
@@ -608,7 +608,7 @@ func (h *RadarHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		logFields = append(logFields, zap.Any("rectangle", v))
 	}
 	h.logger.Info("UpdateConfig", logFields...)
-	deviceCode, err := h.radarInstall.UpdateConfig(r.Context(), device.DeviceAddr, deviceUID, config)
+	deviceCode, err := h.radarInstall.UpdateConfig(r.Context(), deviceUID, config)
 	if err != nil {
 		h.logger.Error("UpdateConfig failed",
 			zap.String("uid", deviceUID), zap.Int("device_code", deviceCode), zap.Error(err))

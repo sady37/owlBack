@@ -415,16 +415,17 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(
 	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO spatial_config (
-			spatial_prefix, config_key, config_value,
+			spatial_prefix, config_key, config_value, device_uid,
 			source, state_db, last_synced_at, updated_at, updated_by
 		) VALUES (
-			$1::inet, $2, $3::jsonb,
+			$1::inet, $2, $3::jsonb, (SELECT device_uid FROM devices WHERE device_addr = $1::inet),
 			'manual_ui', 3, now(), now(), $4::uuid
 		)
 		ON CONFLICT (spatial_prefix, config_key) DO UPDATE SET
 			config_value   = EXCLUDED.config_value,
 			source         = EXCLUDED.source,
 			state_db       = EXCLUDED.state_db,
+			device_uid     = EXCLUDED.device_uid,
 			last_synced_at = EXCLUDED.last_synced_at,
 			updated_at     = EXCLUDED.updated_at,
 			updated_by     = EXCLUDED.updated_by
