@@ -79,7 +79,7 @@ N_TRACK=$(cnt "SELECT count(*) FROM monitor_stream WHERE stream_type='radar.trac
 N_HEART=$(cnt "SELECT count(*) FROM monitor_stream WHERE stream_type='radar.heart' AND device_addr='${RADAR_ADDR}' AND ts BETWEEN '${WS}' AND '${WE}';")
 N_SLP=$(cnt "SELECT count(*) FROM monitor_stream WHERE stream_type='sleepad.track' ${SLP_FILTER} AND ts BETWEEN '${WS}' AND '${WE}';")
 N_EVT=$(cnt "SELECT count(*) FROM event_log WHERE device_addr IN (${DEVSET}) AND ts BETWEEN '${WS}' AND '${WE}';")
-N_ALM=$(cnt "SELECT count(*) FROM alarm_events WHERE device_addr IN (${DEVSET}) AND triggered_at BETWEEN '${WS}' AND '${WE}';")
+N_ALM=$(cnt "SELECT count(*) FROM alarm_events WHERE device_addr IN (${DEVSET}) AND coalesce(alerted_at, triggered_at) BETWEEN '${WS}' AND '${WE}';")
 
 # 主体（含自动派生 STATE 行）
 BODY="$("${PSQL[@]}" -c "
@@ -114,7 +114,7 @@ WITH base AS (
         THEN format(' [事故@%s 回填→fire@%s]', to_char(triggered_at AT TIME ZONE 'UTC','HH24:MI:SS'),
                to_char(alerted_at AT TIME ZONE 'UTC','HH24:MI:SS'))
         ELSE coalesce(' pose='||(payload->>'pose'), '') END)
-  FROM alarm_events WHERE device_addr IN (${DEVSET}) AND triggered_at BETWEEN '${WS}' AND '${WE}'
+  FROM alarm_events WHERE device_addr IN (${DEVSET}) AND coalesce(alerted_at, triggered_at) BETWEEN '${WS}' AND '${WE}'
   -- ===== 自动派生 STATE（bed_state: InBed/LeftBed 事件; room_state: Enter/Exit/np=0）=====
   UNION ALL
   SELECT ts, 0, '---', '-', '>>> STATE     ',
