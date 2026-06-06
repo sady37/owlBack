@@ -162,7 +162,7 @@ WITH base AS (
       ||'  (来源: '||right(host(device_addr),4)||' '||event_kind||')'
   FROM event_log WHERE device_addr IN (${DEVSET}) AND event_kind IN ('EnterRoom','ExitRoom') AND ts BETWEEN '${WS}' AND '${WE}'
 )
-SELECT to_char(ts AT TIME ZONE 'UTC','HH24:MI:SS') ||'  | '|| dev ||' | tid'|| lpad(tid,3) ||' | '|| typ ||' | '|| line
+SELECT to_char(ts AT TIME ZONE 'UTC','HH24:MI:SS.MS') ||' | '|| dev ||' | tid'|| lpad(tid,3) ||' | '|| typ ||' | '|| line
 FROM base ORDER BY ts, pri
 ")"
 
@@ -170,7 +170,7 @@ FROM base ORDER BY ts, pri
   echo "================================================================================"
   echo " 床态测试完整记录   case=${CASE_NAME}"
   echo " 窗口(本地 ${TZ_ARG}): ${START_ARG} – ${END_ARG}"
-  echo " 窗口(UTC): ${WS} – ${WE}   (下表时间列为 UTC, HH:MM:SS)"
+  echo " 窗口(UTC): ${WS} – ${WE}   (下表时间列为 UTC, HH:MM:SS.mmm — ms 精度可见断连/补发 burst)"
   [[ -n "$ANCHOR_NOTE" ]] && echo " ${ANCHOR_NOTE}"
   echo " radar   = ${RADAR_UID} (${RADAR_ADDR})"
   [[ -n "$SLEEPAD_ADDR" ]] && echo " sleepad = ${SLEEPAD_UID} (${SLEEPAD_ADDR})"
