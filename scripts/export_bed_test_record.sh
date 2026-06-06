@@ -137,7 +137,7 @@ WITH base AS (
       coalesce(payload->0->>'vital_confidence','-'))
   FROM monitor_stream WHERE stream_type='sleepad.track' ${SLP_FILTER} AND ts BETWEEN '${WS}' AND '${WE}'
   UNION ALL
-  SELECT ts, 1, right(host(device_addr),4), coalesce(payload->0->>'track_id','-'), 'EVENT '||rpad(event_kind,12),
+  SELECT ts, 1, right(host(device_addr),4), coalesce(payload->0->>'track_id','-'), 'EVENT '||rpad(CASE event_kind WHEN 'number_people' THEN 'np' ELSE event_kind END,12),
     (SELECT string_agg(k||'='||v,' ' ORDER BY k) FROM jsonb_each_text(payload->0) e(k,v))
   FROM event_log WHERE device_addr IN (${DEVSET}) AND ts BETWEEN '${WS}' AND '${WE}'
   UNION ALL
