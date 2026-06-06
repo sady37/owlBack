@@ -84,43 +84,44 @@ N_ALM=$(cnt "SELECT count(*) FROM alarm_events WHERE device_addr IN (${DEVSET}) 
 # 主体（含自动派生 STATE 行）
 BODY="$("${PSQL[@]}" -c "
 WITH base AS (
-  SELECT ts AS ts, 1 AS pri, right(host(device_addr),4) AS dev, 'track         ' AS typ,
-    format('pose=%s xy=(%s,%s) z=%s tid=%s area=%s conf=%s', payload->0->>'pose', payload->0->>'position_x',
-      payload->0->>'position_y', payload->0->>'position_z', payload->0->>'track_id', payload->0->>'area_id',
+  SELECT ts AS ts, 1 AS pri, right(host(device_addr),4) AS dev,
+    coalesce(payload->0->>'track_id','-') AS tid, 'track         ' AS typ,
+    format('pose=%s xy=(%s,%s) z=%s area=%s conf=%s', payload->0->>'pose', payload->0->>'position_x',
+      payload->0->>'position_y', payload->0->>'position_z', payload->0->>'area_id',
       payload->0->>'track_confidence') AS line
   FROM monitor_stream WHERE stream_type='radar.track' AND device_addr='${RADAR_ADDR}' AND ts BETWEEN '${WS}' AND '${WE}'
   UNION ALL
-  SELECT ts, 1, right(host(device_addr),4), 'radar.heart   ',
-    format('tid=%s conf=%s (payload 不含 HR/RR)', payload->0->>'track_id', payload->0->>'track_confidence')
+  SELECT ts, 1, right(host(device_addr),4), coalesce(payload->0->>'track_id','-'), 'radar.heart   ',
+    format('conf=%s (payload 不含 HR/RR)', payload->0->>'track_confidence')
   FROM monitor_stream WHERE stream_type='radar.heart' AND device_addr='${RADAR_ADDR}' AND ts BETWEEN '${WS}' AND '${WE}'
   UNION ALL
-  SELECT ts, 1, right(host(device_addr),4), 'sleepad.track ',
+  SELECT ts, 1, right(host(device_addr),4), coalesce(payload->0->>'track_id','-'), 'sleepad.track ',
     format('bed=%s move=%s turn=%s HR=%s RR=%s pc=%s vc=%s', coalesce(payload->0->>'bed_status','-'),
       coalesce(payload->0->>'body_move','-'), coalesce(payload->0->>'turn_over','-'), coalesce(payload->0->>'heart_rate','-'),
       coalesce(payload->0->>'respiratory_rate','-'), coalesce(payload->0->>'pose_confidence','-'),
       coalesce(payload->0->>'vital_confidence','-'))
   FROM monitor_stream WHERE stream_type='sleepad.track' ${SLP_FILTER} AND ts BETWEEN '${WS}' AND '${WE}'
   UNION ALL
-  SELECT ts, 1, right(host(device_addr),4), 'EVENT '||rpad(event_kind,12),
+  SELECT ts, 1, right(host(device_addr),4), coalesce(payload->0->>'track_id','-'), 'EVENT '||rpad(event_kind,12),
     (SELECT string_agg(k||'='||v,' ' ORDER BY k) FROM jsonb_each_text(payload->0) e(k,v))
   FROM event_log WHERE device_addr IN (${DEVSET}) AND ts BETWEEN '${WS}' AND '${WE}'
   UNION ALL
-  SELECT triggered_at, 1, right(host(device_addr),4), '*** ALARM     ',
+  SELECT triggered_at, 1, right(host(device_addr),4), coalesce(payload->>'track_id','-'), '*** ALARM     ',
     format('%s lvl=%s reason=%s status=%s pose=%s', event_type, alarm_level, coalesce(reason,'-'), alarm_status, payload->>'pose')
   FROM alarm_events WHERE device_addr IN (${DEVSET}) AND triggered_at BETWEEN '${WS}' AND '${WE}'
   -- ===== 自动派生 STATE（bed_state: InBed/LeftBed 事件; room_state: Enter/Exit/np=0）=====
   UNION ALL
-  SELECT ts, 0, '---', '>>> STATE     ',
+  SELECT ts, 0, '---', '-', '>>> STATE     ',
     'bed_state -> '||CASE event_kind WHEN 'InBed' THEN 'InBed' ELSE 'NotInBed' END
       ||'  (来源: '||right(host(device_addr),4)||' '||event_kind||')'
   FROM event_log WHERE device_addr IN (${DEVSET}) AND event_kind IN ('InBed','LeftBed') AND ts BETWEEN '${WS}' AND '${WE}'
   UNION ALL
-  SELECT ts, 0, '---', '>>> STATE     ',
+  SELECT ts, 0, '---', '-', '>>> STATE     ',
     'room_state -> '||CASE event_kind WHEN 'EnterRoom' THEN 'Occupied' ELSE 'Vacant' END
       ||'  (来源: '||right(host(device_addr),4)||' '||event_kind||')'
   FROM event_log WHERE device_addr IN (${DEVSET}) AND event_kind IN ('EnterRoom','ExitRoom') AND ts BETWEEN '${WS}' AND '${WE}'
 )
-SELECT to_char(ts AT TIME ZONE 'UTC','HH24:MI:SS') ||'  | '|| dev ||' | '|| typ ||' | '|| line
+SELECT to_char(ts AT TIME ZONE 'UTC','HH24:MI:SS') ||'  | '|| dev ||' | tid'|| lpad(tid,3) ||' | '|| typ ||' | '|| line
 FROM base ORDER BY ts, pri
 ")"
 
@@ -132,6 +133,8 @@ FROM base ORDER BY ts, pri
   echo " radar   = ${RADAR_UID} (${RADAR_ADDR})"
   [[ -n "$SLEEPAD_ADDR" ]] && echo " sleepad = ${SLEEPAD_UID} (${SLEEPAD_ADDR})"
   echo "--------------------------------------------------------------------------------"
+  echo " 列: 时间(UTC) | dev(addr后4) | tid(track_id) | 类型 | 明细"
+  echo " tid: 真人 0-8 / 9=vital / 10=space(np 事件) / 11=device(心跳) / 88=无目标 / - =派生态无轨"
   echo " 行类型: track(radar.track ${N_TRACK}) / radar.heart(${N_HEART},无HR/RR) / sleepad.track(${N_SLP})"
   echo "        / EVENT(event_log ${N_EVT}) / *** ALARM(${N_ALM}) / >>> STATE(自动派生 bed/room 转换)"
   echo "--------------------------------------------------------------------------------"
