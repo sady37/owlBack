@@ -106,8 +106,14 @@ WITH base AS (
     (SELECT string_agg(k||'='||v,' ' ORDER BY k) FROM jsonb_each_text(payload->0) e(k,v))
   FROM event_log WHERE device_addr IN (${DEVSET}) AND ts BETWEEN '${WS}' AND '${WE}'
   UNION ALL
-  SELECT triggered_at, 1, right(host(device_addr),4), coalesce(payload->>'track_id','-'), '*** ALARM     ',
-    format('%s lvl=%s reason=%s status=%s pose=%s', event_type, alarm_level, coalesce(reason,'-'), alarm_status, payload->>'pose')
+  -- 按 alerted_at(真 fire 时刻)排序/落位，非 triggered_at(可被回填到事故锚点)；reason 列空时回落 payload.reason
+  SELECT coalesce(alerted_at, triggered_at), 1, right(host(device_addr),4), coalesce(payload->>'track_id','-'), '*** ALARM     ',
+    format('%s lvl=%s reason=%s status=%s%s', event_type, alarm_level,
+      coalesce(nullif(reason,''), payload->>'reason', '-'), alarm_status,
+      CASE WHEN alerted_at IS NOT NULL AND alerted_at <> triggered_at
+        THEN format(' [事故@%s 回填→fire@%s]', to_char(triggered_at AT TIME ZONE 'UTC','HH24:MI:SS'),
+               to_char(alerted_at AT TIME ZONE 'UTC','HH24:MI:SS'))
+        ELSE coalesce(' pose='||(payload->>'pose'), '') END)
   FROM alarm_events WHERE device_addr IN (${DEVSET}) AND triggered_at BETWEEN '${WS}' AND '${WE}'
   -- ===== 自动派生 STATE（bed_state: InBed/LeftBed 事件; room_state: Enter/Exit/np=0）=====
   UNION ALL
