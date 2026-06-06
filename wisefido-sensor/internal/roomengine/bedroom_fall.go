@@ -208,7 +208,7 @@ func (r *BedroomFallRules) firstNonGhostNearBed(bases []TrackStatusBase, grid *R
 		if b.Verdict == VerdictGhost {
 			continue
 		}
-		if b.StillSec < bedroomBedsideNightStaticSec {
+		if b.StillBoxSec < bedroomBedsideNightStaticSec {
 			continue
 		}
 		if !grid.IsNearPriorType(b.X, b.Y, AreaBed, bedroomBedsideMarginCm) {
@@ -268,11 +268,11 @@ func (r *BedroomFallRules) evaluateBedsideFall(
 	}
 	r.fireFall(anchor, roomID, suiteID, ReasonBedroomBedsideStatic, map[string]interface{}{
 		"context":         "bedside_static_after_leftbed",
-		"still_sec":       anchor.StillSec,
+		"still_sec":       anchor.StillBoxSec,
 		"timeout_sec":     bedroomBedsideNightStaticSec,
 		"margin_cm":       bedroomBedsideMarginCm,
 		"leftbed_at_ms":   latestLeftBed,
-	}, nowMs-int64(anchor.StillSec)*1000, nowMs)
+	}, nowMs-int64(anchor.StillBoxSec)*1000, nowMs)
 	state.BedsideFiredForLeftBedAt = latestLeftBed
 }
 

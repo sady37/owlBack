@@ -1119,7 +1119,8 @@ type TrackStatusBase struct {
 	X, Y, Z          int // 画布坐标（grid/cell 算法用；Kalman 输出）
 	RawH, RawV, RawZ int // firmware raw 雷达本地坐标 — alarm publish 用，对外契约不变
 	Pose             int
-	StillSec         int
+	StillSec         int // 逐帧 |Δpos|<15cm 累计；任一帧 ≥15cm 瞬清（脆，质心抖动易断）
+	StillBoxSec      int // still-box 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动，fall 判据用）
 	CellAreaType     AreaType
 	EnterTarget      string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
 	MoveActive       bool   // 本次快照是否"非静止"（StillSince==0 OR LastObservedMs == nowMs）
@@ -1170,6 +1171,10 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		// StillSec：StillSince==0 表示非静止；否则 (nowMs - StillSince) / 1000。
 		if ts.StillSince > 0 && nowMs > ts.StillSince {
 			base.StillSec = int((nowMs - ts.StillSince) / 1000)
+		}
+		// StillBoxSec：still-box run 时长（30s 滚动 50×50 方框，抗质心抖动）。fall 判据优先用此。
+		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
+			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
 		}
 		// LongSurvival / StartupGrace 锚定 → 升格 Anchored verdict（v2 §10.1.1）
 		if base.Verdict == VerdictReal && (ts.LongSurvivalAnchored || ts.StartupGrace) {
@@ -3211,8 +3216,10 @@ func (tm *TrackManager) otherDeviceRealTrackRecent(excludeDevice string, nowMs i
 //
 // 调用位置：processFrameAt 已有 track 分支，Kalman.Update 之后。
 func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame, nowMs int64, residualF float64) {
-	// ---- StillBox（静止无移动）检测（box 判据）----
-	disp := ts.DisplacementWithinMs(30_000, nowMs)
+	// ---- StillBox（静止无移动）检测（50×50 per-axis box 判据）----
+	// 用 BoxRangeWithinMs（max(dx,dy)）而非 DisplacementWithinMs（对角线）：50×40 倒地框
+	// 对角线 64 会被误判成"动"，per-axis 算 50（≤StillBoxCm=50）才正确判 still。
+	disp := ts.BoxRangeWithinMs(30_000, nowMs)
 	if disp <= FallRulesParam.Lost.StillBoxCm && len(ts.History) >= 2 {
 		if ts.StillBoxRunStart == 0 {
 			// 起点回填到 History 最早帧（box 内最早可见点）

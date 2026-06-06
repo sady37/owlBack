@@ -341,6 +341,46 @@ func (ts *TrackState) DisplacementWithinMs(windowMs int64, nowMs int64) int {
 	return int(math.Sqrt(float64(dx*dx + dy*dy)))
 }
 
+// BoxRangeWithinMs 返回过去 windowMs 内 History 位移 box 的 per-axis 边长较大者 max(dx, dy)（cm）。
+//
+// 与 DisplacementWithinMs（对角线 √(dx²+dy²)）的区别 = 50×50 方框判据:dx,dy 各 ≤ 阈值即静止。
+// 对角线会把 50×40 的框算成 64（偏严，把倒地质心抖动误判成"动"）;per-axis 算 50（≤50 仍判 still）。
+// still-box 静止判定用此（见 updateContinuousIndicators）;DisplacementWithinMs 仍供
+// static_reflector / belief 速度采样等用对角线口径,二者不混。
+func (ts *TrackState) BoxRangeWithinMs(windowMs int64, nowMs int64) int {
+	cutoff := nowMs - windowMs
+	minX, minY := math.MaxInt32, math.MaxInt32
+	maxX, maxY := math.MinInt32, math.MinInt32
+	count := 0
+	for _, p := range ts.History {
+		if p.TMs < cutoff {
+			continue
+		}
+		count++
+		if p.X < minX {
+			minX = p.X
+		}
+		if p.X > maxX {
+			maxX = p.X
+		}
+		if p.Y < minY {
+			minY = p.Y
+		}
+		if p.Y > maxY {
+			maxY = p.Y
+		}
+	}
+	if count < 2 {
+		return 0
+	}
+	dx := maxX - minX
+	dy := maxY - minY
+	if dx > dy {
+		return dx
+	}
+	return dy
+}
+
 // TotalDisplacement 历史窗口内的总位移（cm）
 func (ts *TrackState) TotalDisplacement() int {
 	if len(ts.History) < 2 {

@@ -159,7 +159,9 @@ var FallRulesParam = fallRulesParam{
 		WalkwayWaitSec:             5 * 60,
 		ExitDistMinCm:              30, // 30cm（贴近门口）；2026-04-30 从 100cm 收紧
 		SpatialJumpFactor:          0.5,
-		StillBoxCm:                 30,    // 失锁前 30s 位移 box <= 30cm 视为 still
+		StillBoxCm:                 50,    // 30s 滚动窗 per-axis box(dx,dy 各)<= 50cm 视为 still（50×50 方框）
+		//                                  2026-06-06 30→50 + 判据由对角线改 per-axis(见 BoxRangeWithinMs)：
+		//                                  倒地质心抖动实测 50×40cm，旧 30/对角线把真摔躺着误判成"动"，still 累计不起来。
 		MovingPreconditionMs:       60_000, // 消失前 still-box ≥60s = 静止态 → 不进 lost-fall（走 Still-fall）
 		ImpossibleSpeedCm:          200,   // 硬 ghost：老人最快 100-150cm/s
 		SuspectSpeedCm:             100,   // 软 ghost：需 EnterRoom 反证

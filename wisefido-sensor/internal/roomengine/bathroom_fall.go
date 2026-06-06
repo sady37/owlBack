@@ -300,19 +300,21 @@ func (r *BathroomFallRules) evaluateStillFall(
 		if b.CellAreaType != AreaToilet && b.CellAreaType != AreaShower {
 			continue
 		}
-		if b.Pose != observation.PoseStanding {
+		// 直立静止候选:pose=4(站立) 或 pose=0(未知——firmware 对静止/低位目标分类不出时给 0)。
+		// 排除 pose=1(明确"行走")及 sit/lie。StillSec 已保证不动,故 pose=0 这里不是漏判而是"站着没动测不准"。
+		if b.Pose != observation.PoseStanding && b.Pose != observation.PoseUnknown {
 			continue
 		}
-		if b.StillSec < timeoutSec {
+		if b.StillBoxSec < timeoutSec {
 			continue
 		}
 		r.fireFall(b, roomID, suiteID, c, ReasonBathroomStill, map[string]interface{}{
 			"context":     "bathroom_still_in_toilet_shower",
-			"still_sec":   b.StillSec,
+			"still_sec":   b.StillBoxSec,
 			"timeout_sec": timeoutSec,
 			"risk_time":   IsNightTime(nowMs, r.timezone),
 			"cell_area":   areaTypeWireName(b.CellAreaType),
-		}, nowMs-int64(b.StillSec)*1000, nowMs)
+		}, nowMs-int64(b.StillBoxSec)*1000, nowMs)
 		state.StillAlerted[b.TrackID] = true
 	}
 }
@@ -357,7 +359,7 @@ func (r *BathroomFallRules) evaluateBedsideFall(
 		if b.CellAreaType == AreaToilet || b.CellAreaType == AreaShower {
 			continue
 		}
-		if b.StillSec < bathroomBedsideStaticSec {
+		if b.StillBoxSec < bathroomBedsideStaticSec {
 			continue
 		}
 		anchor = b
@@ -368,12 +370,12 @@ func (r *BathroomFallRules) evaluateBedsideFall(
 	}
 	r.fireFall(anchor, roomID, suiteID, c, ReasonBathroomLongStatic, map[string]interface{}{
 		"context":        "bathroom_long_static_outside_toilet_shower",
-		"still_sec":      anchor.StillSec,
+		"still_sec":      anchor.StillBoxSec,
 		"timeout_sec":    bathroomBedsideStaticSec,
 		"grace_sec":      bathroomBedsideGraceSec,
 		"occupied_since": state.BathroomOccupiedSinceMs,
 		"cell_area":      areaTypeWireName(anchor.CellAreaType),
-	}, nowMs-int64(anchor.StillSec)*1000, nowMs)
+	}, nowMs-int64(anchor.StillBoxSec)*1000, nowMs)
 	state.BedsideFiredAtSessionMs = state.BathroomOccupiedSinceMs
 }
 
@@ -502,7 +504,7 @@ func (r *BathroomFallRules) evaluateLostFallWeak(
 	// 找任一 track static ≥ 7min（保守不挑 verdict — 决定 14 ghost 不抑制 fall）
 	var staticTrack *TrackStatusBase
 	for i := range bases {
-		if bases[i].StillSec >= bathroomLostWeakSilentSec {
+		if bases[i].StillBoxSec >= bathroomLostWeakSilentSec {
 			staticTrack = &bases[i]
 			break
 		}
@@ -513,9 +515,9 @@ func (r *BathroomFallRules) evaluateLostFallWeak(
 	r.fireFall(staticTrack, roomID, suiteID, c, ReasonSuitePersonSilentWithGhost, map[string]interface{}{
 		"context":     "suite_person_static_with_ghost_proxy",
 		"person_id":   personID,
-		"still_sec":   staticTrack.StillSec,
+		"still_sec":   staticTrack.StillBoxSec,
 		"timeout_sec": bathroomLostWeakSilentSec,
-	}, nowMs-int64(staticTrack.StillSec)*1000, nowMs)
+	}, nowMs-int64(staticTrack.StillBoxSec)*1000, nowMs)
 	state.LostWeakAlerted[personID] = true
 }
 

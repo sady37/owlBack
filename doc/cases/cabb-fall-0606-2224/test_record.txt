@@ -1,0 +1,175 @@
+================================================================================
+ 床态测试完整记录   case=cabb-fall-0606-2224
+ 窗口(本地 Asia/Shanghai): 2026-06-06 22:22:28 – 2026-06-06 22:31:22
+ 窗口(UTC): 2026-06-06 14:22:28.401+00 – 2026-06-06 14:31:22.634+00   (下表时间列为 UTC, HH:MM:SS.mmm — ms 精度可见断连/补发 burst)
+ 告警锚定: Fall 事故@22:24:28 → fire@22:30:22  (窗口 = 事故-120s .. fire+60s)
+ radar   = 4D8710D5CABB (fd00:0:3:411:1:200:10d5:cabb)
+--------------------------------------------------------------------------------
+ 列: 时间(UTC) | dev(addr后4) | tid(track_id) | 类型 | 明细
+ tid: 真人 0-8 / 9=vital / 10=space(np 事件) / 11=device(心跳) / 88=无目标 / - =派生态无轨
+ 行类型: track(radar.track 124) / radar.heart(9,无HR/RR) / sleepad.track(0)
+        / EVENT(event_log 16) / Sensor_ALARM|Device_ALARM(alarm_events 1, 按 payload.source 分) / Sensor_DECIDE(sensor_decision_log 4)
+        / >>> STATE(自动派生 bed/room 转换)
+--------------------------------------------------------------------------------
+ 数据流水线: 固件 --MQTT--> qinglan(解码 mqtt rx) --Redis--> wisefido-iot(写 event_log/monitor) --> PG
+ STATE 派生说明: bed_state 取 InBed/LeftBed 事件(radar 固件 Enter2Out 与 sleepad 各发各的);
+   room_state 取 EnterRoom/ExitRoom。均为转换点标注, 非逐秒填充。窗口起始前的态需看更早事件。
+================================================================================
+
+14:22:31.259 | cabb | tid  0 | Sensor_DECIDE  | lostfall_suppress verdict=- reason=room_ledger_empty conf=-
+14:22:31.259 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:22:46.885 | cabb | tid 10 | EVENT np           | event_since=1780755766885 event_status=start heart_rate=-1 number_people=1 respiratory_rate=-1 track_id=10
+14:22:47.221 | --- | tid  - | >>> STATE      | room_state -> Occupied  (来源: cabb EnterRoom)
+14:22:47.221 | cabb | tid  - | EVENT EnterRoom    | event_since=1780755767221 event_status=start heart_rate=-1 respiratory_rate=-1
+14:22:47.224 | cabb | tid  0 | track          | pose=4 xy=(90,0) z=113 area=1 conf=80
+14:22:47.533 | cabb | tid  0 | track          | pose=4 xy=(80,10) z=78 area=1 conf=80
+14:22:48.288 | cabb | tid  0 | track          | pose=1 xy=(20,0) z=75 area=1 conf=80
+14:22:50.294 | cabb | tid  0 | track          | pose=1 xy=(10,-10) z=83 area=1 conf=80
+14:22:50.296 | cabb | tid  0 | track          | pose=1 xy=(20,0) z=95 area=1 conf=80
+14:22:51.290 | cabb | tid  0 | track          | pose=1 xy=(20,0) z=82 area=1 conf=80
+14:22:52.296 | cabb | tid  0 | track          | pose=1 xy=(10,20) z=65 area=1 conf=80
+14:22:53.293 | cabb | tid  0 | track          | pose=3 xy=(10,20) z=71 area=1 conf=80
+14:22:54.191 | cabb | tid  0 | track          | pose=1 xy=(20,20) z=77 area=1 conf=80
+14:22:55.186 | cabb | tid  0 | track          | pose=1 xy=(40,20) z=74 area=1 conf=80
+14:22:56.202 | cabb | tid 11 | radar.heart    | conf=80 (payload 不含 HR/RR)
+14:22:56.202 | cabb | tid  9 | EVENT activity     | event_since=1780755776202 event_status=instant heart_rate=-1 lie_duration=0 multi_person_duration=0 respiratory_rate=-1 stand_duration=28 track_count=1 track_id=9 walk_distance=1 walk_duration=6
+14:22:56.445 | cabb | tid  0 | track          | pose=1 xy=(70,20) z=0 area=1 conf=80
+14:22:57.188 | cabb | tid  0 | track          | pose=1 xy=(80,30) z=0 area=1 conf=80
+14:22:58.204 | cabb | tid  0 | track          | pose=4 xy=(80,30) z=88 area=1 conf=80
+14:22:59.191 | cabb | tid  0 | track          | pose=4 xy=(80,30) z=0 area=1 conf=80
+14:23:00.190 | cabb | tid  0 | track          | pose=4 xy=(80,30) z=0 area=1 conf=80
+14:23:01.192 | cabb | tid  0 | track          | pose=4 xy=(80,30) z=0 area=1 conf=80
+14:23:05.758 | cabb | tid  0 | track          | pose=4 xy=(80,30) z=0 area=1 conf=80
+14:23:05.759 | cabb | tid  0 | track          | pose=4 xy=(80,30) z=0 area=1 conf=80
+14:23:05.761 | cabb | tid  0 | track          | pose=4 xy=(80,30) z=0 area=1 conf=80
+14:23:05.763 | --- | tid  - | >>> STATE      | room_state -> Vacant  (来源: cabb ExitRoom)
+14:23:05.763 | cabb | tid  - | EVENT ExitRoom     | event_since=1780755785763 event_status=start heart_rate=-1 respiratory_rate=-1
+14:23:05.765 | cabb | tid 10 | EVENT np           | event_since=1780755785765 event_status=start heart_rate=-1 number_people=0 respiratory_rate=-1 track_id=10
+14:23:05.767 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:23:06.110 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:23:07.702 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:23:29.917 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:23:29.917 | cabb | tid  0 | Sensor_DECIDE  | lostfall_suppress verdict=- reason=room_ledger_empty conf=-
+14:23:38.137 | cabb | tid 10 | EVENT np           | event_since=1780755818137 event_status=start heart_rate=-1 number_people=1 respiratory_rate=-1 track_id=10
+14:23:38.430 | --- | tid  - | >>> STATE      | room_state -> Occupied  (来源: cabb EnterRoom)
+14:23:38.430 | cabb | tid  - | EVENT EnterRoom    | event_since=1780755818430 event_status=start heart_rate=-1 respiratory_rate=-1
+14:23:38.433 | cabb | tid  0 | track          | pose=4 xy=(60,30) z=89 area=1 conf=80
+14:23:38.824 | cabb | tid  0 | track          | pose=4 xy=(40,30) z=71 area=1 conf=80
+14:23:39.897 | cabb | tid  0 | track          | pose=4 xy=(10,30) z=77 area=1 conf=80
+14:23:40.900 | cabb | tid  0 | track          | pose=4 xy=(10,10) z=71 area=1 conf=80
+14:23:42.724 | cabb | tid  0 | track          | pose=4 xy=(40,10) z=102 area=1 conf=80
+14:23:42.934 | cabb | tid  0 | track          | pose=4 xy=(50,0) z=109 area=1 conf=80
+14:23:43.792 | cabb | tid  0 | track          | pose=4 xy=(40,-10) z=79 area=1 conf=80
+14:23:45.084 | cabb | tid  0 | track          | pose=4 xy=(50,-10) z=0 area=1 conf=80
+14:23:47.230 | cabb | tid  0 | track          | pose=4 xy=(40,-40) z=52 area=1 conf=80
+14:23:47.232 | cabb | tid  0 | track          | pose=3 xy=(40,-10) z=149 area=1 conf=80
+14:23:47.796 | cabb | tid  0 | track          | pose=3 xy=(40,-10) z=0 area=1 conf=80
+14:23:48.803 | cabb | tid  0 | track          | pose=3 xy=(40,-20) z=119 area=1 conf=80
+14:23:49.798 | cabb | tid  0 | track          | pose=4 xy=(40,-10) z=83 area=1 conf=80
+14:23:50.800 | cabb | tid  0 | track          | pose=4 xy=(10,10) z=57 area=1 conf=80
+14:23:51.805 | cabb | tid  0 | track          | pose=4 xy=(20,10) z=86 area=1 conf=80
+14:23:52.816 | cabb | tid  0 | track          | pose=4 xy=(40,0) z=98 area=1 conf=80
+14:23:53.707 | cabb | tid  0 | track          | pose=4 xy=(40,-10) z=99 area=1 conf=80
+14:23:54.707 | cabb | tid  0 | track          | pose=4 xy=(30,-30) z=106 area=1 conf=80
+14:23:55.719 | cabb | tid 11 | radar.heart    | conf=80 (payload 不含 HR/RR)
+14:23:55.719 | cabb | tid  9 | EVENT activity     | event_since=1780755835719 event_status=instant heart_rate=-1 lie_duration=0 multi_person_duration=0 respiratory_rate=-1 stand_duration=19 track_count=1 track_id=9 walk_distance=0 walk_duration=3
+14:23:55.939 | cabb | tid  0 | track          | pose=4 xy=(30,-10) z=93 area=1 conf=80
+14:23:56.712 | cabb | tid  0 | track          | pose=4 xy=(40,-20) z=104 area=1 conf=80
+14:23:57.710 | cabb | tid  0 | track          | pose=4 xy=(50,0) z=111 area=1 conf=80
+14:24:27.783 | cabb | tid  0 | track          | pose=4 xy=(60,-10) z=95 area=1 conf=80
+14:24:27.785 | cabb | tid  0 | track          | pose=4 xy=(60,-30) z=80 area=1 conf=80
+14:24:27.787 | cabb | tid  0 | track          | pose=4 xy=(40,0) z=96 area=1 conf=80
+14:24:27.789 | cabb | tid  0 | track          | pose=4 xy=(0,10) z=84 area=1 conf=80
+14:24:27.790 | cabb | tid  0 | track          | pose=1 xy=(-10,20) z=68 area=1 conf=80
+14:24:27.792 | cabb | tid  0 | track          | pose=1 xy=(-10,30) z=66 area=1 conf=80
+14:24:27.793 | cabb | tid  0 | track          | pose=1 xy=(40,30) z=88 area=1 conf=80
+14:24:27.795 | cabb | tid  0 | track          | pose=1 xy=(50,0) z=84 area=1 conf=80
+14:24:27.796 | cabb | tid  0 | track          | pose=1 xy=(100,10) z=87 area=1 conf=80
+14:24:27.798 | cabb | tid  0 | track          | pose=4 xy=(100,20) z=0 area=1 conf=80
+14:24:27.799 | cabb | tid  0 | track          | pose=4 xy=(100,20) z=0 area=1 conf=80
+14:24:27.801 | cabb | tid  0 | track          | pose=3 xy=(100,20) z=0 area=1 conf=80
+14:24:28.119 | cabb | tid  0 | track          | pose=3 xy=(100,20) z=0 area=1 conf=80
+14:24:28.121 | cabb | tid  0 | track          | pose=3 xy=(100,20) z=0 area=1 conf=80
+14:24:28.123 | cabb | tid  0 | track          | pose=3 xy=(100,20) z=0 area=1 conf=80
+14:24:28.124 | cabb | tid  0 | track          | pose=3 xy=(100,20) z=78 area=1 conf=80
+14:24:28.126 | cabb | tid  0 | track          | pose=4 xy=(80,20) z=87 area=1 conf=80
+14:24:28.128 | cabb | tid  0 | track          | pose=4 xy=(80,10) z=82 area=1 conf=80
+14:24:28.129 | cabb | tid  0 | track          | pose=4 xy=(60,0) z=67 area=1 conf=80
+14:24:28.131 | cabb | tid  0 | track          | pose=4 xy=(80,10) z=26 area=1 conf=80
+14:24:28.132 | cabb | tid  0 | track          | pose=1 xy=(70,-10) z=34 area=1 conf=80
+14:24:28.134 | cabb | tid  0 | track          | pose=1 xy=(60,-20) z=0 area=1 conf=80
+14:24:28.135 | cabb | tid  0 | track          | pose=4 xy=(50,-30) z=0 area=1 conf=80
+14:24:28.137 | cabb | tid  0 | track          | pose=4 xy=(50,-40) z=0 area=1 conf=80
+14:24:28.138 | cabb | tid  0 | track          | pose=4 xy=(50,-40) z=0 area=1 conf=80
+14:24:28.400 | cabb | tid  0 | track          | pose=4 xy=(50,-40) z=0 area=1 conf=80
+14:24:28.401 | cabb | tid  - | Sensor_ALARM   | Fall lvl=0 reason=lost_track status=active [事故@14:24:28 回填→fire@14:30:22]
+14:24:28.401 | cabb | tid  0 | track          | pose=4 xy=(50,-50) z=0 area=1 conf=80
+14:24:28.403 | cabb | tid  0 | track          | pose=4 xy=(50,-50) z=0 area=1 conf=80
+14:24:28.404 | cabb | tid  0 | track          | pose=4 xy=(50,-50) z=0 area=1 conf=80
+14:24:28.406 | cabb | tid  0 | track          | pose=4 xy=(50,-50) z=0 area=1 conf=80
+14:24:30.241 | cabb | tid  0 | track          | pose=4 xy=(50,-50) z=0 area=1 conf=80
+14:24:30.242 | cabb | tid  0 | track          | pose=4 xy=(50,-50) z=0 area=1 conf=80
+14:24:30.550 | cabb | tid  0 | track          | pose=4 xy=(50,-60) z=0 area=1 conf=80
+14:24:31.436 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:32.433 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:33.434 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:34.437 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:35.449 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:36.438 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:38.229 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:38.539 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:39.331 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:40.332 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:41.333 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:42.337 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:43.338 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:44.339 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:46.244 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:48.264 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:48.265 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:48.570 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:49.344 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:50.243 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:51.248 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:52.245 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:53.252 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:54.257 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:55.261 | cabb | tid  9 | EVENT activity     | event_since=1780755895261 event_status=instant heart_rate=-1 lie_duration=0 multi_person_duration=0 respiratory_rate=-1 stand_duration=48 track_count=1 track_id=9 walk_distance=1 walk_duration=7
+14:24:55.261 | cabb | tid 11 | radar.heart    | conf=80 (payload 不含 HR/RR)
+14:24:55.535 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:56.249 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:57.250 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:24:58.251 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:25:00.961 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:25:00.962 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:25:01.301 | cabb | tid  0 | track          | pose=4 xy=(50,-80) z=0 area=1 conf=80
+14:25:02.191 | cabb | tid 10 | EVENT np           | event_since=1780755902191 event_status=start heart_rate=-1 number_people=0 respiratory_rate=-1 track_id=10
+14:25:04.751 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:25:04.753 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:25:04.754 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:25:05.187 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:25:36.869 | cabb | tid  0 | Sensor_DECIDE  | lostfall_pending verdict=1 reason=track_lost conf=- ev={"score": 98, "verdict": 1, "cell_area": 0, "spatial_jump": false, "still_box_start_ms": 1780755868401}
+14:25:36.869 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:26:08.624 | cabb | tid 11 | radar.heart    | conf=80 (payload 不含 HR/RR)
+14:26:08.624 | cabb | tid  9 | EVENT activity     | event_since=1780755968624 event_status=instant heart_rate=-1 lie_duration=0 multi_person_duration=0 respiratory_rate=-1 stand_duration=8 track_count=0 track_id=9 walk_distance=0 walk_duration=0
+14:26:08.963 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:26:40.414 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:27:12.112 | cabb | tid 11 | radar.heart    | conf=80 (payload 不含 HR/RR)
+14:27:12.112 | cabb | tid  9 | EVENT activity     | event_since=1780756032112 event_status=instant heart_rate=-1 lie_duration=0 multi_person_duration=0 respiratory_rate=-1 stand_duration=0 track_count=0 track_id=9 walk_distance=0 walk_duration=0
+14:27:12.448 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:27:43.901 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:28:15.693 | cabb | tid  9 | EVENT activity     | event_since=1780756095693 event_status=instant heart_rate=-1 lie_duration=0 multi_person_duration=0 respiratory_rate=-1 stand_duration=0 track_count=0 track_id=9 walk_distance=0 walk_duration=0
+14:28:15.693 | cabb | tid 11 | radar.heart    | conf=80 (payload 不含 HR/RR)
+14:28:21.777 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:28:47.330 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:29:19.149 | cabb | tid  9 | EVENT activity     | event_since=1780756159149 event_status=instant heart_rate=-1 lie_duration=0 multi_person_duration=0 respiratory_rate=-1 stand_duration=0 track_count=0 track_id=9 walk_distance=0 walk_duration=0
+14:29:19.149 | cabb | tid 11 | radar.heart    | conf=80 (payload 不含 HR/RR)
+14:29:19.428 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:29:50.824 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:30:22.634 | cabb | tid  9 | EVENT activity     | event_since=1780756222634 event_status=instant heart_rate=-1 lie_duration=0 multi_person_duration=0 respiratory_rate=-1 stand_duration=0 track_count=0 track_id=9 walk_distance=0 walk_duration=0
+14:30:22.634 | cabb | tid 11 | radar.heart    | conf=80 (payload 不含 HR/RR)
+14:30:22.634 | cabb | tid  0 | Sensor_DECIDE  | lostfall_fire verdict=1 reason=lost_track conf=- ev={"verdict": 1, "wait_ms": 266000, "cell_area": 0, "fall_score": 98, "spatial_jump": false, "still_box_start_ms": 1780755868401}
+14:30:22.918 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
+14:30:54.321 | cabb | tid 11 | radar.heart    | conf=80 (payload 不含 HR/RR)
+14:30:54.321 | cabb | tid  9 | EVENT activity     | event_since=1780756254321 event_status=instant heart_rate=-1 lie_duration=0 multi_person_duration=0 respiratory_rate=-1 stand_duration=0 track_count=0 track_id=9 walk_distance=0 walk_duration=0
+14:30:56.301 | cabb | tid 88 | track          | pose= xy=(0,0) z=0 area= conf=80
