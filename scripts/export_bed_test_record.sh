@@ -143,7 +143,8 @@ WITH base AS (
   UNION ALL
   -- 按 triggered_at(事故时刻)过滤+落位：事故在窗内就保留，落在摔倒那一刻；真 fire 时间靠标注说明
   -- (回填型 alarm triggered_at=事故锚点 ≠ alerted_at=真 fire；reason 列空时回落 payload.reason)
-  SELECT triggered_at, 1, right(host(device_addr),4), coalesce(payload->>'track_id','-'), '*** ALARM     ',
+  SELECT triggered_at, 1, right(host(device_addr),4), coalesce(payload->>'track_id','-'),
+    CASE WHEN payload->>'source' LIKE 'fd00:0:fff1%' THEN 'Sensor_ALARM  ' ELSE 'Device_ALARM  ' END,
     format('%s lvl=%s reason=%s status=%s%s', event_type, alarm_level,
       coalesce(nullif(reason,''), payload->>'reason', '-'), alarm_status,
       CASE WHEN alerted_at IS NOT NULL AND alerted_at <> triggered_at
@@ -153,7 +154,7 @@ WITH base AS (
   FROM alarm_events WHERE device_addr IN (${DEVSET}) AND triggered_at BETWEEN '${WS}' AND '${WE}'
   UNION ALL
   -- sensor 决策审计（lostfall suppress/pending/fire 等；判读告警为何发/不发的关键层）
-  SELECT ts, 1, right(host(device_addr),4), coalesce(track_id::text,'-'), '### DECIDE    ',
+  SELECT ts, 1, right(host(device_addr),4), coalesce(track_id::text,'-'), 'Sensor_DECIDE ',
     format('%s verdict=%s reason=%s conf=%s%s', event, coalesce(verdict::text,'-'), coalesce(reason,'-'),
       coalesce(track_confidence::text,'-'),
       CASE WHEN evidence IS NOT NULL THEN ' ev='||evidence::text ELSE '' END)
@@ -186,7 +187,7 @@ FROM base ORDER BY ts, pri
   echo " 列: 时间(UTC) | dev(addr后4) | tid(track_id) | 类型 | 明细"
   echo " tid: 真人 0-8 / 9=vital / 10=space(np 事件) / 11=device(心跳) / 88=无目标 / - =派生态无轨"
   echo " 行类型: track(radar.track ${N_TRACK}) / radar.heart(${N_HEART},无HR/RR) / sleepad.track(${N_SLP})"
-  echo "        / EVENT(event_log ${N_EVT}) / *** ALARM(${N_ALM}) / ### DECIDE(sensor_decision_log ${N_DEC})"
+  echo "        / EVENT(event_log ${N_EVT}) / Sensor_ALARM|Device_ALARM(alarm_events ${N_ALM}, 按 payload.source 分) / Sensor_DECIDE(sensor_decision_log ${N_DEC})"
   echo "        / >>> STATE(自动派生 bed/room 转换)"
   echo "--------------------------------------------------------------------------------"
   echo " 数据流水线: 固件 --MQTT--> qinglan(解码 mqtt rx) --Redis--> wisefido-iot(写 event_log/monitor) --> PG"
