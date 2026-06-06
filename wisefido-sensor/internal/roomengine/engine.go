@@ -1339,6 +1339,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		if cfg.RoomName != "" {
 			tm.SetRoomName(cfg.RoomName)
 		}
+		tm.SetRoomType(cfg.RoomType)
 		if cfg.Timezone != "" {
 			if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
 				tm.SetTimezone(loc)
@@ -1422,6 +1423,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetBedsideFallConfig(e.bedsideFallCfg)
 	tm.SetLogger(e.logger)
 	tm.SetRoomName(cfg.RoomName)
+	tm.SetRoomType(cfg.RoomType)
 	tm.SetInterferes(cfg.Interferes)
 	tm.SetRadarMount(cfg.Radar)        // L1 mirror pair 检测用 radar 中心做 ghost tiebreaker
 	tm.SetWallPolygon(cfg.WallPolygon) // 静止反射体检测判"近墙"

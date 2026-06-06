@@ -9,6 +9,7 @@ import (
 
 	"go.uber.org/zap"
 	"owl-common/alarm"
+	"owl-common/card"
 	"owl-common/observation"
 	"owl-common/radarutils"
 	"owl-common/roomutil"
@@ -153,6 +154,11 @@ type TrackManager struct {
 	// roomName：rooms.room_name，由 engine.RegisterRoom 注入。
 	// Still fall 触发时与 cell.Belief[0].Type 取并集判 bathroom 语义（见 owl-common/roomutil.ClassifyRoomType）。
 	roomName string
+
+	// roomType：rooms.room_type（card.RoomType* 0=Default/1=Bathroom/2=Kitchen），由 engine.RegisterRoom 注入。
+	// 权威 bathroom 标志（FE 由 room_name 同义词 ∪ 勾选 bathroom 复选框写库）。
+	// lost-fall 等待时长：room_type==Bathroom 即整房按 bathroom 长档（不依赖是否画了 Toilet/Shower 子区）。
+	roomType int
 
 	// PR-Bootstrap: v1 stayAlarmEnabled 字段已删除（loadStayAlarmEnablement DB 路径同时删除）。
 	// PR-10 BathroomStillFall 用 room.kind=="bathroom" 分支替代"运维显式启用 Stay alarm"语义。
@@ -395,6 +401,14 @@ func (tm *TrackManager) SetRoomName(name string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	tm.roomName = name
+}
+
+// SetRoomType 注入 rooms.room_type（card.RoomType*）；lost-fall 等待按 bathroom 长档放宽。
+// 由 engine.RegisterRoom 调用。
+func (tm *TrackManager) SetRoomType(t int) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.roomType = t
 }
 
 // SetInterferes 注入本房间镜面/反射区矩形（cfg.Interferes）。
@@ -3009,17 +3023,21 @@ func (tm *TrackManager) checkLostFall(ts *TrackState) bool {
 func (tm *TrackManager) lostFallWaitMs(p *PendingLostFall, isRiskTime bool) int64 {
 	pl := FallRulesParam.Lost
 	var base int
-	switch p.LastCellArea {
-	case AreaBed, AreaSit:
-		base = pl.RestZoneWaitSec
-	case AreaToilet, AreaShower:
-		// 与 still fall 同时长
+	// bathroom 长档判据（与 bathroom still-fall 同时长）：
+	//   ① 整房 room_type==Bathroom（权威标志，即便未画 Toilet/Shower 子区、cell_area=0 也放宽）；
+	//   ② 否则按消失点 cell areaType ∈ {Toilet, Shower}。
+	// 治本：CABB「叫 Bathroom 但无声明子区」lost_track FP——原 cell_area=0 落 Walkway 5min 误报。
+	bathroomStd := tm.roomType == card.RoomTypeBathroom || p.LastCellArea == AreaToilet || p.LastCellArea == AreaShower
+	switch {
+	case bathroomStd:
 		if isRiskTime {
 			base = FallRulesParam.Still.ToiletShowerSec
 		} else {
 			base = int(float64(FallRulesParam.Still.ToiletShowerSec) * FallRulesParam.Still.NonRiskTimeFactor)
 		}
-	case AreaDeny:
+	case p.LastCellArea == AreaBed || p.LastCellArea == AreaSit:
+		base = pl.RestZoneWaitSec
+	case p.LastCellArea == AreaDeny:
 		base = pl.DenyZoneWaitSec
 	default:
 		base = pl.WalkwayWaitSec
