@@ -200,14 +200,12 @@ func (r *PostgresTenantsRepository) CreateTenant(ctx context.Context, tenant *do
 		return "", fmt.Errorf("check tenant_name: %w", err)
 	}
 
-	// 下一可用 slot：MAX+1（约束 1..65534；实际 5 个 seed → next=6）
-	var nextSlot int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(tenant_slot), 0) + 1 FROM tenants`).Scan(&nextSlot); err != nil {
-		return "", fmt.Errorf("compute next slot: %w", err)
-	}
-	if nextSlot < 1 || nextSlot > 65534 {
-		return "", fmt.Errorf("tenant slot out of range: %d", nextSlot)
+	// tenant_slot 1..65534（0=unbound、0xFFFF=wildcard 保留）。MAX+1 优先，撞顶回收空号。
+	nextSlot, err := AllocSlotReclaim(ctx, tx, 65534,
+		`SELECT COALESCE(MAX(tenant_slot), 0) + 1 FROM tenants`,
+		`SELECT tenant_slot FROM tenants`)
+	if err != nil {
+		return "", fmt.Errorf("alloc tenant_slot: %w", err)
 	}
 	prefixStr := fmt.Sprintf("fd00:0:%x::/48", nextSlot)
 

@@ -671,14 +671,12 @@ func (r *PostgresUnitsRepository) CreateUnit(ctx context.Context, tenantID strin
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "owl_v2.units.alloc:"+sitePrefix); err != nil {
 		return "", fmt.Errorf("lock: %w", err)
 	}
-	// unit_slot 从 1 起（slot 0 = unbound 哨兵；0xFFFF wildcard 保留）
-	var nextSlot int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(unit_slot), 0) + 1 FROM units WHERE unit_id <<= $1::INET`, sitePrefix).Scan(&nextSlot); err != nil {
-		return "", fmt.Errorf("compute unit_slot: %w", err)
-	}
-	if nextSlot < 1 || nextSlot > 65534 {
-		return "", fmt.Errorf("unit_slot exhausted: %d (valid 1..65534)", nextSlot)
+	// unit_slot 1..65534（0=unbound 哨兵、0xFFFF=wildcard 保留）。MAX+1 优先，撞顶回收空号。
+	nextSlot, err := AllocSlotReclaim(ctx, tx, 65534,
+		`SELECT COALESCE(MAX(unit_slot), 0) + 1 FROM units WHERE unit_id <<= $1::INET`,
+		`SELECT unit_slot FROM units WHERE unit_id <<= $1::INET`, sitePrefix)
+	if err != nil {
+		return "", fmt.Errorf("alloc unit_slot: %w", err)
 	}
 	unitPrefix, err := deriveUnitCIDR(sitePrefix, uint16(nextSlot))
 	if err != nil {
@@ -910,13 +908,12 @@ func (r *PostgresUnitsRepository) CreateRoom(ctx context.Context, tenantID, unit
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "owl_v2.rooms.alloc:"+unitID); err != nil {
 		return "", fmt.Errorf("lock: %w", err)
 	}
-	// room_slot 从 1 起（slot 0 = unbound 哨兵；0xFF wildcard 保留）
-	var nextSlot int
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(room_slot), 0) + 1 FROM rooms WHERE room_id <<= $1::INET`, unitID).Scan(&nextSlot); err != nil {
-		return "", fmt.Errorf("compute room_slot: %w", err)
-	}
-	if nextSlot < 1 || nextSlot > 254 {
-		return "", fmt.Errorf("room_slot exhausted: %d (valid 1..254)", nextSlot)
+	// room_slot 1..254（0=unbound 哨兵、0xFF=wildcard 保留）。MAX+1 优先，撞顶回收空号。
+	nextSlot, err := AllocSlotReclaim(ctx, tx, 254,
+		`SELECT COALESCE(MAX(room_slot), 0) + 1 FROM rooms WHERE room_id <<= $1::INET`,
+		`SELECT room_slot FROM rooms WHERE room_id <<= $1::INET`, unitID)
+	if err != nil {
+		return "", fmt.Errorf("alloc room_slot: %w", err)
 	}
 	roomPrefix, err := deriveRoomCIDR(unitID, byte(nextSlot))
 	if err != nil {
@@ -1236,13 +1233,12 @@ func (r *PostgresUnitsRepository) CreateBed(ctx context.Context, tenantID, roomI
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "owl_v2.beds.alloc:"+roomID); err != nil {
 		return "", fmt.Errorf("lock: %w", err)
 	}
-	// bed_slot 从 1 起（slot 0 = unbound 哨兵；0xFF wildcard 保留）
-	var nextSlot int
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(bed_slot), 0) + 1 FROM beds WHERE bed_id <<= $1::INET`, roomID).Scan(&nextSlot); err != nil {
-		return "", fmt.Errorf("compute bed_slot: %w", err)
-	}
-	if nextSlot < 1 || nextSlot > 254 {
-		return "", fmt.Errorf("bed_slot exhausted: %d (valid 1..254)", nextSlot)
+	// bed_slot 1..254（0=unbound 哨兵、0xFF=wildcard 保留）。MAX+1 优先，撞顶回收空号。
+	nextSlot, err := AllocSlotReclaim(ctx, tx, 254,
+		`SELECT COALESCE(MAX(bed_slot), 0) + 1 FROM beds WHERE bed_id <<= $1::INET`,
+		`SELECT bed_slot FROM beds WHERE bed_id <<= $1::INET`, roomID)
+	if err != nil {
+		return "", fmt.Errorf("alloc bed_slot: %w", err)
 	}
 	bedPrefix, err := deriveBedCIDR(roomID, byte(nextSlot))
 	if err != nil {

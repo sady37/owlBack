@@ -198,15 +198,12 @@ func (r *PostgresBranchesRepository) CreateBranch(ctx context.Context, tenantID 
 		return "", fmt.Errorf("check branch_name: %w", err)
 	}
 
-	// 下一 slot — 从 1 起（slot 0 保留为 "unbound 哨兵"，0xFF wildcard 保留）
-	var nextSlot int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(branch_slot), 0) + 1 FROM branches WHERE branch_id <<= $1::INET`, tenantID,
-	).Scan(&nextSlot); err != nil {
-		return "", fmt.Errorf("compute next branch_slot: %w", err)
-	}
-	if nextSlot < 1 || nextSlot > 254 {
-		return "", fmt.Errorf("branch_slot exhausted: %d (valid 1..254)", nextSlot)
+	// branch_slot 1..254（0=unbound 哨兵、0xFF=wildcard 保留）。MAX+1 优先，撞顶回收空号。
+	nextSlot, err := AllocSlotReclaim(ctx, tx, 254,
+		`SELECT COALESCE(MAX(branch_slot), 0) + 1 FROM branches WHERE branch_id <<= $1::INET`,
+		`SELECT branch_slot FROM branches WHERE branch_id <<= $1::INET`, tenantID)
+	if err != nil {
+		return "", fmt.Errorf("alloc branch_slot: %w", err)
 	}
 
 	branchPrefix, err := deriveBranchCIDR(tenantID, byte(nextSlot))

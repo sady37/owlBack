@@ -1773,17 +1773,13 @@ func (s *unitService) createPublicResident(ctx context.Context, tenantID, unitID
 	}
 	defer tx.Rollback()
 
-	// 分 slot：per-tenant MAX+1（与 PostgresResidentsRepository.CreateResident 一致逻辑）
-	var slot int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(resident_slot), 0) + 1
-		  FROM residents
-		 WHERE network(set_masklen(resident_id, 48)) = $1::INET`, tenantPrefix,
-	).Scan(&slot); err != nil {
-		return fmt.Errorf("alloc slot: %w", err)
-	}
-	if slot < 1 || slot >= 65535 {
-		return fmt.Errorf("slot out of range: %d", slot)
+	// resident_slot 1..65534（per-tenant；与 PostgresResidentsRepository.CreateResident 一致逻辑）。
+	// MAX+1 优先，撞顶回收空号。
+	slot, err := repository.AllocSlotReclaim(ctx, tx, 65534,
+		`SELECT COALESCE(MAX(resident_slot), 0) + 1 FROM residents WHERE network(set_masklen(resident_id, 48)) = $1::INET`,
+		`SELECT resident_slot FROM residents WHERE network(set_masklen(resident_id, 48)) = $1::INET`, tenantPrefix)
+	if err != nil {
+		return fmt.Errorf("alloc resident_slot: %w", err)
 	}
 
 	// 构造 hoa：tenant /48 host 部分 + ":ff01:<slot hex>::"
