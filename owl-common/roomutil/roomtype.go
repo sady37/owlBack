@@ -8,27 +8,33 @@
 package roomutil
 
 import (
+	"regexp"
 	"strings"
 
 	"owl-common/card"
 )
 
-// ClassifyRoomType 根据 room_name 推断 room_type（不区分大小写，子串匹配）。
+// bathroom 同义词词表（与 owlFront useRoom.detectBathroomFromName / utils.isBathroomLikeRoomName 同步）：
+//   - 长词子串匹配（安全）：bathroom / restroom / washroom / lavatory / toilet / bath
+//   - 短缩写需词边界（避免 lava / bloom / forest 等误匹配）：wc / loo / lav
+var (
+	bathroomLongRe  = regexp.MustCompile(`bathroom|restroom|washroom|lavatory|toilet|bath`)
+	bathroomShortRe = regexp.MustCompile(`\b(wc|loo|lav)\b`)
+)
+
+// ClassifyRoomType 根据 room_name 推断 room_type（不区分大小写）。
 // 返回 owl-common/card.RoomType*（0=Default / 1=Bathroom / 2=Kitchen）。
 //
-//	wc / bathroom / restroom / toilet → Bathroom
-//	kitchen                           → Kitchen
-//	其余（含 bedroom / living / dining） → Default
+//	bathroom/restroom/washroom/lavatory/toilet/bath/wc/loo/lav → Bathroom
+//	kitchen                                                     → Kitchen
+//	其余（含 bedroom / living / dining）                          → Default
 //
 // 设计意图：用户在 layout / unit 编辑器输入的 room_name 是英文/中英混合自由文本，
-// 用子串匹配比硬编码 enum 灵活；空名 → Default。
+// 用词表匹配比硬编码 enum 灵活；空名 → Default。
 func ClassifyRoomType(roomName string) int {
 	lower := strings.ToLower(roomName)
 	switch {
-	case strings.Contains(lower, "wc"),
-		strings.Contains(lower, "bathroom"),
-		strings.Contains(lower, "restroom"),
-		strings.Contains(lower, "toilet"):
+	case bathroomLongRe.MatchString(lower) || bathroomShortRe.MatchString(lower):
 		return card.RoomTypeBathroom
 	case strings.Contains(lower, "kitchen"):
 		return card.RoomTypeKitchen
