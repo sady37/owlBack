@@ -807,8 +807,10 @@ func (e *Engine) applyBedBayesianLocked(z *zoneInstance, nowMs int64) *ZoneEvent
 		newStatus = StatusVacant
 		transition = TransitionVacant
 	default:
+		// Standby / Maintain：不翻占用 Status（Standby 用 BedStandby flag 表达，避免误改房级人数）。
 		newStatus = prevStatus
 	}
+	newStandby := decision == BedDecisionStandby
 
 	z.state.Score = z.bedBayesian.Confidence()
 	z.state.UpdatedAt = nowMs
@@ -828,13 +830,20 @@ func (e *Engine) applyBedBayesianLocked(z *zoneInstance, nowMs int64) *ZoneEvent
 			zap.Int64("ts_ms", nowMs))
 	}
 
-	if newStatus == prevStatus {
+	// 进/出待机带也要发事件（即使占用 Status 没翻），让下游 bed_status 在 0/1/8 间正确刷新。
+	if newStatus == prevStatus && newStandby == z.state.BedStandby {
 		return nil
 	}
-	applyTransitionToState(&z.state, TransitionResult{
-		NewStatus:  newStatus,
-		Transition: transition,
-	}, nowMs)
+	if newStatus != prevStatus {
+		applyTransitionToState(&z.state, TransitionResult{
+			NewStatus:  newStatus,
+			Transition: transition,
+		}, nowMs)
+	} else {
+		// 仅 standby flag 翻转（占用态不变）：戳 SinceTs 作 BedStatus=8 的 anchor。
+		z.state.SinceTs = nowMs
+	}
+	z.state.BedStandby = newStandby
 
 	return &ZoneEvent{
 		ZoneType:   ZoneTypeBed,

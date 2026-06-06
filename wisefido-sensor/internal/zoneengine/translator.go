@@ -30,12 +30,16 @@ func TranslateBedState(e ZoneEvent) *card.BedState {
 	out := &card.BedState{}
 	nowMs := e.NewState.UpdatedAt
 
-	// BedStatus + BedStatusTs：直接从 engine transition 时刻取
-	if e.NewState.IsPresent() {
-		out.BedStatus = 0
+	// BedStatus + BedStatusTs：直接从 engine transition 时刻取。
+	// BedStandby(bayesian 中性带) 优先 → 8 待机；anchor 用 SinceTs(进待机带时刻)。
+	if e.NewState.BedStandby {
+		out.BedStatus = card.BedStatusStandby
+		out.BedStatusTs = e.NewState.SinceTs
+	} else if e.NewState.IsPresent() {
+		out.BedStatus = card.BedStatusInBed
 		out.BedStatusTs = e.NewState.LastEnterTs
 	} else {
-		out.BedStatus = 1
+		out.BedStatus = card.BedStatusNotInBed
 		out.BedStatusTs = e.NewState.LastExitTs
 	}
 

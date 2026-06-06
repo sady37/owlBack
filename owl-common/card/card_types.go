@@ -523,10 +523,13 @@ type AlarmState struct {
 //
 // 详 owlBack/doc/card_display.md。
 
-// BedStatus 二态枚举（保留 — sensor/cardagg 内部 BedState.BedStatus 仍用）。
+// BedStatus 枚举（sensor/cardagg 内部 BedState.BedStatus 用）。
+// 8=Standby 待机：bayesian |L|<0.5 中性带，床态不确定（既非确信在床也非确信离床）——
+// 下游 scene 退回房级(InRoom/OOR)，zonealarm 视作既非 Vacant 也非 Occupied（不触发 LeftBed/NightAbsence）。
 const (
 	BedStatusInBed    = 0 // 在床
 	BedStatusNotInBed = 1 // 离床
+	BedStatusStandby  = 8 // 待机（床态不确定；与 vital_source / firmware bed_status==8 同义）
 )
 
 // Section2LeftIcon — FE 单 switch 决定 base icon；cardagg 派生填这个数。

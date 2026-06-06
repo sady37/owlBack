@@ -292,8 +292,8 @@ func TestBayesian_PriorByHour(t *testing.T) {
 
 func TestBayesian_MaintainTimeoutForceLeftBed(t *testing.T) {
 	s := NewBedBayesianScorer()
-	// 人为构造 L 处于维持区
-	s.L = 0.40 // P ≈ 0.60 ∈ [0.50, 0.70] 维持区
+	// 人为构造 L 处于维持区。Stage 2 后 standby 带 |L|<0.5 优先，故维持区收窄为 L∈[0.5,0.847]。
+	s.L = 0.65 // P ≈ 0.657 ∈ 维持区（standby 之上、InBed 0.70 之下）
 
 	now := int64(0)
 	d := s.Decision(now)
@@ -320,14 +320,79 @@ func TestBayesian_MaintainTimeoutForceLeftBed(t *testing.T) {
 		t.Errorf("InBed test: decision=%v, want InBed", d)
 	}
 
-	// 调进维持区
+	// 调进维持区（standby 之上）
 	fmt.Println("--- maintain InBed -> maintain zone test ---")
-	s2.L = 0.40 // P ≈ 0.60 维持区
+	s2.L = 0.65 // P ≈ 0.657 维持区（standby 之上、InBed 之下）
 	if d := s2.Decision(60_000); d != BedDecisionInBed {
 		t.Errorf("recently InBed, just entered maintain: decision=%v, want InBed (maintain prev)", d)
 	}
 	// 2 min 后 force LeftBed
 	if d := s2.Decision(180_000); d != BedDecisionLeftBed {
 		t.Errorf("maintain timeout: decision=%v, want LeftBed (forced)", d)
+	}
+}
+
+// 治本验证：陈旧 sleepad LeftBed 不再永久否决 fresh radar InBed。
+// 旧 bug：sleepad LeftBed 后哑掉，-2.94 每分钟重复累加把 L 钉死，radar InBed(+1.45) 翻不动。
+// 修复：event 超 5min 陈旧 → 不再贡献 + 无 fresh 则 L*=0.55 leak 回中性 → fresh InBed 能翻回。
+func TestBayesian_StaleLeftBedLeaksThenFreshInBedFlips(t *testing.T) {
+	const min = int64(60_000)
+	base := int64(1_780_000_000_000)
+	s := NewBedBayesianScorer() // facility
+	s.OnSleepadLeftBed(base)    // sleepad 离床后即哑（无后续事件/vital）
+	if d := s.Decision(base); d != BedDecisionLeftBed {
+		t.Fatalf("初始应 LeftBed, got %v (L=%.2f)", d, s.LogOdds())
+	}
+	// 逐分钟 Tick；event 超 5min 陈旧后无 fresh 贡献 → L 从 floor 指数 leak 回中性带（约 5~6min）。
+	for i := int64(1); i <= 12; i++ {
+		s.Tick(base + i*min)
+	}
+	if l := s.LogOdds(); l <= -0.5 {
+		t.Errorf("陈旧 LeftBed leak 12min 后 L 应回中性带(>-0.5), got %.3f（旧 sticky bug 下恒为 floor）", l)
+	}
+	// fresh radar InBed（陈旧 LeftBed 已释放）→ 应翻回 InBed（旧 sticky bug 下被永久否决翻不动）
+	tIn := base + 13*min
+	s.OnRadarInBed(tIn)
+	s.OnRadarPoseLying(tIn)
+	if d := s.Decision(tIn); d != BedDecisionInBed {
+		t.Errorf("陈旧 LeftBed 释放后 fresh radar InBed 应翻回 InBed, got %v (L=%.2f)", d, s.LogOdds())
+	}
+}
+
+// 安全验证：睡着的人 InBed event 超 5min 陈旧，但 vital + pose_lying 持续 re-pulse 维持 → 不被 leak 误降。
+func TestBayesian_SleepingHeldInBedByVitalPose(t *testing.T) {
+	const min = int64(60_000)
+	base := int64(1_780_000_000_000)
+	s := NewBedBayesianScorer()
+	s.OnSleepadInBed(base)
+	s.OnRadarInBed(base)
+	// 连续在床：InBed event 仅一次，之后每分钟 vital + pose_lying（接触式微振动 + 雷达 lying）
+	for i := int64(1); i <= 10; i++ {
+		now := base + i*min
+		s.OnSleepadVital(now)
+		s.OnRadarPoseLying(now)
+		s.Tick(now)
+	}
+	if d := s.Decision(base + 10*min); d != BedDecisionInBed {
+		t.Errorf("睡着(vital/pose 持续)10min 后应仍 InBed, got %v (L=%.2f)", d, s.LogOdds())
+	}
+}
+
+// Stage 2 验证：陈旧 event leak 进中性带 → Decision 返回 Standby（下游 bed_status=8 待机）。
+func TestBayesian_NeutralBandReturnsStandby(t *testing.T) {
+	const min = int64(60_000)
+	base := int64(1_780_000_000_000)
+	s := NewBedBayesianScorer()
+	s.OnSleepadLeftBed(base) // L → -2.94
+	var d BedDecision
+	for i := int64(1); i <= 12; i++ {
+		s.Tick(base + i*min)
+		d = s.Decision(base + i*min)
+	}
+	if math.Abs(s.LogOdds()) >= standbyBandL {
+		t.Fatalf("应已 leak 进中性带(|L|<%.2f), got L=%.3f", standbyBandL, s.LogOdds())
+	}
+	if d != BedDecisionStandby {
+		t.Errorf("中性带 Decision 应 Standby, got %v (L=%.3f)", d, s.LogOdds())
 	}
 }

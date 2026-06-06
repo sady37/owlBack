@@ -114,6 +114,10 @@ type ZoneState struct {
 	BayesianLogOdds float64 `json:"bayesian_log_odds,omitempty"`
 	BayesianProb    float64 `json:"bayesian_prob,omitempty"`
 	BayesianGamma   float64 `json:"bayesian_gamma,omitempty"`
+
+	// BedStandby — bed zone 处于 bayesian 中性带（|L|<standbyBandL）= 床态不确定。
+	// translator 据此发 BedStatus=8（待机）；不翻 Status（占用沿用 prev，避免误改房级人数）。
+	BedStandby bool `json:"bed_standby,omitempty"`
 }
 
 // IsPresent zone 是否被占用（Vacant 之外都算）。

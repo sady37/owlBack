@@ -70,6 +70,12 @@ const (
 	shadowStandbyBandL    = 0.5     // |shadowL|<此 → bed_status=8
 	shadowRefreshWindowMs = 60_000  // sustain 刷新窗
 
+	// 生产 L 衰减（治本：陈旧 InBed/LeftBed event 不再永久 sticky 把 L 钉死；无 fresh 贡献的
+	// 分钟 L 指数 leak 回中性 → 陈旧 LeftBed 不再永久否决 fresh InBed）。sim_decay.py 真实数据验证。
+	staleEventMs = 5 * 60_000 // 事件超 5min = 陈旧 → event 不再贡献（vital/pose 仍各自按窗活：卡 event 不卡 vital）
+	leakFactor   = 0.55       // 无 fresh 贡献的分钟 L *= 0.55（floor → |L|<0.5 约 4min）
+	standbyBandL = 0.5        // |L|<此 → Decision=Standby（bed_status=8 待机，床态不确定）
+
 	// neverTs：uninitialized *LastTs sentinel；构造时填，保证 nowMs - neverTs > 任何 freshness 窗（含 nowMs=0）。
 	neverTs = int64(-evidenceWindowMs - 1)
 )
@@ -81,6 +87,7 @@ const (
 	BedDecisionMaintain BedDecision = iota // 维持上一态
 	BedDecisionInBed
 	BedDecisionLeftBed
+	BedDecisionStandby // |L|<standbyBandL 中性带：床态不确定（→ bed_status=8）
 )
 
 func decisionName(d BedDecision) string {
@@ -89,6 +96,8 @@ func decisionName(d BedDecision) string {
 		return "InBed"
 	case BedDecisionLeftBed:
 		return "LeftBed"
+	case BedDecisionStandby:
+		return "Standby"
 	default:
 		return "Maintain"
 	}
@@ -138,6 +147,9 @@ type BedBayesianScorer struct {
 	// Hysteresis maintain 区超时计时
 	maintainStartedTs int64       // 0 = 不在维持区
 	lastDecision      BedDecision // 上一次有效决策 (InBed/LeftBed)
+
+	// 生产 L 衰减：上次执行 leak 的分钟（无 fresh 贡献时 L *= leakFactor，每分钟最多一次）
+	leakLastMin int64
 
 	// shadow（producer-first，不入生产 Decision）：陈旧 event 指数衰减回中性 + 床区 track 刷新。
 	shadowL              float64
@@ -448,6 +460,14 @@ func (s *BedBayesianScorer) Tick(nowMs int64) {
 func (s *BedBayesianScorer) Decision(nowMs int64) BedDecision {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// 中性带优先：|L|<standbyBandL → 待机（床态不确定），优先于 In/Left 阈值（sim_decay.py 验证）。
+	// 陈旧 event leak 回中性后落此带，避免继续呈现陈旧 LeftBed/InBed；不动 lastDecision（退出带后由阈值/维持区接管）。
+	if math.Abs(s.L) < standbyBandL {
+		s.maintainStartedTs = 0
+		return BedDecisionStandby
+	}
+
 	p := sigmoidLogit(s.L)
 
 	pInBedThreshold := pInBedThresholdFacility
@@ -498,6 +518,15 @@ func (s *BedBayesianScorer) evaluateAndContributeLocked(nowMs int64) {
 	}
 	s.contributeClusterLocked(currentMin, radarContrib, &s.radarContrib)
 
+	// 治本：两簇均无 fresh 贡献（event 陈旧 + vital/pose 失活）时，L 按分钟指数 leak 回中性，
+	// 替代旧的"陈旧 LeftBed 每分钟重复累加把 L 钉死 floor"的永久否决 bug。每分钟最多 leak 一次。
+	if currentMin > s.leakLastMin {
+		s.leakLastMin = currentMin
+		if sleepadLR == 0 && radarLR == 0 {
+			s.L = clampLogOdds(s.L * leakFactor)
+		}
+	}
+
 	s.shadowTickLocked(nowMs)
 }
 
@@ -532,14 +561,16 @@ func (s *BedBayesianScorer) sleepadClusterLRLocked(nowMs int64) float64 {
 	// 物理优先级（user 2026-05-23 拍板）：冲击信号 > 微振动信号。
 	// LeftBed/InBed 是大幅压力冲击事件，HR/RR 是衍生微振动。前者 sticky（直到对立 event 才清），
 	// 后者只在窗内活；如此 firmware 在 LeftBed 后自相矛盾继续推 vital 也无法反咬。
-	leftBedHappened := s.sleepadLeftBedLastTs != neverTs
-	inBedHappened := s.sleepadInBedLastTs != neverTs
+	// 事件按年龄门控：超 staleEventMs 的 InBed/LeftBed event 不再贡献（治本陈旧 sticky 永久否决）。
+	// vital 不受此门控，仍按自己的 35s 窗活——睡着的人 InBed event 陈旧后由 vital/pose 维持（卡 event 不卡 vital）。
+	leftBedFresh := s.sleepadLeftBedLastTs != neverTs && nowMs-s.sleepadLeftBedLastTs <= staleEventMs
+	inBedFresh := s.sleepadInBedLastTs != neverTs && nowMs-s.sleepadInBedLastTs <= staleEventMs
 	vitalAlive := nowMs-s.sleepadVitalLastTs <= vitalWindowMs
 
-	if leftBedHappened {
+	if leftBedFresh {
 		return -lr
 	}
-	if inBedHappened {
+	if inBedFresh {
 		return lr
 	}
 	if vitalAlive {
@@ -554,18 +585,18 @@ func (s *BedBayesianScorer) sleepadClusterLRLocked(nowMs int64) float64 {
 //	否则 LeftBed event fresh → -1.39
 //	都没                     → 0
 func (s *BedBayesianScorer) radarClusterLRLocked(nowMs int64) float64 {
-	// 同 sleepad 原则：radar InBed/LeftBed event sticky；pose/vital 衍生信号窗内活。
-	inBedHappened := s.radarInBedLastTs != neverTs
-	leftBedHappened := s.radarLeftBedLastTs != neverTs
+	// 同 sleepad 原则：radar InBed/LeftBed event 按 staleEventMs 年龄门控；pose/vital 衍生信号各自窗内活
+	// （pose_lying 每帧 re-pulse，睡着的人 InBed event 陈旧后由 pose/vital 维持）。
+	inBedFresh := s.radarInBedLastTs != neverTs && nowMs-s.radarInBedLastTs <= staleEventMs
+	leftBedFresh := s.radarLeftBedLastTs != neverTs && nowMs-s.radarLeftBedLastTs <= staleEventMs
 	vitalAlive := nowMs-s.radarVitalLastTs <= vitalWindowMs
 	poseFresh := nowMs-s.radarPoseLyingLastTs <= vitalWindowMs
 
-	// LeftBed event sticky 同 sleepad；InBed event sticky 同。
-	if leftBedHappened {
+	if leftBedFresh {
 		return -lrRadarLeftBedEvt
 	}
 	var positive float64
-	if inBedHappened && lrRadarInBedEvt > positive {
+	if inBedFresh && lrRadarInBedEvt > positive {
 		positive = lrRadarInBedEvt
 	}
 	if poseFresh && lrRadarPoseLying > positive {
