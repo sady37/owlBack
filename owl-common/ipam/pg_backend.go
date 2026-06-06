@@ -62,6 +62,38 @@ func (p *PGBackend) recordKeaAddrLease(ctx context.Context, addr netip.Addr, com
 	}
 }
 
+// allocSlot 在 [1, ceiling] 内为 parent 下的子实体分配 slot：
+//   1. 优先 MAX+1 —— 单调递增、不复用空号（slot 稳定，删了再建不会撞到旧地址）。
+//   2. MAX+1 撞顶（> ceiling）→ 回收：取 [1, ceiling] 内最低的空闲 slot（复用被删留下的空号）。
+//   3. 全满 → ErrSlotExhausted。
+//
+// slot 0 = unbound 哨兵、ceiling 之上（byte 的 0xFF / uint16 的 0xFFFF）= wildcard/subject namespace，
+// 均为保留位，generate_series(1, ceiling) 天然不含 → 不会分配。
+// table/slotCol/idCol 均为包内编译期常量（非外部输入），fmt 拼接无注入风险；WHERE 用 << 严格包含。
+func allocSlot(ctx context.Context, tx *sql.Tx, table, slotCol, idCol string, parent netip.Prefix, ceiling int) (int, error) {
+	var nextSlot int
+	maxQ := fmt.Sprintf(`SELECT COALESCE(MAX(%s), 0) + 1 FROM %s WHERE %s << $1::INET`, slotCol, table, idCol)
+	if err := tx.QueryRowContext(ctx, maxQ, parent.String()).Scan(&nextSlot); err != nil {
+		return 0, fmt.Errorf("query MAX %s: %w", slotCol, err)
+	}
+	if nextSlot >= 1 && nextSlot <= ceiling {
+		return nextSlot, nil
+	}
+	// 撞顶 → 回收最低空闲 slot
+	reclaimQ := fmt.Sprintf(`
+		SELECT s FROM generate_series(1, $2) AS s
+		WHERE s NOT IN (SELECT %s FROM %s WHERE %s << $1::INET)
+		ORDER BY s LIMIT 1`, slotCol, table, idCol)
+	err := tx.QueryRowContext(ctx, reclaimQ, parent.String(), ceiling).Scan(&nextSlot)
+	if err == sql.ErrNoRows {
+		return 0, ErrSlotExhausted
+	}
+	if err != nil {
+		return 0, fmt.Errorf("reclaim %s: %w", slotCol, err)
+	}
+	return nextSlot, nil
+}
+
 // =============================================================================
 // AllocateBranch — tenant /48 → branch /56
 // =============================================================================
@@ -85,17 +117,10 @@ func (p *PGBackend) AllocateBranch(ctx context.Context, tenant netip.Prefix, att
 	}
 
 	// branch_slot 1..254：0 = unbound 哨兵（device.device_addr byte 6=0 表示未绑 branch）；
-	// 0xFF (255) 保留作 subject namespace（resident HoA / caregiver 等）
-	var nextSlot int
-	err = tx.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(branch_slot), 0) + 1
-		FROM branches WHERE branch_id << $1::INET
-	`, tenant.String()).Scan(&nextSlot)
+	// 0xFF (255) 保留作 subject namespace（resident HoA / caregiver 等）。MAX+1 优先，撞顶回收空号。
+	nextSlot, err := allocSlot(ctx, tx, "branches", "branch_slot", "branch_id", tenant, 254)
 	if err != nil {
-		return netip.Prefix{}, fmt.Errorf("query MAX branch_slot: %w", err)
-	}
-	if nextSlot < 1 || nextSlot > 254 {
-		return netip.Prefix{}, ErrSlotExhausted
+		return netip.Prefix{}, err
 	}
 
 	branchPrefix, err := spatial.DeriveBranchPrefix(tenant, uint8(nextSlot))
@@ -184,16 +209,10 @@ func (p *PGBackend) AllocateUnit(ctx context.Context, site netip.Prefix, attrs U
 		return netip.Prefix{}, err
 	}
 
-	var nextSlot int
-	err = tx.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(unit_slot), 0) + 1
-		FROM units WHERE unit_id << $1::INET
-	`, site.String()).Scan(&nextSlot)
+	// unit_slot 1..65534（16-bit；0=unbound、0xFFFF=wildcard 保留）。MAX+1 优先，撞顶回收空号。
+	nextSlot, err := allocSlot(ctx, tx, "units", "unit_slot", "unit_id", site, 65534)
 	if err != nil {
-		return netip.Prefix{}, fmt.Errorf("query MAX unit_slot: %w", err)
-	}
-	if nextSlot > 65534 {
-		return netip.Prefix{}, ErrSlotExhausted
+		return netip.Prefix{}, err
 	}
 
 	unitPrefix, err := spatial.DeriveUnitPrefix(site, uint16(nextSlot))
@@ -238,16 +257,10 @@ func (p *PGBackend) AllocateRoom(ctx context.Context, unit netip.Prefix, attrs R
 		return netip.Prefix{}, err
 	}
 
-	var nextSlot int
-	err = tx.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(room_slot), 0) + 1
-		FROM rooms WHERE room_id << $1::INET
-	`, unit.String()).Scan(&nextSlot)
+	// room_slot 1..254（0=unbound、0xFF=wildcard 保留）。MAX+1 优先，撞顶回收空号。
+	nextSlot, err := allocSlot(ctx, tx, "rooms", "room_slot", "room_id", unit, 254)
 	if err != nil {
-		return netip.Prefix{}, fmt.Errorf("query MAX room_slot: %w", err)
-	}
-	if nextSlot > 254 {
-		return netip.Prefix{}, ErrSlotExhausted
+		return netip.Prefix{}, err
 	}
 
 	roomPrefix, err := spatial.DeriveRoomPrefix(unit, uint8(nextSlot))
@@ -292,16 +305,10 @@ func (p *PGBackend) AllocateBed(ctx context.Context, room netip.Prefix, attrs Be
 		return netip.Prefix{}, err
 	}
 
-	var nextSlot int
-	err = tx.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(bed_slot), 0) + 1
-		FROM beds WHERE bed_id << $1::INET
-	`, room.String()).Scan(&nextSlot)
+	// bed_slot 1..254（0=unbound、0xFF=wildcard 保留）。MAX+1 优先，撞顶回收空号。
+	nextSlot, err := allocSlot(ctx, tx, "beds", "bed_slot", "bed_id", room, 254)
 	if err != nil {
-		return netip.Prefix{}, fmt.Errorf("query MAX bed_slot: %w", err)
-	}
-	if nextSlot > 254 {
-		return netip.Prefix{}, ErrSlotExhausted
+		return netip.Prefix{}, err
 	}
 
 	bedPrefix, err := spatial.DeriveBedPrefix(room, uint8(nextSlot))
