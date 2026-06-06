@@ -1,10 +1,10 @@
 // alarm_enablement.go — qinglan 端 per-device alarm 使能缓存。
 //
 // 复用 sensor (wisefido-sensor/internal/service/alarm_enablement.go) 同形态实现：
-// **唯一数据源**：spatial_config (config_key='alarm.device_config', spatial_prefix=device /128)。
+// **唯一数据源**：device_config (config_key='alarm.device_config', key=device_uid；经 devices 把 device_addr→uid)。
 // JSONB schema：{alarm_items: []alarm.AlarmItem, updated_at: ts}。
 //
-// 不读 alarm.cloud_config（tenant 模板）—— 那是 wisefido-data UI 用的，与运行时无关。
+// 不读 alarm.cloud_config（tenant 模板，在 spatial_config）—— 那是 wisefido-data UI 用的，与运行时无关。
 // device 一旦有 alarm.device_config row 即独立，tenant 模板改动不影响已配置 device。
 //
 // 用途：qinglan StreamPublisher.PublishAlarm 在源头按 device /128 + alarmType 查使能；
@@ -15,7 +15,7 @@
 // 当前 qinglan 只用 on/off（IsEnabled 二值）；threshold 主要给 sensor zonealarm 用。
 //
 // 注：qinglan 不查 cards 表 / 不引 CardMeta；enablement 完全按物理实体地址（device /128
-// spatial_config 精确匹配）。无 row → 用 alarm.GetDefaultAlarmItems(deviceType) 兜底。
+// device_config 精确匹配）。无 row → 用 alarm.GetDefaultAlarmItems(deviceType) 兜底。
 
 package service
 
@@ -98,7 +98,7 @@ func (c *AlarmEnablementCache) IsEnabled(ctx context.Context, deviceAddr, alarmT
 	return ea, ea != nil
 }
 
-// Invalidate 失效单 device cache（spatial_config 改了 → consumer 调）。
+// Invalidate 失效单 device cache（device_config 改了 → consumer 调）。
 func (c *AlarmEnablementCache) Invalidate(deviceAddr string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -131,7 +131,7 @@ func (c *AlarmEnablementCache) InvalidateDevices(addrs []string) {
 }
 
 // loadDevice 解析 device 的 alarm 使能配置：
-//  1. loadFromDeviceConfig 查 spatial_config alarm.device_config /128 精确匹配
+//  1. loadFromDeviceConfig 查 device_config alarm.device_config（key=device_uid）
 //  2. 无 row → alarm.GetDefaultAlarmItems(deviceType) 硬编码默认值兜底
 func (c *AlarmEnablementCache) loadDevice(ctx context.Context, deviceAddr string) {
 	if c.db == nil {
@@ -146,17 +146,18 @@ func (c *AlarmEnablementCache) loadDevice(ctx context.Context, deviceAddr string
 	c.setFromItems(deviceAddr, alarm.GetDefaultAlarmItems(deviceType))
 }
 
-// loadFromDeviceConfig 读 spatial_config alarm.device_config 精确匹配 /128。
+// loadFromDeviceConfig 读 device_config alarm.device_config（key=device_uid，经 devices 把 device_addr→uid）。
 func (c *AlarmEnablementCache) loadFromDeviceConfig(ctx context.Context, deviceAddr string) []alarm.AlarmItem {
 	if c.db == nil || deviceAddr == "" {
 		return nil
 	}
 	var raw []byte
 	err := c.db.QueryRowContext(ctx,
-		`SELECT config_value
-		 FROM spatial_config
-		 WHERE config_key = 'alarm.device_config'
-		   AND spatial_prefix = $1::inet
+		`SELECT dc.config_value
+		 FROM device_config dc
+		 JOIN devices d ON d.device_uid = dc.device_uid
+		 WHERE dc.config_key = 'alarm.device_config'
+		   AND d.device_addr = $1::inet
 		 LIMIT 1`, deviceAddr,
 	).Scan(&raw)
 	if err != nil || len(raw) == 0 {

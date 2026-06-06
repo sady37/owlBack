@@ -58,22 +58,22 @@ func toIntParam(v interface{}) (int, bool) {
 	return 0, false
 }
 
-// deviceMonitorSettingsService backs config storage in spatial_config.
-//   - Get reads spatial_config@device_ipv6 → fallback tenant@device_type → hardcoded default
-//   - Update upserts spatial_config@device_ipv6; device push (qinglan/sleepace) deferred
+// deviceMonitorSettingsService backs per-device config storage in device_config (key=device_uid).
+//   - Get reads device_config@device_uid → fallback tenant@device_type → hardcoded default
+//   - Update upserts device_config@device_uid; device push (qinglan/sleepace) deferred
 //   - 9 OTA/firmware/resync methods return errNotImplemented (Phase 1c+ wiring)
 type deviceMonitorSettingsService struct {
 	db              *sql.DB
 	alarmCloudRepo  repository.AlarmCloudRepository // tenant 层 spatial_config 读取 (Phase 1a 已 v2)
 	qinglanClient   *QinglanClient                  // 雷达在线检查 / device push (Phase 1c 用)
 	sleepaceGateway *SleepaceGatewayClient          // sleepad 厂家 HTTP 下发；nil = 不可下发，UI 会看到 device_write=false
-	configPublisher *publisher.ConfigPublisher      // 写 spatial_config 后 publish config:alarmDevice:stream 让 sensor 失效本地 cache
+	configPublisher *publisher.ConfigPublisher      // 写 device_config 后 publish config:alarmDevice:stream 让 sensor 失效本地 cache
 	logger          *zap.Logger
 }
 
 const deviceAlarmConfigKey = "alarm.device_config"
 
-// deviceAlarmPacked 是 device-level spatial_config.config_value 的 JSONB 包装。
+// deviceAlarmPacked 是 device_config.config_value 的 JSONB 包装。
 type deviceAlarmPacked struct {
 	AlarmItems []alarm.AlarmItem `json:"alarm_items"`
 	UpdatedAt  time.Time         `json:"updated_at"`
@@ -200,15 +200,15 @@ func (s *deviceMonitorSettingsService) resolveTenantResetTime(ctx context.Contex
 	return &tr.ResetTime
 }
 
-// readDeviceConfig 读 device 自己的 spatial_config 行。返回 (nil, sql.ErrNoRows) 表示未保存。
-func (s *deviceMonitorSettingsService) readDeviceConfig(ctx context.Context, deviceIPv6 string) ([]alarm.AlarmItem, error) {
+// readDeviceConfig 读 device 自己的 device_config 行（key=device_uid，rebind 不孤儿）。返回 (nil, sql.ErrNoRows) 表示未保存。
+func (s *deviceMonitorSettingsService) readDeviceConfig(ctx context.Context, deviceUID string) ([]alarm.AlarmItem, error) {
 	var raw []byte
 	err := s.db.QueryRowContext(ctx, `
 		SELECT config_value
-		  FROM spatial_config
-		 WHERE spatial_prefix = $1::inet
+		  FROM device_config
+		 WHERE device_uid = $1
 		   AND config_key = $2
-	`, deviceIPv6, deviceAlarmConfigKey).Scan(&raw)
+	`, deviceUID, deviceAlarmConfigKey).Scan(&raw)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +292,7 @@ func (s *deviceMonitorSettingsService) tenantSnapshot(ctx context.Context, tenan
 // 每一层按 alarm_type + per-key 覆盖上一层；后一层显式给的字段才覆盖。
 // FE 拿到的 alarm_items 永远完整，模板里 hardcoded fallback 只是 BE 出错时的 emergency safety net。
 func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Context, tenantID, deviceAddr, deviceType string) ([]alarm.AlarmItem, error) {
-	deviceIPv6, err := s.resolveDeviceIPv6(ctx, deviceAddr)
+	deviceUID, err := s.resolveDeviceUID(ctx, deviceAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -300,14 +300,14 @@ func (s *deviceMonitorSettingsService) GetDeviceMonitorSettings(ctx context.Cont
 	// Layer 1+2: default + tenant snapshot（与 GetDefaultDeviceMonitorSettings 同源，保证 "Load Defaults" 视图与正常视图共用 base）
 	result := s.buildTenantDefaultLayer(ctx, tenantID, deviceType)
 
-	// Layer 3: user device override（spatial_config 行存在才叠）
-	if items, err := s.readDeviceConfig(ctx, deviceIPv6); err == nil {
+	// Layer 3: user device override（device_config 行存在才叠）
+	if items, err := s.readDeviceConfig(ctx, deviceUID); err == nil {
 		result = mergeAlarmItemsOverDefaults(result, items)
 	} else if err != sql.ErrNoRows {
 		// JSON 解析失败或其它 SQL 错误 — warn 记录，不阻塞 page；前两层已足以渲染。
 		s.logger.Warn("failed to read device alarm config; tenant-default layer used",
 			zap.String("device_addr", deviceAddr),
-			zap.String("device_ipv6", deviceIPv6),
+			zap.String("device_uid", deviceUID),
 			zap.Error(err),
 		)
 	}
@@ -400,6 +400,10 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(
 	if err != nil {
 		return nil, err
 	}
+	deviceUID, err := s.resolveDeviceUID(ctx, deviceAddr)
+	if err != nil {
+		return nil, err
+	}
 
 	payload, err := json.Marshal(deviceAlarmPacked{
 		AlarmItems: alarmItems,
@@ -414,22 +418,21 @@ func (s *deviceMonitorSettingsService) UpdateDeviceMonitorSettings(
 		updatedBy = userID
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO spatial_config (
-			spatial_prefix, config_key, config_value, device_uid,
+		INSERT INTO device_config (
+			device_uid, config_key, config_value,
 			source, state_db, last_synced_at, updated_at, updated_by
 		) VALUES (
-			$1::inet, $2, $3::jsonb, (SELECT device_uid FROM devices WHERE device_addr = $1::inet),
+			$1, $2, $3::jsonb,
 			'manual_ui', 3, now(), now(), $4::uuid
 		)
-		ON CONFLICT (spatial_prefix, config_key) DO UPDATE SET
+		ON CONFLICT (device_uid, config_key) DO UPDATE SET
 			config_value   = EXCLUDED.config_value,
 			source         = EXCLUDED.source,
 			state_db       = EXCLUDED.state_db,
-			device_uid     = EXCLUDED.device_uid,
 			last_synced_at = EXCLUDED.last_synced_at,
 			updated_at     = EXCLUDED.updated_at,
 			updated_by     = EXCLUDED.updated_by
-	`, deviceIPv6, deviceAlarmConfigKey, string(payload), updatedBy)
+	`, deviceUID, deviceAlarmConfigKey, string(payload), updatedBy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert device alarm config: %w", err)
 	}

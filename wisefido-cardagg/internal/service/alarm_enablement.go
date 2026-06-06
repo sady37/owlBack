@@ -1,13 +1,13 @@
 // alarm_enablement.go — cardagg 端 per-device alarm 使能缓存。
 //
-// **唯一数据源**：spatial_config (config_key='alarm.device_config', spatial_prefix=device /128)。
+// **唯一数据源**：device_config (config_key='alarm.device_config', key=device_uid；经 devices 把 device_addr→uid)。
 // JSONB schema：{alarm_items: []alarm.AlarmItem, updated_at: ts}。
 //
-// **不读 alarm.cloud_config**（tenant 级模板）—— 那是 wisefido-data 给 UI"reset to default"和
+// **不读 alarm.cloud_config**（tenant 级模板，在 spatial_config）—— 那是 wisefido-data 给 UI"reset to default"和
 // 新设备 bind 时取 snapshot 用的，与运行时无关。device 一旦有 alarm.device_config row 即独立，
 // tenant 模板改动不影响已配置 device（用户拍板：snapshot model，不级联）。
 //
-// 失效路径：wisefido-data UpdateDeviceMonitorSettings 写 spatial_config 后 publish
+// 失效路径：wisefido-data UpdateDeviceMonitorSettings 写 device_config 后 publish
 // config:alarmDevice:stream → cardagg AlarmDeviceConfigConsumer.Invalidate(deviceAddr) →
 // 下次 IsEnabled lazy reload。
 
@@ -56,7 +56,7 @@ func NewAlarmEnablementCache(db *sql.DB, logger *zap.Logger) *AlarmEnablementCac
 }
 
 // IsEnabled 查 device 是否启用了某条 alarm。返 (enabledAlarm, ok)。
-// tenantID 参数保留兼容旧 signature；本实现不用（device_config 按 /128 精确匹配）。
+// tenantID 参数保留兼容旧 signature；本实现不用（device_config 按 device_uid 精确匹配）。
 func (c *AlarmEnablementCache) IsEnabled(ctx context.Context, tenantID, deviceAddr, alarmType string) (*EnabledAlarm, bool) {
 	_ = tenantID
 	if deviceAddr == "" || alarmType == "" {
@@ -91,7 +91,7 @@ func (c *AlarmEnablementCache) IsEnabled(ctx context.Context, tenantID, deviceAd
 	return ea, ea != nil
 }
 
-// Invalidate 失效单 device cache（spatial_config 改了 → consumer 调）。
+// Invalidate 失效单 device cache（device_config 改了 → consumer 调）。
 func (c *AlarmEnablementCache) Invalidate(deviceAddr string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -124,7 +124,7 @@ func (c *AlarmEnablementCache) InvalidateDevices(deviceAddrs []string) {
 }
 
 // loadDevice 解析 device 的 alarm 使能配置：
-//  1. loadFromDeviceConfig 查 spatial_config alarm.device_config /128 精确匹配
+//  1. loadFromDeviceConfig 查 device_config alarm.device_config（key=device_uid）
 //  2. 无 row → alarm.GetDefaultAlarmItems(deviceType) 硬编码默认值兜底
 //
 // tenant 级 alarm.cloud_config 不读 — 那是 wisefido-data UI 的模板，与运行时无关。
@@ -158,7 +158,7 @@ func (c *AlarmEnablementCache) resolveDeviceType(ctx context.Context, deviceAddr
 	return dt.String
 }
 
-// loadFromDeviceConfig 读 spatial_config alarm.device_config /128 精确匹配。
+// loadFromDeviceConfig 读 device_config alarm.device_config（key=device_uid，经 devices 把 device_addr→uid）。
 // 配置由 wisefido-data UpdateDeviceMonitorSettings 写入；schema = {alarm_items: []AlarmItem}。
 // 未配置 → nil（caller 用 GetDefaultAlarmItems 兜底）。
 func (c *AlarmEnablementCache) loadFromDeviceConfig(ctx context.Context, deviceAddr string) []alarm.AlarmItem {
@@ -167,10 +167,11 @@ func (c *AlarmEnablementCache) loadFromDeviceConfig(ctx context.Context, deviceA
 	}
 	var raw []byte
 	err := c.db.QueryRowContext(ctx,
-		`SELECT config_value
-		 FROM spatial_config
-		 WHERE config_key = 'alarm.device_config'
-		   AND spatial_prefix = $1::inet
+		`SELECT dc.config_value
+		 FROM device_config dc
+		 JOIN devices d ON d.device_uid = dc.device_uid
+		 WHERE dc.config_key = 'alarm.device_config'
+		   AND d.device_addr = $1::inet
 		 LIMIT 1`, deviceAddr,
 	).Scan(&raw)
 	if err != nil || len(raw) == 0 {

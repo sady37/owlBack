@@ -356,10 +356,10 @@ func main() {
 			}
 		})
 
-		// DeviceMonitorSettingsService — backed by spatial_config (device /128) + tenant snapshot fallback.
+		// DeviceMonitorSettingsService — backed by device_config (key=device_uid) + tenant snapshot fallback (spatial_config).
 		// 实现 Get/Update/GetDefault/CheckOnline 4 个核心方法；其它 9 个（OTA / firmware / resync）返回 NotImplemented。
 		deviceMonitorSettingsService = service.NewDeviceMonitorSettingsService(db, alarmCloudRepo, logger)
-		// device-level UPSERT spatial_config(alarm.device_config) 后 publish invalidate
+		// device-level UPSERT device_config(alarm.device_config) 后 publish invalidate
 		if dms, ok := deviceMonitorSettingsService.(interface {
 			SetConfigPublisher(p *publisher.ConfigPublisher)
 		}); ok {

@@ -237,16 +237,16 @@ func isSleepaceUserNotFound(err error) bool {
 	return strings.Contains(s, "user not found") || strings.Contains(s, "status: 5")
 }
 
-// readUserConfiguredInterval — 从 spatial_config alarm.device_config 读 SleepadSetting.realtime_interval。
+// readUserConfiguredInterval — 从 device_config alarm.device_config 读 SleepadSetting.realtime_interval。
 // 找不到 / 解析失败 → 返回 0（视为未设置，不触发 skip）。
 func (s *SleepaceIntervalScheduler) readUserConfiguredInterval(ctx context.Context, deviceID string) int {
 	var raw []byte
 	err := s.db.QueryRowContext(ctx, `
-		SELECT sc.config_value
-		  FROM spatial_config sc, devices d
+		SELECT dc.config_value
+		  FROM device_config dc
+		  JOIN devices d ON d.device_uid = dc.device_uid
 		 WHERE d.device_addr = $1::INET
-		   AND sc.spatial_prefix = d.device_addr
-		   AND sc.config_key = 'alarm.device_config'
+		   AND dc.config_key = 'alarm.device_config'
 	`, deviceID).Scan(&raw)
 	if err != nil || len(raw) == 0 {
 		return 0

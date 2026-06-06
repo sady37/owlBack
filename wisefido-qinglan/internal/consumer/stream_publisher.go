@@ -82,7 +82,7 @@ var alarmGateSkip = map[string]struct{}{
 // PublishAlarm sends a redis.StreamMessage to iot:alarm:stream.
 //
 // 源头 enablement gate（仅对 vital 类生效）：
-//   - vital (HR/RR/Apnea/Weak)：查 spatial_config alarm.device_config，未启用 drop
+//   - vital (HR/RR/Apnea/Weak)：查 device_config alarm.device_config，未启用 drop
 //   - device-class (Offline/SensorDetached/SignalPoor/AngleException + Recovers)：跳 gate，HIPAA 强制审计
 //
 // LeftBed / Stay / Fall / SittingOnGround 不走 qinglan PublishAlarm — 那些由 sensor 派生（zonealarm 或
@@ -92,7 +92,7 @@ func (p *StreamPublisher) PublishAlarm(ctx context.Context, msg *rediscommon.IoT
 		if _, skip := alarmGateSkip[msg.Category]; !skip {
 			if !p.alarmGate(ctx, msg.DeviceAddr.String(), msg.Category) {
 				if p.logger != nil {
-					p.logger.Debug("publish alarm gated (disabled in spatial_config)",
+					p.logger.Debug("publish alarm gated (disabled in device_config)",
 						zap.String("device_addr", msg.DeviceAddr.String()),
 						zap.String("category", msg.Category))
 				}

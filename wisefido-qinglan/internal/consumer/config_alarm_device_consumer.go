@@ -1,6 +1,6 @@
 // config_alarm_device_consumer.go — qinglan 端 config:alarmDevice:stream 订阅。
 //
-// 数据流：wisefido-data UPDATE spatial_config (alarm.device_config) → Publish 精确 device_addr
+// 数据流：wisefido-data UPSERT device_config (alarm.device_config) → Publish 精确 device_addr
 // payload 到 config:alarmDevice:stream → 本 consumer Invalidate qinglan AlarmEnablementCache。
 //
 // 与 sensor/cardagg 同消息源、独立 consumer group ("wisefido-qinglan-alarm-device")，

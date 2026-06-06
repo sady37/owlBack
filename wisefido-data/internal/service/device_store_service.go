@@ -33,7 +33,7 @@ type DeviceStoreService struct {
 }
 
 // NewDeviceStoreService 创建设备库存 Service。sleepaceGateway 可为 nil（未配置时不执行绑定相关逻辑）。
-// db 用于 bind-init 时读 spatial_config 的 user-configured realtime_interval；nil 时落 alarm.go 默认。
+// db 用于 bind-init 时读 device_config 的 user-configured realtime_interval；nil 时落 alarm.go 默认。
 func NewDeviceStoreService(
 	db *sql.DB,
 	deviceStoreRepo repository.DeviceStoreRepository,
@@ -431,7 +431,7 @@ func (s *DeviceStoreService) DeleteDeviceStoreAndNotify(ctx context.Context, dev
 }
 
 // applyDefaultSleepadRealtime 在 Sleepace bind 成功后下发实时上报配置：
-//   - SetRealtimeInterval —— 取值优先：spatial_config (FE 保存值) > alarm.go SleepadSetting 默认 (10)
+//   - SetRealtimeInterval —— 取值优先：device_config (FE 保存值) > alarm.go SleepadSetting 默认 (10)
 //   - SetRealtimeModeAfterLeave(1) —— 离床后停止上报；仅 BM8701-2 + 固件 ≥ 6.67 支持
 //
 // 任何错误降级为 Warn 日志，不阻塞 bind 流程。偶发瞬时错误（实测厂家 status:3 空 msg）做一次重试。
@@ -469,8 +469,8 @@ func (s *DeviceStoreService) applyDefaultSleepadRealtime(ctx context.Context, ds
 }
 
 // resolveSleepadRealtimeInterval 取 bind-init 时 cloud 应下发的 realtime_interval：
-//   1. spatial_config alarm.device_config (FE 保存值)  ←—— 优先
-//   2. alarm.go SleepadSetting 默认 10                  ←—— 缺失/解析失败时兜底
+//   1. device_config alarm.device_config (FE 保存值, key=device_uid)  ←—— 优先
+//   2. alarm.go SleepadSetting 默认 10                                ←—— 缺失/解析失败时兜底
 //
 // scheduler 运行期会在窗口内切 2s 高频；此函数只决定 bind-init 的初始值。
 func (s *DeviceStoreService) resolveSleepadRealtimeInterval(ctx context.Context, deviceUID string) int {
@@ -480,11 +480,10 @@ func (s *DeviceStoreService) resolveSleepadRealtimeInterval(ctx context.Context,
 	}
 	var raw []byte
 	err := s.db.QueryRowContext(ctx, `
-		SELECT sc.config_value
-		  FROM spatial_config sc
-		  JOIN devices d ON d.device_addr = sc.spatial_prefix
-		 WHERE d.device_uid = $1
-		   AND sc.config_key = 'alarm.device_config'
+		SELECT config_value
+		  FROM device_config
+		 WHERE device_uid = $1
+		   AND config_key = 'alarm.device_config'
 	`, deviceUID).Scan(&raw)
 	if err != nil || len(raw) == 0 {
 		return fallback
