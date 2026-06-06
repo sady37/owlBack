@@ -7,17 +7,23 @@
 # 与 export_case.sh 的区别：那个导 JSON replay fixture 喂 belief_replay_test；本脚本导
 # 人类可读 txt 供测试复盘/对账（bed 融合、固件 fall、sleepad-radar 矛盾等）。
 #
-# 用法:
-#   ./export_bed_test_record.sh <radar_uid> <sleepad_uid> <start> <end> --tz <IANA_TZ> [<case_name>]
+# 用法（二选一）:
+#   A 显式窗口: ./export_bed_test_record.sh <radar_uid> <sleepad_uid> <start> <end> --tz <TZ> [<case_name>]
+#   B 告警锚定: ./export_bed_test_record.sh <radar_uid> <sleepad_uid> --alarm "<近似时刻>" --tz <TZ> [<case_name>]
+#               窗口自动 = triggered_at - <pre> .. coalesce(alerted_at,triggered_at) + <post>（默认 120/60 秒）
 #
 # 示例:
-#   ./export_bed_test_record.sh 9D8A326309E7 BM87224700978 \
-#       "2026-06-05 13:08:30" "2026-06-05 13:18:45" --tz America/Denver bed-test-0605-2
+#   A: ./export_bed_test_record.sh 9D8A326309E7 BM87224700978 \
+#        "2026-06-05 13:08:30" "2026-06-05 13:18:45" --tz America/Denver bed-test-0605-2
+#   B: ./export_bed_test_record.sh 4D8710D5CABB - --alarm "2026-06-05 06:08" --tz Asia/Shanghai cabb-fall
 #
 # 参数:
 #   <radar_uid>    雷达 device_uid（发 radar.track/heart + 固件 InBed/LeftBed/Fall）
 #   <sleepad_uid>  床垫 device_uid（发 sleepad.track + sleepad InBed/LeftBed）；'-' 表示无床垫
-#   <start> <end>  本地时间 "YYYY-MM-DD HH:MM:SS"，按 --tz 解释（DB 内部存 UTC）
+#   <start> <end>  模式 A：本地时间 "YYYY-MM-DD HH:MM:SS"，按 --tz 解释（DB 内部存 UTC）
+#   --alarm <t>    模式 B：近似时刻（本地，按 --tz），找该设备最近的告警锚定窗口
+#   --alarm-type T 模式 B 告警类型，缺省 Fall
+#   --pre/--post N 模式 B 窗口前/后秒数，缺省 120/60
 #   --tz <TZ>      必填，IANA 时区（如 America/Denver）。服务器 $TZ 未必等于设备所在地。
 #   <case_name>    可选；缺省自动拼 "bedtest_<radar后4>_<startISO>"
 #
@@ -28,17 +34,29 @@
 
 set -euo pipefail
 
-if [[ $# -lt 4 ]]; then sed -n '2,30p' "$0"; exit 1; fi
+if [[ $# -lt 2 ]]; then sed -n '2,35p' "$0"; exit 1; fi
 
-RADAR_UID="$1"; SLEEPAD_UID="$2"; START_ARG="$3"; END_ARG="$4"; shift 4
-TZ_ARG=""; CASE_NAME=""
+RADAR_UID="$1"; SLEEPAD_UID="$2"; shift 2
+TZ_ARG=""; CASE_NAME=""; START_ARG=""; END_ARG=""
+ALARM_AT=""; ALARM_TYPE="Fall"; PRE_SEC=120; POST_SEC=60
+POS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --tz) TZ_ARG="$2"; shift 2 ;;
-    *) CASE_NAME="$1"; shift ;;
+    --tz)         TZ_ARG="$2"; shift 2 ;;
+    --alarm)      ALARM_AT="$2"; shift 2 ;;
+    --alarm-type) ALARM_TYPE="$2"; shift 2 ;;
+    --pre)        PRE_SEC="$2"; shift 2 ;;
+    --post)       POST_SEC="$2"; shift 2 ;;
+    *)            POS+=("$1"); shift ;;
   esac
 done
 [[ -z "$TZ_ARG" ]] && { echo "ERROR: --tz <IANA_TZ> 必填"; exit 1; }
+if [[ -n "$ALARM_AT" ]]; then
+  CASE_NAME="${POS[0]:-}"
+else
+  START_ARG="${POS[0]:-}"; END_ARG="${POS[1]:-}"; CASE_NAME="${POS[2]:-}"
+  [[ -z "$START_ARG" || -z "$END_ARG" ]] && { echo "ERROR: 需 <start> <end> 或 --alarm <近似时刻>"; exit 1; }
+fi
 
 PGHOST="${PGHOST:-localhost}"; PGPORT="${PGPORT:-5432}"
 PGUSER="${PGUSER:-postgres}"; PGPASSWORD="${PGPASSWORD:-postgres}"; PGDB="${PGDB:-owl_v2}"
@@ -57,13 +75,29 @@ if [[ "$SLEEPAD_UID" != "-" ]]; then
   [[ -z "$SLEEPAD_ADDR" ]] && { echo "ERROR: 找不到 sleepad uid=$SLEEPAD_UID"; exit 1; }
 fi
 
-# 本地时间 -> UTC timestamptz 字面量（psql 内用 AT TIME ZONE 反算）
-WS="$("${PSQL[@]}" -c "SELECT (timestamp '${START_ARG}' AT TIME ZONE '${TZ_ARG}')::text;")"
-WE="$("${PSQL[@]}" -c "SELECT (timestamp '${END_ARG}'   AT TIME ZONE '${TZ_ARG}')::text;")"
-
-if [[ -z "$CASE_NAME" ]]; then
-  R4="${RADAR_UID: -4}"; ISO="$(echo "$START_ARG" | tr ' :' '__')"
-  CASE_NAME="bedtest_${R4}_${ISO}"
+ANCHOR_NOTE=""
+if [[ -n "$ALARM_AT" ]]; then
+  # 模式 B：找该 radar 最近的 <ALARM_TYPE> 告警，窗口 = triggered-PRE .. coalesce(alerted,triggered)+POST
+  AROW="$("${PSQL[@]}" -c "
+    SELECT (triggered_at - interval '${PRE_SEC} sec')::text || '~' ||
+           (coalesce(alerted_at,triggered_at) + interval '${POST_SEC} sec')::text || '~' ||
+           to_char(triggered_at AT TIME ZONE '${TZ_ARG}','YYYY-MM-DD_HH24-MI-SS') || '~' ||
+           to_char(triggered_at AT TIME ZONE '${TZ_ARG}','HH24:MI:SS') || '~' ||
+           to_char(coalesce(alerted_at,triggered_at) AT TIME ZONE '${TZ_ARG}','HH24:MI:SS') || '~' ||
+           to_char((triggered_at - interval '${PRE_SEC} sec') AT TIME ZONE '${TZ_ARG}','YYYY-MM-DD HH24:MI:SS') || '~' ||
+           to_char((coalesce(alerted_at,triggered_at) + interval '${POST_SEC} sec') AT TIME ZONE '${TZ_ARG}','YYYY-MM-DD HH24:MI:SS')
+    FROM alarm_events
+    WHERE device_addr='${RADAR_ADDR}' AND event_type='${ALARM_TYPE}'
+    ORDER BY abs(extract(epoch FROM (triggered_at - (timestamp '${ALARM_AT}' AT TIME ZONE '${TZ_ARG}')))) LIMIT 1;")"
+  [[ -z "$AROW" ]] && { echo "ERROR: 找不到 ${ALARM_TYPE} 告警 near '${ALARM_AT}'（radar ${RADAR_UID}）"; exit 1; }
+  IFS='~' read -r WS WE TRIG_TAG TRIG_LOCAL FIRE_LOCAL START_ARG END_ARG <<< "$AROW"
+  ANCHOR_NOTE="告警锚定: ${ALARM_TYPE} 事故@${TRIG_LOCAL} → fire@${FIRE_LOCAL}  (窗口 = 事故-${PRE_SEC}s .. fire+${POST_SEC}s)"
+  [[ -z "$CASE_NAME" ]] && CASE_NAME="${ALARM_TYPE,,}test_${RADAR_UID: -4}_${TRIG_TAG}"
+else
+  # 模式 A：本地时间 -> UTC timestamptz 字面量（psql 内用 AT TIME ZONE 反算）
+  WS="$("${PSQL[@]}" -c "SELECT (timestamp '${START_ARG}' AT TIME ZONE '${TZ_ARG}')::text;")"
+  WE="$("${PSQL[@]}" -c "SELECT (timestamp '${END_ARG}'   AT TIME ZONE '${TZ_ARG}')::text;")"
+  [[ -z "$CASE_NAME" ]] && { R4="${RADAR_UID: -4}"; ISO="$(echo "$START_ARG" | tr ' :' '__')"; CASE_NAME="bedtest_${R4}_${ISO}"; }
 fi
 OUT_DIR="${OWLBACK_DIR}/doc/cases/${CASE_NAME}"
 mkdir -p "$OUT_DIR"
@@ -137,6 +171,7 @@ FROM base ORDER BY ts, pri
   echo " 床态测试完整记录   case=${CASE_NAME}"
   echo " 窗口(本地 ${TZ_ARG}): ${START_ARG} – ${END_ARG}"
   echo " 窗口(UTC): ${WS} – ${WE}   (下表时间列为 UTC, HH:MM:SS)"
+  [[ -n "$ANCHOR_NOTE" ]] && echo " ${ANCHOR_NOTE}"
   echo " radar   = ${RADAR_UID} (${RADAR_ADDR})"
   [[ -n "$SLEEPAD_ADDR" ]] && echo " sleepad = ${SLEEPAD_UID} (${SLEEPAD_ADDR})"
   echo "--------------------------------------------------------------------------------"
