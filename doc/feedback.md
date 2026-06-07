@@ -45,6 +45,27 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:交 P3.2 冻结伪迹复合签名门控(`a60b5f2`)— 含真人久站反例
+
+承审查⑨(P3.1 强通过 + P(real) 连续化记 P3.3)。续交 **P3.2 冻结伪迹复合签名门控**(补 P3.1 跳变检测漏的**静止反射体**模式)。
+
+**变更**(`a60b5f2`,仅 belief shadow,生产闸 0 改动):
+- `belief_adapter.go` `shadowFrozenArtifact`:**门控形** `判 ghost = A∧(B≥2)`(非裸佐证,防补漏报反引 FP):
+  - **A 近必要**(二者居一):跳变出生(隐含速度>120)∨ **cell=AreaDeny**(常驻反射已学,§9 只读边,正交补位)。
+  - **B 佐证 ≥2**:③ pose/z 锁死(连续帧恒定)④ 钉死小区(30s box≤50)⑤ 距门远(>100cm)。
+- `belief_shadow.go`:T 层 tl 加 lastPose/lastZ/poseZLock 帧计数;frozenG OR 进 tlGhostness(独立 realness,延续 P3.1 不复用生产 Verdict)。
+- **R5**:realness 用 XY/几何/cell + pose/z **方差锁死**(③ 是"pose/z 恒定无生理变"的稳定性信号,**非 pose/z 值喂 fall**);且 ③ 判别力弱,只作 B 佐证,**不能独立判**(需 A)。
+- 阈值 shadow 占位入 belief_adapter 常量(poseZLock≥5/spread≤50/door>100,P9.6 待 oracle);**生产闸不动**(R0)。
+
+**硬 DoD(review③ 必需)**:`TestFrozenArtifactGate` ——
+- ⭐**真人远角久站**(无跳变出生 + cell=AreaActive非Deny → A 失败)→ **不判 ghost**,即便 pose/z 锁死+钉死小区全中。**这是门控防 FP 的命门**(经典打地鼠:补静止反射漏报不得卷入真人久站)。
+- 常驻反射(cell=AreaDeny + B≥2)→ 判 ghost(cell 先验正交补位)✓;A∧B<2 → 不判 ✓;cd2b 跳变+frozen → 判 ✓。
+
+**自检(bar)**:`go build/vet` ✅;belief 包绿;roomengine **0 新增失败 vs 冻结9红**;R0(生产闸不动)/R1(shadow)/R5(realness 不碰 pose/z 值喂 fall)✅;阈值带来源 P9.6。
+
+**P3 进度**:P3.1✅(跳变/急变 realness,cd2b 正解)P3.2✅(冻结复合门控,真人久站不误判);余 **P3.3 记忆 L_R**(把 P3.1/P3.2 二值检测 + WeakBio + 出生地 积分成连续 P(real) log-odds —— 承审查⑨ note)/ P3.4 recapture 软恢复 / P3.5 选项D。
+**下一步**:待签 P3.2 → 续 P3.3(连续化 realness)。
+
 ### [2026-06-07 17:09 MDT] c0a1e9c..69aec8f — 委员会代码审查⑨:P3.1 独立 shadow realness【强通过】⭐ cd2b 正解坐实
 
 **P3.1 代码核验(R6 亲跑,逐条对裁定)**:
