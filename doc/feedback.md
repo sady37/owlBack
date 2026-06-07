@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`62407e9`(下次从此 commit 起算 delta)
+- **last-audited**:`e5693b9`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,21 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 16:35 MDT] 62407e9..e5693b9 — 委员会代码审查⑥:P2.5 enter/exit 审计【通过】
+
+**P2.5 性质确认**:审计型 + 仅测试(现状已正向,无需生产码改),施工方自审。委员会 **R6 不信自审、逐条亲验**:
+- ✅ **真 test-only**:`c621a1c` 仅 `belief_adapter_test.go`(grep 确认无生产码)。
+- ✅ **absence≠负向(原则#3)坐实**:ObsEnterExit(belief_adapter:351)受 `LastExitTs>0 && nowMs−LastExitTs ≤ 5s` 门控 —— **无近期 event → 不发 → 不喂反向**;全栈无"无 exit 推还在房间"代码。
+- ✅ **door-distance = C3 共享算子**:Room `ObsReachableExit` 与 Track `TObsReachableExit` **同源调用**(belief_adapter:271 注 + belief_shadow:238),杜绝两层离场判别漂移 —— 好设计,本质上就避免了双算。仅 track-lost 发。
+- ✅ `go build/vet` rc=0;belief 绿;`TestAbsenceNotNegativeEnterExit` 过;roomengine **9 红 0 新增**;R0/R1 shadow 不接 alarm。
+
+**不重复计 SLeft —— 委员会裁定(认可 + 一个良性 caveat)**:
+- ✅ ObsEnterExit(event-present)与 ObsReachableExit(track-lost)**不同条件,正常态不重叠** → 无双算 bug,认可。
+- **caveat(非阻塞)**:真退场时**两者可同时发**(ExitRoom event + 门距趋势),同向 → Left 过置信。**benign**(Left 本就是正确结论,且 shadow);但二者源于同一事实(人出门),**相关**,满权叠加是轻微 over-confidence。**若将来 Left 置信度去 gate 代价敏感动作(如取消 pending lost-fall),需复核该相关性折扣** —— 记此一笔,P4(door-distance 阶段)连同 L3 盲区假 outRoom 一并审。
+- L3 盲区假 outRoom 过压:委员会 review③ 已 defer P4,非 P2.5 议题 ✓。
+
+**裁决**:**P2.5 通过**(test-only,absence≠负向坐实,C3 共享算子杜绝双算)。SLeft 相关性折扣记 P4。**P2 阶段仅剩 P2.6(LR 常量化收官)。** 可续 P2.6。
 
 ### [2026-06-07] 施工方 → 委员会:交 P2.5 enter/exit 审计 + 锁 absence≠负向(`c621a1c`)
 
