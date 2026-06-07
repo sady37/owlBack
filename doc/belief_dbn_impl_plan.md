@@ -75,4 +75,66 @@ margin 不够则 DBN 不值得继续(signal_map §11.4),止于 shadow。
 
 ---
 
-*后续节将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
+## §1 P2 — 发射层标定 L(o|s)(keystone)
+
+**目标**:把 `belief/likelihood.go` 的发射似然全部对齐 signal_map §2 的"真实方向性"原则:
+**pose/z 对 fall 只正向**(R5),删伪正向,降不可信源权。全程 shadow,只改 likelihood 标定,
+不动判决路径。
+
+**现状审计(belief/likelihood.go,已逐行核)**:
+| 现行为 | 行 | 与新标定的冲突 |
+|---|---|---|
+| `ObsKinematics` z↓→`SFallen:1+7f` | likelihood.go:19-27 | **违 R5/§10#3**:z 骤降当 fall 强正向证据;z=0 是噪声,连正向都不算 → **删** |
+| `ObsFirmwareFall` →`SFallen:10` | likelihood.go:52-55 | **§10#2**:pose=5 不可信却给 ×10 极权 → 按混淆矩阵降权 |
+| `poseLikelihood` stand→`SFallen:0.4` / walk→`0.3` / sit→(无 fall 项但 walk 压 0.8) | likelihood.go:137,145,147 | **违 R5**:pose=stand/walk **压** fall = pose 负向;firmware 误把"摔后"标成 walk 就会抹真摔 → 压 fall 项一律提到中性 1.0 |
+| pose=fallen OpenFloor→`SFallen:10` / InBed→`1.5` | likelihood.go:149-156 | 正向,保留(lying/fallen 是允许的正向) |
+| z 三档无独立发射(仅折进 Geom) | — | §2 新增 z>80→stand / 30–80→sit / <30→LR=1,且 z **不进 fall** |
+
+### P2.1 — 删 kinematics Δz fall 正向(§10#3a)
+- **动**:`belief/likelihood.go:19-27` `ObsKinematics` case。
+- **改法**:整 case 删除(或 return `lk(nil)`);上游 `belief/observation.go` 停产 `ObsKinematics`(z↓ 信号)。
+- **标定来源**:A 类 round-z3/round-posonly —— z 骤降=环境噪声,非 fall 证据。
+- **shadow 字段**:对账日志记 `p2_1_kinematics_dropped=true`,对比删前/删后 Fallen 后验差。
+- **oracle**:cabb-0603 冻结 FP —— 删 Δz 后该 case Fallen 后验应**下降**(不再被 z=0 抬)。
+- **边界**:真摔(cabb-0605)靠 pose-lying 正向扛,不依赖 Δz → 后验不应塌。
+- **DoD**:`grep ObsKinematics` 全栈 0 命中(producer+consumer 同删,R4 producer-first)。
+
+### P2.2 — pose 对 fall 改正向 only(§10#3c / R5)
+- **动**:`poseLikelihood` 各 case 的 **fall 压制项**:walk `SFallen:0.3`→`1.0`、stand `SFallen:0.4`→`1.0`、走动门口 SLeft 保留(那是 S_room 路由非 fall 压制)。
+- **保留正向**:lying/fallen/suspected-fall/sit-ground 的 `SFallen>1` 不动。
+- **posture vs fall 双表分离**:pose 对 **posture 节点**仍可做混淆矩阵区分(sit 特异/stand 模糊),但对 **fall 读出**只正向 —— 用两条 LR 通道,别让 posture 判别污染 fall 压制。
+- **标定来源**:A 类 round-posonly;混淆矩阵 70/20。
+- **oracle**:构造"firmware 误标 walking 的静止真摔" —— 改后 walk 不再压 Fallen,真摔后验不被抹。
+- **DoD**:`poseLikelihood` 内 `SFallen` 取值 ∀ <1.0 的条目清零为 1.0(grep 自查)。
+
+### P2.3 — z 三档发射(posture,§2 新增)
+- **动**:`belief/observation.go` 新增 `ObsZBand`(或扩 ObsPose 带 z);`likelihood.go` 加 case。
+- **标定**:`z>80→+stand`(`SStandWalk:↑`)、`30–80→+sit`(`SSit:↑`)、`<30→lk(nil)`(假低,LR=1)。**z 不写任何 SFallen 项**(R5:不确认不否决)。
+- **来源**:A 类 round-z3。
+- **依赖**:z 档同时是 cell engine 解偏输入(§9 接口,但 DBN 这侧只读 posture 用)。
+- **oracle**:cabb-0606(全程 pose=4/z=0)—— z<30 段 LR=1,不污染;验证 z 不参与 fall(§11.2 残差对仍只剩 Z_cell 杠杆,符合预期)。
+
+### P2.4 — firmware-fall pose=5 降权(§10#2)
+- **动**:`likelihood.go:52-55` `ObsFirmwareFall` 的 `SFallen:10`。
+- **改法**:按 firmware fall 混淆矩阵(真机 fixture 估 TP/FP 率)重标 LR,从 ×10 降到与"可信度"匹配的档(待 P9 oracle 标定具体值,先占位 `SFallen:~3-4` 并 shadow 对账)。
+- **来源**:§10#2;firmware_fall_qualification 真机统计。
+- **风险**:firmware pose=5 仍是现网 Device_ALARM 直发路径(记忆[firmware_fall_qualification]),**本改只动 belief shadow 的 LR,不动 firmware 直发**(R1)。
+- **oracle**:对比降权前后,firmware-fall FP fixture 的后验是否落到 τ\* 下而真 fall 仍过。
+
+### P2.5 — enter/exit 正向 + 缺失由 door-distance 补(已入 signal_map 3da5dfe)
+- **现状**:`likelihood.go:58-65` 已是正向(EnterRoom→StandWalk×2 / ExitRoom→SLeft×8)。
+- **本 task**:**编码"absence≠状态"** —— event 不在时**不**喂反向证据;信号丢失时由 `ObsReachableExit`(door-distance,likelihood.go:116-125 已存)补缺失退场。核对二者不重复计 SLeft。
+- **来源**:signal_map §2 enter/exit 行 + door-distance 行。
+- **oracle**:cd2b —— 丢真人时无 ExitRoom event,door-distance 远(未近门)→ 不误判 Left → 真人 Lost 浮出(配合 P3)。
+
+### P2.6 — 发射标定集中化(R7)
+- **动**:把散落在 `likelihood.go` 的 LR 数值抽到一张**标定常量表**(单文件/单 struct),附每条 `来源` 注脚(A 类 round-x / fixture)。
+- **目的**:P9 oracle 调灵敏度时单点改,不猎散落字面量;委员会可审"每个数从哪来"。
+- **DoD**:likelihood.go 内裸数值字面量 → 命名常量;对照表与 signal_map §2 行一一对应。
+
+**P2 验收闸**:shadow 重放 §8 全 fixture,逐 case 记 fall 后验**改前/改后** delta;
+要求(a) 真摔 case 后验不降破 τ\*;(b) 冻结/误标 FP case 后验下降。delta 报告进 P9。
+
+---
+
+*后续节(§2 P3 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
