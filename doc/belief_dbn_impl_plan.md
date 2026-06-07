@@ -116,7 +116,7 @@ margin 不够则 DBN 不值得继续(signal_map §11.4),止于 shadow。
 
 ### P2.4 — firmware-fall pose=5 降权(§10#2)
 - **动**:`likelihood.go:52-55` `ObsFirmwareFall` 的 `SFallen:10`。
-- **改法**:按 firmware fall 混淆矩阵(真机 fixture 估 TP/FP 率)重标 LR,从 ×10 降到与"可信度"匹配的档(待 P9 oracle 标定具体值,先占位 `SFallen:~3-4` 并 shadow 对账)。
+- **改法**:按 firmware fall 混淆矩阵(真机 fixture 估 TP/FP 率)重标 LR,从 ×10 降到与"可信度"匹配的档。**shadow 期先取保守档 `SFallen:≤2`(委员会#5)**—— pose=5 是 pose 派生(R5 域),即便有 firmware 升级限定仍是强正向,不宜占位过高;待 P9 用 firmware_fall 真机 TP/FP 率标定后再定终值。
 - **来源**:§10#2;firmware_fall_qualification 真机统计。
 - **风险**:firmware pose=5 仍是现网 Device_ALARM 直发路径(记忆[firmware_fall_qualification]),**本改只动 belief shadow 的 LR,不动 firmware 直发**(R1)。
 - **oracle**:对比降权前后,firmware-fall FP fixture 的后验是否落到 τ\* 下而真 fall 仍过。
