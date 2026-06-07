@@ -137,4 +137,54 @@ margin 不够则 DBN 不值得继续(signal_map §11.4),止于 shadow。
 
 ---
 
-*后续节(§2 P3 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
+## §2 P3 — realness R_i(运动学 + 方差 + 记忆)
+
+**目标**:R_i 是 cd2b 类"冻结 ghost 压掉真人 lost-fall"的正解(§11.3)。把 realness 判据从
+室外口径收紧到**室内-老人**,补**冻结方差**与**记忆衰减**两段,全部走 reliable 量(XY/速度/方差),
+**不碰 pose/z**(R5)。
+
+**现状审计**:
+| 现行为 | 行 | 与新标定的冲突 |
+|---|---|---|
+| `isGhostJump` 用 `ImpossibleSpeedCm=200` | belief_adapter.go:169-175 | **§10#11**:200 是室外口径;cd2b 150cm/s 跳变在 200 闸下漏判 → 降到 ~110–130 |
+| per-device speed EWMA cap(已存,P2.1)`1.5×EWMA∈[30,150]` | belief_adapter.go:184-214 | 复用为 R_i 个性化天花板;ceil 150 偏高,室内复核 |
+| ghost verdict:`GhostPenalty≥80`→Ghost;Score 50/20 | track.go:177-179,197 | 逐帧/累积混合,**§10#9 需明确记忆衰减率**(摔倒瞬间 v≈0 靠摔前 L_R) |
+| still-box `BoxRangeWithinMs≤50cm` 当静止 | track.go:350; §10#12 | **把真静止与冻结伪迹混了**:真人 ±10–20cm 抖,ghost 零方差 → 需方差判据 |
+| `MaxKalmanResidual` 峰值残差 | track.go:163-167 | 已有,复用为跳变→ghost 的 reliable 量 |
+
+### P3.1 — 室内-老人速度天花板(§10#11)
+- **动**:`fall_rules_param.go` `ImpossibleSpeedCm` 200→**~120**(待 P9 用 cd2b/真机走速分布定);`SuspectSpeedCm` 100 复核;`isGhostJump`(belief_adapter.go:169)随之收紧。
+- **改法**:**空间跳跃近确定性判 ghost** —— `P(瞬移|real elderly)≈0`,跳变=近确定 ghost(不是 suspect)。即超天花板 → 直接强 ghost LR,不再"需 enter 反证"软档。
+- **标定来源**:A 类 round-室内;cd2b 150cm/s fixture;per-device EWMA 实测走速上沿。
+- **shadow 字段**:`p3_1_jump_cmps`、`p3_1_verdict_delta`。
+- **oracle**:cd2b —— 150cm/s 跳变在新闸下判 ghost → 真人 Lost 浮出 → lost-fall 应报。
+- **边界**:真人快走/小跑(门口)不应误判 → 天花板取走速分布上沿 + per-device cap 个性化兜底。
+
+### P3.2 — 冻结方差判据(§10#12,新增)
+- **动**:`track.go` 新增 per-track **位置方差/抖动**统计(滚动窗 std 或 box 内点散布);belief_adapter 加 `ObsFrozenArtifact` 发射。
+- **判据**:**零方差 + pose/z 锁死恒定** = 伪迹(R_i→ghost);真人静止有 ±10–20cm 抖 + pose/z 偶变 → 不判。**区别于** still-box(后者只看 box 范围,分不开)。
+- **标定来源**:A 类 round-cd2b。
+- **shadow 字段**:`p3_2_pos_std_cm`、`p3_2_pose_z_locked`(连续 N tick 恒定)、`p3_2_frozen=bool`。
+- **oracle**:cd2b 冻结椅子 ghost(零方差 + pose/z 锁死)判 ghost;cabb-0605 真摔躺着(box 内有微抖)**不**误判 ghost。
+- **关键陷阱**:别把"真静止"判成伪迹 —— 阈值要让真人微抖 > 伪迹零方差,用 fixture 标定分界。
+
+### P3.3 — realness 记忆 filter L_R(§10#9)
+- **动**:把 ghost verdict 的逐帧/累积混合(track.go GhostPenalty)显式化为 **log-odds 带遗忘递归**:$L_R^t=\gamma L_R^{t-1}+\sum\ln\mathrm{LR}_k$(proposal 时间反馈①)。
+- **机理**:摔倒瞬间 v≈0 无当下运动学证据,realness 必须靠**摔前走路段累积的 L_R** 带进静止段。
+- **待定参数**:$\gamma$(记忆衰减率)—— 既是记忆深度也是 Boyen-Koller mixing 率(proposal §4.1)。用 fixture 标:走路段建立的 L_R 要能"存活"到倒地后判定窗。
+- **shadow 字段**:`p3_3_LR_walk`(摔前)、`p3_3_LR_atfall`(摔时)、`p3_3_gamma`。
+- **oracle**:cabb-0605(摔前有走动)L_R 带进倒地段,realness 维持 real → 不被当 ghost 压掉。
+- **依赖**:与 P2.6 标定集中化共用 log-odds 模板(bed_bayesian leak 0.55 是同款,§9 复用)。
+
+### P3.4 — recapture 软恢复(非硬 cancel,§11.3 / signal_map §3)
+- **动**:`track_manager.go:1830` birth 重生取消 pending 的逻辑。
+- **改法**:recapture(人返回)**不能硬 cancel** lost-fall —— 返回可能是**跌后自救**;真摔自救应留**低 severity** 事件(对齐记忆[silent_leftbed_fall_recovery_window_gap])。
+- **shadow 字段**:`p3_4_recapture_ms`、`p3_4_would_cancel`、`p3_4_self_rescue_candidate`。
+- **oracle**:cd2b recapture(5.85min 返回)—— 不抹真摔,留低 severity。
+- **R1 注意**:shadow 期只 log "若发会发什么 severity",不真发。
+
+**P3 验收闸**:cd2b fixture 在 P3 全开后:冻结 ghost 被判 ghost(P3.1+P3.2)→ 真人 Lost 浮出 → lost-fall 后验过 τ\*;且 cabb-0605 真静止真摔**不**被 P3.2 误判 ghost。两者同时成立才算过(§11.3 下限)。
+
+---
+
+*后续节(§3 P4 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
