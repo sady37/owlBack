@@ -218,6 +218,7 @@ zone 选档只读 cell engine(R3)。
 - **shadow 字段**:`p4_1_dwell_sec`、`p4_1_zone`、`p4_1_fall_LR`。
 - **oracle**:开阔地真人久站 FP(cabb 类)—— ramp 下 8min 前 LR 温和,配合 Z_cell tolerance 压在 τ\* 下;真摔躺地 LR 随 d 快速累积过 τ\*。
 - **依赖**:替代 fall_unified 的 still-fall 硬阈表(silent/lost/moving 三类的"等阈值")。
+- **⚠️ 样本不足(委员会#3)**:7-case fixture **标不出生存函数尾形**,尤其 bedside benign-外出尾(cd2b 两例都 ~5.5–6min 返回,**n=2**)。8min 站立尾、bedside 尾**先用粗档**(尺度取 A 类先验 + 现有硬阈点,形状用单参指数/Weibull 占位),**标注"待样本收紧"**;P9 报告(§8 P9.2/P9.4)须把**样本量列为 margin 置信的限制项** —— 尾形不确定 → margin 给区间不给点值。线上 canary 期持续收集 dwell 样本回标尾形。
 
 ### P4.2 — zone 选档(cell engine 只读边,§9 前置)
 - **动**:`fallLRFromDwell` 的 `zone` 入参 = cell engine 输出 `AreaType`(read-only)。
@@ -445,7 +446,7 @@ zone 选档只读 cell engine(R3)。
 
 ### P9.2 — margin 量化(信息论)
 - **动**:每 case 算 **fall 后验轨迹** + 与 τ\* 的 margin(nat):`margin = |ln(P/(1−P)) − ln(τ\*/(1−τ\*))|`。
-- **报告**:per-case margin 表 + 改前(gate-list)/改后(DBN)对比。
+- **报告**:per-case margin 表 + 改前(gate-list)/改后(DBN)对比。**margin 给区间不给点值**:尾形/标定样本不足(委员会#3,如 bedside 尾 n=2)→ margin 带置信区间,样本量作显式限制项列出。
 - **判据**(§11.4):
   - 可分多数(cabb-0605 真摔 / 坐姿 FP / ghost / 门区 exit)→ margin>0 干净 → **DBN 赢**。
   - §11.2 残差对(cabb-0606 vs cabb-0603)→ 只剩 Z_cell 一杠杆:有 cell 学习 margin≈1.5nat 可分,无则重合。
