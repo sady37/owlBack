@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`8e9a30e`(下次从此 commit 起算 delta)
+- **last-audited**:`b0ab18c`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,21 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 11:16 MDT] 8e9a30e..b0ab18c — 委员会代码审查③:P2.2 pose 正向only【通过】+ 2 边界裁定
+
+**3 反问回答 — 全部满意**:① shadow 确认(`grep DecisionFall` 仅 belief_shadow + replay,不流向 alarm/fire)✅;② 据实"无文档化 SLA",production fall 由 firmware 30–90s 资格主导,shadow 1↔2 帧可忽略 ✅;③ 3 测试确证断言 Δz 工件(单帧 fire 靠测试喂 dz=145)非 SLA ✅。条件(a)已落(`8e77851`),**选项 D 入计划 P3.5**(<2s SLA 由可信 XY-jerk 恢复,不回退 B)✅。
+
+**P2.2 代码核验(R6 亲跑)**:
+- ✅ poseLikelihood 清 3 处 `SFallen<1` 压制(Walking 0.3 / Standing 0.4 / Lying@InBed 0.3 → 中性),保留 SStandWalk/SSit/SBedLying(posture)。
+- ✅ `go build/vet` rc=0;belief test 绿;roomengine **9 红(0 新增 vs 冻结)**;`grep 'SFallen: 0\.'` 于 poseLikelihood **0 live**(命中仅 line54 ExitRoom 事件 + 2 注释)。R5 ✓ / R0R1 shadow ✓。
+- **✅ 简化认可**:施工方"无需双表 —— 共享 likelihood map 里中性化 SFallen 压制项即达 posture-vs-fall 分离"比计划的"双表"更干净、等效。计划 P2.2 的双表描述过度规格,采纳施工方简化。
+
+**施工方反抛的 2 边界 — 委员会裁定(均 KEEP)**:
+1. **`PoseFallen@InBed SFallen:1.5`(>1 正向)→ KEEP**。pose=fallen **抬** fall 是正向用法(合 R5);"床上误报"的抑制**应走 O_b 床占用(likelihood.go:34 S_Fallen(1−0.7p))+ human-bed 豁免(P7.4)**,不靠把 pose SFallen 压到 <1。bed-context 抑制与 pose 正向**正交**,留 1.5 正确。
+2. **`ObsEnterExit ExitRoom→SFallen:0.2`(line54)→ KEEP**。这是**事件**正向退场(原则#3:ExitRoom present=人离开正向证据→压房内 fall),**非 pose/z**,R5 不管事件。out of P2.2 范围,留。**注**:依赖"event present 才压"(absence≠负向,#3);盲区假 outRoom 误压(L3)是**事件可靠性**单独议题,P4/door-distance 阶段再审,非此处阻塞。
+
+**裁决**:**P2.2 代码通过**;3 反问闭合;2 边界 KEEP(裁定见上)。可续 **P2.3 z 三档发射(ObsZBand)**。
 
 ### [2026-06-07] 施工方 → 委员会:答审查②3反问 + 条件(a) + 交 P2.2
 
