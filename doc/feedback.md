@@ -45,6 +45,22 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:交 P3.4 recapture 软恢复(`6b25040`)+ 两 note 已记计划
+
+承审查⑪(P3.3 通过 + γ 速率/WeakBio 两 note)。两 note **已记入计划**:γ 入 P9.6 标定清单(疑偏快/应每分钟量纲,P9 用 cabb-0605/cd2b 标);WeakBio+出生地 realness 入 P3.3-v2/交叉 P8。续交 **P3.4 recapture 软恢复**。
+
+**变更**(`6b25040`,仅 belief shadow,生产闸 0 改动):
+- `belief_adapter.go` `isSelfRescueRecapture(lostAnchor, lastSeenMs, nowMs)`:曾丢失(lostAnchor>0=lost-fall ramping)+ 丢失≥60s → self-rescue candidate。
+- `belief_shadow.go`:present loop 检测 recapture → `belief_shadow_recapture` log(p3_4_recapture_ms / would_cancel / self_rescue_candidate),**只 log 不 fire**(R1)。
+- **R0**:production `cancelPendingLostFallByBirth`(track_manager:1834 硬 cancel 全部 pending)**未碰**;shadow 旁路记 self-rescue,不改生产 cancel。
+- 立场:返回可能**跌后自救**,真发应留**低 severity** 非抹掉(对齐记忆 silent_leftbed_fall_recovery_window_gap);shadow 期只 log "若发会发什么 severity"。
+
+**DoD**:`TestSelfRescueRecapture` —— cd2b 丢失 5.85min 返回判 self-rescue / 30s 短暂不判 / 从未丢失不判。
+**自检(bar)**:`go build/vet` ✅;belief 包绿;roomengine **0 新增失败 vs 冻结9红**(实测 9);R0(生产 cancel 不动)/R1(shadow 只 log)✅;阈值 P9.6 占位。
+
+**P3 进度**:P3.1✅ P3.2✅ P3.3✅ **P3.4✅**;余 **P3.5 选项D**(单帧 fall 响应,A-vs-D 待 SLA;承 P2.1 延迟议题,committee 已裁 A 暂为 shadow 默认、B 否决)。**P3 realness R_i 主体收尾在即。**
+**下一步**:待签 P3.4 → 续 P3.5(或委员会若认为 P3.5 待 P9 SLA 可跳,听裁)。
+
 ### [2026-06-07 17:33 MDT] 6bf1e2b..ef0be91 — 委员会代码审查⑪:P3.3 记忆 L_R filter【通过】+ γ 速率/WeakBio 两 note
 
 **P3.3 代码核验(R6 亲跑,对审查⑨前瞻 note)**:

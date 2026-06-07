@@ -199,6 +199,7 @@ margin 不够则 DBN 不值得继续(signal_map §11.4),止于 shadow。
 - **shadow 字段**:`p3_4_recapture_ms`、`p3_4_would_cancel`、`p3_4_self_rescue_candidate`。
 - **oracle**:cd2b recapture(5.85min 返回)—— 不抹真摔,留低 severity。
 - **R1 注意**:shadow 期只 log "若发会发什么 severity",不真发。
+- **⚠️ Left 置信相关性折扣(委员会审查⑥ caveat,记此待 P4)**:真退场时 `ObsEnterExit(ExitRoom→SLeft:8)` 与 `ObsReachableExit(门距→SLeft)` 同向叠加,二者**源于同一事实(人出门)= 相关**,满权乘是轻微 over-confidence。本身 benign(Left 即正确结论 + shadow);但**若用 Left 置信去 gate 取消 pending lost-fall(代价敏感)**,须先做相关性折扣,**否则相关证据双倍置信会过早 cancel 真摔自救**。P4/door-distance 阶段连同 L3 盲区假 outRoom 一并审。
 
 ### P3.5 — 单帧 fall 响应(选项 D,承 P2.1 延迟议题;代码审查②挂入)
 - **背景**:P2.1 删 Δz 后 genuine-fall 由单帧→2帧(~2s,见 feedback 代码审查②)。委员会裁:A(纯多帧累积)暂为 shadow 默认;**若 P3 阶段确有 <2s 真 SLA**,单帧响应**只能由可信 XY-jerk 恢复(选项 D)**,**不得回退 pose/firmware 提权(B,违 R5+P2.4)**。
@@ -498,7 +499,11 @@ shadow 期为跑通对账,部分 LR 取保守占位,**终值待 P9 oracle 标定
 | ObsZBand 30–80 sit 权 | SSit:2 | 同上比例校 | P2.3 |
 | **firmware-fall LR** | SFallen:2(≤×2) | 按 **firmware_fall 真机 TP/FP 率**标定(可能 ≠2) | P2.4 |
 | pose-fallen@open_floor | SFallen:10 | 真机校(当前 genuine-fall 主证据) | 现存 |
+| **realness 记忆 γ** | 0.9/帧(≈6.6s 半衰) | ⚠️**疑偏快**(审查⑪ note1):真摔躺分钟级会衰回中性、腰斩边缘化 P(fall)。**疑应每分钟量纲**(同 bed_scorer leak 0.55/min≈46s);P9 用 cabb-0605(躺52s)/cd2b 标定 + 确认 frame-vs-minute 量纲 | P3.3 |
+| realness lnLR(move/jump/frozen) | +ln2 / −ln19 / −ln19 | 真机校(走动 real 抬幅 vs 跳变/冻结 ghost 压幅) | P3.3 |
 > 原则:**shadow 期勿拍脑袋抬权**,先保守占位跑对账;oracle 出真机分布再统一标。R7 每值带来源。
+
+> **P3.3-v2 / 交叉 P8(审查⑪ note2)**:完整 P(real) 须折入 **WeakBio(§10#1:HR/RR≥80→可靠独立 real 证据)+ 出生地 ghost 先验**;当前 base 无 vital,P3.3 v1 仅 XY(走动/跳变/冻结)。有心跳的真人静止 realness 会衰到中性 → 须接 vital。追踪:P3.3-v2 或与 P8 health 节点交叉接入。
 
 **P9 验收闸(总闸)**:oracle report 出 go/no-go 结论 + 每个 P2–P7 改动的 margin 贡献归因 + P9.5 良性残口验证 + P9.6 占位标定项收口。**这是"DBN 值不值得继续做"的数学判据**,委员会据此决定是否进 canary。
 
