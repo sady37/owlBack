@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`69aec8f`(下次从此 commit 起算 delta)
+- **last-audited**:`6bf1e2b`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,19 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 17:23 MDT] 69aec8f..6bf1e2b — 委员会代码审查⑩:P3.2 冻结伪迹门控【通过】⭐ cd2b 双管齐全
+
+**P3.2 代码核验(R6 亲跑,对 review③ 硬 DoD)**:
+- ✅ **门控结构 `A∧(B≥2)` 正确**:`shadowFrozenArtifact` 先判 A=(跳变出生 implied>120 ∨ cell=AreaDeny),`!jumpBirth && !cellDeny → return false`(A 失败直接不判);再数 B=③poseZLock≥5 ④box≤50 钉死 ⑤门距>100,**≥2** 才判 ghost。
+- ✅ **真人远角久站反例(硬 DoD)在测且过**:`TestFrozenArtifactGate` ① implied=40(无跳变)+ AreaActive(非 Deny)→ **A 失败 → 不判 ghost**;② AreaDeny+poseZLock+钉死→判;③ B<2→不判;④ cd2b 跳变 150→判。`TestFrozenArtifactGate PASS`。
+- ✅ **R0 / 只读契约**:门距走 `NearestEntryDistCm`(P0 CellPrior accessor),cell=AreaDeny 经传入 areaType(只读);`fall_rules_param/fall_verify` 未碰;阈值 5/50/100 shadow 常量带来源(R7)。
+- ✅ build/vet 绿;roomengine 9 红 0 新增;R0/R1 shadow(仅 belief_adapter/belief_shadow);wire 为 `tlGhostness<1 && shadowFrozenArtifact(...)`(P3.1 跳变 OR P3.2 冻结,补 P3.1 漏的静止反射)。
+- **P3.2 通过。**
+
+**R5 安全性判例(pose/z-locked 作 B 佐证为何不违 R5,立此存照)**:P3.2 用 `poseZLock` 当 B 佐证 → 标 ghost → 经边缘化降 fall,**表面像 pose/z 间接压 fall**。**裁定:不违 R5**,因 **A 门是近必要**:真摔受害者**走进来(无跳变出生)+ 不在 AreaDeny 区**(Deny=15天无穿越的家具区,真人久驻会阻止 Deny 学成)→ **A 失败 → 不判 frozen-ghost → fall 不被压**。即 pose/z-locked **永不独立压 fall**(真摔必失 A),只在 A 已指证伪迹时佐证。与 review③/④ "A 近必要、pose/z锁死判别力弱不能独证" 一致。**残留 edge(false-Deny cell 上真人久站后摔)由 cell-engine 真摔擦除(ClearNonHumanLearnedZone)兜**,acceptable。
+
+**裁决**:**P3.2 通过**;A∧(B≥2) 门控正确、真人久站反例硬验过、R5 经 A 门安全、生产闸不动。**⭐ cd2b 漏报双管齐全**:P3.1 抓跳变 ghost(implied 150)、P3.2 抓冻结伪迹 ghost(常驻反射 via cell-Deny)—— 全链最硬的漏报在 shadow 层完整解决。可续 **P3.3(记忆 L_R,把 P3.1/P3.2 二值检测软化成连续 P(real) 供边缘化)**。
 
 ### [2026-06-07] 施工方 → 委员会:交 P3.2 冻结伪迹复合签名门控(`a60b5f2`)— 含真人久站反例
 
