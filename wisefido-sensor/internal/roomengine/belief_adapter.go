@@ -33,6 +33,14 @@ const (
 	beliefFrozenSpreadCm       = 50    // ④30s box 散布 ≤ 此 = 钉死小区(真人微抖也小,故仅佐证非独证)
 	beliefFrozenWindowMs       = 30000 // ④散布窗
 	beliefFrozenDoorFarCm      = 100   // ⑤距最近门 > 此 = 距门远(排除门口正常驻留)
+
+	// P3.3 记忆 L_R filter(承审查⑨:二值检测→连续 P(real) log-odds 带遗忘 γ;shadow 占位,P9.6 待 oracle)。
+	// 摔倒瞬间 v≈0 无当下证据 → realness 靠摔前走路累积的 L_R 经 γ 带进倒地窗(cabb-0605)。
+	beliefRealnessGamma = 0.9  // 每帧遗忘率(realness 缓衰,走路段存活到倒地窗;= Boyen-Koller mixing)
+	beliefRealnessLOCap = 5.0  // log-odds 截断 [-5,5]
+	lnLRMoveReal        = 0.69 // ln2:每走动帧 +realness(MoveActive,XY 派生,R5-safe)
+	lnLRJumpGhost       = 2.94 // ln19:P3.1 跳变/急变 近确定 ghost(强 −)
+	lnLRFrozenGhost     = 2.94 // ln19:P3.2 冻结伪迹 近确定 ghost(强 −)
 	// lost-fall（走动中突然消失）：消失前 still-box < MovingPreconditionMs(60s) = 走动中（对齐 gate-list 止血）。
 	// 走速只用于 ghost-filter（>ImpossibleSpeedCm 的 track-swap 假跳先剔除），不做"走速判走动"——
 	// radar 位置量化重（走动也常报 median=0），per-frame 走速不可靠，still-box(spread) 才 robust。
@@ -218,6 +226,31 @@ func shadowFrozenArtifact(ts *TrackState, poseZLock int, grid *RoomGrid, x, y in
 		b++
 	}
 	return b >= 2
+}
+
+// realnessStep — P3.3 记忆 L_R filter(承审查⑨:把 P3.1/P3.2 二值 ghost 检测 + 走动 real 证据
+// 积分成**连续 P(real) log-odds 带遗忘 γ**,供边缘化 P(fall)=P(fall|real)·P(real))。
+// 摔倒瞬间 v≈0 无当下证据,realness 靠摔前走路累积的 L_R 经 γ 带进倒地窗(cabb-0605:走动→倒地不塌)。
+// L>0 偏 real,L<0 偏 ghost。返回 (新 L_R, ghostness=P(ghost)=1−σ(L_R))。
+// (WeakBio/出生地 real 证据 v2 接:base 暂无 vital;走动 MoveActive 是 XY 派生 real 证据,R5-safe。)
+func realnessStep(prevLO float64, moving, jumpGhost, frozenGhost bool) (float64, float64) {
+	d := 0.0
+	if moving { // 走动 = 人(累积 realness,摔前)
+		d += lnLRMoveReal
+	}
+	if jumpGhost { // P3.1 跳变/急变 → 近确定 ghost
+		d -= lnLRJumpGhost
+	}
+	if frozenGhost { // P3.2 冻结伪迹 → 近确定 ghost
+		d -= lnLRFrozenGhost
+	}
+	lo := beliefRealnessGamma*prevLO + d
+	if lo > beliefRealnessLOCap {
+		lo = beliefRealnessLOCap
+	} else if lo < -beliefRealnessLOCap {
+		lo = -beliefRealnessLOCap
+	}
+	return lo, 1.0 / (1.0 + math.Exp(lo)) // P(ghost)=1−σ(LO)
 }
 
 // noDetectObs track 丢失（走动前置已满足）→ P(no-detect|s) 发射。每 tick 固定强度（无时长项，时长→P3）；

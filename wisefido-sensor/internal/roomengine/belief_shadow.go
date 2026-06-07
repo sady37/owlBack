@@ -43,7 +43,8 @@ type beliefShadowTLayer struct {
 	lastPosTs    int64  // 上帧位置时刻
 	lastPose     int    // P3.2:上帧 pose/z,算 pose/z 锁死帧数(冻结伪迹 B 佐证③)
 	lastZ        int
-	poseZLock    int // pose&z 连续恒定帧数
+	poseZLock    int     // pose&z 连续恒定帧数
+	realLO       float64 // P3.3:realness log-odds(带遗忘 γ;>0 real <0 ghost),摔前走路 realness 带进倒地窗
 }
 
 type beliefShadow struct {
@@ -148,11 +149,12 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			tl.poseZLock = 0
 		}
 		tsRaw := tm.tracks[b.TrackID]
-		// 独立 shadow realness:P3.1 跳变/急变 OR P3.2 冻结伪迹复合门控(补静止反射;真人久站缺 A→不判)。
-		tlGhostness := shadowTrackGhostness(tsRaw, frameJumpCmS)
-		if tlGhostness < 1 && shadowFrozenArtifact(tsRaw, tl.poseZLock, grid, b.X, b.Y, b.CellAreaType, nowMs) {
-			tlGhostness = 1
-		}
+		// 独立 shadow realness 二值检测:P3.1 跳变/急变 / P3.2 冻结伪迹复合门控(补静止反射;真人久站缺 A→不判)。
+		jumpGhost := shadowTrackGhostness(tsRaw, frameJumpCmS) == 1
+		frozenGhost := !jumpGhost && shadowFrozenArtifact(tsRaw, tl.poseZLock, grid, b.X, b.Y, b.CellAreaType, nowMs)
+		// P3.3 记忆 L_R:二值检测 + 走动 real 证据 → 连续 P(ghost) 带遗忘 γ(摔前 realness 带进倒地窗)。
+		var tlGhostness float64
+		tl.realLO, tlGhostness = realnessStep(tl.realLO, b.MoveActive, jumpGhost, frozenGhost)
 		tl.lastX, tl.lastY, tl.lastPosTs = b.X, b.Y, nowMs
 		tl.lastPose, tl.lastZ = b.Pose, b.Z
 		tlGeom := geomFromArea(b.CellAreaType)

@@ -247,3 +247,28 @@ func TestFrozenArtifactGate(t *testing.T) {
 		t.Fatalf("跳变出生+pose/z锁死+钉死小区 应判ghost")
 	}
 }
+
+// P3.3 记忆 L_R filter(承审查⑨):二值检测→连续 P(real),且摔前走路 realness 经 γ 带进倒地静止窗(cabb-0605)。
+func TestRealnessMemoryFilter(t *testing.T) {
+	lo := 0.0
+	var gh float64
+	// 摔前走动 5 帧 → realness 累积,ghostness 远低于中性 0.5。
+	for i := 0; i < 5; i++ {
+		lo, gh = realnessStep(lo, true /*moving*/, false, false)
+	}
+	if gh >= 0.5 {
+		t.Fatalf("走动 5 帧后应偏 real(ghostness<0.5),得 %.3f", gh)
+	}
+	walkGh := gh
+	// 倒地帧:v≈0 无当下证据(!moving,!ghost)→ L_R 经 γ 缓衰,ghostness 仍低(记忆带入,真摔不被误 ghost)。
+	loStill, ghStill := realnessStep(lo, false, false, false)
+	if ghStill >= 0.5 {
+		t.Fatalf("倒地静止帧 realness 应靠记忆带入仍偏 real(ghostness<0.5),得 %.3f —— 否则真摔被误判 ghost", ghStill)
+	}
+	_ = walkGh
+	// 跳变帧(jumpGhost)→ 即便摔前走动累积,一次近确定 ghost 也翻过中性 → 判 ghost。
+	_, ghJump := realnessStep(loStill, false, true /*jumpGhost*/, false)
+	if ghJump <= 0.5 {
+		t.Fatalf("跳变 ghost 帧应翻向 ghost(ghostness>0.5),得 %.3f", ghJump)
+	}
+}
