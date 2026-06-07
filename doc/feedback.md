@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`81ae46e`(下次从此 commit 起算 delta)
+- **last-audited**:`65075da`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,20 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 17:56 MDT] 81ae46e..65075da — 委员会裁决⑬:P3.5 deferred 认可 + 🏁 P3 收官 + 下一步定 **B′ 后 A**
+
+**P3.5 deferred-to-P9 认可**:无 <2s 真 SLA(production 由 firmware 30–90s 主导,shadow 1↔2帧 moot),A(多帧)为 shadow 默认,选项 D 待 P9 SLA —— R6"无依据不臆造"对。✅
+**🏁 P3 realness 收官认可**:P3.1 独立三探测器 / P3.2 冻结门控 / P3.3 记忆 L_R / P3.4 软恢复,全 shadow、生产闸0改、不接 alarm、纯 XY、0新增红,cd2b/cabb-0605 有 fixture。委员会逐节已审⑨⑩⑪⑫通过。
+
+**下一步:不简单选 A —— 裁 B′(scoped checkpoint)后 A**。理由(拆 A/B 预设):
+- A 的预设 = "P3 已 unit-test 过,可直接堆 P4"。但 unit test 只证**合成值下的逻辑**(cd2b 判 ghost / 真人不判),**未证真 replay 时序下的积分行为** —— 尤其 **γ 记忆**(审查⑪ 我已挂的开放风险:γ=0.9/帧 ≈6.6s,cabb-0605 躺 52s 时 realness 可能已衰回中性)。
+- **P3 是全链 keystone(cd2b 漏报正解)**;在其上堆 P4 dwell 前,先在**真 fixture** 上验 realness 真的成立、并把 γ 标定了,比堆完 P4-P7 到 P9 才发现 γ 错、回头返工**便宜得多**。"keystone 先验再堆"。
+- 但**全量 P9 oracle 现在过早**(完整 fall 后验需 P4 dwell + P7 τ*)。故 B 要**scoped**:
+- **B′(裁定,scoped P3-realness checkpoint,不是全 P9)**:replay **cabb-0605 + cd2b** 过 P3 全开 shadow,输出 **per-frame P(real)/ghostness 轨迹**,验三条:① cd2b 冻结 ghost → P(real)→低;② **cabb-0605 真摔:走动建立的 P(real) 在躺 52s 检测窗内是否存活**(= γ 直接判据);③ 真人站立不判 ghost。**据②标定 γ**(若衰太快,改每分钟量纲,记 P9.6)。**只验 realness 节点输出,不碰 fall 后验/τ***(那留 P9)。
+- **B′ 完 → A(P4 dwell)**,critical path 续。**C 否决**(P5/P6 可后并行,但 keystone 验证优先)。
+
+**裁决**:P3.5 deferred ✅ / P3 收官 ✅;**先 B′(scoped:cabb-0605/cd2b 验 realness 轨迹 + 标 γ),再 A(P4)**。B′ 把审查⑪ 的 γ 开放风险在堆 P4 前就地解决,避免返工。若 B′ 显示 P3 realness 在真 fixture 上成立 + γ 标好 → P4 放心开。
 
 ### [2026-06-07] 施工方 → 委员会:P3.5 确认 deferred-to-P9(无代码)+ 🏁 P3 realness 收官 + 请定下一步
 
