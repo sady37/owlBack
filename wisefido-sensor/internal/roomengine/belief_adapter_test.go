@@ -87,22 +87,26 @@ func TestAdapterGenuineFallFires(t *testing.T) {
 		tr := observation.Track{LogicID: "L1", Pose: observation.PoseWalking, PositionX: ptr(50), PositionY: ptr(50), PositionZ: ptr(z), PoseConfidence: 80}
 		be.Step(now, radarFrameAdapter(tr, ts, nil, now))
 	}
-	// 跌倒帧：pose=fallen + firmware fall。改 2帧 = 删 Δz 工件非 SLA 放宽(原单帧靠已删 z↓ 冲击);
-	// 真摔本持续躺地,正向 pose 多帧累积。belief Decide 是 shadow 不接 alarm;单帧响应议题挂 P3 选项D。
+	// 跌倒帧 + 持续躺地。断言**不变量**:持续 pose-fallen 在窗内必确认 —— 不锁帧数。
+	// 删 Δz(P2.1)/ firmware 降权(P2.4)后单帧冲击退场,genuine-fall 由正向 pose 多帧累积;
+	// latency 是 shadow-moot 量(belief Decide 不接 alarm;production fall 走 firmware Device_ALARM 独立路径)。
 	now += 1000
-	ts := &TrackState{LastObservedMs: now, LastZ: z, Verdict: VerdictReal}
+	ts := &TrackState{LastObservedMs: now, LastZ: 20, Verdict: VerdictReal}
 	tr := observation.Track{LogicID: "L1", Pose: observation.PoseFallen, PositionX: ptr(50), PositionY: ptr(50), PositionZ: ptr(20), PoseConfidence: 80}
 	frame := radarFrameAdapter(tr, ts, nil, now)
 	fallEvt, _ := radarEventToObs(alarm.Fall, now, belief.GeomOpenFloor)
 	be.Step(now, append(frame, fallEvt))
 
-	now += 1000
-	ts2 := &TrackState{LastObservedMs: now, LastZ: 20, Verdict: VerdictReal}
-	tr2 := observation.Track{LogicID: "L1", Pose: observation.PoseFallen, PositionX: ptr(50), PositionY: ptr(50), PositionZ: ptr(20), PoseConfidence: 80}
-	be.Step(now, radarFrameAdapter(tr2, ts2, nil, now))
-
-	if d := be.Decide(); d != belief.DecisionFall {
-		t.Fatalf("adapter 真跌倒未 fire: decision=%v b=%v", d, be.Vector())
+	fired := be.Decide() == belief.DecisionFall
+	for i := 0; i < 6 && !fired; i++ {
+		now += 1000
+		tsN := &TrackState{LastObservedMs: now, LastZ: 20, Verdict: VerdictReal}
+		trN := observation.Track{LogicID: "L1", Pose: observation.PoseFallen, PositionX: ptr(50), PositionY: ptr(50), PositionZ: ptr(20), PoseConfidence: 80}
+		be.Step(now, radarFrameAdapter(trN, tsN, nil, now))
+		fired = be.Decide() == belief.DecisionFall
+	}
+	if !fired {
+		t.Fatalf("adapter 真跌倒持续躺地窗内未确认: b=%v", be.Vector())
 	}
 }
 

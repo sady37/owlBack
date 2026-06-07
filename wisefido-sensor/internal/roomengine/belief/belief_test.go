@@ -60,19 +60,23 @@ func TestGenuineFall(t *testing.T) {
 		ts += 1000
 		be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseWalking, 0.8, GeomOpenFloor)})
 	}
-	// 跌倒帧：firmware fall + pose fallen，全在开阔地板。
-	// 改 1帧→2帧 = **删 Δz 工件,非 SLA 放宽**:原单帧 fire 靠已删的 ObsKinematics(z↓,不可信)单帧冲击,
-	// 非"必须 1s 内 fire"的产品 SLA。真摔本持续躺地(cabb-0605 躺 52s),正向 pose 多帧累积更稳健。
-	// (belief Decide 是 shadow 不接 alarm;单帧响应议题挂 P3 选项D=可信 XY-jerk,不回退 pose/firmware 提权。)
+	// 跌倒帧 + 持续躺地。断言**不变量**:持续 pose-fallen 在窗内必确认 Fall —— 不锁具体帧数。
+	// 删 Δz(P2.1)/ firmware 降权(P2.4)后,单帧冲击退场,genuine-fall 由**正向 pose 多帧累积**确认;
+	// 真摔本持续躺地(cabb-0605 躺 52s)。latency 是 shadow-moot 量(belief Decide 不接 alarm;
+	// production fall 走 firmware Device_ALARM 独立路径);单帧响应议题挂 P3 选项D(可信 XY-jerk),不回退 pose/firmware 提权。
 	ts += 1000
 	be.Step(ts, []Observation{
 		ob(ts, ObsFirmwareFall, 1, 0.9, GeomOpenFloor),
 		ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomOpenFloor),
 	})
-	ts += 1000
-	be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomOpenFloor)})
-	if d := be.Decide(); d != DecisionFall {
-		t.Fatalf("genuine fall not fired: decision=%v b=%v", d, be.Vector())
+	fired := be.Decide() == DecisionFall
+	for i := 0; i < 6 && !fired; i++ {
+		ts += 1000
+		be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomOpenFloor)})
+		fired = be.Decide() == DecisionFall
+	}
+	if !fired {
+		t.Fatalf("genuine fall 持续躺地窗内未确认: b=%v", be.Vector())
 	}
 }
 
@@ -220,9 +224,13 @@ func TestFallGeomRouting(t *testing.T) {
 		ob(ts, ObsFirmwareFall, 1, 0.9, GeomOpenFloor),
 		ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomOpenFloor),
 	})
-	ts += 1000
-	be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomOpenFloor)})
-	if be.Decide() != DecisionFall {
+	fired := be.Decide() == DecisionFall
+	for i := 0; i < 6 && !fired; i++ { // 持续躺地累积(不锁帧数,latency shadow-moot)
+		ts += 1000
+		be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomOpenFloor)})
+		fired = be.Decide() == DecisionFall
+	}
+	if !fired {
 		t.Fatalf("床边地板真跌倒被几何路由漏报: b=%v", be.Vector())
 	}
 
@@ -237,9 +245,13 @@ func TestFallGeomRouting(t *testing.T) {
 		ob(ts, ObsFirmwareFall, 1, 0.9, GeomInToilet),
 		ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomInToilet),
 	})
-	ts += 1000
-	be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomInToilet)})
-	if be.Decide() != DecisionFall {
+	fired = be.Decide() == DecisionFall
+	for i := 0; i < 6 && !fired; i++ { // 持续躺地累积(不锁帧数)
+		ts += 1000
+		be.Step(ts, []Observation{ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomInToilet)})
+		fired = be.Decide() == DecisionFall
+	}
+	if !fired {
 		t.Fatalf("马桶区塌陷被几何路由漏报: b=%v", be.Vector())
 	}
 }
