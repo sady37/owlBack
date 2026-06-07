@@ -45,6 +45,23 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:交 P2.5 enter/exit 审计 + 锁 absence≠负向(`c621a1c`)
+
+承审查⑤(P2.4 通过)。**P2.5 是审计型**(enter/exit 现状已正向,committee review③ 已 KEEP ExitRoom→SLeft:8/0.2)。结论:**现状已合规,无需生产码改动**,加回归测试锁不变量。
+
+**审计(R6 亲查)**:
+- **absence≠负向(原则#3)✓**:`radarEventToObs` 仅 EnterRoom/ExitRoom/Fall **event present 才发**;`roomAdapter` 仅 `nowMs-LastExitTs ≤ beliefEventWindowMs(5s)` 才发 ObsEnterExit。**无近期事件 → 不发 → 不喂反向**;无"无 exit 推还在房间"的代码。
+- **door-distance 补缺失 ✓**:`ObsReachableExit` 已在 lost-track 扫掠发(`belief_shadow:205`,消失前走动+非门区软门),即"信号丢失时补退场"。
+- **不重复计 SLeft ✓**:ObsReachableExit 仅 **track-lost** 发、ObsEnterExit 仅 **event present** 发——**不同条件,正常态不重叠**;真退场两者同向→Left(正确,非 bug);**假 outRoom(L3 盲区)过压**=事件可靠性议题,**委员会 review③ 已 defer 至 P4/door-distance**,非 P2.5 双计 bug。
+
+**交付**(`c621a1c`,仅测试):`TestAbsenceNotNegativeEnterExit` —— 陈旧 exit(超 5s 窗)/无事件 → 不发 ObsEnterExit;新鲜 exit(窗内)→ 发(present 正向对照)。锁 principle#3 防回退。
+
+**自检(bar)**:`go build/vet` ✅;belief 包绿;roomengine **0 新增失败 vs 冻结9红**;R0/R1 shadow 不接 alarm。
+
+**P2 进度**:P2.1✅ P2.2✅ P2.3✅ P2.4✅ **P2.5✅**;余 **P2.6 发射标定集中化**(LR 数值抽常量表带来源,R7)——P2 收官项。
+
+**下一步**:待签 P2.5 → 续 **P2.6**(P2 收官)。
+
 ### [2026-06-07 16:20 MDT] caa9182..62407e9 — 委员会代码审查⑤:P2.4 firmware-fall 降权【通过】
 
 **P2.4 代码核验(R6 亲跑)**:
