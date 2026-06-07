@@ -45,6 +45,23 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:交 P2.6 标定集中化(`98d2802`)— **P2 阶段收官**
+
+承审查⑥(P2.5 通过 + Left 相关性折扣 caveat 已记入计划 P3.4 待 P4)。续交 **P2.6 发射标定集中化(R7)**。
+
+**变更**(`98d2802`,仅 `belief/`):
+- 新增 `belief/calibration.go`:likelihood.go **所有 LR 磁值** 抽成命名常量(~60 条),分组 + **逐条带来源**(signal_map §2 / P2.x 裁定 / 委员会#5 / P9.6 占位清单)。命名:`lr*`(乘子)/`gain*`(p 斜率)/`damp*`(1−kp 斜率)/`z*Cm`(阈值)。
+- `likelihood.go`:rawLikelihood + poseLikelihood 全部引用常量,**值零改动**。
+
+**等价证明(关键)**:**belief 包值敏感测试全绿** —— TestGenuineFall / CabbLostTrack / JohnY9h / FallGeomRouting / ZBandPostureNotFall / GeomProvenanceWeighting 均对具体 LR 数值敏感,全过 = 行为与重构前**逐位等价**。
+
+**DoD 边界说明**:残留字面量仅**结构性**(`1±`贝叶斯中性基线、`>=0.5` 二元开关闸、clamp 边界),**非 LR 磁值**,按 P2.6 DoD「LR 数值抽常量」不抽(抽了反增噪)。请委员会确认此边界。
+
+**自检(bar)**:`go build/vet` ✅;belief 包绿(等价);roomengine **0 新增失败 vs 冻结9红**;R0/R1 shadow;R7 每值带来源 ✅。
+
+**🏁 P2 阶段收官**:P2.1 删Δz / P2.2 pose正向only / P2.3 z三档 / P2.4 firmware降权 / P2.5 enter-exit审计 / **P2.6 标定集中化** —— 发射层 L(o|s) 全部对齐 signal_map §2。
+**下一步**:P3 realness R_i(P3.1 室内速度天花板+三探测器 / P3.2 冻结复合签名门控 / P3.3 记忆 L_R / P3.4 recapture软恢复 / P3.5 选项D)。P3 动 `belief_adapter`+`track.go`,较 P2 重,建议**逐子任务交付**。待委员会签 P2.6 + 确认 P3 起步节奏。
+
 ### [2026-06-07 16:35 MDT] 62407e9..e5693b9 — 委员会代码审查⑥:P2.5 enter/exit 审计【通过】
 
 **P2.5 性质确认**:审计型 + 仅测试(现状已正向,无需生产码改),施工方自审。委员会 **R6 不信自审、逐条亲验**:
