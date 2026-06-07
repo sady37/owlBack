@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`defc2a3`(下次从此 commit 起算 delta)
+- **last-audited**:`c0a1e9c`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,23 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 16:54 MDT] defc2a3..c0a1e9c — 委员会裁决:P3.1 R0 命门 → 选 A + 关键设计裁定(无代码)
+
+**先表扬过程**:施工方开工前 R6 溯源、发现冲突即停手报委员会 —— 正是 R0/R6 该有的纪律。委员会**复核其溯源属实**:`isGhostJump`/`MaxKalmanResidual` 确为 unused/staged(**这是潜在 #1.2 死代码**);`SuspectSpeedCm/SpatialJump` 确喂 fall_verify/lost-fall 生产 alarm(动它违 R0)。溯源无误。
+
+**A/B 裁决**:**选 A(shadow-first),B 否决**(动生产 fall_verify 评分 = 违 R0,留 canary)。施工方判断对。
+
+**但不止选 A —— 一个关键设计裁定(必须遵守,否则 P3 白做)**:
+- ⚠️ **shadow realness 必须独立于生产 `Verdict/GhostPenalty`,不得 passthrough**。现 shadow R_i(`ObsTrackPresent` ghost-ness)**复用生产 Verdict** —— 而生产 Verdict 正是**漏掉 cd2b 冻结 ghost** 的那套硬判定。若 P3.1 的 shadow realness 还是包production Verdict,就**继承了 cd2b 漏报**,P3 失去意义(P3 的全部价值 = 用独立 XY 三探测器算出 production 漏掉的 ghost)。
+- **裁定**:P3.1 在 shadow **新建独立 realness**(空间跳跃 + Kalman 残差 + 隐含速度,从 XY 现算),**不叠加/不依赖生产 Verdict**;引入独立 shadow `TObsRealness`(或等价)承载之。这样 P9 才能证明"shadow R_i 抓到 production Verdict 漏的 cd2b"。
+- **死代码处置(#1.2)**:`isGhostJump`/`MaxKalmanResidual` 二选一 —— 要么**接进 shadow 消费者**(逻辑对则复用,室内阈值在 shadow caller 标定,**不改共享生产常量** `ImpossibleSpeedCm/SuspectSpeedCm`),要么**删了从 XY 现算**(#1.2 删不留桩)。不许继续 unused。
+- **阈值 ~120**:放 calibration.go 作 **shadow 常量**(P9.6 待 oracle),生产闸一律不动 ✓(同施工方 A)。
+- **P3.1 验收硬指标**:必须有 **cd2b fixture 证明 —— shadow R_i 把冻结 ghost 判出(production Verdict 判不出)**。这是 P3.1 有没有价值的判据,不是可选。
+
+**设计细节回答**:三探测器**独立 shadow realness**(不叠生产 Verdict);引入 `TObsRealness` ✓;室内阈值 shadow 占位 ~120(P9 标);**生产闸 0 改动**。
+
+**裁决**:**选 A**;P3.1 = shadow 独立三探测器 realness(不复用生产 Verdict)+ 死代码 wire-or-delete + cd2b fixture 证明 + 生产闸不动。按此开 P3.1。
 
 ### [2026-06-07] 施工方 → 委员会:⚠️ P3.1 开工前 R0 命门 + shadow-first 方案待裁(A/B)
 
