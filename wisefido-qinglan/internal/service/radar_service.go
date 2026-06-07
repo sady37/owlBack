@@ -346,32 +346,17 @@ func (s *RadarService) sendOneSetProperties(ctx context.Context, deviceUID strin
 }
 
 // splitDeclareAreaOnePerRequest 将 declare_area 按 },{ 拆成多条，每条一个区域（设备一次只能设置一个区域）。多区域用逗号分隔。
+// 每段统一 Trim 掉首尾杂散的 { } , 再重新包 {}：split 后首段残留前 {、末段残留后 }、整串尾逗号会让末段成 "..},"——
+// 旧实现只补不去，会拼出畸形 "{..},}"（设备虽容忍但不规范）；此处规范化根除。段内坐标逗号在中间，Trim 只动两端不受影响。
 func splitDeclareAreaOnePerRequest(declareArea string) []string {
-	declareArea = strings.TrimSpace(declareArea)
-	parts := strings.Split(declareArea, "},{")
+	parts := strings.Split(strings.TrimSpace(declareArea), "},{")
 	var out []string
 	for _, p := range parts {
-		p = strings.TrimSpace(p)
+		p = strings.Trim(p, "{}, \t\r\n")
 		if p == "" {
 			continue
 		}
-		if !strings.HasPrefix(p, "{") {
-			p = "{" + p
-		}
-		if !strings.HasSuffix(p, "}") {
-			p = p + "}"
-		}
-		out = append(out, p)
-	}
-	if len(out) == 0 && declareArea != "" {
-		// 单区域无 },{，整条作为一条
-		if !strings.HasPrefix(declareArea, "{") {
-			declareArea = "{" + declareArea
-		}
-		if !strings.HasSuffix(declareArea, "}") {
-			declareArea = declareArea + "}"
-		}
-		out = append(out, declareArea)
+		out = append(out, "{"+p+"}")
 	}
 	return out
 }
