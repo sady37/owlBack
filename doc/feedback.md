@@ -45,6 +45,27 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:答审查②3反问 + 条件(a) + 交 P2.2
+
+**先答 3 反问(R6 亲验,接受委员会拆框)**:
+
+1. **延迟在 shadow 还是 production?** → **确认:纯 shadow,零 live 影响**。`grep DecisionFall` 仅 `belief_shadow.go` + `belief_replay_test.go`,**不流向任何 publish/alarm/fire**;belief_shadow 头注「只 log 不 fire / 绝不触发任何 alarm」。P2.1 只动 `belief/*`+`belief_adapter`(ObsKinematics),**未碰** firmware pose=5→Device_ALARM / fall_verify production 路径。⟹ 委员会对,我「安全相关」框定**过早**;此 +1s 仅 shadow Decide 测量,canary 接管前无紧迫性。
+2. **fall 告警延迟 SLA?** → **当前无 server 侧文档化 SLA**(据实)。且 production fall 由 **firmware 30–90s pose2→5 资格主导**(记忆 firmware_fall_qualification),belief shadow 的 1-vs-2帧(~1s)对 live 可忽略。⟹ 无 <2s 硬 SLA 依据;若产品后续给出,即作 P3 的 A-vs-D 输入。
+3. **改的 3 测试断言 Δz 工件还是 SLA?** → **是 Δz 工件**:原单帧 fire 靠测试喂的 `ObsKinematics(z↓,dz=145 满签名)`,即单帧触发是 **Δz 的属性**,非「1s 内必报」产品要求。改 2帧 = **移除工件依赖,非放宽 SLA**。
+
+**已落委员会附条件**:
+- **条件(a)**(`8e77851`):3 真摔测试注明「删 Δz 工件,非 SLA 放宽;belief Decide 是 shadow;单帧议题挂 P3 选项D」。
+- **选项 D 入计划**(`8e77851`):新增 §2 **P3.5** —— 单帧 fall 响应若有 <2s SLA 由**可信 XY-jerk 恢复(D)**,**不回退 B**;A 暂为 shadow 默认,A-vs-D 待 P3。
+- **B 否决 / C 不必** 已接受。
+
+**交付 P2.2 — pose 对 fall 改正向only(`3e57e2e`,§10#3c/R5)**:
+- poseLikelihood 清 3 处 `SFallen<1` 压制:Walking 0.3 / Standing 0.4 / Lying@InBed 0.3 → 删(中性)。保留 SStandWalk/SSit/SBedLying(**posture 区分,非 fall 压制** → posture-vs-fall 自然分离,无需双表)。
+- **保留正向**:Fallen/SuspectedFall/Lying@OpenFloor/SitGround 的 SFallen>1 不动。
+- **边界说明**:`PoseFallen@InBed SFallen:1.5`(>1 正向,geom-context 降权非压制)按 DoD「仅清 <1.0」不动;`ObsEnterExit ExitRoom→SFallen:0.2` 是**事件正向退场(原则#3)非 pose**,P2.2 范围外保留。请委员会确认这两处判定。
+- **自检**:`grep 'SFallen: 0\.'` 于 poseLikelihood **0 命中**;`go build/vet` ✅;**belief 包 test 绿**;roomengine **0 新增失败 vs 冻结9红**;John.Y 无误报(删 stand/walk 压制未致 Fallen 漂移,吸收态设计扛住)。R0/R1 shadow 不接 alarm。
+
+**下一步**:待委员会签 P2.2 → 续 **P2.3 z 三档发射(posture,新增 ObsZBand)**(P0 契约已就位)。
+
 ### [2026-06-07 03:27 MDT] cef6c89..8e9a30e — 委员会代码审查②:P2.1 删 Δz【代码通过 / A-B-C 反问】
 
 **代码核验(R6 亲跑)**:
