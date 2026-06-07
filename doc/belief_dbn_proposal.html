@@ -176,7 +176,7 @@
 <tr><td><b>z 30–80</b></td><td><span class="tag t-mid">较可信</span></td><td>正向 → 坐</td></tr>
 <tr><td><b>z &lt; 30 / 0</b></td><td><span class="tag t-no">噪声(假低)</span></td><td>无信息;<b>z 全程不进 fall 压制</b></td></tr>
 <tr><td><b>pose</b></td><td><span class="tag t-mid">混淆矩阵</span></td><td>只正向:lying→抬 fall;stand/sit 永不压 fall</td></tr>
-<tr><td>leftRoom / outRoom 事件</td><td><span class="tag t-no">不可靠(盲区)</span></td><td>弃用,改用门距趋势(可信 XY)</td></tr>
+<tr><td>EnterRoom / LeftRoom 事件</td><td><span class="tag t-ok">可信(正向)</span></td><td>event 在=真进出;<b>缺失≠人还在</b>(信号丢失时不发 event)→ 由门距趋势补缺失</td></tr>
 </tbody>
 </table>
 <div class="callout key"><b>安全不对称原则</b>:pose / z 对跌倒<strong>只能作正向证据(抬高怀疑),绝不作负向(压制)</strong>。理由:正向用错 → 最多误报($C_{FP}$,便宜);负向用错 → 漏报($C_{FN}$,昂贵)。这从根上堵死"firmware 漏判的静止真摔被 <code>pose=stand</code> 压掉"这类漏报。</div>

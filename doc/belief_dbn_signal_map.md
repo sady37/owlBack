@@ -74,7 +74,7 @@ bed_bayesian_review.md、sensor_v2_known_limitations.md(L1–L5)。
 | radar vital / pose_lying | 弱(pose 不可信) | 现 ln4.25,**应降到 ≈0** | O_b | bed_bayesian:35 ←§10 待修 |
 | **WeakBio(HR/RR/Apnea)** | **可信,独立模态** | **≥80→force Real**;score=max(raw)+5·HR+5·RR+15·Apnea | **R_i + 健康事件** | fall_verify.go:189; aggregator:467 |
 | firmware-fall pose=5 | 低(pose 不可信) | belief 现 ×10,**应降** | S_room/fall | likelihood.go:52 ←§10 待修 |
-| **door-distance 趋势↓** | **可信 XY** | JustLeft 发射门(替 leftRoom event) | T, lost-fall | A类round5; ExitDistMinCm=30 |
+| **door-distance 趋势↓** | **可信 XY** | **补缺失的 enter/left event**(信号丢失时):朝门↓→JustLeft | T, lost-fall | A类round5; ExitDistMinCm=30 |
 | ObsNoDetect(消失) | — | Fallen ×1.6(贴地遮挡)/ StandWalk ×0.3 | S_room, T | likelihood.go:100 |
 | ~~kinematics Δz~~ | **z 不可信** | **删**:z↓→0 是环境噪声,不能当 fall 正向证据 | — | likelihood.go:19 ←§10#3 待删 |
 | Kalman 残差 / 隐含速度 | 可信 XY | 跳变→ghost(**逐步极值,不平均**) | R_i | track.go:167; MaxKalmanResidual |
@@ -82,8 +82,8 @@ bed_bayesian_review.md、sensor_v2_known_limitations.md(L1–L5)。
 | **空间跳跃(逐步)** | 可信 XY | **P(瞬移\|real elderly)≈0 → 跳变=近确定性 ghost** | R_i | A类round-室内; isGhostJump |
 | **冻结伪迹(方差)** | 可信 XY | **真目标有 ±10–20cm 抖;ghost/冻结近零方差 + pose/z 锁死 → ghost**(≠ box 内真静止) | R_i | A类round-cd2b; cf. still-box 只看 box 范围 |
 | mirror 3 不变量 | 可信 XY | 方向<15°+中点共线⊥v+同步<0.4 → ghost | R_i | mirror_detect.go:288 |
-| EnterRoom event | 半可信 | +real / S_room +stand ×2 | R_i, S_room | likelihood.go:58 |
-| ExitRoom event | **不可靠(L3)** | →Left ×8(**L3 盲区假触发**) | S_room, T | likelihood.go:58; L3 |
+| EnterRoom event | **可信,正向**(event 在=真进入) | +real / S_room +stand ×2;**absence≠没进** | R_i, S_room | likelihood.go:58 |
+| ExitRoom event | **可信,正向**(event 在=真离开) | →Left ×8;**absence≠还在**(信号丢失时不发 event)→ 缺失由 door-distance 补 | S_room, T | likelihood.go:58 |
 | ObsBedOccupied(O_b 投影) | 软 | S_BedLying(1+5p)/S_Fallen(1−0.7p) | S_room | likelihood.go:34 |
 | SleepStage | 弱 | stage{1,2,3}→Lying×2 / {0,8}→Restless×2 | S_room, O_b | likelihood.go:45; sleepstage_consumer |
 
