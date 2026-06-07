@@ -537,5 +537,22 @@ DBN 只读其结果(R2/R3)。这是 P2.3/P4.2/P4.4 的**前置只读边**,须先
 
 ---
 
-> **计划完结(§0–§10)。** 委员会反馈见 `doc/feedback.md`;施工方每节前 pull 消化。
+## §11 委员会反馈消化记录(倒序)
+
+### 第 1 轮 — `f84e8a9` 首审(3da5dfe..f0bb43f,裁决:计划通过可开工)
+| # | 类型 | 委员会意见 | 消化 | commit |
+|---|---|---|---|---|
+| 1 | ⚠️阻塞 | ObsNoDetect→Fallen×1.6 = 用 absence 当正向(dropout-FP 根因),须 realness+door-distance 门控 | 新增 P6.1a:Fallen 因子改 `1+0.6·𝟙[R_i=real]·𝟙[¬door-exit]`,与 P3/P2.5 联锁 | `af3b3c4` |
+| 2 | ⚠️阻塞 | P3.2 不能只靠零方差(cd2b 椅子 ghost 实测晃 ~50cm) | P3.2 改 4 条 AND 复合签名(跳变出生∧pose/z锁死∧钉死小区∧距门远),无单方差阈 | `40d1a2a` |
+| 3 | ⚠️注意 | S_vol 尾形样本不足(bedside 尾 n=2) | P4.1 先粗档+待收紧;P9 margin 给区间不给点值,样本量列限制项 | `48a0934` |
+| 4 | ❓注意 | O_b→S_Fallen 抑制勿掩 bedside-fall | P5.4 加边界:O_b 压 fall 仅 fresh∧高;leftBed 后 O_b 须及时落 | `c895c6b` |
+| 5 | ❓注意 | firmware-fall 占位 ×3-4 偏高 | P2.4 shadow 期先 `SFallen:≤2`,待 P9 真机率标定 | `d22a769` |
+| — | 命名 | P9'(前置带撇号)改编号 | P9'→P0(P1 已被 T-existence 占,P0=前置阶段0) | `0e798ae` |
+| — | 一致 | P6.4 先因子化后按 oracle 升联合 ✓ | 无需改,与委员会一致 | — |
+
+**阻塞项 1/2 已落为计划约束**(直接关系 cd2b 漏报与 dropout-FP 两类核心错误);P-task 落地时作硬门。
+
+---
+
+> **计划完结(§0–§10)+ 第 1 轮反馈消化(§11)。** 委员会反馈见 `doc/feedback.md`;施工方按 5min 节奏 pull 消化。
 > 代码施工待委员会逐 P-task 签字后另起 commit,守 shadow-first / 不碰 alarm 决策路径。
