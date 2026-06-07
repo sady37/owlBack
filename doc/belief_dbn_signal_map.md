@@ -44,6 +44,7 @@ bed_bayesian_review.md、sensor_v2_known_limitations.md(L1–L5)。
 | **Z_cell** 空间语义 | AreaType × conf | **天** | **cell belief + 语义遗忘** ✓ | 学习+软 | cell.go:225,553 |
 | **S_room** 9态 | S0–S8 | 秒 | **belief/ HMM forward** ✓ | 软 | belief/state.go, likelihood.go |
 | **T** existence | None/Real/Ghost/JustLeft/Lost | 秒 | **belief/track.go(P1 已部署)** ✓ | 软(仅 shadow log) | belief/track.go |
+| **P_id** suite 身份 | resident / visitor / none(+ AnchorRoomType) | 分–时 | **suite_census**(radar age≥5min∧traverse≥10 提 resident;visitor 2min∧5;**sleepad 双锚即时**;idle 衰减 visitor 10min/resident 6h;失锁 60s clear) | 硬+衰减 | suite_census.go:97; engine.go:945 |
 
 **可辨识性边界(A 类结论)**:pose/z 不可信 ⟹ posture 的 {sit/stand/lying} 三分**不可由 pose 单独辨识**;只有
 - moving vs static(XY 可信)、
@@ -96,6 +97,7 @@ bed_bayesian_review.md、sensor_v2_known_limitations.md(L1–L5)。
 | self-contradiction 回滚 | 翻 Occupied 后 15s 内 score<30 → rollback | zoneengine engine.go:368 | 低置信转移撤销 | engine |
 | subset-invariant 修复 | bed present→room occupied;stale-bed 5min 降级;orphan-room drop | zoneengine engine.go:512 | 结构约束(节点间一致性) | engine |
 | LeavingTimeout | leaving 8s/5s → vacant | state_machine.go:129 | dwell 转移 | state_machine |
+| **bathroom room-type 锚翻转** | BathroomCount 0↔1(恰好 1 resident) | AdjustBathroomCount + 60s member timeout → 翻 sole-resident AnchorRoomType(default↔bathroom) | A 结构约束(dispatch→选 dwell 档) | bathroom_gate.go:37; suite_census AdjustBathroomCount; engine.go:974 |
 
 ---
 
@@ -146,6 +148,7 @@ A 类核心:**老人站立静止 >8min 几乎不可能**;代码用 zone 条件�
 | bed P 阈 | InBed 0.70(facility)/0.75(home);LeftBed 0.50;Standby |L|<0.5 | 软 | bed_bayesian:49 |
 | **RiskLevel 分级** | **Attention / Risk**(浴室日 standing≥8/≥15;夜≥5/≥8;alone≥30/45) | **已是分级软输出** | risk_evaluator.go:39 |
 | 速度 ghost 二档 | hard 200cm/s / soft 100cm/s(需 enter 反证) | 硬 | fall_rules_param.go:166 |
+| **human-bed fall 总豁免** | Source=Human ∧ AreaBed ∧ **Conf≥99** → 所有 fall 路径不报(跨 silent/bedside/lost 共闸;Conf≥99 切人工 layout vs radar 自学习 95) | 硬总闸(decision veto) | fall_exempt.go:15; bedroom_fall.go:262,341; track_manager.go:1892 |
 
 > τ\* 的 Bayes 形式:$\tau^\*=C_{FP}/(C_{FP}+C_{FN})$。现有 30/70 与 RiskLevel 分级**可直接对接** —— DBN 把散落阈值收敛到一个代价比旋钮。
 
@@ -178,6 +181,7 @@ A 类核心:**老人站立静止 >8min 几乎不可能**;代码用 zone 条件�
 | still-box 冻结命门 | StillBoxRunStart≥120s → Conf=0 不更新 | belief_adapter.go:21 |
 | ghost jump 剔除 | >200cm/s 单跳 → 剔 | belief_adapter.go:169 |
 | 防 loop | 自家 producer(slot fd00:0:fff1::/48)跳过 | consumers |
+| **bed-presence 新鲜窗** | sleepad/radar InBed >10min 视为 stale 不计占用;占用 = OR(fresh sleepad, fresh radar)→ 投 N_r | bed_presence_fusion.go:48 |
 
 > 关系 A 类:bathroom 突发丢信号若 firmware 报 **SignalPoor → device_fitness 直接挡**;没报的才落到 door-distance 过滤(§2/§3)。
 
@@ -206,7 +210,7 @@ A 类核心:**老人站立静止 >8min 几乎不可能**;代码用 zone 条件�
 4. **radar pose_lying LR=ln4.25**:bed_bayesian 给 radar 躺姿过高权,pose 不可信下应降到 ≈0,bed 靠 sleepad 接触扛。
 5. **三个 Bayesian 层未统一**:cell / bed / room-9态 各跑各的 + fall_verify 加性 scorer 第四套 —— 需收敛到单一因子化框架(Boyen-Koller 跨层有界)。
 6. **循环偏置**:Z_cell 学自 pose(ActiveType←RadarPoseToCore)→ 继承 70/20 混淆 → 有偏先验×有偏似然。解偏:Source 真值注入(已有)+ LieRetract(已有)+ **用 z=high 学 cell 语义(ai_fall_model 在做,待接)**。
-7. **多人/count>1**:v1 单实体(belief_dbn §7 #7/#13),多 resident 抑制 / room count>1 待 P5。
+7. **多人/count>1**:身份锚定层 **P_id(suite_census)已在跑**(单 resident anchor + sleepad 双锚 + bathroom 锚翻转,§1/§3 已归位);仍缺的是**多 resident 抑制 / room count>1 联合滤波**(belief_dbn §7 #7/#13),待 P5。
 8. **Warning 缺席层是否进同一 DBN**:Stay/LeftBed/NightAbsence 是缺席驻留,同族 S_vol 但 anchor 不同,scope 待定。
 9. **R_i 静止期的记忆依赖**:摔倒瞬间 v≈0,realness 必须靠摔前走路累积的 L_R(带记忆 filter)—— 现 ghost verdict 是逐帧/累积混合,需确认记忆衰减率。
 10. **R_i–S_i 耦合强弱**(belief_dbn 待决):ghost 运动学胎记 ⟹ R_i⊥S_i 不成立,倾向 {R_i,S_i} 同簇联合滤波(4态),需定。
