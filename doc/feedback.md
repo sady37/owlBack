@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`f0bb43f`(下次从此 commit 起算 delta)
+- **last-audited**:`98a33a7`(下次从此 commit 起算 delta)
 
 ---
 
@@ -44,7 +44,24 @@
 **建议**:...
 -->
 
-### [2026-06-06 21:06 MDT] 3da5dfe..f0bb43f — 施工计划 belief_dbn_impl_plan.md(10 commit,纯 doc,无 sensor 代码)
+### [2026-06-06 21:32 MDT] f0bb43f..98a33a7 — 施工方消化首轮反馈(7 commit)+ 委员会第 2 轮
+
+**变更摘要**:施工方逐条消化首审 5 项 + 命名,并加 §11 issue→commit 追溯表。无 sensor 代码,仍 doc。
+
+**核验(不信声明,看实际改法)**:
+- ✅ **阻塞#1 已解(`af3b3c4`)**:P6.1a 把 ObsNoDetect→Fallen 从无条件 ×1.6 改为 `1+0.6·𝟙[R_i=real]·𝟙[¬door-exit]`,与 P3/P2.5 联锁 —— 正中 dropout-FP 根因(absence 不再无条件抬 fall)。
+- ✅ **阻塞#2 已解(`40d1a2a`)**:P3.2 改 4 条 AND 复合签名(跳变出生∧pose/z锁死∧钉死小区∧距门远),弃单方差阈 —— 符合 cd2b 椅子 ghost 实测晃 ~50cm 的事实。
+- ✅ #3/#4/#5 + 命名(P9'→P0)均按建议落,firmware-fall 取 ≤×2(比我建议更保守)。
+
+**⚠️ 第 2 轮(2 个 refine,非阻塞)**:
+1. **P6.1a 用软 P 而非硬 𝟙**:`𝟙[R_i=real]·𝟙[¬door-exit]` 是在软 DBN 里塞硬阈值,会重新引入"realness 判错就全 0/全 1"的脆性。改 `1+0.6·P(R_i=real)·(1−P(door-exit))` —— 边缘化的连续形,和 §4.3 ghost 融合方程同构。**drift 风险**:软网里嵌硬闸 = 局部回退硬阈范式。
+2. **P3.2 四条 AND 可能过严(漏报风险)**:**预先存在的**静止反射体(椅子从一开始就在,无"跳变出生")不满足第 1 条 → AND 失败 → 漏判 ghost。cd2b 是"跌后跳到椅子"有跳变;但常驻反射无跳变。确认 static_reflector 学习路径覆盖这类,或把 AND 放宽成加权证据(任 3/4 即疑)。
+
+**委员会自纠(signal_map §2,本轮同 commit 修)**:用户审出 §2 把 `Kalman 残差` 与 `隐含速度` 错捆一行且误标"逐步极值"。实为**三个不同失效探测器**,已拆:空间跳跃(逐步 raw,teleport)/ Kalman 残差(逐步 model-relative,不可预测急变)/ 隐含速度(**全程平均**,firmware track 拼接 birth-incoherence)。三者仅在干净 teleport 重叠,不等价。
+
+**裁决**:首轮反馈消化**合格**,两阻塞落为计划约束 ✓。第 2 轮 2 项为 refine,P3.2/P6.1a 落地 P-task 时一并处理(#1 关 drift,#2 关漏报)。可继续 P0 接口契约冻结 → P2。
+
+---
 
 **变更摘要**:新增 `doc/belief_dbn_impl_plan.md`(520 行),把 signal_map/proposal 拆成 P2–P9 + P9' 可施工/验收/灰度的 P-task,含铁律 R0–R7、DoD 模板、依赖 DAG、灰度门。**无生产代码改动**(明示代码待签字后另起 commit)。
 

@@ -77,9 +77,10 @@ bed_bayesian_review.md、sensor_v2_known_limitations.md(L1–L5)。
 | **door-distance 趋势↓** | **可信 XY** | **补缺失的 enter/left event**(信号丢失时):朝门↓→JustLeft | T, lost-fall | A类round5; ExitDistMinCm=30 |
 | ObsNoDetect(消失) | — | Fallen ×1.6(贴地遮挡)/ StandWalk ×0.3 | S_room, T | likelihood.go:100 |
 | ~~kinematics Δz~~ | **z 不可信** | **删**:z↓→0 是环境噪声,不能当 fall 正向证据 | — | likelihood.go:19 ←§10#3 待删 |
-| Kalman 残差 / 隐含速度 | 可信 XY | 跳变→ghost(**逐步极值,不平均**) | R_i | track.go:167; MaxKalmanResidual |
+| Kalman 残差(逐步,model-relative) | 可信 XY | 观测偏离匀速预测 → 不可预测跳变/急变(raw 速度漏的方向/加速度异常;匀速直线快走残差低) | R_i | track.go:167; MaxKalmanResidual |
 | **avg-speed(室内-老人带)** | 可信 XY(**仅 moving**) | 带内→real / 0→无信息 / **超室内天花板→ghost** | R_i | A类round4/round-室内; per-device EWMA belief_adapter:37 |
-| **空间跳跃(逐步)** | 可信 XY | **P(瞬移\|real elderly)≈0 → 跳变=近确定性 ghost** | R_i | A类round-室内; isGhostJump |
+| **空间跳跃(逐步 raw)** | 可信 XY | 单帧 Δ/dt > 室内-老人天花板 → **P(瞬移\|real)≈0,近确定性 ghost** | R_i | A类round-室内; isGhostJump |
+| 隐含速度(**全程平均**,reachability) | 可信 XY | dist(now,birth)/age 超人极限 → firmware track_id 拼接两反射(birth-incoherence);**平均量,非逐步,单跳会被抹平** | R_i | track.go:168; MaxImpliedSpeedFromBirth |
 | **冻结伪迹(方差)** | 可信 XY | **真目标有 ±10–20cm 抖;ghost/冻结近零方差 + pose/z 锁死 → ghost**(≠ box 内真静止) | R_i | A类round-cd2b; cf. still-box 只看 box 范围 |
 | mirror 3 不变量 | 可信 XY | 方向<15°+中点共线⊥v+同步<0.4 → ghost | R_i | mirror_detect.go:288 |
 | EnterRoom event | **可信,正向**(event 在=真进入) | +real / S_room +stand ×2;**absence≠没进** | R_i, S_room | likelihood.go:58 |
