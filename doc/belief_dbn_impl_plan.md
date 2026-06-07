@@ -187,4 +187,60 @@ margin 不够则 DBN 不值得继续(signal_map §11.4),止于 shadow。
 
 ---
 
-*后续节(§3 P4 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
+## §3 P4 — dwell HSMM 生存函数 S_vol(t|zone)
+
+**目标**:把 signal_map §5 散落的**硬阈值驻留**收敛成**显式半马尔可夫驻留** $d$ +
+平滑生存函数 ramp:$\ln\mathrm{LR}_{fall}(d)=-\ln S_{vol}(d\mid zone)$。硬阈悬崖 → 软斜坡,
+zone 选档只读 cell engine(R3)。
+
+**现状清单(signal_map §5,全硬阈)**:
+| 上下文 | 现生存尾 | 来源 |
+|---|---|---|
+| stand 开阔地 | 8min | aggregator:302 StandingMin cap 8 |
+| toilet/shower | 10(风险)/12min | bathroom_fall.go:46 |
+| bed/sofa RestZone | ∞ | cell.go:326 |
+| deny zone | 5min | DenyZoneSec |
+| leftBed 床边 | 15min(夜)/窗3min | bedroom_fall.go:41 |
+| lost-fall wait | bed60/walk5/deny5 min | fall_rules_param.go:157 |
+| moving precondition | 60s | MovingPreconditionMs:165 |
+| 缺席:Stay/LeftBed/NightAbsence | 45/30 · 30 · 30min | zonealarm rules.go:111/122/133 |
+
+### P4.1 — 生存函数 ramp 取代硬阈(核心)
+- **动**:新增 `belief/survival.go`(或 likelihood 内)`fallLRFromDwell(d, zone) = -ln S_vol(d|zone)`。
+- **改法**:每个 zone 一条生存尾参数(尺度 + 形状),`d` 由 HSMM 驻留状态累积。**输出连续 LR**,不再是"≥阈值就报"的二元悬崖。
+- **标定来源**:A 类"老人站立静止 >8min 几乎不可能"= 生存尾在 8min 处快速衰减;各 zone 尾形用 §8 fixture 标。
+- **shadow 字段**:`p4_1_dwell_sec`、`p4_1_zone`、`p4_1_fall_LR`。
+- **oracle**:开阔地真人久站 FP(cabb 类)—— ramp 下 8min 前 LR 温和,配合 Z_cell tolerance 压在 τ\* 下;真摔躺地 LR 随 d 快速累积过 τ\*。
+- **依赖**:替代 fall_unified 的 still-fall 硬阈表(silent/lost/moving 三类的"等阈值")。
+
+### P4.2 — zone 选档(cell engine 只读边,§9 前置)
+- **动**:`fallLRFromDwell` 的 `zone` 入参 = cell engine 输出 `AreaType`(read-only)。
+- **映射**:rest/bed→尾∞(不报)、toilet→15min 尾、stand 开阔→8min 尾、deny→5min 尾。
+- **R3**:DBN 不写 cell,只读 `AreaType+Conf`;Conf 低时尾形向"中性 zone"blend(对齐 likelihood.go:14-18 已有的 GeomConf blend 思路)。
+- **oracle**:cabb-0606 vs cabb-0603 残差对(§11.2)—— 唯一分离杠杆是 Z_cell zone 容忍,选档正确则 margin≈1.5nat 可分。
+
+### P4.3 — risk-time 夜间尾形切换
+- **动**:`math_util.go:16` risk-time 22:00–06:30 → S_vol 夜间用更短尾(夜间久静更可疑)。
+- **改法**:生存尾尺度参数按 risk-time 二档(昼/夜),折进 P4.1 参数表,不另开闸。
+- **来源**:signal_map §4 risk-time;zonealarm 昼夜阈(45/30 等)。
+
+### P4.4 — per-cell 自适应放宽(读 cell tolerance,§9)
+- **现状**:`cell.go:400` toleranceFactor ×[1,2.0] by FakeAlarm/ToleratedStill —— **cell engine 内部学习**。
+- **本 task**:DBN 只**读** tolerance factor,乘到 S_vol 尾尺度(久站被容忍的 cell 尾拉长)。**不在 DBN 学**(R2/R3)。
+- **oracle**:cabb 那个 cell 若被 ToleratedStill 学成"可久站",尾拉长 → 久站不报;未学则正常 8min 尾。
+
+### P4.5 — 缺席驻留同族归并(§10#8 scope 决议)
+- **现状**:Stay(独处45/30)/LeftBed(离床30)/NightAbsence(离室30,21–07)是**同族 S_vol 不同 anchor**(独处/离床/离室)。
+- **决议项(待委员会)**:是否纳入同一 DBN dwell 框架,还是保留 zonealarm 独立。**建议**:纳入 S_vol 框架统一参数化(anchor 当 zone 维度),但**发射仍走 zonealarm**(producer 不变,R4)—— DBN 这侧只做 shadow 对账,验证同族尾形一致性。
+- **shadow 字段**:`p4_5_absence_anchor`、`p4_5_dwell_sec`、`p4_5_LR`。
+
+### P4.6 — moving precondition 并入 A_T(与 P3 接)
+- **动**:`MovingPreconditionMs=60s`(still≥60s→不进 lost)= signal_map §3 的 static→lost vs moving→lost 分叉判据。
+- **改法**:作为 HSMM 进入 lost 态的**前置驻留**,与 P3.1/P3.2 的 realness 联合(消失前 prev-state 由驻留时长定)。
+- **oracle**:走着突然消失(moving→lost,moving-fall)vs 静止后消失(static→lost)分得开。
+
+**P4 验收闸**:全 fixture 重放,验证(a) ramp 输出连续无悬崖;(b) §11.2 残差对在 zone 选档正确时 margin≥~1.5nat;(c) 缺席三类尾形参数自洽。硬阈→ramp 的等价性:旧阈值点处新 LR≈ln(odds at τ\*)。
+
+---
+
+*后续节(§4 P5 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
