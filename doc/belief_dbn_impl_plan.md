@@ -328,4 +328,49 @@ zone 选档只读 cell engine(R3)。
 
 ---
 
-*后续节(§6 P7 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
+## §6 P7 — decision τ\*(代价比单旋钮读出)
+
+**目标**:把散落判决阈值(fall 30/70、ghost 50/20、bed P、RiskLevel 分级)收敛到
+**一个代价比阈值** $\tau^\*=C_{FP}/(C_{FP}+C_{FN})$。后验过 τ\* → 告警;reason 路由由
+各节点后验来源决定。**shadow 期只读出到 log,不接 alarm**(R1)。
+
+**现状清单(signal_map §6)**:
+| 决策 | 现阈 | 来源 |
+|---|---|---|
+| firmware-fall 验证 | 50→30(ghost)/70(real) 加性 scorer | fall_verify.go:54 |
+| ghost verdict | 50(real)/20(ghost);Penalty≥80 | track.go:197 |
+| bed P 阈 | InBed 0.70/0.75;LeftBed 0.50;Standby\|L\|<0.5 | bed_bayesian:49 |
+| RiskLevel 分级 | Attention/Risk(浴室日8/15 夜5/8 alone30/45) | risk_evaluator.go:39 |
+| 速度 ghost 二档 | hard200/soft100 | fall_rules_param.go:166 |
+| human-bed fall 总豁免 | Human∧AreaBed∧Conf≥99 | fall_exempt.go:15 |
+
+### P7.1 — fall 后验 → τ\* 判决
+- **动**:DBN 输出 `P(Fallen)` 后验 → 与 τ\* 比;`fall_verify.go` 加性 scorer 形式化为标定 log-odds(signal_map §9)。
+- **改法**:`baseline 50→30/70` 映射成 odds:`τ\* = C_FP/(C_FP+C_FN)`,30/70 对应两个代价比工作点(suspect/confirm)。
+- **shadow 字段**:`p7_1_P_fallen`、`p7_1_tau`、`p7_1_decision`(vs gate-list 实际)。
+- **oracle**:全 fixture —— 真摔 P_fallen>τ\*,FP<τ\*;margin 报告进 P9。
+
+### P7.2 — τ\* 代价比参数化(单旋钮)
+- **动**:把 30/70 与 RiskLevel 的多档阈值,统一成 `τ\*(context)` —— 不同 zone/risk-time 用不同 C_FP/C_FN(夜间/浴室 C_FN 高 → τ\* 低 → 更敏感)。
+- **理由**:signal_map §6 注 "DBN 把散落阈值收敛到一个代价比旋钮"。
+- **DoD**:risk_evaluator 的 Attention/Risk 分级表 → τ\* 二档函数;委员会可审"每个工作点的代价假设"。
+
+### P7.3 — reason 路由(读出可解释性)
+- **动**:fall 告警的 `reason` 由"哪个节点后验主导过 τ\*"决定(realness-lost / dwell-still / pose-lying / bathroom-still …),取代 fall_unified 的 6+ 散落 reason 函数。
+- **映射**:silent(dwell 主导)/ lost(R_i+消失主导)/ moving(prev-moving+消失)三类 + human-bed 豁免。
+- **oracle**:每 fixture 的 reason 与 fall_unified 现有 reason 对账一致(语义不丢)。
+
+### P7.4 — human-bed 豁免接入 τ\*(承 §6 决策)
+- **动**:`fall_exempt.go` Conf≥99 人工床 → fall 后验**前置短路**(不进 τ\* 判决)。
+- **位置**:作为 τ\* 读出前的 veto gate(decision 层,非发射层 —— 区别于 P4.2 的 zone 软抑制)。
+- **R7**:Conf≥99 切人工 layout vs radar 自学习 95,常量复用 fall_exempt。
+
+### P7.5 — ghost/bed 判决并入(可选,scope 待定)
+- **决议项**:ghost verdict(50/20)、bed P(0.70/0.75)是否也用 τ\* 统一,还是各保留(它们是节点内判决,非 fall 读出)。
+- **建议**:保留节点内判决(O_b/R_i 各自 τ),fall 读出层只统一 fall 的 τ\*;避免过度统一伤可解释性。
+
+**P7 验收闸**:(a) fall 判决 = 单一 τ\* 比较,30/70 等价复现;(b) reason 路由与现有语义对账无丢;(c) human-bed 豁免短路正确;(d) shadow 判决 vs gate-list 对账过关率达门(具体率 P9 定)。
+
+---
+
+*后续节(§7 P8 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
