@@ -373,4 +373,36 @@ zone 选档只读 cell engine(R3)。
 
 ---
 
-*后续节(§7 P8 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
+## §7 P8 — health 正交节点(WeakBio/HR/RR/Apnea)
+
+**目标**:§10#1 暴露的缺口 —— WeakBio/HR/RR/Apnea 现仅作 realness boost(≥80→Real),
+但**心率/呼吸/呼吸暂停异常本身是健康事件**,与 fall 正交。补这一列输出。**可与 P2–P7 并行**
+(不在 fall 关键路径)。
+
+**现状审计**:
+| 现行为 | 行 | 缺口 |
+|---|---|---|
+| WeakBio score=max(raw)+5·HR+5·RR+15·Apnea,cap100 | aggregator:467-486 | 只喂 R_i realness(≥80→Real),无独立健康输出 |
+| ≥80→force Real | fall_verify.go:189 | 健康信号被当 fall 辅助,本身不告警 |
+| WeakBio 30min 窗 | aggregator:446 | 窗口口径,复用 |
+
+### P8.1 — health 节点定义(与 fall 正交)
+- **动**:DBN 加 `H` 健康节点(或独立读出列),输入 = WeakBio/HR/RR/Apnea 事件。
+- **输出**:健康事件分级(与 fall τ\* 正交的独立判决),**不**进 fall 决策路径(R1 + 记忆[feedback_no_dynamic_threshold_modulation])。
+- **关键**:WeakBio 现喂 realness 的用法**保留**(≥80→Real 是 realness 证据);P8 是**新增**正交输出,不改 realness 用法。
+- **shadow 字段**:`p8_1_health_score`、`p8_1_hr/rr/apnea_count`、`p8_1_health_level`。
+
+### P8.2 — 输出去向(producer-first,R4)
+- **决议项**:健康事件走 `iot:event:stream`(持久化 event_log)还是 alarm。
+- **建议**:参考记忆[device_class_alarm…]与 zonealarm 模式 —— 健康异常是 actionable → 可走 alarm 流,但**非 medical-grade 诊断**(care-not-treatment 原则,ai_health Phase0)。具体归属待委员会 + 与 wisefido-ai-health 服务边界对齐。
+- **R4**:producer(sensor 或 ai-health)先定,downstream/FE 再做。
+
+### P8.3 — 与 ai-health 服务边界(避免重复)
+- **核对**:记忆[ai_health_phase0] —— wisefido-ai-health 已有 realtime_liveness_alert(非 medical)+ daily ETL。本 P8 是 **sensor 实时层**的健康事件,与 ai-health 批处理层分工:sensor 出实时异常 event,ai-health 做趋势/cohort。
+- **DoD**:明确 sensor-realtime vs ai-health-batch 的字段/职责切割,不双写。
+
+**P8 验收闸**:(a) health 节点输出与 fall 完全正交(grep 确认无 health 信号进 fall verdict/severity/routing);(b) 输出去向与 ai-health 边界无重叠;(c) WeakBio→realness 旧用法不回归。
+
+---
+
+*后续节(§8 P9 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
