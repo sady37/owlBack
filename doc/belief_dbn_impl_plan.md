@@ -405,4 +405,49 @@ zone 选档只读 cell engine(R3)。
 
 ---
 
-*后续节(§8 P9 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
+## §8 P9 — oracle 定量验收(go/no-go 数学闸)
+
+**目标**:signal_map §11 的定量结论落成**可重放、可量化 margin 的 oracle 测试**。
+这是整个 DBN 的 **go/no-go 闸**:margin 不够则止于 shadow,不进 canary(§11.4)。
+依赖 P2–P7 全部 shadow 落地。
+
+**现有基建**:`belief_replay_test.go`、`doc/cases/`(export_case.sh 导出)、记忆中的 fixture
+(cabb-*、d5f7、cd2b、D523、MoM)。
+
+### P9.1 — 7-case fixture 套件落定
+- **动**:汇集/补齐 §11 的 case profile 到 `doc/cases/`,每 case 带真值标签(verified fall / FP / ghost):
+  | case | 类型 | 期望判决 | 关键判别量 |
+  |---|---|---|---|
+  | cabb-0605 | 真摔(firmware pose=2 lying 52s) | fall>τ\* | pose-lying 正向 |
+  | cabb-0606 | firmware 漏判静止真摔(全程 pose=4) | fall>τ\*(难) | 仅 Z_cell 杠杆(§11.2) |
+  | cabb-0603 | 冻结 FP | fall<τ\* | Z_cell tolerance + 删 Δz |
+  | cd2b | 跌床→冻结 ghost 压真人 | lost-fall>τ\* | R_i 方差+跳变(§11.3) |
+  | D5F7 | 浴室真摔 | fall>τ\* | dwell+pose |
+  | D523 | 边缘丢轨 | 不误报 lost | door-distance+d_fall |
+  | MoM | (多人/移动场景) | 按真值 | N_r/P_id |
+- **DoD**:每 case fixture 可被 `belief_replay_test.go` 加载重放。
+
+### P9.2 — margin 量化(信息论)
+- **动**:每 case 算 **fall 后验轨迹** + 与 τ\* 的 margin(nat):`margin = |ln(P/(1−P)) − ln(τ\*/(1−τ\*))|`。
+- **报告**:per-case margin 表 + 改前(gate-list)/改后(DBN)对比。
+- **判据**(§11.4):
+  - 可分多数(cabb-0605 真摔 / 坐姿 FP / ghost / 门区 exit)→ margin>0 干净 → **DBN 赢**。
+  - §11.2 残差对(cabb-0606 vs cabb-0603)→ 只剩 Z_cell 一杠杆:有 cell 学习 margin≈1.5nat 可分,无则重合。
+  - cd2b → R_i 运动学能分(§11.3),下限在冻结 ghost vs 真静止方差判据(P3.2)。
+
+### P9.3 — shadow vs gate-list 对账
+- **动**:`belief_shadow.go` 旁路输出 vs 现网 gate-list alarm 逐 case/逐 tick 对账。
+- **指标**:一致率、DBN 多报(潜在 FP)、DBN 漏报(潜在 FN)、DBN 修正(gate-list 错 DBN 对,如 cd2b 漏报)。
+- **DoD**:对账报告 + 每条分歧归因(标定问题 / 真值问题 / DBN 缺陷)。
+
+### P9.4 — go/no-go 判据 + 报告
+- **产出**:`doc/belief_dbn_oracle_report.md` —— margin 表 + 对账 + 结论:
+  - **go**(进 canary):可分多数 margin 干净 + cd2b 类修正成立 + 无新增 FP。
+  - **no-go-but-shadow**(止于 shadow):§11.2 残差对治不了(只剩 Z_cell)→ 需 cell 解偏(§9 cell engine,§10#6)或加传感器(多雷达/bedside 垫),非滤波层能解。
+- **诚实边界**(§11.4):firmware 漏判静止真摔 vs 冻结 FP 的下限要加硬件,DBN 不夸大。
+
+**P9 验收闸(总闸)**:oracle report 出 go/no-go 结论 + 每个 P2–P7 改动的 margin 贡献归因。**这是"DBN 值不值得继续做"的数学判据**,委员会据此决定是否进 canary。
+
+---
+
+*后续节(§9 cell 接口 / §10 里程碑)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
