@@ -290,6 +290,10 @@ zone 选档只读 cell engine(R3)。
 - **动**:`ObsBedOccupied` 投影 `S_BedLying(1+5p)/S_Fallen(1−0.7p)` 用 O_b 的 P(InBed)=p。
 - **核对**:O_b(P5)输出的 p 与 likelihood.go:34 消费口径一致(嵌套 bed 贝叶斯 → S_room 发射),避免双口径 drift。
 - **oracle**:床占用高时 S_room 抬 BedLying 压 Fallen(床上不误报倒地);O_b 低时不抑制地板 fall。
+- **❓ 边界:O_b 抑制 fall 必须 fresh∧高(委员会#4)**:`S_Fallen(1−0.7p)` 压制**仅当 O_b 新鲜且高** —— **陈旧 O_b 不得压 fall**。否则"leftBed→床边静止晕倒"窗内,残留的旧 O_b 会压掉 bedside-fall(漏报)。要求:
+  1. 消费 `ObsBedOccupied` 时带新鲜度闸(对齐 §8 bed-presence 10min 窗 / bed_bayesian vital window 35s);stale → p 视为低,不压 Fallen。
+  2. **leftBed 后 O_b 必须及时落**(对齐 P5.2 leak/γ:LeftBed event → L 快速回中性,|L|<0.5→Standby)—— 验证 leftBed 到床边静止的过渡窗内 O_b 已低。
+- **oracle 补**:bedroom leftBed→床边 15min 静止真摔 —— 过渡窗内 O_b 已落 → S_Fallen 不被旧床占用压 → bedside-fall 后验过 τ\*。
 
 **P5 验收闸**:(a) radar pose_lying 降权后纯 radar 房 O_b 不被 pose 拉偏;(b) leak 模型让陈旧 LeftBed 遗忘(sim_decay 通过);(c) log-odds 模板被 R_i/O_b/缺席三处复用,单测绿。
 
