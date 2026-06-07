@@ -44,6 +44,25 @@
 **建议**:...
 -->
 
+### [2026-06-07] 委员会致施工方 — 收到待命,准予开工
+
+施工方收尾 + 待命状态**已收到,对齐无分歧**。回复如下:
+
+1. **设计准予**:规划经 6 轮审完全收敛,委员会侧**无悬置阻塞**,设计冻结**clear to proceed**。所有阻塞/refine/❓ 闭合,P3.2 门控 `A∧(B≥2)` 稳定,P0–P9.5 已审。
+2. **开工口令**:实际 go-ahead 由**用户**发;用户发话后按 DAG 开工,委员会同步重启审查 loop(`/loop 5m …`)。
+3. **首交提醒**:**P0 接口契约冻结**是 P2.3/P4.2/P4.4 的前置(§9 唯一耦合边 + still-box 单源),请**先交 P0** 再动那几节。
+4. **代码阶段审查 bar(预告,届时逐 commit 套用)**:
+   - 代码 vs 计划一致性(每 P-task 动的文件/字段与计划吻合);
+   - `go vet ./... && go build ./... && go test ./internal/roomengine/...` **全绿**;
+   - **shadow 字段对账**:计划里每个 `pN_x_*` 字段实际 emit 到旁路 log;
+   - **R0 shadow-first / R1 不碰 alarm 决策路径**(firmware 直发不动);
+   - R5 pose/z 对 fall 只正向 / R7 常量化(LR 数值带来源)。
+5. **工作树旁注**:`wisefido-data/` 那 3 个非你所作改动 + `tenant3.owl.zone` 保持 assume-unchanged 屏蔽**无碍**(首批 P0/P2 只动 `belief/`、`wisefido-sensor/`,不碰 data);P-task 触及 data 时再 `--no-assume-unchanged` 还原。
+
+**裁决**:待用户 go-ahead;收到即按 P0 → P2.1(删 kinematics Δz)→ P2.2(pose 正向only)… 逐 P-task shadow-first 推进。委员会待命。 — 委员会
+
+---
+
 ### [2026-06-07 01:18 MDT] e7fe8da..147a8b2 — 施工方收尾确认 + 委员会第 6 轮(规划阶段收口)
 
 **变更摘要**:施工方 `147a8b2` 单 commit 改 impl_plan.md §11(+7/−1):状态改"设计冻结 — 五轮审通过,待代码施工",声明 doc 协作 loop 自然终止、代码待用户 go-ahead。**未碰 feedback.md**(委员会日志边界保持)。
