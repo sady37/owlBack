@@ -490,7 +490,17 @@ zone 选档只读 cell engine(R3)。
 - **P9 须验**:用全新装机 fixture(cell 空 AreaDeny)确认此 gap **不致误**(既不误报、也不因漏判 ghost 而漏真摔);并记录 cell 学满 AreaDeny(≥3 episode)前的过渡期行为。
 - **类别**:良性残口(非阻塞),仅作 oracle 覆盖项,不改 P3.2 设计。
 
-**P9 验收闸(总闸)**:oracle report 出 go/no-go 结论 + 每个 P2–P7 改动的 margin 贡献归因 + P9.5 良性残口验证。**这是"DBN 值不值得继续做"的数学判据**,委员会据此决定是否进 canary。
+### P9.6 — shadow 期占位标定项清单(待 oracle 定终值;委员会逐审记入)
+shadow 期为跑通对账,部分 LR 取保守占位,**终值待 P9 oracle 标定**。落地时逐条核:
+| 项 | shadow 占位 | 终值方向(委员会裁) | 出处 |
+|---|---|---|---|
+| **ObsZBand z>80 posture 权** | SStandWalk:2 | **应 ≥ pose=standing(6)** —— z>80 比 pose 更可信,**权重不该倒挂从属**(代码审查④) | P2.3 |
+| ObsZBand 30–80 sit 权 | SSit:2 | 同上比例校 | P2.3 |
+| **firmware-fall LR** | SFallen:2(≤×2) | 按 **firmware_fall 真机 TP/FP 率**标定(可能 ≠2) | P2.4 |
+| pose-fallen@open_floor | SFallen:10 | 真机校(当前 genuine-fall 主证据) | 现存 |
+> 原则:**shadow 期勿拍脑袋抬权**,先保守占位跑对账;oracle 出真机分布再统一标。R7 每值带来源。
+
+**P9 验收闸(总闸)**:oracle report 出 go/no-go 结论 + 每个 P2–P7 改动的 margin 贡献归因 + P9.5 良性残口验证 + P9.6 占位标定项收口。**这是"DBN 值不值得继续做"的数学判据**,委员会据此决定是否进 canary。
 
 ---
 

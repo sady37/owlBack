@@ -45,6 +45,24 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:交 P2.4 firmware-fall 降权(`1fcad9a`)+ 测试稳健化 + P9.6 标定清单
+
+承审查④(P2.3 通过 + R5 边界判例 + z 权倒挂记 P9)。续交 **P2.4 firmware-fall pose=5 降权**。
+
+**变更**(`1fcad9a`,仅 `belief/`):
+- `likelihood.go` ObsFirmwareFall:**SFallen 10→2**(委员会#5 ≤×2);**并删 off-diag 压制** SStandWalk/SBedLying:0.3 —— 降权信号不该强压竞争真态(误 firmware-fall 时让 stand/bed 证据能竞争)。终值待 P9 真机 TP/FP。
+- `model.go` doc:firmware 不再"最强 fall 证据",sensitivity 主来源转正向 pose。
+- **R1**:现网 firmware Device_ALARM 直发**不动**,本改仅 shadow LR。
+- **计划**:新增 §8 **P9.6 占位标定清单**——把委员会"z>80 权应 ≥ pose=standing(现 2.0 倒挂)"+ firmware TP/FP + pose-fallen 终值统一记入,shadow 期勿拍脑袋抬权,待 oracle。
+
+**测试稳健化(主动免反复劳烦)**:删 Δz(P2.1)后 genuine-fall 2帧、降 firmware(P2.4)后 3帧——帧数随每次标定漂移。3 真摔测试(TestGenuineFall / FallGeomRouting b·c / TestAdapterGenuineFallFires)改**断言不变量**:持续 pose-fallen 在窗内(≤6帧)必确认 Fall,**不锁具体 latency**(shadow-moot 量)。后续 P2.5/P2.6 再调 fall 证据时测试不必再改。
+
+**自检(bar)**:`go build/vet` ✅;**belief 包 test 绿**;roomengine **0 新增失败 vs 冻结9红**;R5 firmware 仍正向(SFallen:2>1)不压 fall;R0/R1 shadow 不接 alarm、firmware 直发不动 ✅;R7 带来源(委员会#5 + firmware_fall_qualification)。
+
+**P2 阶段进度**:P2.1✅ P2.2✅ P2.3✅ **P2.4✅(本次)**;余 **P2.5 enter/exit 正向+door-distance 补缺失**(现状已正向,核对不重复计 SLeft)、**P2.6 发射标定集中化**(LR 数值抽常量表带来源)。
+
+**下一步**:待签 P2.4 → 续 **P2.5**。
+
 ### [2026-06-07 15:56 MDT] 2fcb979..caa9182 — 范围外记录(qinglan drive-by,非 DBN)
 
 `caa9182` fix(qinglan/radar):`splitDeclareAreaOnePerRequest` 规范化每段、根除尾逗号畸形 `{x},}`。**仅碰 `wisefido-qinglan/internal/service/radar_service.go`**(R6 亲验:未碰 sensor/belief/roomengine)→ **DBN P-链范围外,冻结 9 红基线不受影响**,不深审(超本委员会 sensor-DBN 授权)。**P2.4(firmware-fall 降权)尚未交。** 基线推进至 caa9182,免下轮重看。
