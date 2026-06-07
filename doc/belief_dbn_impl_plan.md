@@ -151,14 +151,19 @@ margin 不够则 DBN 不值得继续(signal_map §11.4),止于 shadow。
 | ghost verdict:`GhostPenalty≥80`→Ghost;Score 50/20 | track.go:177-179,197 | 逐帧/累积混合,**§10#9 需明确记忆衰减率**(摔倒瞬间 v≈0 靠摔前 L_R) |
 | still-box `BoxRangeWithinMs≤50cm` 当静止 | track.go:350; §10#12 | **把真静止与冻结伪迹混了**:真人 ±10–20cm 抖,ghost 零方差 → 需方差判据 |
 | `MaxKalmanResidual` 峰值残差 | track.go:163-167 | 已有,复用为跳变→ghost 的 reliable 量 |
+| 速度类信号曾混标(委员会 §2 自纠 8cdc4ad) | signal_map §2:80/82/83 | **三个不同失效探测器,非等价**:空间跳跃(逐步 raw teleport,isGhostJump)/ Kalman 残差(逐步 model-relative,track.go:167)/ 隐含速度(全程平均 reachability,track.go:168 MaxImpliedSpeedFromBirth,单跳会被抹平)→ P3.1 须三者分立 |
 
-### P3.1 — 室内-老人速度天花板(§10#11)
+### P3.1 — 室内-老人速度天花板 + 三探测器分立(§10#11;委员会 §2 自纠对齐)
 - **动**:`fall_rules_param.go` `ImpossibleSpeedCm` 200→**~120**(待 P9 用 cd2b/真机走速分布定);`SuspectSpeedCm` 100 复核;`isGhostJump`(belief_adapter.go:169)随之收紧。
-- **改法**:**空间跳跃近确定性判 ghost** —— `P(瞬移|real elderly)≈0`,跳变=近确定 ghost(不是 suspect)。即超天花板 → 直接强 ghost LR,不再"需 enter 反证"软档。
+- **三个失效探测器分立喂 R_i(signal_map §2:80/82/83,委员会自纠不可混标)**:
+  1. **空间跳跃**(逐步 raw,isGhostJump,belief_adapter.go:169):单帧 Δ/dt > 室内天花板 → `P(瞬移|real)≈0`,**近确定 ghost**(直接强 ghost LR,不再"需 enter 反证"软档);
+  2. **Kalman 残差**(逐步 model-relative,track.go:167 MaxKalmanResidual):观测偏离匀速预测 → raw 速度漏的方向/加速度异常;匀速直线快走残差低(**不误判正常快走**);
+  3. **隐含速度**(全程平均 reachability,track.go:168 MaxImpliedSpeedFromBirth):dist(now,birth)/age 超人极限 → firmware track_id 拼接两反射(birth-incoherence);**平均量,单跳被抹平**,与 1 互补。
+- **关键**:三者仅在干净 teleport 重叠,不等价 —— 各喂独立 LR,别再捆一行(委员会 8cdc4ad 已在 signal_map §2 拆开)。
 - **标定来源**:A 类 round-室内;cd2b 150cm/s fixture;per-device EWMA 实测走速上沿。
-- **shadow 字段**:`p3_1_jump_cmps`、`p3_1_verdict_delta`。
-- **oracle**:cd2b —— 150cm/s 跳变在新闸下判 ghost → 真人 Lost 浮出 → lost-fall 应报。
-- **边界**:真人快走/小跑(门口)不应误判 → 天花板取走速分布上沿 + per-device cap 个性化兜底。
+- **shadow 字段**:`p3_1_jump_cmps`、`p3_1_kalman_resid`、`p3_1_implied_speed`、`p3_1_verdict_delta`。
+- **oracle**:cd2b —— 150cm/s 跳变(探测器1)在新闸下判 ghost → 真人 Lost 浮出 → lost-fall 应报;隐含速度(探测器3)兜 birth-incoherence 拼接。
+- **边界**:真人快走/小跑(门口)匀速 → 探测器2 残差低不误判;天花板取走速分布上沿 + per-device cap 个性化兜底。
 
 ### P3.2 — 冻结伪迹**复合签名**(§10#12,新增;**委员会#2 阻塞:非单纯方差**)
 - **真机反例(委员会#2)**:bedroom201-cd2b 那个冻结椅子 ghost 位置在 `(-170,330)/(-150,340)/(-120,300)` 间晃 **~50cm,不是零方差** —— 静止反射体带多径抖动。**单方差阈既漏(ghost 有抖)又误(真人微抖)**。
