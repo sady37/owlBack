@@ -160,13 +160,19 @@ margin 不够则 DBN 不值得继续(signal_map §11.4),止于 shadow。
 - **oracle**:cd2b —— 150cm/s 跳变在新闸下判 ghost → 真人 Lost 浮出 → lost-fall 应报。
 - **边界**:真人快走/小跑(门口)不应误判 → 天花板取走速分布上沿 + per-device cap 个性化兜底。
 
-### P3.2 — 冻结方差判据(§10#12,新增)
-- **动**:`track.go` 新增 per-track **位置方差/抖动**统计(滚动窗 std 或 box 内点散布);belief_adapter 加 `ObsFrozenArtifact` 发射。
-- **判据**:**零方差 + pose/z 锁死恒定** = 伪迹(R_i→ghost);真人静止有 ±10–20cm 抖 + pose/z 偶变 → 不判。**区别于** still-box(后者只看 box 范围,分不开)。
-- **标定来源**:A 类 round-cd2b。
-- **shadow 字段**:`p3_2_pos_std_cm`、`p3_2_pose_z_locked`(连续 N tick 恒定)、`p3_2_frozen=bool`。
-- **oracle**:cd2b 冻结椅子 ghost(零方差 + pose/z 锁死)判 ghost;cabb-0605 真摔躺着(box 内有微抖)**不**误判 ghost。
-- **关键陷阱**:别把"真静止"判成伪迹 —— 阈值要让真人微抖 > 伪迹零方差,用 fixture 标定分界。
+### P3.2 — 冻结伪迹**复合签名**(§10#12,新增;**委员会#2 阻塞:非单纯方差**)
+- **真机反例(委员会#2)**:bedroom201-cd2b 那个冻结椅子 ghost 位置在 `(-170,330)/(-150,340)/(-120,300)` 间晃 **~50cm,不是零方差** —— 静止反射体带多径抖动。**单方差阈既漏(ghost 有抖)又误(真人微抖)**。
+- **动**:`track.go` 新增 per-track 位置散布 + 出生/约束/距门统计;belief_adapter 加 `ObsFrozenArtifact` 发射。
+- **复合签名(全部命中才判 ghost,方差只是其一)**:
+  1. **不可能跳变出生**:birth 跳速超室内天花板(P3.1)或瞬移出生 —— track-swap 来的;**且**
+  2. **pose/z 锁死**:`pose=4 ∧ z=0` 连续 N tick 恒定(伪迹无生理变化);**且**
+  3. **位置受限于小区**:散布困在 ~50cm 小区且**不离开**(真人静止也微抖,但伪迹"钉"在反射点不漂移、不偶发大位移);**且**
+  4. **距门远**:非门区(排除"门口正常进出短驻")。
+- **关键**:**不是** zero-variance;是"**多径小抖 + 钉死不漂 + pose/z 生理锁死 + 跳变出生 + 距门远**"的联合。真人静止有微抖**且** pose/z 偶变**且**偶有重心漂移 → 至少破第 2/3 条 → 不判。
+- **标定来源**:A 类 round-cd2b + cd2b 实测坐标散布。
+- **shadow 字段**:`p3_2_pos_spread_cm`、`p3_2_pose_z_locked_ticks`、`p3_2_jump_birth`、`p3_2_door_dist_cm`、`p3_2_frozen=bool(复合)`。
+- **oracle**:cd2b 椅子 ghost(50cm 多径抖 + pose=4/z=0 锁死 + 跳变出生 + 距门远)→ 复合命中判 ghost;cabb-0605 真摔躺地(微抖 + 偶有 pose/z 变 + 非跳变出生)→ 复合**不**命中,保 real。
+- **DoD**:`ObsFrozenArtifact` 判据是 4 条 AND,**无任何单方差阈分支**;fixture 标出每条阈值的真人/伪迹分界。
 
 ### P3.3 — realness 记忆 filter L_R(§10#9)
 - **动**:把 ghost verdict 的逐帧/累积混合(track.go GhostPenalty)显式化为 **log-odds 带遗忘递归**:$L_R^t=\gamma L_R^{t-1}+\sum\ln\mathrm{LR}_k$(proposal 时间反馈①)。
