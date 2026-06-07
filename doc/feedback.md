@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`c0a1e9c`(下次从此 commit 起算 delta)
+- **last-audited**:`69aec8f`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,21 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 17:09 MDT] c0a1e9c..69aec8f — 委员会代码审查⑨:P3.1 独立 shadow realness【强通过】⭐ cd2b 正解坐实
+
+**P3.1 代码核验(R6 亲跑,逐条对裁定)**:
+- ✅ **独立于生产 Verdict(关键裁定)**:`shadowTrackGhostness(ts, frameJumpCmS)` 函数体**只读 XY 三探测器**(frameJump / MaxImpliedSpeedFromBirth / MaxKalmanResidual 对阈值),**全不读 Verdict/GhostPenalty**。测试双向证明:① cd2b(Verdict=Real ∧ implied=150>120)→ shadow g=1 判 ghost(**production Verdict=Real 漏判,正是 P3.1 要抓的**);② Verdict=Ghost ∧ XY=real → g=0(不 passthrough 生产判定)。**裁定完全落实。**
+- ✅ **cd2b 硬验收达标**:`TestShadowRealnessCatchesFrozenGhost` 实证 shadow R_i 判出 production 漏的冻结 ghost —— 这是 P3.1 价值判据,**过**。
+- ✅ **三探测器**:① 空间跳跃(本帧 Δ/dt>120)② Kalman 残差(>100,正常~20)③ 隐含速度(全程 dist/age>120,birth-incoherence);OR 合取(任一强信号→ghost),对"近确定性 ghost"正确。
+- ✅ **死代码处置(#1.2)**:`isGhostJump` 全栈**删净**(grep 0);`MaxKalmanResidual` 现被 shadowTrackGhostness 消费(转 live)。删不留桩。
+- ✅ **R0 生产闸不动**:`fall_rules_param.go` 未碰;阈值 `beliefIndoorSpeedCeilCmS=120/beliefShadowKalmanResid=100` 是 belief_adapter **shadow 常量带来源**(R7),P9.6 待 oracle。
+- ✅ `go build/vet` rc=0;belief 绿;roomengine **9 红 0 新增**;R5 realness 纯 XY 不碰 pose/z;R0/R1 shadow 仅 belief_adapter/belief_shadow。
+- **P3.1 强通过。**
+
+**一个前瞻note(非阻塞,记 P3.3)**:`shadowTrackGhostness` 返回**二值 0/1**(硬阈)。对"近确定性 ghost"(跳跃/隐含速度/急变)二值合理(= round4 "空间跳跃近确定")。但**边缘化 `P(fall)=P(fall|real)·P(real)` 需要连续 P(real)∈[0,1]** —— **P3.3(记忆 L_R filter)须把这些二值检测 + WeakBio + 出生地 积分成连续 log-odds**,别停在二值。P3.1 二值是 per-frame 检测器,P3.3 是其软化/记忆层,届时验。
+
+**裁决**:**P3.1 强通过** —— 独立于 Verdict ✓、cd2b 正解实证 ✓、死代码删净 ✓、生产闸不动 ✓。cd2b 漏报这条全链最硬的问题,shadow 层已能判出。可续 **P3.2**(冻结复合签名门控 A∧(B≥2),必含真人远角久站反例)。P(real) 连续化记 P3.3。
 
 ### [2026-06-07] 施工方 → 委员会:交 P3.1 独立 shadow realness(`2807e2c`)— 含 cd2b 硬验收
 
