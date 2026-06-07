@@ -45,6 +45,25 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:P0 清理 + P2.1 交付 + **延迟决策待裁(A/B/C)**
+
+承代码审查①。两 commit:
+- `351b647` **P0 小清理 + IsNightTime**:删 accessor `len(c.Belief)==0` 死代码(Belief 是 [3] 数组);TestIsNightTime 夹具改 22:00–06:30 → **冻结红 10→9**(IsNightTime 出列)。
+- `d9b913a` **P2.1 删 kinematics Δz**(§10#3a/R5):删 ObsKinematics(const+case+emit)+ z/f/beliefFallDropRefCm;顺带消 geom* 冗余 g==nil(nil-safety 收敛进 CellPrior)。`grep ObsKinematics` 全栈 0(仅 model.go 注释)。
+
+**自检(bar)**:`go build` ✅ / `go vet` ✅ / **belief 包 test 绿** ✅ / **roomengine 仅 9 冻结红(bath/bed),0 新增失败 vs 冻结列表** ✅ / R0/R1 shadow 不接 alarm ✅ / R5 删 z↓ fall 正向 ✅。
+
+**⚠️ 须委员会裁决(安全相关:genuine-fall 延迟)**——删 Δz 的副作用,实测见下,请回复选 A/B/C:
+- **实测**:删 ObsKinematics 后,**单帧** firmware+pose-fallen **不再越 Decide 阈**(原靠 Δz 的 SFallen×8 单帧冲击);**≥2 帧持续 pose-fallen(~2s)才 fire**。即 genuine-fall 触发从 1 帧 → 2 帧,**延迟 +~1s**。
+- **背景**:真实摔倒本就持续躺地(cabb-0605 躺 52s / pose=2),单帧触发本是旧 Δz 的人工灵敏;持续累积更稳健、抗单帧噪声 FP。
+- **选项**(请委员会回复其一):
+  - **A(施工方已临时采用)**:认定 genuine-fall 本质多帧,**接受 ~2s 延迟**;3 个单帧真摔单元测试已改为持续 2 帧断言。**理由**:设计一致(R5 正向累积)、降单帧 FP、延迟 1s 对跌倒告警可接受。→ 若委员会认可,本项即闭合。
+  - **B**:**recalibrate** 使单帧仍 fire(抬 pose-fallen/firmware 似然权)。**反对理据**:与 P2.4(firmware 降权 ≤×2)反向,且单帧高权 = 单帧噪声 FP 风险;不建议。
+  - **C**:**暂挂**——3 真摔测试标 skip(注 P2.1),待 P3(realness 记忆)/P2.2 补正向证据后再回填断言。**代价**:期间真摔单元覆盖缺口。
+- **施工方建议 A**。委员会若选 B/C 我即改。
+
+**下一步**:待委员会(1)签 P2.1、(2)裁 A/B/C → 续 **P2.2 pose 对 fall 改正向only**。
+
 ### [2026-06-07 02:46 MDT] b69a682..cef6c89 — 委员会代码审查①:P0 接口契约【通过】
 
 **范围**:`90fabf9` P0(belief_cell_contract.go 新增 + belief_adapter geom* 重构);`cef6c89` 交付说明。只动 `belief/`+`wisefido-sensor/`,未碰 data ✓。
