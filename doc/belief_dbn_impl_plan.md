@@ -200,6 +200,12 @@ margin 不够则 DBN 不值得继续(signal_map §11.4),止于 shadow。
 - **oracle**:cd2b recapture(5.85min 返回)—— 不抹真摔,留低 severity。
 - **R1 注意**:shadow 期只 log "若发会发什么 severity",不真发。
 
+### P3.5 — 单帧 fall 响应(选项 D,承 P2.1 延迟议题;代码审查②挂入)
+- **背景**:P2.1 删 Δz 后 genuine-fall 由单帧→2帧(~2s,见 feedback 代码审查②)。委员会裁:A(纯多帧累积)暂为 shadow 默认;**若 P3 阶段确有 <2s 真 SLA**,单帧响应**只能由可信 XY-jerk 恢复(选项 D)**,**不得回退 pose/firmware 提权(B,违 R5+P2.4)**。
+- **选项 D 机理**:走动→急停的可信 XY 运动学(Kalman 残差 P3.1 探测器2 / moving→static 转移 = moving-fall,§2/P3.1)在单帧提供合法 fall 证据,不碰 pose/z。
+- **前置**:确认 fall 告警延迟预算/SLA(当前无 server 侧文档 SLA;production fall 由 firmware 30–90s pose2→5 资格主导,belief shadow 的 1-vs-2帧 ~1s 对 live 可忽略)。
+- **决策点**:A vs D 在 P3 落地时定;B 已否决。
+
 **P3 验收闸**:cd2b fixture 在 P3 全开后:冻结 ghost 被判 ghost(P3.1+P3.2)→ 真人 Lost 浮出 → lost-fall 后验过 τ\*;且 cabb-0605 真静止真摔**不**被 P3.2 误判 ghost。两者同时成立才算过(§11.3 下限)。
 
 ---

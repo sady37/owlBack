@@ -87,8 +87,8 @@ func TestAdapterGenuineFallFires(t *testing.T) {
 		tr := observation.Track{LogicID: "L1", Pose: observation.PoseWalking, PositionX: ptr(50), PositionY: ptr(50), PositionZ: ptr(z), PoseConfidence: 80}
 		be.Step(now, radarFrameAdapter(tr, ts, nil, now))
 	}
-	// 跌倒帧：pose=fallen + firmware fall。P2.1 删 ObsKinematics 后,真摔靠正向 pose 持续累积
-	// (≥2 帧 pose-fallen ~2s);真实摔倒本就持续躺地,非单帧 z↓ 冲击(延迟 +~1s,委员会确认中)。
+	// 跌倒帧：pose=fallen + firmware fall。改 2帧 = 删 Δz 工件非 SLA 放宽(原单帧靠已删 z↓ 冲击);
+	// 真摔本持续躺地,正向 pose 多帧累积。belief Decide 是 shadow 不接 alarm;单帧响应议题挂 P3 选项D。
 	now += 1000
 	ts := &TrackState{LastObservedMs: now, LastZ: z, Verdict: VerdictReal}
 	tr := observation.Track{LogicID: "L1", Pose: observation.PoseFallen, PositionX: ptr(50), PositionY: ptr(50), PositionZ: ptr(20), PoseConfidence: 80}
