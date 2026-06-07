@@ -450,4 +450,71 @@ zone 选档只读 cell engine(R3)。
 
 ---
 
-*后续节(§9 cell 接口 / §10 里程碑)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
+## §9 P9' — cell engine ↔ DBN 接口契约(唯一耦合边)
+
+**目标**:落定 signal_map §11.5 的**唯一耦合边**:cell engine 独立(自学习/自衰减/自带护栏),
+DBN 只读其结果(R2/R3)。这是 P2.3/P4.2/P4.4 的**前置只读边**,须先冻结契约再施工那几节。
+
+### P9'.1 — 正向只读边(cell → DBN)
+- **契约**(signal_map §11.5):
+  | cell 输出(read-only) | DBN 怎么用 | 消费节 |
+  |---|---|---|
+  | `AreaType(cell)` | π(zone):rest/bed→fall 抑制;toilet/open→escalate | P4.2 |
+  | `Confidence + Source(Human/Feedback/Learned)` | 先验权重(Human1.0>Feedback0.6>Learned0.4);human-bed Conf≥99=fall 总豁免 | P4.2/P7.4 |
+  | `AreaType → S_vol(t\|zone)` 选档 | 驻留生存尾:stand8/toilet15/rest∞ | P4.2 |
+- **DoD**:DBN 侧定义只读 accessor(无任何 cell 写路径);`grep` 确认 DBN 不调 cell 学习/promote 函数。
+
+### P9'.2 — 反向单源边(track still-box → cell)
+- **契约**(signal_map §8 注):track 层每分钟算一次 still-box(50×50 + StillBoxRunStart),**传** `(cell_xy, is_static, run_duration)` 给 cell engine(`MarkDwell/MarkLongStill`)和 DBN(fall/M_i)**双消费**;cell engine **不重算**(§2.4 producer/maintainer,避免两套阈值 drift)。
+- **DoD**:still-box 单一计算点;cell engine 与 DBN 消费同一份;`grep` 确认无第二处 still-box 计算。
+
+### P9'.3 — 边界纪律(防 §10#6 循环偏置回流)
+- **铁律**:cell 内部学习(dwell→sit / z 档语义 / 长静→sit / 重复+衰减+真摔擦除护栏)**不在 DBN 图**,属独立 cell-engine spec。
+- **解偏归属**:§10#6 循环偏置(Z_cell 学自 pose→继承 70/20 混淆)是 **cell engine 内部问题**,解在 cell 内(dwell 不用 pose / z 档 / Source 真值注入 / ai_fall_model z=high 学语义),DBN 不卷入学习回路。
+- **DoD**:文档化 cell-engine spec 边界(单独 doc 链接),本计划只管 DBN 侧只读消费。
+
+**P9' 验收闸**:(a) 只读边 accessor 无写路径;(b) still-box 单源双消费无重算;(c) cell 学习回路与 DBN 完全解耦(grep 双向无越界调用)。**此节须在 P2.3/P4.2/P4.4 之前冻结。**
+
+---
+
+## §10 里程碑 / 排序 / 灰度门
+
+### 10.1 施工顺序(承 §0.4 DAG)
+```
+阶段 0(前置):  P9' 接口契约冻结 ─────────────┐
+阶段 1(发射):  P2 ──────────────────────────┤
+阶段 2(并行):  P3(realness) ‖ P4(dwell) ‖ P5(bed) ‖ P8(health)
+阶段 3(房级):  P6 ───────────────────────────┤
+阶段 4(读出):  P7(τ*) ───────────────────────┤
+阶段 5(验收):  P9 oracle ── go/no-go 闸 ──────┘
+```
+- P8(health)与 fall 链正交,任意阶段并行。
+- 每阶段内子任务(P<n>.<m>)各自 commit;跨阶段守 producer-first(R4)。
+
+### 10.2 灰度门(shadow → canary → cutover)
+| 门 | 进入条件 | 可秒关 |
+|---|---|---|
+| **shadow** | 代码进 belief_shadow,只 log 不 fire | `beliefShadowEnabled` |
+| **canary** | P9 oracle go + 单房/单 unit 小流量对账过关率达门 | per-device 灰度开关 |
+| **cutover** | canary 期零新增 FP + 修正 cd2b 类漏报 + 委员会签字 | 整套停/启(记忆[v2_cutover_rules]) |
+- **绝不**:shadow 未过关直接接 alarm(R0/R1)。
+
+### 10.3 风险登记
+| 风险 | 缓解 |
+|---|---|
+| §11.2 残差对治不了(只剩 Z_cell) | P9 诚实判 no-go-but-shadow;转 cell 解偏 / 加硬件,不夸大滤波层 |
+| 标定数值拍脑袋 | 每条 LR/τ\* 带来源(A 类 round-x / fixture);P9 oracle 反验 |
+| 改 likelihood 影响现网 | 全程 shadow,firmware 直发路径不动(R1) |
+| cell↔DBN 边界泄漏(循环偏置回流) | P9' 契约冻结 + grep 双向越界检查 |
+| multi-resident 未覆盖 | v1 单实体明示;P_id 已铺路,联合滤波留 P-later |
+
+### 10.4 交付物清单
+- `doc/belief_dbn_impl_plan.md`(本文,施工计划)
+- `doc/belief_dbn_oracle_report.md`(P9 产出,go/no-go)
+- cell-engine spec 边界 doc(P9'.3)
+- 各 P-task 的 shadow 代码 + 单测(committee 签字后另起 commit)
+
+---
+
+> **计划完结(§0–§10)。** 委员会反馈见 `doc/feedback.md`;施工方每节前 pull 消化。
+> 代码施工待委员会逐 P-task 签字后另起 commit,守 shadow-first / 不碰 alarm 决策路径。
