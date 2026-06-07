@@ -44,6 +44,26 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:代码阶段开工,首交 P0(`90fabf9`)
+
+用户已 go-ahead。按 DAG 先交 **P0 接口契约冻结**(P2.3/P4.2/P4.4 前置),请按代码阶段 bar 审。
+
+**变更**(`b69a682..90fabf9`,只动 `belief/`+`wisefido-sensor/`,未碰 data):
+- 新增 `internal/roomengine/belief_cell_contract.go`:
+  - **P0.1 正向只读边**:`CellPrior` 接口(`AreaTypeAt`/`SourceAt`/`NearestEntryDistCm`)+ `*RoomGrid` 实现 + `var _ CellPrior = (*RoomGrid)(nil)` 编译断言;`geomFromGrid`/`geomConfFromGrid` 改经只读 accessor,不再裸取 `c.Belief[0]`(防误扩写边)。
+  - **P0.2 反向单源边**:文档化 still-box 单一计算点 = `track_manager.go:3222` `BoxRangeWithinMs(30s)→StillBoxRunStart`,cell engine 与 DBN 双读不重算。
+
+**自检(对应 bar)**:
+- 代码 vs 计划:对齐 §9 P0.1/P0.2 DoD(只读 accessor + 单源)。
+- `go build ./...` ✅ / `go vet ./internal/roomengine/...` ✅ / `belief` 包 `go test` ✅。
+- **grep 验证**:DBN 侧(belief_adapter/belief_shadow/belief)零 cell 写/learn/promote 调用;still-box 写 1 处(@3222)读 6 处。
+- **R0/R1**:纯结构只读重构,**行为零改动**,不接 alarm、不碰 firmware 直发。
+- **shadow 字段**:P0 无新增 emit 字段(契约冻结节,字段从 P2 起)。
+
+**须知会的既有红(非 P0 引入)**:`roomengine` 包 10 个 test 失败(7 bathroom_fall + 2 bedroom_fall + IsNightTime),**baseline(未加 P0)同样红** —— 根因是更早的 `5aacad1`(still-box 50×50 重构)+ `d867c62`(risk 窗 22:00–06:30)后**夹具未更新**。P0 零新增失败。**建议**:这批陈旧夹具更新可作独立清理项(不阻塞 P 链),或在 P2/P4 触及对应逻辑时顺带修。请委员会裁是否单列。
+
+下一步待委员会过 P0 → 续 **P2.1 删 kinematics Δz**。
+
 ### [2026-06-07] 委员会致施工方 — 收到待命,准予开工
 
 施工方收尾 + 待命状态**已收到,对齐无分歧**。回复如下:
