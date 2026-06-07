@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`6bf1e2b`(下次从此 commit 起算 delta)
+- **last-audited**:`ef0be91`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,20 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 17:33 MDT] 6bf1e2b..ef0be91 — 委员会代码审查⑪:P3.3 记忆 L_R filter【通过】+ γ 速率/WeakBio 两 note
+
+**P3.3 代码核验(R6 亲跑,对审查⑨前瞻 note)**:
+- ✅ **二值→连续 P(real)**:`realnessStep` log-odds 递归 `lo=γ·prevLO+d`,d=走动 +ln2 / P3.1跳变 −ln19 / P3.2冻结 −ln19;返回连续 ghostness=1−σ(L_R)。供边缘化的 P(real) 到位(不再二值)。
+- ✅ **记忆机制坐实**:`TestRealnessMemoryFilter` 测倒地帧(v≈0 无当下证据)→ L_R 经 γ 缓衰、ghostness 仍低 → **摔前走路 realness 带进倒地窗**(cabb-0605:走动→倒地不被误 ghost)。这正是审查⑨要的软化层。
+- ✅ γ 自注"= Boyen-Koller mixing"(概念对);build/vet 绿;roomengine 9 红 0 新增;R5 走动/跳变/冻结全 XY 派生;R0/R1 shadow。
+- **P3.3 通过。**
+
+**⚠️ note 1(实质,记 P9.6):γ=0.9/帧 ≈ 6.6s 半衰,可能太快**。审查⑨/round4 要求"摔前 realness 存活到倒地判定窗"。lost-fall 窗可达**分钟级**;6.6s 半衰下,真摔者走动建立的 L_R 在躺 ~30–60s 后已衰回中性(P(real)→0.5),边缘化 P(fall)=P(fall|real)·P(real) 被腰斩。对比 **bed_scorer leak 0.55/分钟 ≈ 46s 半衰**(慢得多)。**冻结 ghost 仍被抓**(它持续累 −ln19,P(real)→0,与真摔 0.5 仍可分),故非阻塞;但 **P9 必须用 cabb-0605(躺 52s)+ cd2b 标定 γ**,确保真摔 realness 在检测窗内存活、ghost realness 坍缩。**疑 γ 应按"每分钟"而非"每帧"衰**(同 bed_scorer 量纲)。
+
+**❓ note 2(范围,记 P3.3-v2 / 交叉 P8):WeakBio + 出生地 realness 未并入**。施工方明注"base 暂无 vital,v2 接"。当前 P(real) 只有 XY(走动/跳变/冻结),**缺 vital 跨模态 real 通道(§10#1:WeakBio≥80→Real 是可靠独立 real 证据)+ 出生地 ghost 先验**。cd2b 不依赖 vital 故 P3.3 当前足够;但**完整 P(real) 必须折入 WeakBio**(否则有心跳的真人静止仍可能 realness 衰到中性)。追踪:P3.3-v2 或与 P8(health 节点)交叉接入。
+
+**裁决**:**P3.3 通过**(连续 P(real)+记忆,cd2b/cabb-0605 记忆实证)。两 note 非阻塞:γ 速率 P9 用 cabb-0605/cd2b 标定(疑偏快、量纲应/分钟);WeakBio+出生地 realness 待 v2 折入。**P3 核心(R_i:三探测器+门控+记忆)已成型**,余 P3.4(recapture 软恢复)/ P3.5(选项D)。可续。
 
 ### [2026-06-07] 施工方 → 委员会:交 P3.3 记忆 L_R filter — 二值→连续 P(real)(`b2013b9`)
 
