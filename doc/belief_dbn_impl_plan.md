@@ -288,4 +288,44 @@ zone 选档只读 cell engine(R3)。
 
 ---
 
-*后续节(§5 P6 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
+## §5 P6 — room S_room / N_r / multi-resident(P_id)
+
+**目标**:S_room 9 态 HMM(belief/,已部署 forward)是房级读出层。本阶段
+(a) 校 likelihood 矩阵中 firmware/exit 的过权(§10#2);(b) N_r 人数从硬 max 软化;
+(c) 接 P_id 身份层(suite_census 已在跑,§1/§3),为 multi-resident 联合滤波铺路(§10#7/#10)。
+
+**现状审计**:
+| 现行为 | 行 | 与新标定的冲突 |
+|---|---|---|
+| `ObsFirmwareFall→SFallen:10` | likelihood.go:52 | §10#2 与 P2.4 同源,room 侧同降 |
+| `ObsEnterExit ExitRoom→SLeft:8` | likelihood.go:58-63 | 已改正向(3da5dfe);核 absence≠还在 |
+| `N_r = max(radar_np, bed_np)` 硬 | stream_publisher.go:426 | 硬 max,multi-resident 下需软化 |
+| `P_id` suite_census(resident/visitor anchor) | suite_census.go:97 | 已在跑(§1 节点),未进 S_room 联合 |
+| `S_room` 9 态 forward | belief/state.go | 已部署软层,复用 |
+
+### P6.1 — S_room likelihood 矩阵再标定(承 P2.4)
+- **动**:`belief/likelihood.go` room 侧 `ObsFirmwareFall`(:52)、`ObsNoDetect`(:100,Fallen×1.6)、`ObsReachableExit`(:116)核对。
+- **改法**:firmware ×10 随 P2.4 降;NoDetect/ReachableExit 已是软发射,验证与 P3(realness)、P4(dwell)不重复计 Fallen。
+- **oracle**:firmware 漏判静止真摔(cabb-0606)—— 不靠 firmware-fall(它没报),靠 dwell+pose-lying 累积;firmware FP 不靠 ×10 误抬。
+
+### P6.2 — N_r 软化(承 §8 bed-presence)
+- **动**:`N_r` 从 `max(radar_np, bed_np)` 硬 → 软 count 后验(radar_np 不可信,bed occupancy 较可信)。
+- **改法**:O_b(P5)+ radar_np + P_id anchor 联合估 N_r;radar_np=0 是 corroboration 非 substitution(记忆[number_people_zero_exitroom_fallback])。
+- **shadow 字段**:`p6_2_radar_np`、`p6_2_bed_np`、`p6_2_Nr_posterior`。
+- **oracle**:镜面 ghost 致 radar_np 虚高 → 不假抬 N_r(R_i 判 ghost 后该 track 不计数)。
+
+### P6.3 — P_id 身份接入 S_room(§10#7 铺路)
+- **动**:`suite_census` 的 resident/visitor anchor + AnchorRoomType → S_room 的人数/身份维度。
+- **scope(待委员会)**:v1 仍单实体;本 task 只把 P_id 作为 **N_r 的证据之一**(单 resident anchor 确认"房里有人"),**不做** multi-resident 联合滤波(留 §10#7 P-later)。
+- **oracle**:bathroom 锚翻转(§3 转移)后,fall dispatch 走 bathroom 尾(P4.2)—— 验证 P_id→zone→S_vol 链路。
+
+### P6.4 — R_i–S_i 耦合决议(§10#10,纯设计)
+- **决议项**:ghost 运动学胎记 ⟹ $R_i\perp S_i$ 不成立 → 倾向 `{R_i, S_i}` 同簇**联合滤波(4 态)**还是保持因子化 + 消息传递。
+- **建议**:shadow 期先**因子化 + 期望值消息传递**(proposal L2:track→bed→room 逐级期望传递),实现简单;若 oracle 显示 cd2b 类必须联合(R_i 与 S_room Fallen 强耦合分不开)再升 4 态联合。**本 task 只出决策依据,不写码**。
+- **oracle 判据**:cd2b 在因子化下能否分出"冻结 ghost + 真人 Lost";不能则需联合。
+
+**P6 验收闸**:(a) firmware/exit 过权校正后 room FP 降;(b) N_r 软后验不被 ghost/镜面虚高;(c) P_id→zone→S_vol 链路在 bathroom 锚翻转 fixture 上通;(d) R_i–S_i 耦合决议有 oracle 依据。
+
+---
+
+*后续节(§6 P7 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
