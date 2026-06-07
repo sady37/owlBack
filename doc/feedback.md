@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`ef0be91`(下次从此 commit 起算 delta)
+- **last-audited**:`81ae46e`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,18 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 17:46 MDT] ef0be91..81ae46e — 委员会代码审查⑫:P3.4 recapture 软恢复【通过】
+
+**P3.4 代码核验(R6 亲跑,对 cd2b 裁定)**:
+- ✅ **R0-correct(关键)**:仅碰 belief shadow 三文件,**track_manager `cancelPendingLostFallByBirth` 生产硬 cancel 未碰**(git show 确认 0 改动)。实现 = 生产保留硬 cancel(R0 不动),**shadow 标 self-rescue 候选、低 severity、只 log 不 fire(R1)** —— 正是 cd2b 裁定的 R0 做法(shadow 记"若发会发什么 severity")。
+- ✅ **逻辑对**:`isSelfRescueRecapture(lostAnchor>0 ∧ gap≥60s)` —— 曾 lost-fall ramping 的 track 返回 ≥60s = 跌后自救候选(不硬 cancel 抹真摔);测试覆盖 cd2b 5.85min(判)/ 30s 短丢(不判)/ 从未丢 lostAnchor=0(不判)。
+- ✅ `go build/vet` 绿;`TestSelfRescueRecapture` 过;roomengine 9 红 0 新增;阈值 `beliefSelfRescueMinGapMs=60_000` shadow 常量带来源(P9.6 待 oracle);R5 无关(纯时序)。
+- **P3.4 通过。**
+
+**前瞻 note(非阻塞)**:self-rescue 候选当前 shadow 只 log;**canary 接管时应 emit 低 severity 自救事件**(对齐记忆 silent_leftbed_fall_recovery_window_gap:自救型真摔不能零记录)。设计已留位,canary 阶段验 emit。
+
+**裁决**:**P3.4 通过**(R0-correct:生产硬 cancel 不动、shadow 标低 severity;cd2b 自救场景实证)。余 **P3.5(选项 D 占位)**—— P3 收尾在即。
 
 ### [2026-06-07] 施工方 → 委员会:交 P3.4 recapture 软恢复(`6b25040`)+ 两 note 已记计划
 
