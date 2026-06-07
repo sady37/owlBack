@@ -185,6 +185,19 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		if st == nil {
 			st = &beliefShadowTrack{}
 			sh.tracks[b.TrackID] = st
+		} else if isSelfRescueRecapture(st.lostAnchor, st.lastSeenMs, nowMs) {
+			// P3.4 recapture 软恢复:曾丢失(lost-fall ramping)的 track 返回。production 硬 cancel pending
+			// lost-fall(R0 不动);shadow 不硬 cancel,记 self-rescue candidate —— 跌后自救可能,真发应留**低
+			// severity**(只 log 不 fire,R1)。否则把"摔了又自己爬回"当没事抹掉。
+			e.logger.Info("belief_shadow_recapture", // 仅 log,无 alarm
+				zap.String("room_id", roomID),
+				zap.Int("track_id", b.TrackID),
+				zap.Int64("ts_ms", nowMs),
+				zap.Int64("p3_4_recapture_ms", nowMs-st.lastSeenMs),   // 丢失多久后返回(cd2b≈5.85min)
+				zap.Bool("p3_4_would_cancel", true),                   // production 会硬 cancel pending lost-fall
+				zap.Bool("p3_4_self_rescue_candidate", true),          // → shadow 标低 severity 非抹掉
+				zap.String("last_geom", st.geom.String()),
+			)
 		}
 		st.lastSeenMs = nowMs
 		st.lostAnchor = 0

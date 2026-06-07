@@ -41,6 +41,10 @@ const (
 	lnLRMoveReal        = 0.69 // ln2:每走动帧 +realness(MoveActive,XY 派生,R5-safe)
 	lnLRJumpGhost       = 2.94 // ln19:P3.1 跳变/急变 近确定 ghost(强 −)
 	lnLRFrozenGhost     = 2.94 // ln19:P3.2 冻结伪迹 近确定 ghost(强 −)
+
+	// P3.4 recapture 软恢复:曾丢失(lost-fall ramping)的 track 返回 ≥ 此 = self-rescue candidate
+	// (跌后自救可能,不硬 cancel 抹真摔)。shadow 占位(cd2b 5.85min 返回合格),P9.6 待 oracle。
+	beliefSelfRescueMinGapMs = 60_000
 	// lost-fall（走动中突然消失）：消失前 still-box < MovingPreconditionMs(60s) = 走动中（对齐 gate-list 止血）。
 	// 走速只用于 ghost-filter（>ImpossibleSpeedCm 的 track-swap 假跳先剔除），不做"走速判走动"——
 	// radar 位置量化重（走动也常报 median=0），per-frame 走速不可靠，still-box(spread) 才 robust。
@@ -251,6 +255,14 @@ func realnessStep(prevLO float64, moving, jumpGhost, frozenGhost bool) (float64,
 		lo = -beliefRealnessLOCap
 	}
 	return lo, 1.0 / (1.0 + math.Exp(lo)) // P(ghost)=1−σ(LO)
+}
+
+// isSelfRescueRecapture — P3.4:曾丢失(lostAnchor>0 = lost-fall ramping)的 track 返回、且丢失 ≥ 阈
+// → self-rescue candidate(跌后自救可能)。production cancelPendingLostFallByBirth **硬 cancel** pending
+// lost-fall(人回来=全清,R0 不动);shadow **不硬 cancel**,标 self-rescue 留低 severity(只 log 不 fire,R1)——
+// 否则把"摔了又自己爬回来"当没事抹掉(对齐记忆 silent_leftbed_fall_recovery_window_gap)。
+func isSelfRescueRecapture(lostAnchor, lastSeenMs, nowMs int64) bool {
+	return lostAnchor > 0 && nowMs-lastSeenMs >= beliefSelfRescueMinGapMs
 }
 
 // noDetectObs track 丢失（走动前置已满足）→ P(no-detect|s) 发射。每 tick 固定强度（无时长项，时长→P3）；

@@ -272,3 +272,20 @@ func TestRealnessMemoryFilter(t *testing.T) {
 		t.Fatalf("跳变 ghost 帧应翻向 ghost(ghostness>0.5),得 %.3f", ghJump)
 	}
 }
+
+// P3.4 recapture 软恢复:曾丢失(lost-fall ramping)的 track 返回 ≥阈 → self-rescue candidate(跌后自救,不硬cancel抹真摔)。
+func TestSelfRescueRecapture(t *testing.T) {
+	now := int64(10_000_000)
+	// cd2b:丢失 5.85min 后返回 → self-rescue candidate(production 会硬 cancel,shadow 标低 severity)。
+	if !isSelfRescueRecapture(now-351_000, now-351_000, now) {
+		t.Fatalf("丢失 5.85min 返回应判 self-rescue candidate(不硬 cancel 抹真摔)")
+	}
+	// 短暂丢失(30s<60s 阈)返回 → 非 self-rescue(普通重捕)。
+	if isSelfRescueRecapture(now-30_000, now-30_000, now) {
+		t.Fatalf("短暂丢失(30s)返回不该判 self-rescue")
+	}
+	// 从未丢失(lostAnchor=0)→ 非 recapture。
+	if isSelfRescueRecapture(0, now-1000, now) {
+		t.Fatalf("从未丢失不该判 recapture")
+	}
+}
