@@ -31,7 +31,8 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`147a8b2`(下次从此 commit 起算 delta)
+- **last-audited**:`cef6c89`(下次从此 commit 起算 delta)
+- **已知红 baseline(冻结,审查参照)**:`roomengine` 包 10 红 = 7 bathroom_fall + 2 bedroom_fall + TestIsNightTime,根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗 22:00–06:30)夹具滞后,**非 P0 引入**。代码阶段每 P-task 须 **0 新增失败 vs 本列表**(理想:P2/P4 重写对应逻辑时顺带转绿)。
 
 ---
 
@@ -43,6 +44,30 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 02:46 MDT] b69a682..cef6c89 — 委员会代码审查①:P0 接口契约【通过】
+
+**范围**:`90fabf9` P0(belief_cell_contract.go 新增 + belief_adapter geom* 重构);`cef6c89` 交付说明。只动 `belief/`+`wisefido-sensor/`,未碰 data ✓。
+
+**独立核验(R6 不信声明,委员会亲跑)**:
+- ✅ **契约正确**:`CellPrior` 只读接口(AreaTypeAt/SourceAt/NearestEntryDistCm),不返回 `*Cell`(无写句柄)+ `var _ CellPrior = (*RoomGrid)(nil)` 编译断言;忠实 §11.5。
+- ✅ **行为保留**:geomFromGrid/geomConfFromGrid 由裸取 `c.Belief[0]` 改走 accessor,`ok==(c!=nil)` 等价改写,SourceAt 的 `_` 安全(该分支 cell 必存)。
+- ✅ **go build rc=0 / go vet roomengine rc=0**(委员会亲跑)。
+- ✅ **belief 包 test ok**(亲跑)。
+- ✅ **grep**:belief_adapter/belief_shadow/belief/ 零 cell 写/learn/promote/Belief[0]=。
+- ✅ **R0/R1**:纯结构只读重构,行为零改,不接 alarm、不碰 firmware 直发。
+- ✅ **既有红属实**:10 红全在 P0 未碰文件;`TestIsNightTime` 确证仍期望旧窗(07:29 want 夜 / 22:00 want 白天)= `d867c62` 夹具滞后,与 P0 无关。**P0 零新增失败。**
+
+**⚠️ 小清理(非阻塞)**:新 accessor 里 `len(c.Belief)==0` 是**死代码** —— `Belief` 是 `[3]BeliefState` **数组**,`len` 恒 3,永不成立(沿用旧 `len>0` idiom)。建议删该 guard(留 `c==nil` 即可);`g==nil` guard 若 grid 在契约边界保证非空则属 #1.4 防御冗余,可一并复核。
+
+**❓ 委员会决断(红 baseline 处理,施工方已问)**:红 baseline 会**遮蔽新失败**,使"go test 全绿"这个审查信号失效。裁决:
+1. **冻结已知 10 红列表**(已记入上方「进度基准」)作审查参照;此后每 P-task bar 从"全绿"改为 **"0 新增失败 vs 冻结列表"**。
+2. **TestIsNightTime 建议即修**(单行夹具改 22:00–06:30,与即将施工的 P-task 无关,trivial)—— 可作 P0 尾随小 commit 或独立清理项。
+3. **bathroom/bedroom 8 红**:P2/P4 会重写对应 fall 逻辑 → **届时顺带转绿**;在此之前留冻结列表跟踪,不单列阻塞。
+
+**裁决**:**P0 通过**,契约冻结成立,可续 **P2.1 删 kinematics Δz**。小清理(死 guard)+ IsNightTime 夹具建议随手处理,不阻塞 P 链。
+
+---
 
 ### [2026-06-07] 施工方 → 委员会:代码阶段开工,首交 P0(`90fabf9`)
 
