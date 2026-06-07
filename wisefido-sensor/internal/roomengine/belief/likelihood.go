@@ -125,7 +125,9 @@ func rawLikelihood(o Observation) Vector {
 func poseLikelihood(pose int, g Geom) Vector {
 	switch pose {
 	case observation.PoseWalking, observation.PoseRunning:
-		m := map[State]float64{SStandWalk: 6, SFallen: 0.3, SBedLying: 0.3}
+		// P2.2(R5):pose 对 fall 只正向 —— 删 SFallen 压制(firmware 误把摔后标 walk 不得抹 fall)。
+		// 保留 SStandWalk/SBedLying(posture 区分,非 fall 压制)。
+		m := map[State]float64{SStandWalk: 6, SBedLying: 0.3}
 		if g == GeomInEnter {
 			m[SLeft] = 3 // 门口走动 → 可能正离场
 		}
@@ -135,7 +137,8 @@ func poseLikelihood(pose int, g Geom) Vector {
 	case observation.PoseSitting:
 		return lk(map[State]float64{SSit: 6, SStandWalk: 0.8})
 	case observation.PoseStanding:
-		return lk(map[State]float64{SStandWalk: 6, SSit: 1.5, SFallen: 0.4})
+		// P2.2(R5):删 SFallen:0.4 压制 —— stand 对 fall 中性,不否决跌倒。
+		return lk(map[State]float64{SStandWalk: 6, SSit: 1.5})
 	case observation.PoseFallen:
 		m := map[State]float64{SFallen: 8, SStandWalk: 0.3, SSit: 0.3}
 		if g == GeomInBed {
@@ -148,7 +151,9 @@ func poseLikelihood(pose int, g Geom) Vector {
 	case observation.PoseLying:
 		switch g {
 		case GeomInBed:
-			return lk(map[State]float64{SBedLying: 6, SBedRestless: 3, SFallen: 0.3})
+			// P2.2(R5):删 SFallen:0.3 压制 —— 床上不报跌倒走 cell rest-zone/human-bed 豁免(P7.4),
+			// 不靠 pose 压 fall。SBedLying:6 强抬床态自然主导。
+			return lk(map[State]float64{SBedLying: 6, SBedRestless: 3})
 		case GeomOpenFloor:
 			return lk(map[State]float64{SFallen: 4, SBedLying: 0.5, SStandWalk: 0.4})
 		default:
