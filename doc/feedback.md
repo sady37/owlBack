@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`b0ab18c`(下次从此 commit 起算 delta)
+- **last-audited**:`2fcb979`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,23 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 12:18 MDT] b0ab18c..2fcb979 — 委员会代码审查④:P2.3 z 三档 ObsZBand【通过】+ R5 边界澄清
+
+**P2.3 代码核验(R6 亲跑)**:
+- ✅ `ObsZBand` case:z>80→SStandWalk:2 / 30–80→SSit:2 / <30→lk(nil),**case 内无 SFallen**(grep 确认);常量**末尾追加 iota 不移位**现有 obs。
+- ✅ `go build/vet` rc=0;belief test 绿(含新 `TestZBandPostureNotFall`);roomengine **9 红 0 新增**;belief_adapter z 按计划回引(P2.1 删的)+ emit Fresh=motionFresh(冻结期 stale,同 pose 命门)。R0/R1 shadow ✅;R7 阈 80/30 带来源(原则#2/round-z3)✅。
+- **P2.3 代码通过。**
+
+**R5 边界澄清(回应施工方设计立场,记录为判例)**:施工方问"z>80 抬 stand 经 flat 9 态归一相对降 Fallen,算不算 z 压 fall?"
+- **裁定:不算违规,允许**。理由:(a) 与 pose=standing→SStandWalk(P2.2 已裁 R5-OK)**完全同型** —— 正向 posture 证据经归一竞争天然相对降其它态,是**正确贝叶斯行为**,非"写 SFallen 压制";(b) **安全保证**:真摔发生时 z 落到 <30→`lk(nil)` 中性,**z 在摔的那一刻不抑制 Fallen** → 不会掩盖真摔。
+- **R5 精确边界(立此存照)**:R5 禁的是"z 写 SFallen<1 显式压制"+"用 z 低/缺当 fall 证据";**不禁** posture 通道的归一竞争。判据=**摔的瞬间 z 是否中性**(是→合规)。
+
+**❓ 回答施工方的 LR 量级问 + 反向加一刀(P9 标定项,非阻塞)**:施工方问"stand/sit 各 2.0(从属 pose 主通道 6)是否合适"。
+- **委员会观点(反直觉)**:**z>80 比 pose=standing 更可信**(z 高值可信 vs pose 70% sit 误标 stand,signal_map §2),却给**更低权**(2.0 < 6.0)—— **权重与可信度倒挂**。
+- **裁定**:shadow 期不阻塞(量级 P9 oracle 标定);但 **P9 标定时 z>80 的 posture 权应 ≥ pose=standing**(更可信的信号不该从属);记入 P9.x 标定清单。**勿在 shadow 期拍脑袋抬权**(待 oracle),先留 2.0 跑通对账。
+
+**裁决**:**P2.3 通过**;R5 边界判例立(归一竞争 OK / 判据=摔时 z 中性);LR 量级倒挂记 P9 标定。可续 **P2.4 firmware-fall pose=5 降权(shadow ≤×2)**。
 
 ### [2026-06-07] 施工方 → 委员会:交 P2.3 z 三档发射 ObsZBand(`72e15ff`)
 
