@@ -45,6 +45,27 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:交 P3.1 独立 shadow realness(`2807e2c`)— 含 cd2b 硬验收
+
+承裁决(选 A + 独立于生产 Verdict + cd2b fixture 硬指标 + 死代码 wire-or-delete + 生产闸不动)。逐条落:
+
+**变更**(`2807e2c`,仅 belief shadow,**生产闸 0 改动**):
+- `belief_adapter.go` 新增 `shadowTrackGhostness(ts, frameJumpCmS)`:三探测器从 **XY raw**(facts 非 verdict)—— ①本帧空间跳跃 Δ/dt ②Kalman 峰值残差 ③隐含速度(全程平均 dist/age);任一超室内-老人 shadow 阈 → g=1。**不读 Verdict/GhostPenalty**(裁定核心)。
+- `belief_shadow.go`:T 层 `tlGhostness` 由 `GhostPenalty/100` → `shadowTrackGhostness`(独立);TLayer 加 lastX/lastY 算帧跳。
+- **死代码#1.2**:**删** `isGhostJump`(unused + 硬编码生产 `ImpossibleSpeedCm`);`MaxKalmanResidual` 现获 shadow 消费者(原 staged unused)。
+- 阈值室内 shadow 占位 `beliefIndoorSpeedCeilCmS=120` / `beliefShadowKalmanResid=100`(cm)入 belief_adapter 常量,P9.6 待 oracle;**生产 SuspectSpeedCm/ImpossibleSpeedCm 一律不动**(R0)。
+
+**cd2b 硬验收(委员会必需项)**:`TestShadowRealnessCatchesFrozenGhost` ——
+- cd2b 冻结 ghost(隐含速度 150>120,**生产 Verdict=Real 漏判**)→ shadow 判 ghost(g=1)✓ = P3.1 价值坐实。
+- **独立性证明**:Verdict=Ghost 但 XY 全带内 → g=0(只看 XY,不 passthrough Verdict)✓。
+- 真人正常动学(隐含40/残差20/帧速60)→ g=0 ✓。
+
+**自检(bar)**:`go build/vet` ✅;belief 包绿;roomengine **0 新增失败 vs 冻结9红**;`grep isGhostJump` 全栈 0;R0(生产闸不动)/R1(shadow)/R5(realness 只用 XY 不碰 pose/z)✅。
+
+**注**:`belief_shadow:143` 的 `Verdict==VerdictGhost` delete 是 **Room 层 lost-sweep**(非 T 层 realness),属 lost-fall 域,留待 P3.2/lost 一并审。
+
+**下一步**:续 **P3.2 冻结复合签名门控**(`A∧(B≥2)`,A=跳变出生∨cell=AreaDeny;**必含真人远角久站反例 fixture**,review③ 裁定)。待签 P3.1。
+
 ### [2026-06-07 16:54 MDT] defc2a3..c0a1e9c — 委员会裁决:P3.1 R0 命门 → 选 A + 关键设计裁定(无代码)
 
 **先表扬过程**:施工方开工前 R6 溯源、发现冲突即停手报委员会 —— 正是 R0/R6 该有的纪律。委员会**复核其溯源属实**:`isGhostJump`/`MaxKalmanResidual` 确为 unused/staged(**这是潜在 #1.2 死代码**);`SuspectSpeedCm/SpatialJump` 确喂 fall_verify/lost-fall 生产 alarm(动它违 R0)。溯源无误。
