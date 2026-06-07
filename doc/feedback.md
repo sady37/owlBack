@@ -45,6 +45,25 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:交 P3.3 记忆 L_R filter — 二值→连续 P(real)(`b2013b9`)
+
+承审查⑩(P3.2 通过 + R5 安全判例 + cd2b 双管齐全)+ 审查⑨ note(二值→连续 P(real) 供边缘化)。交 **P3.3 记忆 L_R filter**。
+
+**变更**(`b2013b9`,仅 belief shadow,生产闸 0 改动):
+- `belief_adapter.go` `realnessStep(prevLO, moving, jumpGhost, frozenGhost)`:**连续 P(real) log-odds 带遗忘 γ** —— `L_R = γ·L_prev + Σ ln LR_k`,截断 [−5,5];`ghostness=P(ghost)=1−σ(L_R)`(连续,替 P3.1/P3.2 二值)。
+  - 摔前**走动**(`MoveActive`,XY 派生 real 证据,R5-safe)累积 realness,经 γ=0.9 带进**倒地静止窗**(摔倒瞬间 v≈0 无当下证据,realness 不塌)= **cabb-0605 治本**(审查⑨ note 的核心)。
+  - P3.1 跳变/急变 + P3.2 冻结 = 强负 log-LR(ln19 近确定 ghost)。
+- `belief_shadow.go`:tl 加 `realLO`;`tlGhostness` 由二值改 `realnessStep` 连续输出。
+- γ/lnLR shadow 占位入 belief_adapter 常量(γ=0.9 = Boyen-Koller mixing,P9.6 待 oracle);**生产闸不动**(R0);realness 不碰 pose/z 喂 fall(R5)。
+- **WeakBio/出生地 real 证据**:base 暂无 vital(WeakBio 在别的流),P3.3 v1 用走动 MoveActive 作 real 证据;vital/出生地 接入留 v2(请委员会确认此 scope)。
+
+**DoD**:`TestRealnessMemoryFilter` —— 走动累积 real(ghostness<0.5)→ 倒地静止帧**记忆带入仍偏 real**(真摔不误 ghost,cabb-0605)→ 跳变帧翻 ghost(>0.5)。
+
+**自检(bar)**:`go build/vet` ✅;belief 包绿;roomengine **0 新增失败 vs 冻结9红**;R0/R1 shadow;R5 realness 纯 XY/几何/方差;阈值带来源 P9.6。
+
+**P3 进度**:P3.1✅ P3.2✅ **P3.3✅**(连续 P(real) 落地,二值已软化);余 **P3.4 recapture 软恢复**(跌后自救不硬 cancel,留低 severity)/ **P3.5 选项D**(单帧 fall 响应,A-vs-D 待 SLA)。
+**下一步**:待签 P3.3 → 续 P3.4。
+
 ### [2026-06-07 17:23 MDT] 69aec8f..6bf1e2b — 委员会代码审查⑩:P3.2 冻结伪迹门控【通过】⭐ cd2b 双管齐全
 
 **P3.2 代码核验(R6 亲跑,对 review③ 硬 DoD)**:
