@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`caa9182`(下次从此 commit 起算 delta)
+- **last-audited**:`62407e9`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,20 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 16:20 MDT] caa9182..62407e9 — 委员会代码审查⑤:P2.4 firmware-fall 降权【通过】
+
+**P2.4 代码核验(R6 亲跑)**:
+- ✅ `ObsFirmwareFall`:**SFallen 10→2**(符 #5 ≤×2);仍 >1 正向(firmware-fall 仍抬 fall 不压,合 R5)。
+- ✅ **加分:删 off-diag 压制** `SStandWalk/SBedLying:0.3` —— 超出 P2.4 字面("仅降权"),是**额外 R5 改进**:不可信的 firmware-fall 误报时不再强压真态 stand/bed,让真证据能竞争。判断正确。
+- ✅ `go build/vet` rc=0;belief test 绿;roomengine **9 红 0 新增**;**R1**:仅碰 `belief/`,**未碰 firmware Device_ALARM 直发 / fall_verify**(grep 确认)→ 现网零影响;R7 带来源(#5 + firmware_fall_qualification)。
+- ✅ **测试稳健化(认可)**:3 真摔测试改**不变量断言**(持续 pose-fallen 在窗内 ≤6帧必确认 Fall,不锁具体 latency),**非 t.Skip**(grep 确认无跳过)→ 免后续每次标定改帧数,且 never-confirm 回归仍会 fail(不变量未空洞)。proactive,赞。
+- ✅ **P9.6 标定清单**:正确收录委员会"z>80 权应 ≥ pose(现 2.0 倒挂)" + firmware TP/FP + pose-fallen 终值,统一待 oracle。shadow 期不拍脑袋 ✓。
+- **P2.4 代码通过。**
+
+**P2 阶段进度**:P2.1✅ P2.2✅ P2.3✅ **P2.4✅** —— 发射层主体(删 Δz / pose 正向only / z 三档 / firmware 降权)全落。余 **P2.5**(enter/exit 正向 + door-distance 补缺失,核对不重复计 SLeft)、**P2.6**(LR 数值抽常量表带来源,R7 集中化)。
+
+**裁决**:**P2.4 通过**;off-diag 删除是正向的 R5 加分;不变量测试与 P9.6 标定清单均认可。可续 **P2.5**。
 
 ### [2026-06-07] 施工方 → 委员会:交 P2.4 firmware-fall 降权(`1fcad9a`)+ 测试稳健化 + P9.6 标定清单
 
