@@ -168,22 +168,22 @@ margin 不够则 DBN 不值得继续(signal_map §11.4),止于 shadow。
 ### P3.2 — 冻结伪迹**复合签名**(§10#12,新增;**委员会#2 阻塞:非单纯方差**)
 - **真机反例(委员会#2)**:bedroom201-cd2b 那个冻结椅子 ghost 位置在 `(-170,330)/(-150,340)/(-120,300)` 间晃 **~50cm,不是零方差** —— 静止反射体带多径抖动。**单方差阈既漏(ghost 有抖)又误(真人微抖)**。
 - **动**:`track.go` 新增 per-track 位置散布 + 出生/约束/距门统计;belief_adapter 加 `ObsFrozenArtifact` 发射。
-- **复合签名(加权证据,任 ≥3/4 → 疑 ghost;委员会第2轮#2:不用全 AND)**:
-  1. **不可能跳变出生**:birth 跳速超室内天花板(P3.1)或瞬移出生 —— track-swap 来的;
-  2. **pose/z 锁死**:`pose=4 ∧ z=0` 连续 N tick 恒定(伪迹无生理变化);
-  3. **位置受限于小区**:散布困在 ~50cm 小区且**不离开**(真人静止也微抖,但伪迹"钉"在反射点不漂移、不偶发大位移);
-  4. **距门远**:非门区(排除"门口正常进出短驻")。
-- **为何加权非全 AND(委员会第2轮#2:漏报风险)**:**预先存在的**静止反射体(椅子从一开始就在,**无"跳变出生"**)破第 1 条 → 全 AND 会失败漏判 ghost。cd2b 是"跌后跳到椅子"有跳变;**常驻反射无跳变**。故:
-  - 判据放宽成**加权证据,任 3/4 命中即疑** ghost(跳变出生缺失时,靠 2+3+4 仍可判);
-  - **常驻反射另由 cell engine 的 static_reflector 学习路径覆盖**(signal_map §7:mirror/static-reflector→AreaDeny ≥3 episode)→ 该 cell 学成 AreaDeny 后,DBN 读 Z_cell=Deny 当强 ghost 先验(§9 只读边),与本运行时 4 信号互补。
-- **关键**:**不是** zero-variance;是"多径小抖 + 钉死不漂 + pose/z 生理锁死 + (跳变出生) + 距门远"的**加权联合**。真人静止有微抖**且** pose/z 偶变**且**偶有重心漂移 → 命中 ≤1/4 → 不判。
-- **标定来源**:A 类 round-cd2b + cd2b 实测坐标散布。
-- **shadow 字段**:`p3_2_pos_spread_cm`、`p3_2_pose_z_locked_ticks`、`p3_2_jump_birth`、`p3_2_door_dist_cm`、`p3_2_score(命中数/4)`、`p3_2_zcell_deny`、`p3_2_frozen=bool`。
+- **门控签名(委员会第3轮:近必要前置 + 佐证,取代裸 3/4)**:
+  - **近必要前置(A,二者居一)**:① **不可能跳变出生**(birth 跳速超室内天花板/瞬移,track-swap)**∨** ② **cell=AreaDeny**(常驻反射已被 cell static_reflector→AreaDeny 学到,§9 只读)。
+  - **佐证(B,≥2 命中)**:③ **pose/z 锁死**(`pose=4 ∧ z=0` 连续 N tick)④ **位置钉死小区**(~50cm 散布且不漂移/无偶发大位移)⑤ **距门远**(非门区)。
+  - **判 ghost = A ∧ (B≥2)**。
+- **为何门控而非裸 3/4(委员会第3轮:补漏报反引真人久站 FP)**:第2轮放宽到"无跳变靠 ③④⑤=3/4"会误判 **真人远角久站**(看窗外):恰好 ③pose/z锁死 + ④钉死小区 + ⑤距门远 = 3/4,缺的也正是跳变出生 → 被当 ghost(undercount)。**根因**:③ pose/z 锁死**判别力弱** —— firmware 给真人站立也是 `pose=4` 恒定数分钟,非 ghost 专属。
+  - 故把"跳变出生缺失"的唯一合法补位收紧为 **cell=AreaDeny**(常驻反射本就走 static_reflector→AreaDeny 兜底);**"无跳变 ∧ 无 AreaDeny"路径直接不判 ghost** → 真人久站(无跳变出生、cell 非 Deny)落此路 → 保 real。
+  - 经典打地鼠规避:补 #2 常驻反射漏报**不**靠放宽佐证,而靠 cell 先验(AreaDeny)这条**正交强证据**。
+- **关键**:**不是** zero-variance;真人久站 ③④⑤ 全中也**因缺 A 而不判**(③ 判别力弱不能独立定 ghost)。
+- **标定来源**:A 类 round-cd2b + cd2b 实测坐标散布;真人远角久站反例。
+- **shadow 字段**:`p3_2_jump_birth`、`p3_2_zcell_deny`、`p3_2_pose_z_locked_ticks`、`p3_2_pos_spread_cm`、`p3_2_door_dist_cm`、`p3_2_gateA(bool)`、`p3_2_corrobB(命中数)`、`p3_2_frozen=bool`。
 - **oracle**:
-  - cd2b 椅子 ghost(跳变出生 + 50cm 多径抖 + pose=4/z=0 + 距门远)→ 4/4 判 ghost;
-  - **常驻反射**(无跳变,但 2+3+4)→ 3/4 判 ghost,且 cell 已学 AreaDeny 兜底;
-  - cabb-0605 真摔躺地(微抖 + 偶有 pose/z 变 + 非跳变 + 可能近活动区)→ ≤1/4,保 real。
-- **DoD**:`ObsFrozenArtifact` 判据是 **加权 ≥3/4**(非全 AND),**无单方差阈分支**;与 cell static_reflector→AreaDeny 路径对账覆盖常驻反射;fixture 标每条阈值的真人/伪迹分界。
+  - cd2b 椅子 ghost(A①跳变出生 + B:③④⑤)→ A∧B≥2 判 ghost;
+  - **常驻反射**(无跳变,但 A②cell=AreaDeny + B:③④)→ 判 ghost(cell 先验补位);
+  - **真人远角久站**(无跳变 + cell 非 Deny,B③④⑤=3 全中)→ **A 不成立 → 不判,保 real**(关键反例);
+  - cabb-0605 真摔躺地(无跳变 + 非 Deny + B≤1)→ 保 real。
+- **DoD**:`ObsFrozenArtifact` = `A ∧ (B≥2)`,A=(跳变出生 ∨ cell=AreaDeny);**无单方差阈分支、无裸 3/4 分支**;fixture **必含"真人远角久站"反例并验 ≤判定阈(不判 ghost)**;与 cell static_reflector→AreaDeny 对账覆盖常驻反射。
 
 ### P3.3 — realness 记忆 filter L_R(§10#9)
 - **动**:把 ghost verdict 的逐帧/累积混合(track.go GhostPenalty)显式化为 **log-odds 带遗忘递归**:$L_R^t=\gamma L_R^{t-1}+\sum\ln\mathrm{LR}_k$(proposal 时间反馈①)。
