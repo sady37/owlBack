@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"owl-common/alarm"
+	"owl-common/card"
 	"owl-common/observation"
 	"wisefido-sensor/internal/roomengine/belief"
 )
@@ -172,5 +173,25 @@ func TestMoMLostTrackVanishNoFire(t *testing.T) {
 	}
 	if be.Vector().P(belief.SFallen) > 0.05 {
 		t.Fatalf("MoM P(Fallen)=%.3f 应极低（无 still-box 不该升 Fallen）", be.Vector().P(belief.SFallen))
+	}
+}
+
+// P2.5 absence≠负向(原则#3):无近期 enter/exit 事件 → 不发 ObsEnterExit。
+// 锁不变量:不得用"曾经离开/无 exit"持续喂反向证据(信号丢失≠状态);present 事件才发(正向)。
+func TestAbsenceNotNegativeEnterExit(t *testing.T) {
+	now := int64(10_000_000)
+	// (a) 陈旧 exit(超事件窗)→ 不该再发(absence≠负向)。
+	stale := card.RoomState{LastExitTs: now - beliefEventWindowMs - 1_000}
+	if _, ok := findObs(roomAdapter(stale, 0, now), belief.ObsEnterExit); ok {
+		t.Fatalf("陈旧 exit(超事件窗)不该再发 ObsEnterExit(absence≠负向)")
+	}
+	// (b) 无任何事件 → 不发。
+	if _, ok := findObs(roomAdapter(card.RoomState{}, 0, now), belief.ObsEnterExit); ok {
+		t.Fatalf("无 enter/exit 事件不该发 ObsEnterExit")
+	}
+	// (c) 新鲜 exit(事件窗内)→ 应发(present=正向证据,对照组)。
+	fresh := card.RoomState{LastExitTs: now - 1_000}
+	if _, ok := findObs(roomAdapter(fresh, 0, now), belief.ObsEnterExit); !ok {
+		t.Fatalf("新鲜 exit(事件窗内)应发 ObsEnterExit(present 正向)")
 	}
 }
