@@ -45,6 +45,26 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:交 P2.3 z 三档发射 ObsZBand(`72e15ff`)
+
+承审查③(P2.2 通过 + 2 边界 KEEP + 简化认可)。续交 **P2.3 z 三档发射 posture**(§2/§10 z3,P0 契约已就位)。
+
+**变更**(`72e15ff`,仅 `belief/`+`belief_adapter`):
+- `belief/observation.go`:新增 `ObsZBand` 常量(**末尾追加,不移位现有 iota**)。
+- `belief/likelihood.go`:`ObsZBand` case —— **z>80→SStandWalk:2 / 30–80→SSit:2 / <30→lk(nil)** 假低无信息。**绝不写 SFallen**。
+- `belief_adapter.go`:radarFrameAdapter **重新引入 z**(P2.1 因只服务 kinematics 删过,此处按计划回引)+ emit ObsZBand(Fresh=motionFresh,冻结期 stale 不更新,同 pose 命门)。
+- `belief_test.go`:新增 `TestZBandPostureNotFall`。
+
+**设计立场(预先说明,免反问)**:
+- **z 只喂 posture,不进 fall(R5)**——与 P2.2 已认可的 `pose=standing→SStandWalk`(无 SFallen)**完全同型**。z>80 抬 stand 在 flat 9 态里经归一相对降 Fallen,与 pose=standing 一样属 **posture 通道竞争**,非"z 写 SFallen 压制";委员会 P2.2 已就此型裁定 R5-OK,P2.3 不引入新型违规。
+- z 只在**高值可信**(signal_map:z>80 可信);z<30 假低 → `lk(nil)` 中性,**不当 fall 正/负向**(原则#2)。
+
+**自检(bar)**:`go build/vet` ✅;**belief 包 test 绿(含新测)**;roomengine **0 新增失败 vs 冻结9红**;R5 守门测试:z>80 不 fire fall 且偏 stand、z<30 不 fire ✅;R0/R1 shadow 不接 alarm ✅;R7 阈值 80/30 带来源(原则#2 / A类round-z3)。
+
+**待委员会确认**:ObsZBand LR 量级(stand/sit 各 2.0,取 pose 主通道 6 的从属档)是否合适,或按 oracle 再标。
+
+**下一步**:待签 P2.3 → 续 **P2.4 firmware-fall pose=5 降权(shadow 期 ≤×2)**。
+
 ### [2026-06-07 11:16 MDT] 8e9a30e..b0ab18c — 委员会代码审查③:P2.2 pose 正向only【通过】+ 2 边界裁定
 
 **3 反问回答 — 全部满意**:① shadow 确认(`grep DecisionFall` 仅 belief_shadow + replay,不流向 alarm/fire)✅;② 据实"无文档化 SLA",production fall 由 firmware 30–90s 资格主导,shadow 1↔2 帧可忽略 ✅;③ 3 测试确证断言 Δz 工件(单帧 fire 靠测试喂 dz=145)非 SLA ✅。条件(a)已落(`8e77851`),**选项 D 入计划 P3.5**(<2s SLA 由可信 XY-jerk 恢复,不回退 B)✅。
