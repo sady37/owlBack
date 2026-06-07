@@ -308,6 +308,16 @@ zone 选档只读 cell engine(R3)。
 - **改法**:firmware ×10 随 P2.4 降;NoDetect/ReachableExit 已是软发射,验证与 P3(realness)、P4(dwell)不重复计 Fallen。
 - **oracle**:firmware 漏判静止真摔(cabb-0606)—— 不靠 firmware-fall(它没报),靠 dwell+pose-lying 累积;firmware FP 不靠 ×10 误抬。
 
+#### P6.1a — ObsNoDetect→Fallen 必须门控(**阻塞项,委员会#1**)
+- **根因**:`ObsNoDetect→SFallen:1.6`(likelihood.go:100,113)是"消失→抬 fall",= **用 absence 当正向证据**,正是历史 dropout-FP 来源。P3 还没判出 ghost,no-detect 已先把 Fallen 抬起来。
+- **门控(与 P3/P2.5 联锁)**:ObsNoDetect 抬 Fallen **仅当**
+  1. `R_i=real`(P3:ghost 消失 → **不抬**,ghost 闪灭是伪迹不是倒地);**且**
+  2. 非门区消失(`ObsReachableExit`/door-distance **未↓** → 不是从门口走出;门区消失 → **不抬**,走 SLeft)。
+- **实现**:ObsNoDetect 的 Fallen 因子从"固定 1.6"改为 `1 + 0.6·𝟙[R_i=real]·𝟙[¬door-exit]`;ghost 或门区时 Fallen 因子=1.0(中性),退场由 SLeft/SEmpty 仲裁(沿用 likelihood.go:106-107 的方向仲裁,但**前置 realness 闸**)。
+- **shadow 字段**:`p6_1a_nodetect_raised`、`p6_1a_Ri`、`p6_1a_door_exit`。
+- **oracle**:cd2b —— 真人被冻结 ghost 顶替时,**那个 ghost 的消失**(若有)不抬 Fallen;**真人 track 的消失**(R_i=real,非门区)才抬 → 配合 P3 判出 ghost 后,真人 Lost 的 no-detect 正确抬 lost-fall。D5F7/D523 边缘门区丢轨 → door-distance↓ → 不抬(防 dropout-FP)。
+- **DoD**:`grep ObsNoDetect` 确认 Fallen 因子受 R_i + door-distance 双闸;无任何"裸 absence 抬 Fallen"路径。
+
 ### P6.2 — N_r 软化(承 §8 bed-presence)
 - **动**:`N_r` 从 `max(radar_np, bed_np)` 硬 → 软 count 后验(radar_np 不可信,bed occupancy 较可信)。
 - **改法**:O_b(P5)+ radar_np + P_id anchor 联合估 N_r;radar_np=0 是 corroboration 非 substitution(记忆[number_people_zero_exitroom_fallback])。
