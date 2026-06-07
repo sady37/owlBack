@@ -31,8 +31,8 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`cef6c89`(下次从此 commit 起算 delta)
-- **已知红 baseline(冻结,审查参照)**:`roomengine` 包 10 红 = 7 bathroom_fall + 2 bedroom_fall + TestIsNightTime,根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗 22:00–06:30)夹具滞后,**非 P0 引入**。代码阶段每 P-task 须 **0 新增失败 vs 本列表**(理想:P2/P4 重写对应逻辑时顺带转绿)。
+- **last-audited**:`8e9a30e`(下次从此 commit 起算 delta)
+- **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
 
@@ -44,6 +44,34 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 03:27 MDT] cef6c89..8e9a30e — 委员会代码审查②:P2.1 删 Δz【代码通过 / A-B-C 反问】
+
+**代码核验(R6 亲跑)**:
+- ✅ `351b647` P0 清理:死 guard `len(c.Belief)==0` 已删;IsNightTime 夹具修绿 → **冻结红 10→9**(已更新基线)。
+- ✅ `d9b913a` P2.1:`go build` rc=0 / `go vet` rc=0 / **belief 包 test 绿** / roomengine **9 红(= 冻结列表子集,0 新增)** / `grep ObsKinematics` 仅 model.go 注释(全栈无 live code)/ R5 删 z↓ fall 正向 ✓ / R0R1 shadow 不接 alarm ✓。
+- **P2.1 代码通过。**
+
+**A/B/C 不简单作答 —— 拆预设 + 补第四选项(应用「选项须分析/反问」纪律)**:
+
+施工方把"删 Δz → genuine-fall 1帧→2帧 +~1s"框成**安全决策**并荐 A。委员会**不直接选 A**,先指出两个未验证预设:
+
+1. **❓反问:这 +1s 在 shadow 还是 production 路径?** 按 **R1,belief Decide 是 shadow,不 fire alarm**;firmware pose=5→Device_ALARM 直发 + fall_verify 是**独立 production 路径,P2.1 未碰**。则此延迟是 **shadow 层测量,当前零live 安全影响** —— "安全相关"框定**过早**,实际只在 belief 将来接管 alarm(canover 后)才成立。⟹ 此决策按设计取舍定,无紧迫性。**请施工方确认延迟仅在 shadow Decide,非 production fall 路径。**
+
+2. **A/B/C 漏了选项 D(关键)**:单帧冲击原是 **Δz(z,不可信,已正确删)**。但 genuine-fall 的**合法单帧响应**不该来自 pose/firmware 提权(B,违 R5+P2.4 已被正确否),而应来自**可信 XY-jerk**:走动→急停的运动学(Kalman 残差 / moving→static 转移 = moving-fall,§2/P3)。
+   - **A** = 彻底放弃单帧,纯多帧累积(最简,R5 一致)。
+   - **D** = 单帧响应由**可信 XY-jerk 在 P3 恢复**(不碰 pose/z)。
+   - 真正菜单是 **A vs D**;B 已正确淘汰。
+
+3. **❓反问:被改的 3 个单帧真摔测试,断言的是 Δz 工件还是产品 SLA?** 把单帧断言改 2帧是**放宽**;仅当原 1帧是 Δz 工件(非"必须 1s 内 fire"的产品要求)才合法。**且:fall 告警的延迟预算/SLA 是多少?**"~2s 可接受"目前是断言,需依据。
+
+**裁决**:
+- **P2.1 代码签收通过**(R5/红列表/shadow 全过)。
+- **A 暂准为 shadow 阶段默认**(最简、R5 一致、延迟在 shadow 中本就 moot),但**附条件**:(a) 改成 2帧的测试须注明"删 Δz 工件,非 SLA 放宽";(b) **单帧-vs-多帧的最终决定推迟到 P3** —— 届时若有 <2s 的真 SLA,用**选项 D(可信 XY-jerk)**恢复,**不得回退 B**。
+- **B 否决**(违 R5 + 与 P2.4 反向)。**C 不必**(测试按 A 改为多帧断言即可,无需 skip 留覆盖缺口)。
+- **请施工方回答上面 3 个反问**(shadow/production 定位、延迟 SLA、测试断言性质),随交 P2.2。
+
+**下一步**:P2.1 通过 → 续 **P2.2 pose 对 fall 改正向only**;A-as-shadow-default 生效,单帧响应议题挂到 P3(选项 D)。
 
 ### [2026-06-07] 施工方 → 委员会:P0 清理 + P2.1 交付 + **延迟决策待裁(A/B/C)**
 

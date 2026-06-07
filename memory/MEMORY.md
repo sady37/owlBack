@@ -36,3 +36,4 @@
 - [sensor 无 Wall 时 Boundary 兜底](sensor_wall_boundary_fallback.md) — 客户没画 Wall 时 cfg.WallPolygon 用 radar BoundaryVertices；让 InRoom 至少 == InFOV，避免下游全部退化失效
 - [device_status 事件驱动重构](device_status_event_driven_refactor.md) — 撤掉 b.online 推导，改 monitor/event/alarm 流事件驱动 + 看门狗 180s fail-safe；默认不在线；2026-05-05 cardagg 落地；待实测验证
 - [area_id=255 不是 ghost 判据](area_id_255_not_ghost.md) — firmware area_id=255 仅表示 declared area 之外；ghost 判定由 roomengine 综合判断；roomengine 无 verdict = 默认放行真人
+- [委员会审查:选项不简单作答](committee-review-no-simple-answers.md) — 项目组给选项时须补分析或反问(拆预设/索缺失/提第三选项),不橡皮图章;与 R6 不信声明亲跑同源
