@@ -885,15 +885,15 @@ func TestIsNightTime(t *testing.T) {
 		want      bool
 		desc      string
 	}{
-		{23, 30, true, "23:30 边界 = 夜"},
-		{23, 31, true, "23:31 = 夜"},
+		{22, 0, true, "22:00 边界 = 夜"},
+		{22, 1, true, "22:01 = 夜"},
 		{0, 0, true, "00:00 = 夜"},
-		{7, 29, true, "07:29 = 夜"},
-		{7, 30, false, "07:30 边界 = 白天"},
+		{6, 29, true, "06:29 = 夜"},
+		{6, 30, false, "06:30 边界 = 白天"},
 		{8, 0, false, "08:00 = 白天"},
 		{12, 0, false, "12:00 = 白天"},
-		{22, 0, false, "22:00 = 白天"},
-		{23, 29, false, "23:29 = 白天"},
+		{21, 59, false, "21:59 = 白天"},
+		{21, 0, false, "21:00 = 白天"},
 	}
 	for _, c := range cases {
 		ts := time.Date(2026, 4, 25, c.hour, c.min, 0, 0, time.Local).UnixMilli()

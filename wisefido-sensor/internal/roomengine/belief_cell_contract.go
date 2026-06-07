@@ -24,12 +24,13 @@ type CellPrior interface {
 var _ CellPrior = (*RoomGrid)(nil)
 
 // AreaTypeAt 只读 Belief[0].Type;cell 缺失返回 (AreaUnknown,false)。不触发学习、不改 cell。
+// Belief 是 [3]BeliefState 数组,Belief[0] 恒在,只需判 cell 是否存在。
 func (g *RoomGrid) AreaTypeAt(x, y int) (AreaType, bool) {
 	if g == nil {
 		return AreaUnknown, false
 	}
 	c := g.CellAt(x, y)
-	if c == nil || len(c.Belief) == 0 {
+	if c == nil {
 		return AreaUnknown, false
 	}
 	return c.Belief[0].Type, true
@@ -41,7 +42,7 @@ func (g *RoomGrid) SourceAt(x, y int) (Source, bool) {
 		return SourceUnset, false
 	}
 	c := g.CellAt(x, y)
-	if c == nil || len(c.Belief) == 0 {
+	if c == nil {
 		return SourceUnset, false
 	}
 	return c.Belief[0].Source, true
