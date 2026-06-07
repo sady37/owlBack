@@ -45,6 +45,33 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:P3.5 确认 deferred-to-P9(无代码)+ 🏁 P3 realness 收官 + 请定下一步
+
+承审查⑫(P3.4 通过 + canary 时 self-rescue emit 低 severity 已留位)。
+
+**P3.5 选项D —— 确认 deferred-to-P9,本轮无代码**:
+- 已完整载于计划 §2 P3.5(选项 D=可信 XY-jerk 单帧响应;A-vs-D 待 P9 SLA;B 否决,review②裁定)。
+- **当前无 <2s 真 SLA**:production fall 由 firmware 30–90s pose2→5 资格主导,belief shadow 的 1↔2帧(~1s)对 live moot(R1 shadow 不接 alarm)→ **现在无须实现单帧响应**;A(多帧累积)暂为 shadow 默认。
+- **决策点正式挂 P9**:oracle 用 cabb-0605 量真摔 latency margin;若 P9/产品给出 <2s SLA 再按选项 D(XY-jerk)实现。本轮**不写码,不拍 SLA**(R6:无依据不臆造)。
+
+**🏁 P3 realness R_i 阶段收官**(全链最硬的 cd2b 漏报已治本):
+| P-task | 内容 | commit |
+|---|---|---|
+| P3.1 | 独立三探测器 ghost(不复用生产 Verdict;cd2b 跳变正解) | `2807e2c` |
+| P3.2 | 冻结伪迹复合门控 A∧(B≥2)(常驻反射;真人久站不误判) | `a60b5f2` |
+| P3.3 | 记忆 L_R filter(二值→连续 P(real),走前 realness 带进倒地窗) | `b2013b9` |
+| P3.4 | recapture 软恢复(跌后自救不硬cancel,标低severity) | `6b25040` |
+| P3.5 | 选项D 单帧响应 = **deferred-to-P9**(documented,无代码) | — |
+全程 shadow-first、生产闸 0 改动(R0)、不接 alarm(R1)、realness 纯 XY/几何/方差不碰 pose/z(R5)、0 新增失败 vs 冻结9红;cd2b/cabb-0605 关键场景均有 fixture 实证。
+
+**P9.6 标定清单累积**(待 oracle):z 权倒挂 / firmware TP-FP / realness γ(疑偏快应每分钟,cabb-0605 标)/ realness lnLR / frozen 三阈 / self-rescue gap;**P3.3-v2**:WeakBio+出生地 realness 待折入。
+
+**请委员会定下一步**(按 §0.4 DAG):
+- **A**:**P4 dwell HSMM**(S_vol(t|zone) ramp 取代散落硬阈;critical path P2→P4→P7)——施工方建议(P3 已完,P4 是下一关键路径)。
+- **B**:先做 **P3 oracle checkpoint**(用 cabb-0605/cd2b 跑 P3 全开后的 margin,验"冻结ghost判出+真人Lost浮出+真摔不误判",顺带标 γ)再续 P4。
+- **C**:其它(P5 bed O_b / P6 room 并行)。
+**施工方倾向 A**(P4 critical path),但若委员会认为 P3 标定(尤其 γ)该先 oracle 验,B 也合理。听裁。
+
 ### [2026-06-07 17:46 MDT] ef0be91..81ae46e — 委员会代码审查⑫:P3.4 recapture 软恢复【通过】
 
 **P3.4 代码核验(R6 亲跑,对 cd2b 裁定)**:
