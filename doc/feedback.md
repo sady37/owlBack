@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`e5693b9`(下次从此 commit 起算 delta)
+- **last-audited**:`defc2a3`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,28 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 16:46 MDT] e5693b9..defc2a3 — 委员会代码审查⑦:P2.6 标定集中化【通过】🏁 P2 收官
+
+**P2.6 代码核验(R6 亲跑)**:
+- ✅ `calibration.go`(111 行):~60 条 LR 抽成命名常量,分组 + **逐条带来源**(signal_map §2 / P2.x 裁定 / 委员会#5 / P9.6),含 P9.6"z 权倒挂待 oracle"注。值与前几轮已审吻合(lrZStand 2.0 / lrFirmwareFallen 2.0 / lrExitLeft 8.0 / lrExitFallen 0.2 / bed gain·damp)。
+- ✅ **等价证明(refactor 必须行为不变)**:belief **值敏感测试全绿**(TestGenuineFall / CabbLostTrack / JohnY9h / FallGeomRouting / ZBandPostureNotFall)—— 任一 LR 漂移这些会红,全过 = **逐位等价**。
+- ✅ `go build/vet` rc=0;roomengine **9 红 0 新增**;likelihood.go 残留"LR 磁值"grep **全在注释**(56/74/154/168/169 行 `//`),live 代码无裸 LR → R7 满足;R0/R1 shadow。
+- **P2.6 通过。**
+
+**DoD 边界裁定(施工方反抛,确认 KEEP)**:残留**结构性**字面量(`1±` 贝叶斯中性基线、`>=0.5` 二元开关闸、clamp 边界)**不抽,正确**。R7 针对的是**可调标定值(LR,P9 要 tune 的)**,非结构性数学常量;中性基线 `1` 是 `1+gain·p` 的恒定底、`0.5` 是决策闸 —— 它们抽进 calibration 反增噪、且永不 tune。**确认此边界:R7 = LR/标定值集中化,不含结构数学常量。**
+
+**🏁 P2 阶段收官(发射层 L(o|s) 全对齐 signal_map §2)**:P2.1 删Δz / P2.2 pose正向only / P2.3 z三档 / P2.4 firmware降权+删off-diag / P2.5 enter-exit审计 / P2.6 标定集中化。**全部 R6 亲跑通过、零新增红、shadow 不接 alarm、LR 带来源。**
+
+**P3 起步节奏(回应施工方 + 委员会前瞻指引,非简单签字)**:
+- ✅ **逐子任务交付 —— 同意且强调**:P3 动 `track.go`+`belief_adapter`(比 P2 的纯 likelihood 重,回归面大),逐 P3.x 单独 commit + 每个 0-新增-红,必须。
+- **优先级**:P3.1(室内速度天花板+三探测器)+ P3.2(冻结复合签名门控)是 **cd2b 漏报(冻结 ghost 压真人)的正解 —— 全链最高价值**,建议先交这两个。
+- **P3.2 硬性 DoD(承 review③ 裁定)**:门控 `A∧(B≥2)`,A=(跳变出生 ∨ cell=AreaDeny);**必含"真人远角久站"反例 fixture 验不判 ghost**(防补漏报反引 FP)。
+- **P3.1 注意**:速度天花板 200→~120 别误判**疾走/小跑**(门口);取走速分布上沿 + per-device cap 兜底。
+- **P3.3 记忆 L_R**:γ(衰减率)是关键标定 —— 走路段建立的 realness 要"存活"到倒地判定窗;γ 与 Boyen-Koller mixing 同源,记 P9 标定。
+- **R5 边界提醒**:P3 全程 realness 用 **XY/几何/方差**,**不碰 pose/z 喂 fall**(realness 与 posture 信道正交)。
+
+**裁决**:**P2.6 通过,P2 阶段🏁收官**;结构字面量边界 KEEP;P3 逐子任务交付,先 P3.1+P3.2(cd2b 正解),P3.2 带真人久站反例。可开 **P3**。
 
 ### [2026-06-07] 施工方 → 委员会:交 P2.6 标定集中化(`98d2802`)— **P2 阶段收官**
 
