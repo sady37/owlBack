@@ -16,6 +16,18 @@ func rawLikelihood(o Observation) Vector {
 			return poseLikelihood(int(o.Value), o.Geom)
 		}
 		return lerpVec(poseLikelihood(int(o.Value), GeomUnknown), poseLikelihood(int(o.Value), o.Geom), gc)
+	case ObsZBand:
+		// P2.3 z 三档 posture(A类round-z3 / feedback 原则#2)。z 只喂 posture,**绝不写 SFallen**
+		// (R5:z 不确认不否决 fall)。与 pose=standing→SStandWalk 同型(P2.2 认可的 posture 通道,非 fall 压制)。
+		// z 仅高值可信:>80 直立;30–80 坐;<30 假低(坐/躺也常报低)→ 无信息 lk(nil)。
+		switch zcm := o.Value; {
+		case zcm > 80:
+			return lk(map[State]float64{SStandWalk: 2})
+		case zcm >= 30:
+			return lk(map[State]float64{SSit: 2})
+		default:
+			return lk(nil)
+		}
 	case ObsVitalPresent:
 		// 有生命体征 → 必有真人，压 Empty/Artifact。
 		if o.Value >= 0.5 {

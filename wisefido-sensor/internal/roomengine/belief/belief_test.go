@@ -243,3 +243,34 @@ func TestFallGeomRouting(t *testing.T) {
 		t.Fatalf("马桶区塌陷被几何路由漏报: b=%v", be.Vector())
 	}
 }
+
+// P2.3 z 三档:z 只喂 posture(高度档),**绝不进 fall**(R5:z 不确认不否决跌倒)。
+func TestZBandPostureNotFall(t *testing.T) {
+	mkEnter := func() (*Belief, int64) {
+		be := New(DefaultModel())
+		ts := int64(1000)
+		be.Step(ts, []Observation{ob(ts, ObsEnterExit, +1, 0.9, GeomInEnter)})
+		return be, ts
+	}
+	// (a) z>80 持续 → 偏 stand,绝不 fire fall。
+	be, ts := mkEnter()
+	for i := 0; i < 10; i++ {
+		ts += 1000
+		be.Step(ts, []Observation{ob(ts, ObsZBand, 160, 0.7, GeomOpenFloor)})
+	}
+	if be.Decide() == DecisionFall {
+		t.Fatalf("z>80 不该触发 fall(R5 z 不进 fall): b=%v", be.Vector())
+	}
+	if v := be.Vector(); v[SStandWalk] <= v[SFallen] {
+		t.Fatalf("z>80 应偏 stand 而非 fallen: stand=%.3f fallen=%.3f", v[SStandWalk], v[SFallen])
+	}
+	// (b) z<30 假低持续 → 无信息,不自行 fire fall。
+	be, ts = mkEnter()
+	for i := 0; i < 10; i++ {
+		ts += 1000
+		be.Step(ts, []Observation{ob(ts, ObsZBand, 10, 0.7, GeomOpenFloor)})
+	}
+	if be.Decide() == DecisionFall {
+		t.Fatalf("z<30 假低不该触发 fall: b=%v", be.Vector())
+	}
+}

@@ -19,6 +19,7 @@ const (
 	ObsTimeContext                    // 夜/昼 + 房型，调 prior 非硬观测
 	ObsNoDetect                       // P(no-detect|s)：本 tick 看了没测到（前置=消失前60s在走动）。状态条件似然=可检测态压低/可合理消失态保留；时长→P3，非斜坡
 	ObsReachableExit                  // 丢失点可达退场证据 e=f_dist·f_reach [0,1]（P2 软门：近门+单帧可达→偏 Left 压 Fallen）
+	ObsZBand                          // P2.3 z 高度档(Value=z cm)：z>80→stand / 30–80→sit / <30→噪声无信息。只喂 posture,**绝不写 SFallen**(R5)
 )
 
 // Geom 位置语义标签——由 device 坐标 ∩ layout polygon 现算（belief_input_normalization.md §1）。
