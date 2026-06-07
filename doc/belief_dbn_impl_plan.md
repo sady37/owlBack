@@ -49,7 +49,7 @@ P2 发射标定 ──┬─> P3 realness ──┐
 P5 bed O_b ───┤                 │
 P6 room/N_r ──┴─> P7 decision τ* ┘
 P8 health(与 fall 正交,可并行)
-P9' cell-engine 接口契约(§9,P2/P4 的前置只读边)
+P0 cell-engine 接口契约(§9,P2/P4 的前置只读边)
 ```
 **关键路径**:P2 → {P3,P4} → P7 → P9。P9 oracle 是**go/no-go 数学闸**:
 margin 不够则 DBN 不值得继续(signal_map §11.4),止于 shadow。
@@ -70,7 +70,7 @@ margin 不够则 DBN 不值得继续(signal_map §11.4),止于 shadow。
 | §6 | **P7** decision τ\* | 30/70 + RiskLevel → 单一 $\tau^\*$ 代价比旋钮 | fall_verify.go, risk_evaluator.go |
 | §7 | **P8** health 节点 | WeakBio/HR/RR/Apnea 正交健康事件输出 | aggregator, fall_verify.go |
 | §8 | **P9** oracle 验收 | 7-case fixture + margin + go/no-go | doc/cases/, belief_replay_test.go |
-| §9 | **P9'** cell 接口契约 | 唯一耦合边 read-only 定义 + still-box 单源 | cell.go, belief_adapter.go |
+| §9 | **P0** cell 接口契约 | 唯一耦合边 read-only 定义 + still-box 单源 | cell.go, belief_adapter.go |
 | §10 | 里程碑/灰度门 | shadow→canary→cutover 排序 + 风险登记 | — |
 
 ---
@@ -471,12 +471,12 @@ zone 选档只读 cell engine(R3)。
 
 ---
 
-## §9 P9' — cell engine ↔ DBN 接口契约(唯一耦合边)
+## §9 P0 — cell engine ↔ DBN 接口契约(唯一耦合边)
 
 **目标**:落定 signal_map §11.5 的**唯一耦合边**:cell engine 独立(自学习/自衰减/自带护栏),
 DBN 只读其结果(R2/R3)。这是 P2.3/P4.2/P4.4 的**前置只读边**,须先冻结契约再施工那几节。
 
-### P9'.1 — 正向只读边(cell → DBN)
+### P0.1 — 正向只读边(cell → DBN)
 - **契约**(signal_map §11.5):
   | cell 输出(read-only) | DBN 怎么用 | 消费节 |
   |---|---|---|
@@ -485,16 +485,16 @@ DBN 只读其结果(R2/R3)。这是 P2.3/P4.2/P4.4 的**前置只读边**,须先
   | `AreaType → S_vol(t\|zone)` 选档 | 驻留生存尾:stand8/toilet15/rest∞ | P4.2 |
 - **DoD**:DBN 侧定义只读 accessor(无任何 cell 写路径);`grep` 确认 DBN 不调 cell 学习/promote 函数。
 
-### P9'.2 — 反向单源边(track still-box → cell)
+### P0.2 — 反向单源边(track still-box → cell)
 - **契约**(signal_map §8 注):track 层每分钟算一次 still-box(50×50 + StillBoxRunStart),**传** `(cell_xy, is_static, run_duration)` 给 cell engine(`MarkDwell/MarkLongStill`)和 DBN(fall/M_i)**双消费**;cell engine **不重算**(§2.4 producer/maintainer,避免两套阈值 drift)。
 - **DoD**:still-box 单一计算点;cell engine 与 DBN 消费同一份;`grep` 确认无第二处 still-box 计算。
 
-### P9'.3 — 边界纪律(防 §10#6 循环偏置回流)
+### P0.3 — 边界纪律(防 §10#6 循环偏置回流)
 - **铁律**:cell 内部学习(dwell→sit / z 档语义 / 长静→sit / 重复+衰减+真摔擦除护栏)**不在 DBN 图**,属独立 cell-engine spec。
 - **解偏归属**:§10#6 循环偏置(Z_cell 学自 pose→继承 70/20 混淆)是 **cell engine 内部问题**,解在 cell 内(dwell 不用 pose / z 档 / Source 真值注入 / ai_fall_model z=high 学语义),DBN 不卷入学习回路。
 - **DoD**:文档化 cell-engine spec 边界(单独 doc 链接),本计划只管 DBN 侧只读消费。
 
-**P9' 验收闸**:(a) 只读边 accessor 无写路径;(b) still-box 单源双消费无重算;(c) cell 学习回路与 DBN 完全解耦(grep 双向无越界调用)。**此节须在 P2.3/P4.2/P4.4 之前冻结。**
+**P0 验收闸**:(a) 只读边 accessor 无写路径;(b) still-box 单源双消费无重算;(c) cell 学习回路与 DBN 完全解耦(grep 双向无越界调用)。**此节须在 P2.3/P4.2/P4.4 之前冻结。**
 
 ---
 
@@ -502,7 +502,7 @@ DBN 只读其结果(R2/R3)。这是 P2.3/P4.2/P4.4 的**前置只读边**,须先
 
 ### 10.1 施工顺序(承 §0.4 DAG)
 ```
-阶段 0(前置):  P9' 接口契约冻结 ─────────────┐
+阶段 0(前置):  P0 接口契约冻结 ─────────────┐
 阶段 1(发射):  P2 ──────────────────────────┤
 阶段 2(并行):  P3(realness) ‖ P4(dwell) ‖ P5(bed) ‖ P8(health)
 阶段 3(房级):  P6 ───────────────────────────┤
@@ -526,13 +526,13 @@ DBN 只读其结果(R2/R3)。这是 P2.3/P4.2/P4.4 的**前置只读边**,须先
 | §11.2 残差对治不了(只剩 Z_cell) | P9 诚实判 no-go-but-shadow;转 cell 解偏 / 加硬件,不夸大滤波层 |
 | 标定数值拍脑袋 | 每条 LR/τ\* 带来源(A 类 round-x / fixture);P9 oracle 反验 |
 | 改 likelihood 影响现网 | 全程 shadow,firmware 直发路径不动(R1) |
-| cell↔DBN 边界泄漏(循环偏置回流) | P9' 契约冻结 + grep 双向越界检查 |
+| cell↔DBN 边界泄漏(循环偏置回流) | P0 契约冻结 + grep 双向越界检查 |
 | multi-resident 未覆盖 | v1 单实体明示;P_id 已铺路,联合滤波留 P-later |
 
 ### 10.4 交付物清单
 - `doc/belief_dbn_impl_plan.md`(本文,施工计划)
 - `doc/belief_dbn_oracle_report.md`(P9 产出,go/no-go)
-- cell-engine spec 边界 doc(P9'.3)
+- cell-engine spec 边界 doc(P0.3)
 - 各 P-task 的 shadow 代码 + 单测(committee 签字后另起 commit)
 
 ---
