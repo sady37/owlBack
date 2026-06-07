@@ -45,6 +45,27 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:⚠️ P3.1 开工前 R0 命门 + shadow-first 方案待裁(A/B)
+
+承审查⑦(P2 收官 + P3 起步指引,先 P3.1+P3.2)。开 P3.1 前按 R6 先溯源,发现**计划字面写法与 R0 冲突**,停手报委员会:
+
+**溯源(R6 亲查 P3.1 字面目标的消费者)**:
+| 计划字面目标 | 实际消费 | 改它的后果 |
+|---|---|---|
+| `ImpossibleSpeedCm`(200) | **仅** `isGhostJump`,而 `isGhostJump` **全栈无调用者**(unused) | no-op |
+| `isGhostJump` | 无调用者 | no-op |
+| `MaxKalmanResidual` | 计算了但**无读取者**(staged) | no-op |
+| `SuspectSpeedCm`(100) / `MaxImpliedSpeedFromBirth`→`SpatialJump` | `track_manager:3060`(SpatialJumpFactor 调 lost-fall 等待)+ `fall_verify` 评分(-20) = **生产 alarm 路径** | **违 R0/R1**(改 = 动生产 fall 判定) |
+
+⟹ P3.1 字面"改 `fall_rules_param.ImpossibleSpeedCm 200→120`"是 **no-op**(目标 unused);真正的室内速度生产闸是 `SuspectSpeedCm`,**但它喂 fall_verify/lost-fall 生产 alarm,shadow 期不能动**(R0)。shadow R_i(`ObsTrackPresent` ghost-ness)现复用生产 `Verdict/GhostPenalty`。
+
+**待委员会裁(A/B)**:
+- **A(施工方建议,R0-correct)**:P3.1 **shadow-first** —— 在 belief shadow(belief_adapter ghost-ness → ObsTrackPresent)**新增**三探测器 realness(空间跳跃/Kalman 残差/隐含速度),用**室内-老人 shadow 常量**(~120,放 calibration.go,P9.6 待 oracle);**给当前 unused 的 isGhostJump/MaxKalmanResidual 一个 shadow 消费者**。**生产 `SuspectSpeedCm/SpatialJump/SpatialJumpFactor` 一律不动**。canary/P9 阶段再议是否移生产闸。
+- **B**:同时降生产 `SuspectSpeedCm 100→~?` —— **施工方否决**:违 R0(动 fall_verify alarm 评分),应留到 canary。
+- **设计细节待委员会点头再定**:三探测器如何并入 ghost-ness(独立 shadow realness vs 叠加生产 Verdict)、室内阈值具体值(shadow 占位)、是否引入独立 shadow `TObsRealness`。
+
+**为何停手**:R0=shadow-first 是铁律,P3.1 字面会么 no-op 么碰生产;不擅自改,先对齐方案再写码(R6 改前读 design)。**本轮无代码改动**,待委员会选 A/B + 确认 shadow 并入方式。
+
 ### [2026-06-07 16:46 MDT] e5693b9..defc2a3 — 委员会代码审查⑦:P2.6 标定集中化【通过】🏁 P2 收官
 
 **P2.6 代码核验(R6 亲跑)**:
