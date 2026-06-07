@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`98a33a7`(下次从此 commit 起算 delta)
+- **last-audited**:`b20f412`(下次从此 commit 起算 delta)
 
 ---
 
@@ -44,7 +44,23 @@
 **建议**:...
 -->
 
-### [2026-06-06 21:32 MDT] f0bb43f..98a33a7 — 施工方消化首轮反馈(7 commit)+ 委员会第 2 轮
+### [2026-06-06 23:11 MDT] 98a33a7..b20f412 — 施工方消化第2轮(4 commit)+ 委员会第 3 轮
+
+**变更摘要**:施工方消化第2轮 2 refine + 对齐 §2 自纠。仍 doc,无 sensor 代码。
+
+**核验(看实际改法)**:
+- ✅ **refine#1 已解(`ec89464`)**:P6.1a 由硬 `𝟙` 改连续 `1+0.6·P(R_i=real)·(1−P(door-exit))`,显式标"与 §4.3 ghost 融合同构 / 退化才趋硬闸",并处理退化(ghost→1.0 中性,退场由 SLeft/SEmpty 仲裁)。drift 隐患消除。
+- ✅ **refine#2 已解(`050352e`)**:P3.2 全 AND→**加权任 ≥3/4 即疑**;常驻反射(无跳变出生)由 cell `static_reflector→AreaDeny`(≥3 episode)兜底,DBN 读 Z_cell=Deny 当强 ghost 先验。明确"非零方差,是多径抖+钉死+pose/z锁死+(跳变出生)+距门远 的加权"。
+- ✅ **§2 对齐(`217a8f7`)**:P3.1 拆三探测器(空间跳跃 raw / Kalman 残差 model-relative / 隐含速度 全程平均),与委员会 8cdc4ad 一致,shadow 字段分立。
+
+**⚠️ 第 3 轮(1 个新 ❓,refine#2 的副作用 → 漏报修复引入的 FP)**:
+1. **❓ P3.2 "3/4 无跳变出生"路径会误判真人久站(新 FP 风险)**。解 #2 漏报时,放宽到"无跳变出生靠 2+3+4"——但**真人在远角久站**(看窗外)恰好命中 `pose/z锁死 + 钉死小区 + 距门远`=3/4,缺的也正是跳变出生 → 被误判 ghost → 真人 track 被当伪迹(undercount / 后续事件被压)。**根因**:`pose/z 锁死`判别力弱 —— firmware 给真人站立也是 `pose=4` 恒定数分钟,不是 ghost 专属。
+   - **建议**:把 P3.2 门控成 **(跳变出生 ∨ cell=AreaDeny)为近必要条件**,再叠其余;常驻反射本就有 cell static_reflector→AreaDeny 兜底,故运行时"3/4 无跳变出生 无 AreaDeny"路径大多冗余且 FP 脆 → 收紧。
+   - **风险类**:drift→**新 FP**(真人静止→ghost)。这是经典打地鼠:补 #2 漏报(常驻反射)时把真人久站卷进来。落地 P3.2 时须用 fixture 标"真人远角久站"反例,确认 ≤2/4。
+
+**裁决**:第2轮消化**合格**,两 refine 改法干净(#1 软形同构、#2 加权+cell兜底思路对)。新 ❓ 非阻塞但**落地 P3.2 前须定**(关真人久站 FP)。可继续 P0 接口契约 → P2;P3.2 编码时把"真人久站反例 ≤2/4"列入 DoD。
+
+---
 
 **变更摘要**:施工方逐条消化首审 5 项 + 命名,并加 §11 issue→commit 追溯表。无 sensor 代码,仍 doc。
 
