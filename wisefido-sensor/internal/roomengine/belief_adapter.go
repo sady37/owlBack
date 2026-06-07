@@ -21,6 +21,11 @@ const (
 	beliefStillBoxStaleMs = 120_000 // 长冻 radar track → 命门 stale（治本 John.Y 9h）
 	beliefEnterMarginCm   = 30      // 离门 ≤30cm 判 Enter 区（对齐 ExitDistMinCm）
 	beliefEventWindowMs   = 5_000   // room transition ts 在此窗内才当一次 Enter/Exit 观测
+
+	// P3.1 shadow realness 三探测器阈(委员会审查⑦:独立于生产 Verdict;室内-老人 shadow 占位,P9.6 待 oracle)。
+	// **生产闸 SuspectSpeedCm/ImpossibleSpeedCm 一律不动**(R0)。超阈→近确定 ghost(P(瞬移|real elderly)≈0)。
+	beliefIndoorSpeedCeilCmS = 120.0 // ①空间跳跃(本帧 Δ/dt)+ ③隐含速度(全程平均 dist/age) 室内天花板 cm/s
+	beliefShadowKalmanResid  = 100.0 // ②Kalman 峰值残差(innovation 距离 cm):预测偏离>1m=急变 ghost(正常 ~20cm)
 	// lost-fall（走动中突然消失）：消失前 still-box < MovingPreconditionMs(60s) = 走动中（对齐 gate-list 止血）。
 	// 走速只用于 ghost-filter（>ImpossibleSpeedCm 的 track-swap 假跳先剔除），不做"走速判走动"——
 	// radar 位置量化重（走动也常报 median=0），per-frame 走速不可靠，still-box(spread) 才 robust。
@@ -159,13 +164,26 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 	return out
 }
 
-// isGhostJump 帧间速 > ImpossibleSpeedCm(200cm/s) = ghost/track-swap 假跳（2米+ 瞬跳），
-// 喂 still-box/belief 前应剔除（2026-06-01 用户实证：坐姿信号丢失/ghost swap 才出 2m+）。
-func isGhostJump(dCm float64, dtMs int64) bool {
-	if dtMs <= 0 {
-		return false
+// shadowTrackGhostness — P3.1 独立 shadow realness ghost-ness ∈{0,1}(委员会审查⑦裁定:
+// **不复用生产 Verdict/GhostPenalty** —— 生产 Verdict 正是漏 cd2b 冻结 ghost 的那套,复用=继承漏报)。
+// 三探测器从 XY raw 现算/读(facts 非 verdict):① 本帧空间跳跃 Δ/dt ② Kalman 峰值残差(预测偏离)
+// ③ 隐含速度(全程平均 dist(now,birth)/age,拼接 birth-incoherence)。任一超室内-老人 shadow 阈 →
+// 近确定 ghost(g=1):P(瞬移|real elderly)≈0。catch 生产 Verdict 漏判的冻结/拼接 ghost。
+// **只读 raw 动学量,不碰生产判定/生产闸**(R0)。frameJumpCmS<0 表本帧无法算跳变(缺前帧)→ 跳过①。
+func shadowTrackGhostness(ts *TrackState, frameJumpCmS float64) float64 {
+	if ts == nil {
+		return 0
 	}
-	return dCm*1000/float64(dtMs) > float64(FallRulesParam.Lost.ImpossibleSpeedCm)
+	if frameJumpCmS > beliefIndoorSpeedCeilCmS { // ① 空间跳跃(逐步 raw teleport)
+		return 1
+	}
+	if float64(ts.MaxImpliedSpeedFromBirth) > beliefIndoorSpeedCeilCmS { // ③ 隐含速度(全程平均,birth-incoherence)
+		return 1
+	}
+	if ts.MaxKalmanResidual > beliefShadowKalmanResid { // ② Kalman 残差(逐步 model-relative 急变)
+		return 1
+	}
+	return 0
 }
 
 // noDetectObs track 丢失（走动前置已满足）→ P(no-detect|s) 发射。每 tick 固定强度（无时长项，时长→P3）；

@@ -195,3 +195,32 @@ func TestAbsenceNotNegativeEnterExit(t *testing.T) {
 		t.Fatalf("新鲜 exit(事件窗内)应发 ObsEnterExit(present 正向)")
 	}
 }
+
+// P3.1 硬验收(委员会审查⑦):独立 shadow realness 判出**生产 Verdict 漏掉**的冻结 ghost(cd2b)。
+// cd2b:跌床→雷达丢真人→track 跳椅子冻住(ghost),但生产 Verdict=Real 漏判。
+// shadow 三探测器从 XY raw 算,**不看 Verdict** → 隐含速度超室内天花板 → 判 ghost(g=1)。
+func TestShadowRealnessCatchesFrozenGhost(t *testing.T) {
+	// cd2b 冻结 ghost:生产判 Real(漏),但隐含速度 150cm/s 超室内天花板 120。
+	cd2b := &TrackState{Verdict: VerdictReal, MaxImpliedSpeedFromBirth: 150}
+	if g := shadowTrackGhostness(cd2b, -1); g != 1 {
+		t.Fatalf("cd2b 冻结 ghost(隐含速度150>120)shadow 应判 ghost(g=1),得 %v —— 生产 Verdict=Real 漏判正是 P3.1 要抓的", g)
+	}
+	// Kalman 残差急变(预测偏离 130cm>100)也判 ghost,即便 Verdict=Real。
+	resid := &TrackState{Verdict: VerdictReal, MaxKalmanResidual: 130}
+	if g := shadowTrackGhostness(resid, -1); g != 1 {
+		t.Fatalf("Kalman 残差130>100 应判 ghost,得 %v", g)
+	}
+	// 本帧空间跳跃(200cm/s>120)判 ghost。
+	if g := shadowTrackGhostness(&TrackState{Verdict: VerdictReal}, 200); g != 1 {
+		t.Fatalf("本帧跳跃200>120 应判 ghost,得 %v", g)
+	}
+	// 真人正常 track:隐含速度40、残差20、帧速60,全在室内带内 → 不判 ghost(g=0)。
+	real := &TrackState{Verdict: VerdictReal, MaxImpliedSpeedFromBirth: 40, MaxKalmanResidual: 20}
+	if g := shadowTrackGhostness(real, 60); g != 0 {
+		t.Fatalf("真人正常动学 不该判 ghost,得 %v", g)
+	}
+	// **独立性证明**:即便生产 Verdict=Ghost,shadow 仍只看 XY(此处全带内)→ g=0,不复用 Verdict。
+	if g := shadowTrackGhostness(&TrackState{Verdict: VerdictGhost, MaxImpliedSpeedFromBirth: 40, MaxKalmanResidual: 20}, 60); g != 0 {
+		t.Fatalf("shadow realness 必须独立于生产 Verdict(不 passthrough),得 %v", g)
+	}
+}

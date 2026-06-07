@@ -34,11 +34,13 @@ type beliefShadowTrack struct {
 // Room 层对 ghost 用 delete+method-2 gate；Track 层**保留 ghost track**让 A_T 结构化处理
 // （Ghost→None，不通 Lost），正是 P1 要对照的"gate vs A_T 一致性"。
 type beliefShadowTLayer struct {
-	tb       *belief.TrackBelief
-	lastSeen int64
-	geom     belief.Geom
-	device   string // 源雷达 device_addr（同房对等雷达占用对账排除自身用）
-	loggedLo bool   // 已 log 过本次 Lost 峰（防重复）
+	tb           *belief.TrackBelief
+	lastSeen     int64
+	geom         belief.Geom
+	device       string // 源雷达 device_addr（同房对等雷达占用对账排除自身用）
+	loggedLo     bool   // 已 log 过本次 Lost 峰（防重复）
+	lastX, lastY int    // P3.1:上帧位置,算本帧空间跳跃 Δ/dt(独立 shadow realness 探测器①)
+	lastPosTs    int64  // 上帧位置时刻
 }
 
 type beliefShadow struct {
@@ -121,7 +123,9 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	for i := range bases {
 		b := &bases[i]
 
-		// DBN P1 Track 层：每帧（含 ghost）喂 present 发射。ghostness 由 GhostPenalty。
+		// DBN P1 Track 层：每帧（含 ghost）喂 present 发射。
+		// P3.1(委员会审查⑦裁定):ghostness 由**独立 shadow realness**(XY 三探测器)算,
+		// **不复用生产 GhostPenalty/Verdict**(那套漏 cd2b 冻结 ghost)→ shadow R_i 才能抓生产漏的 ghost。
 		// 与下方 Room 层 ghost-delete 刻意分离：Track 层让 A_T 把 ghost 路由 →None。
 		curTL[b.TrackID] = struct{}{}
 		tl := sh.tlayer[b.TrackID]
@@ -129,7 +133,13 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			tl = &beliefShadowTLayer{tb: belief.NewTrackBelief()}
 			sh.tlayer[b.TrackID] = tl
 		}
-		tlGhostness := float64(b.GhostPenalty) / 100.0
+		// 本帧空间跳跃 Δ/dt(探测器①);缺前帧 → -1 跳过①,靠②③(读 ts raw 动学量)。
+		frameJumpCmS := -1.0
+		if tl.lastPosTs > 0 && nowMs > tl.lastPosTs {
+			frameJumpCmS = float64(distInt(b.X, b.Y, tl.lastX, tl.lastY)) * 1000 / float64(nowMs-tl.lastPosTs)
+		}
+		tlGhostness := shadowTrackGhostness(tm.tracks[b.TrackID], frameJumpCmS)
+		tl.lastX, tl.lastY, tl.lastPosTs = b.X, b.Y, nowMs
 		tlGeom := geomFromArea(b.CellAreaType)
 		tl.tb.Step(nowMs, []belief.TObservation{{
 			Kind: belief.TObsPresent, Ghostness: tlGhostness, Geom: tlGeom,
