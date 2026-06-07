@@ -6,8 +6,9 @@ type Matrix [numStates][numStates]float64
 // transitionPropensity 转移倾向（行未归一化，init 时按行归一）。
 // 数字是"相对倾向"非概率，方便人手编辑。★=进 Fallen 条目。
 //
-// 关键设计：★ 列刻意取极小值。进 Fallen 的"灵敏度"来自观测似然（ObsFirmwareFall×10 /
-// ObsKinematics×8 / pose=fallen@open_floor×10），不来自时间转移。Fallen 是吸收态（自持 92%），
+// 关键设计：★ 列刻意取极小值。进 Fallen 的"灵敏度"来自观测似然（ObsFirmwareFall /
+// pose=fallen@open_floor / pose-lying@open_floor 等**正向** pose 证据），不来自时间转移。
+// （P2.1 已删 ObsKinematics：z↓ 是环境噪声,不当 fall 证据,R5。）Fallen 是吸收态（自持 92%），
 // 若 A 的 →Fallen 给大值，纯 Predict（缺证据期）会把信念慢慢渗进 Fallen ＝ 从沉默里凭空造跌倒
 // ＝ 正是 CABB/John.Y 误报。所以 A 只保证 Fallen 可达 + 不自愈，造跌倒的活全交给观测。
 //

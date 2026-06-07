@@ -16,15 +16,6 @@ func rawLikelihood(o Observation) Vector {
 			return poseLikelihood(int(o.Value), o.Geom)
 		}
 		return lerpVec(poseLikelihood(int(o.Value), GeomUnknown), poseLikelihood(int(o.Value), o.Geom), gc)
-	case ObsKinematics:
-		// 跌倒运动学签名 [0,1]：z 骤降 + 随后静止。高 → S5；中等运动 → S4。
-		f := clamp01(o.Value)
-		return lk(map[State]float64{
-			SFallen:    1 + 7*f,
-			SStandWalk: 1 + 1.5*(1-f),
-			SBedLying:  1 - 0.5*f,
-			SEmpty:     1 - 0.5*f,
-		})
 	case ObsVitalPresent:
 		// 有生命体征 → 必有真人，压 Empty/Artifact。
 		if o.Value >= 0.5 {

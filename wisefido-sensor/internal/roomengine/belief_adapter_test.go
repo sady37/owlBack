@@ -39,10 +39,6 @@ func TestAdapterStillBoxTrackKillsMotionObs(t *testing.T) {
 	if pose.Fresh {
 		t.Fatalf("StillBox track ObsPose 应 Fresh=false（命门），得 Fresh=true")
 	}
-	kin, _ := findObs(obs, belief.ObsKinematics)
-	if kin.Fresh {
-		t.Fatalf("StillBox track ObsKinematics 应 Fresh=false")
-	}
 	tp, _ := findObs(obs, belief.ObsTrackPresent)
 	if !tp.Fresh {
 		t.Fatalf("ObsTrackPresent(ghost) 不该被静止影响，应 Fresh=true")
@@ -91,13 +87,19 @@ func TestAdapterGenuineFallFires(t *testing.T) {
 		tr := observation.Track{LogicID: "L1", Pose: observation.PoseWalking, PositionX: ptr(50), PositionY: ptr(50), PositionZ: ptr(z), PoseConfidence: 80}
 		be.Step(now, radarFrameAdapter(tr, ts, nil, now))
 	}
-	// 跌倒帧：z 从 165 骤降到 20（dz=145>refCm 满签名），pose=fallen
+	// 跌倒帧：pose=fallen + firmware fall。P2.1 删 ObsKinematics 后,真摔靠正向 pose 持续累积
+	// (≥2 帧 pose-fallen ~2s);真实摔倒本就持续躺地,非单帧 z↓ 冲击(延迟 +~1s,委员会确认中)。
 	now += 1000
 	ts := &TrackState{LastObservedMs: now, LastZ: z, Verdict: VerdictReal}
 	tr := observation.Track{LogicID: "L1", Pose: observation.PoseFallen, PositionX: ptr(50), PositionY: ptr(50), PositionZ: ptr(20), PoseConfidence: 80}
 	frame := radarFrameAdapter(tr, ts, nil, now)
 	fallEvt, _ := radarEventToObs(alarm.Fall, now, belief.GeomOpenFloor)
 	be.Step(now, append(frame, fallEvt))
+
+	now += 1000
+	ts2 := &TrackState{LastObservedMs: now, LastZ: 20, Verdict: VerdictReal}
+	tr2 := observation.Track{LogicID: "L1", Pose: observation.PoseFallen, PositionX: ptr(50), PositionY: ptr(50), PositionZ: ptr(20), PoseConfidence: 80}
+	be.Step(now, radarFrameAdapter(tr2, ts2, nil, now))
 
 	if d := be.Decide(); d != belief.DecisionFall {
 		t.Fatalf("adapter 真跌倒未 fire: decision=%v b=%v", d, be.Vector())

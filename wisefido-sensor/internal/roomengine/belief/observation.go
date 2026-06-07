@@ -7,7 +7,6 @@ type ObsKind int
 
 const (
 	ObsPose            ObsKind = iota // radar Track.Pose 枚举
-	ObsKinematics                     // Δz↓ + 位移 + 隐含速度 合成 [0,1]（跌倒运动学签名）
 	ObsVitalPresent                   // HR>0 ∨ RR>0
 	ObsBedOccupied                    // bed 贝叶斯 P(InBed)，嵌套 belief 子证据
 	ObsSleepStage                     // sleepad 睡眠分期（S1 躺细分）

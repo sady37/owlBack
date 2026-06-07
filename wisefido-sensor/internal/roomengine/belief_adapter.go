@@ -20,7 +20,6 @@ const (
 	beliefSleepadTTLMs    = 35_000  // sleepad vital 窗（对齐 bed scorer vitalWindowMs）
 	beliefStillBoxStaleMs = 120_000 // 长冻 radar track → 命门 stale（治本 John.Y 9h）
 	beliefEnterMarginCm   = 30      // 离门 ≤30cm 判 Enter 区（对齐 ExitDistMinCm）
-	beliefFallDropRefCm   = 60      // z 骤降 60cm ≈ 满跌倒运动学签名
 	beliefEventWindowMs   = 5_000   // room transition ts 在此窗内才当一次 Enter/Exit 观测
 	// lost-fall（走动中突然消失）：消失前 still-box < MovingPreconditionMs(60s) = 走动中（对齐 gate-list 止血）。
 	// 走速只用于 ghost-filter（>ImpossibleSpeedCm 的 track-swap 假跳先剔除），不做"走速判走动"——
@@ -65,9 +64,7 @@ func geomFromArea(a AreaType) belief.Geom {
 // geomFromGrid device 坐标 ∩ layout → belief.Geom。近门优先判 Enter（离场二义性命门）。
 // P0:经 CellPrior 只读 accessor 取 cell 结果，不裸取 c.Belief[0]（§9 唯一耦合边）。
 func geomFromGrid(g *RoomGrid, x, y int) belief.Geom {
-	if g == nil {
-		return belief.GeomUnknown
-	}
+	// nil-safety 收敛进 CellPrior accessor(g==nil → 门距 maxint / AreaTypeAt ok=false),此处不再重复。
 	if g.NearestEntryDistCm(x, y) <= beliefEnterMarginCm {
 		return belief.GeomInEnter
 	}
@@ -93,9 +90,7 @@ func geomTrustFromSource(s Source) float64 {
 // geomConfFromGrid 该 (x,y) geom 的 provenance 信任 [0,1]，喂 belief Observation.GeomConf。
 // 仅 rest-suppress geom(InBed/InToilet)按 cell Source 打折；Enter/开阔地板/Unknown 全信(1.0)。
 func geomConfFromGrid(g *RoomGrid, x, y int) float64 {
-	if g == nil {
-		return 1.0
-	}
+	// nil-safety 收敛进 CellPrior accessor;g==nil → AreaTypeAt ok=false → 落 default 全信 1.0。
 	if g.NearestEntryDistCm(x, y) <= beliefEnterMarginCm {
 		return 1.0 // Enter 是几何，全信
 	}
@@ -116,15 +111,12 @@ func geomConfFromGrid(g *RoomGrid, x, y int) float64 {
 // 命门：长冻 track 的 pose/kinematics/vital 置 Fresh=false（Conf=0 不更新），即便 LastObservedMs 仍新
 // （firmware 冻结期持续 1Hz 推同帧）。ghost-ness 不受冻结影响（verdict 仍有效）。
 func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowMs int64) []belief.Observation {
-	x, y, z := 0, 0, 0
+	x, y := 0, 0
 	if t.PositionX != nil {
 		x = *t.PositionX
 	}
 	if t.PositionY != nil {
 		y = *t.PositionY
-	}
-	if t.PositionZ != nil {
-		z = *t.PositionZ
 	}
 	g := geomFromGrid(grid, x, y)
 	gc := geomConfFromGrid(grid, x, y) // geom provenance 信任（FE 画=1 / feedback=.6 / 自学=.4）
@@ -138,12 +130,8 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 		poseConf = float64(t.PoseConfidence) / 100
 	}
 
-	// 跌倒运动学签名 f：z 相对上帧骤降 → [0,1]。v2 再叠位移/隐含速度。
-	f := 0.0
-	if dz := ts.LastZ - z; dz > 0 {
-		f = clampUnit(float64(dz) / beliefFallDropRefCm)
-	}
-
+	// P2.1(§10#3a):删 kinematics Δz —— z 骤降是环境噪声,不当 fall 正向证据(R5 pose/z 对 fall 只正向,
+	// z↓ 连正向都不算)。fall 压制只走 realness/spatial/sleepad/recapture/human-bed,不走 z。
 	vitalVal := 0.0
 	if t.HeartRate > 0 || t.RespiratoryRate > 0 {
 		vitalVal = 1
@@ -157,7 +145,6 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 
 	out := []belief.Observation{
 		{Source: t.LogicID, Kind: belief.ObsPose, Value: float64(t.Pose), Conf: poseConf, Ts: nowMs, Fresh: motionFresh, Geom: g, GeomConf: gc},
-		{Source: t.LogicID, Kind: belief.ObsKinematics, Value: f, Conf: 0.7, Ts: nowMs, Fresh: motionFresh, Geom: g},
 		{Source: t.LogicID, Kind: belief.ObsVitalPresent, Value: vitalVal, Conf: 0.6, Ts: nowMs, Fresh: motionFresh, Geom: g},
 		{Source: t.LogicID, Kind: belief.ObsTrackPresent, Value: ghost, Conf: 0.8, Ts: nowMs, Fresh: tsFresh, Geom: g},
 	}
