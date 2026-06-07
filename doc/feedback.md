@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`2fcb979`(下次从此 commit 起算 delta)
+- **last-audited**:`caa9182`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,10 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 15:56 MDT] 2fcb979..caa9182 — 范围外记录(qinglan drive-by,非 DBN)
+
+`caa9182` fix(qinglan/radar):`splitDeclareAreaOnePerRequest` 规范化每段、根除尾逗号畸形 `{x},}`。**仅碰 `wisefido-qinglan/internal/service/radar_service.go`**(R6 亲验:未碰 sensor/belief/roomengine)→ **DBN P-链范围外,冻结 9 红基线不受影响**,不深审(超本委员会 sensor-DBN 授权)。**P2.4(firmware-fall 降权)尚未交。** 基线推进至 caa9182,免下轮重看。
 
 ### [2026-06-07 12:18 MDT] b0ab18c..2fcb979 — 委员会代码审查④:P2.3 z 三档 ObsZBand【通过】+ R5 边界澄清
 
