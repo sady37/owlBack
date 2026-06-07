@@ -243,4 +243,49 @@ zone 选档只读 cell engine(R3)。
 
 ---
 
-*后续节(§4 P5 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
+## §4 P5 — bed O_b 统一(降 radar-pose 权 + 并入 DBN 模板)
+
+**目标**:`bed_bayesian_scorer` 已是 log-odds HMM(O_b 节点雏形,§9 复用件)。本阶段
+(a) 修 radar pose_lying 过高权(§10#4);(b) 把它形式化为 DBN 通用 log-odds 模板,
+供 R_i/O_b/缺席同款复用;(c) sleepad 接触为主、radar 为辅的模态权重对齐。
+
+**现状审计(bed_bayesian_scorer.go)**:
+| 现行为 | 行 | 与新标定的冲突 |
+|---|---|---|
+| `lrRadarPoseLying=ln4.25` | bed_bayesian:35 | **§10#4**:pose 不可信,radar 躺姿给 O_b 过高权 → 降到 ≈0,bed 靠 sleepad 接触扛 |
+| `lrRadarVital=ln1.75` / `lrSleepadVitalOnly=ln2` | bed_bayesian:36,39 | radar vital 弱,复核;sleepad 为主 |
+| LR sleepad facility ±ln19 / home ±ln9 | bed_bayesian:31,32 | 接触模态强,保留 |
+| leak 0.55 / γ 三相(0/0.5/0)/ maintain timeout 120s | bed_bayesian:60-76 | log-odds 模板核心,抽出复用(R_i/缺席同款) |
+| 夜/日 prior +1.39/−0.85 | bed_bayesian:63-66 | π,保留;与 §4 先验表对齐 |
+| 多源 LeftBed sticky(60s 双 LeftBed) | bed_bayesian:142 | 记忆[bed_stale_leftbed_vetoes_radar_inbed]相关,复核衰减 |
+
+### P5.1 — radar pose_lying 降权(§10#4)
+- **动**:`bed_bayesian_scorer.go:35` `lrRadarPoseLying` ln4.25 → ≈0(LR≈1)。
+- **理由**:pose 不可信(R5);床占用靠 **sleepad 接触**(独立模态)定,radar 躺姿不该独立抬 O_b。
+- **shadow 字段**:`p5_1_Ob_with_radarpose`、`p5_1_Ob_without`(对比 O_b 后验差)。
+- **oracle**:无 sleepad 的纯 radar 房,radar 误报 lying 不应假抬 O_b → 床态由 radar vital/event 弱证据 + 夜 prior 定,不被 pose 拉偏。
+- **边界**:有 sleepad 的床不受影响(sleepad ±ln19 主导)。
+
+### P5.2 — bed leak 模型遗忘率复核(记忆衔接)
+- **动**:`leakFactor=0.55`、γ 三相(0–60s:1.0 / 60–120s:0.5 / ≥120s:0)。
+- **复核点**:记忆[bed_stale_leftbed_vetoes_radar_inbed]——陈旧 sleepad LeftBed 永久否决 fresh radar InBed 的 bug;本 task 确认 leak/γ 让陈旧 LeftBed 指数遗忘(L*=0.55/min leak 回中性),|L|<0.5→Standby8。
+- **shadow 字段**:`p5_2_L`、`p5_2_leak_applied`、`p5_2_standby`。
+- **oracle**:sim_decay 真实数据(19:27 进 Standby8 → 19:55:58 radar InBed → P0.80 InBed)—— 验证 leak 让陈旧 LeftBed 不再永久压。
+- **R4**:此项是 bed scorer producer 侧,已部分落地待 port shadow;DBN O_b 只读其 P 输出。
+
+### P5.3 — log-odds 模板抽象(§10#5 部分,§9 复用)
+- **动**:把 bed_bayesian 的 `(LR 表 / γ tempering / leak / covers 权重 / cap±5)` 抽成**通用 log-odds filter 模板**。
+- **复用为**:R_i 记忆 filter(P3.3 同款 $\gamma L_{t-1}+\sum\ln LR$)、缺席驻留(P4.5)、O_b 自身。
+- **理由**:signal_map §9 列 bed_bayesian = "通用 log-odds filter 模板(LR/γ/leak/covers)";避免四套滤波各写一遍(§10#5)。
+- **DoD**:R_i/O_b/缺席三处共用同一模板函数,leak/cap/γ 入参化;`go test` 覆盖模板单测。
+
+### P5.4 — O_b → S_room 投影对齐(likelihood.go:34)
+- **动**:`ObsBedOccupied` 投影 `S_BedLying(1+5p)/S_Fallen(1−0.7p)` 用 O_b 的 P(InBed)=p。
+- **核对**:O_b(P5)输出的 p 与 likelihood.go:34 消费口径一致(嵌套 bed 贝叶斯 → S_room 发射),避免双口径 drift。
+- **oracle**:床占用高时 S_room 抬 BedLying 压 Fallen(床上不误报倒地);O_b 低时不抑制地板 fall。
+
+**P5 验收闸**:(a) radar pose_lying 降权后纯 radar 房 O_b 不被 pose 拉偏;(b) leak 模型让陈旧 LeftBed 遗忘(sim_decay 通过);(c) log-odds 模板被 R_i/O_b/缺席三处复用,单测绿。
+
+---
+
+*后续节(§5 P6 …)将逐节追加并各自 commit。委员会反馈见 `doc/feedback.md`。*
