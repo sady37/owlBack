@@ -26,6 +26,13 @@ const (
 	// **生产闸 SuspectSpeedCm/ImpossibleSpeedCm 一律不动**(R0)。超阈→近确定 ghost(P(瞬移|real elderly)≈0)。
 	beliefIndoorSpeedCeilCmS = 120.0 // ①空间跳跃(本帧 Δ/dt)+ ③隐含速度(全程平均 dist/age) 室内天花板 cm/s
 	beliefShadowKalmanResid  = 100.0 // ②Kalman 峰值残差(innovation 距离 cm):预测偏离>1m=急变 ghost(正常 ~20cm)
+
+	// P3.2 冻结伪迹复合签名门控阈(委员会 review③:判 ghost = A∧(B≥2);shadow 占位,P9.6 待 oracle)。
+	// A=近必要前置(跳变出生 ∨ cell=AreaDeny);B=③pose/z锁死 ④钉死小区 ⑤距门远 中 ≥2。真人远角久站缺 A→不判。
+	beliefFrozenPoseZLockTicks = 5     // ③pose&z 连续 N 帧恒定(伪迹无生理变化;判别力弱,仅作 B 佐证)
+	beliefFrozenSpreadCm       = 50    // ④30s box 散布 ≤ 此 = 钉死小区(真人微抖也小,故仅佐证非独证)
+	beliefFrozenWindowMs       = 30000 // ④散布窗
+	beliefFrozenDoorFarCm      = 100   // ⑤距最近门 > 此 = 距门远(排除门口正常驻留)
 	// lost-fall（走动中突然消失）：消失前 still-box < MovingPreconditionMs(60s) = 走动中（对齐 gate-list 止血）。
 	// 走速只用于 ghost-filter（>ImpossibleSpeedCm 的 track-swap 假跳先剔除），不做"走速判走动"——
 	// radar 位置量化重（走动也常报 median=0），per-frame 走速不可靠，still-box(spread) 才 robust。
@@ -184,6 +191,33 @@ func shadowTrackGhostness(ts *TrackState, frameJumpCmS float64) float64 {
 		return 1
 	}
 	return 0
+}
+
+// shadowFrozenArtifact — P3.2 冻结伪迹复合签名门控(委员会 review③):判 ghost = A∧(B≥2)。
+// 补 P3.1 跳变检测漏的**静止反射体**模式。**门控形非裸佐证**:真人远角久站(B③④⑤可全中但缺 A)→不判,
+// 防补漏报反引 FP。realness 用 XY/几何/cell(只读)+ pose/z **方差/锁死**(非 pose/z 值喂 fall,R5)。
+//   A 近必要(二者居一):跳变出生(隐含速度超室内天花板,track-swap)∨ cell=AreaDeny(常驻反射已学,§9 只读)。
+//   B 佐证(≥2):③ pose/z 锁死(连续帧恒定,生理无变)④ 钉死小区(30s box 散布小)⑤ 距门远(非门口驻留)。
+func shadowFrozenArtifact(ts *TrackState, poseZLock int, grid *RoomGrid, x, y int, areaType AreaType, nowMs int64) bool {
+	if ts == nil {
+		return false
+	}
+	jumpBirth := ts.MaxImpliedSpeedFromBirth > int(beliefIndoorSpeedCeilCmS)
+	cellDeny := areaType == AreaDeny
+	if !jumpBirth && !cellDeny { // A 不成立(真人远角久站:无跳变出生 + cell 非 Deny)→ 不判 ghost
+		return false
+	}
+	b := 0
+	if poseZLock >= beliefFrozenPoseZLockTicks { // ③ pose/z 锁死
+		b++
+	}
+	if ts.BoxRangeWithinMs(beliefFrozenWindowMs, nowMs) <= beliefFrozenSpreadCm { // ④ 钉死小区
+		b++
+	}
+	if grid != nil && grid.NearestEntryDistCm(x, y) > beliefFrozenDoorFarCm { // ⑤ 距门远
+		b++
+	}
+	return b >= 2
 }
 
 // noDetectObs track 丢失（走动前置已满足）→ P(no-detect|s) 发射。每 tick 固定强度（无时长项，时长→P3）；

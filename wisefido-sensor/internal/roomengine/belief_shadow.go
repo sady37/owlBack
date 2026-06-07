@@ -41,6 +41,9 @@ type beliefShadowTLayer struct {
 	loggedLo     bool   // 已 log 过本次 Lost 峰（防重复）
 	lastX, lastY int    // P3.1:上帧位置,算本帧空间跳跃 Δ/dt(独立 shadow realness 探测器①)
 	lastPosTs    int64  // 上帧位置时刻
+	lastPose     int    // P3.2:上帧 pose/z,算 pose/z 锁死帧数(冻结伪迹 B 佐证③)
+	lastZ        int
+	poseZLock    int // pose&z 连续恒定帧数
 }
 
 type beliefShadow struct {
@@ -138,8 +141,20 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		if tl.lastPosTs > 0 && nowMs > tl.lastPosTs {
 			frameJumpCmS = float64(distInt(b.X, b.Y, tl.lastX, tl.lastY)) * 1000 / float64(nowMs-tl.lastPosTs)
 		}
-		tlGhostness := shadowTrackGhostness(tm.tracks[b.TrackID], frameJumpCmS)
+		// P3.2 pose/z 锁死帧数(冻结伪迹 B 佐证③):pose&z 连续恒定累加,变则清零。
+		if tl.lastPosTs > 0 && tl.lastPose == b.Pose && tl.lastZ == b.Z {
+			tl.poseZLock++
+		} else {
+			tl.poseZLock = 0
+		}
+		tsRaw := tm.tracks[b.TrackID]
+		// 独立 shadow realness:P3.1 跳变/急变 OR P3.2 冻结伪迹复合门控(补静止反射;真人久站缺 A→不判)。
+		tlGhostness := shadowTrackGhostness(tsRaw, frameJumpCmS)
+		if tlGhostness < 1 && shadowFrozenArtifact(tsRaw, tl.poseZLock, grid, b.X, b.Y, b.CellAreaType, nowMs) {
+			tlGhostness = 1
+		}
 		tl.lastX, tl.lastY, tl.lastPosTs = b.X, b.Y, nowMs
+		tl.lastPose, tl.lastZ = b.Pose, b.Z
 		tlGeom := geomFromArea(b.CellAreaType)
 		tl.tb.Step(nowMs, []belief.TObservation{{
 			Kind: belief.TObsPresent, Ghostness: tlGhostness, Geom: tlGeom,

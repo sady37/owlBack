@@ -224,3 +224,26 @@ func TestShadowRealnessCatchesFrozenGhost(t *testing.T) {
 		t.Fatalf("shadow realness 必须独立于生产 Verdict(不 passthrough),得 %v", g)
 	}
 }
+
+// P3.2 冻结伪迹复合签名门控(委员会 review③ 硬 DoD):判 ghost = A∧(B≥2),A=跳变出生∨cell=AreaDeny。
+// 关键反例:**真人远角久站**(B 可全中但缺 A)→ 不判 ghost(防补静止反射漏报反引 FP)。
+func TestFrozenArtifactGate(t *testing.T) {
+	// ① 真人远角久站(硬 DoD):无跳变出生(隐含40)+ cell=AreaActive(非Deny)→ A 失败 → 不判,
+	//    即便 pose/z 锁死(99帧)+ 钉死小区(空History→box0)。这是门控防 FP 的命门。
+	realStand := &TrackState{MaxImpliedSpeedFromBirth: 40}
+	if shadowFrozenArtifact(realStand, 99, nil, 500, 500, AreaActive, 1000) {
+		t.Fatalf("真人远角久站(无跳变+cell非Deny)A失败应不判ghost(防补漏报反引FP)")
+	}
+	// ② 常驻反射:cell=AreaDeny(A成立,正交补位)+ ③pose/z锁死(10≥5)+ ④钉死小区(box0)→ B≥2 → 判ghost。
+	if !shadowFrozenArtifact(&TrackState{MaxImpliedSpeedFromBirth: 40}, 10, nil, 500, 500, AreaDeny, 1000) {
+		t.Fatalf("常驻反射(cell=Deny+pose/z锁死+钉死小区)应判ghost")
+	}
+	// ③ A成立但B<2:cell=Deny但pose/z未锁死(③✗),grid nil略⑤,仅④ → B=1 → 不判。
+	if shadowFrozenArtifact(&TrackState{MaxImpliedSpeedFromBirth: 40}, 0, nil, 500, 500, AreaDeny, 1000) {
+		t.Fatalf("A成立但B<2(仅钉死小区)不该判ghost")
+	}
+	// ④ cd2b 跳变出生(150>120,A成立)+ ③pose/z锁死 + ④小区 → 判ghost。
+	if !shadowFrozenArtifact(&TrackState{MaxImpliedSpeedFromBirth: 150}, 10, nil, 500, 500, AreaActive, 1000) {
+		t.Fatalf("跳变出生+pose/z锁死+钉死小区 应判ghost")
+	}
+}
