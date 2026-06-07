@@ -63,15 +63,16 @@ func geomFromArea(a AreaType) belief.Geom {
 }
 
 // geomFromGrid device 坐标 ∩ layout → belief.Geom。近门优先判 Enter（离场二义性命门）。
+// P0:经 CellPrior 只读 accessor 取 cell 结果，不裸取 c.Belief[0]（§9 唯一耦合边）。
 func geomFromGrid(g *RoomGrid, x, y int) belief.Geom {
 	if g == nil {
 		return belief.GeomUnknown
 	}
-	if g.NearestEntryDist(x, y) <= beliefEnterMarginCm {
+	if g.NearestEntryDistCm(x, y) <= beliefEnterMarginCm {
 		return belief.GeomInEnter
 	}
-	if c := g.CellAt(x, y); c != nil && len(c.Belief) > 0 {
-		return geomFromArea(c.Belief[0].Type)
+	if a, ok := g.AreaTypeAt(x, y); ok {
+		return geomFromArea(a)
 	}
 	return belief.GeomUnknown
 }
@@ -95,16 +96,17 @@ func geomConfFromGrid(g *RoomGrid, x, y int) float64 {
 	if g == nil {
 		return 1.0
 	}
-	if g.NearestEntryDist(x, y) <= beliefEnterMarginCm {
+	if g.NearestEntryDistCm(x, y) <= beliefEnterMarginCm {
 		return 1.0 // Enter 是几何，全信
 	}
-	c := g.CellAt(x, y)
-	if c == nil || len(c.Belief) == 0 {
+	a, ok := g.AreaTypeAt(x, y)
+	if !ok {
 		return 1.0
 	}
-	switch c.Belief[0].Type {
+	switch a {
 	case AreaBed, AreaToilet, AreaShower: // 抑制跌倒的 rest geom → 按 provenance 给信任
-		return geomTrustFromSource(c.Belief[0].Source)
+		s, _ := g.SourceAt(x, y)
+		return geomTrustFromSource(s)
 	default:
 		return 1.0
 	}
