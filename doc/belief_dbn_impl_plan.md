@@ -324,7 +324,7 @@ zone 选档只读 cell engine(R3)。
 - **门控(与 P3/P2.5 联锁)**:ObsNoDetect 抬 Fallen **仅当**
   1. `R_i=real`(P3:ghost 消失 → **不抬**,ghost 闪灭是伪迹不是倒地);**且**
   2. 非门区消失(`ObsReachableExit`/door-distance **未↓** → 不是从门口走出;门区消失 → **不抬**,走 SLeft)。
-- **实现**:ObsNoDetect 的 Fallen 因子从"固定 1.6"改为 `1 + 0.6·𝟙[R_i=real]·𝟙[¬door-exit]`;ghost 或门区时 Fallen 因子=1.0(中性),退场由 SLeft/SEmpty 仲裁(沿用 likelihood.go:106-107 的方向仲裁,但**前置 realness 闸**)。
+- **实现(软形,委员会第2轮#1)**:ObsNoDetect 的 Fallen 因子从"固定 1.6"改为**连续边缘化形** `1 + 0.6·P(R_i=real)·(1−P(door-exit))` —— **不用硬 𝟙**。R_i 判错时退化平滑(P→0/1 才趋同硬闸),与 §4.3 ghost 融合方程同构;避免"软网里塞硬阈"重新引入"realness 判错就全 0/全 1"的脆性(局部回退硬阈范式 = drift 风险)。ghost(P(real)→0)或门区(P(door-exit)→1)时因子→1.0(中性),退场由 SLeft/SEmpty 仲裁(沿用 likelihood.go:106-107 方向仲裁,但**前置 realness 边缘化权**)。
 - **shadow 字段**:`p6_1a_nodetect_raised`、`p6_1a_Ri`、`p6_1a_door_exit`。
 - **oracle**:cd2b —— 真人被冻结 ghost 顶替时,**那个 ghost 的消失**(若有)不抬 Fallen;**真人 track 的消失**(R_i=real,非门区)才抬 → 配合 P3 判出 ghost 后,真人 Lost 的 no-detect 正确抬 lost-fall。D5F7/D523 边缘门区丢轨 → door-distance↓ → 不抬(防 dropout-FP)。
 - **DoD**:`grep ObsNoDetect` 确认 Fallen 因子受 R_i + door-distance 双闸;无任何"裸 absence 抬 Fallen"路径。
