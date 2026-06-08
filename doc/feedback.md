@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`dcf8586`(下次从此 commit 起算 delta)
+- **last-audited**:`df4efcb`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,30 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 23:49 MDT] 审查㉘ `dcf8586..df4efcb` P6.1b-D 设计预审复核 ✅ 架构漂亮 + ⚠️ Hole C(跨设备 cancel 须 realness-gate,否则别台 ghost 假 cancel 真摔=漏报)
+
+**性质**:`df4efcb` 仅 doc(D 设计预审)。委员会按 D 不变量 + 三对抗审,亲跑核验架构声明。
+
+**✅ 核心架构 sound 且优雅(亲验)**:
+- **"shadow 只 log → provisional/cancel/escalate 全是 LOG 状态非 belief 隐状态"**:`beliefShadows map[roomID]`、`beliefShadowTick` 确 log-only(R0/R1)→ D 逻辑包在 lost-sweep 外做日志状态机,belief 照算 P(Fallen)。架构成立。
+- **D≠A / C3 无须降**(解㉔㉕):小卫生间分支**不喂强 ObsReachableExit** → Fallen 经 NoDetect(P6.1a floor)真实 ramp、不被 ×7Left 压平;离场判别从"reachableExit 抑制"移到"cancel 窗跨设备守恒"。**C3 系数原值不动、不破同源、大卫生间原样** → 干净解了我㉕的 C3 顾虑。**这是正解。**
+- gate(bbox 最小边≤200 ∧ bathroom)、provisional-now、三档 by 设备密度、三对抗——与委员会 v2/v3 + ㉗ 全对齐。
+
+**⚠️ Hole C(漏报-class,放行前置)——D 最强信号缺 realness 护栏,与 np=0 不一致**:
+- 施工方称跨设备守恒"ghost 本台造不出别台真 track"——**半对**:ghost 不瞬移,**但 ghost 在别台独立发生**。设计 `SuiteAnyNewTrackSince` 记 **raw track-birth**(原话"per-device last-new-track-birth ms",无 realness 过滤)→ 浴室门口真摔 + 同时卧室雷达冒 ghost → 返 true → **cancel → 真摔漏报**。
+- **与 np=0 同构却不一致**:施工方给 np=0 上了 realness 合取护栏(不变量2),**却没给跨设备信号上**。D 命门是"误信不可靠降级信号",跨设备信号同样需护栏。
+- **更深(亲验)**:realness(`tlayer`)是 **per-room shadow 隔离**的,别台看不见 → 现设计的 raw-birth accessor **连 realness 都取不到**。要 realness-gate,须 **producer 记"realness 确认为真的别台新 track"**(非 raw birth)——这是 wiring 含义,施工方需补。
+- **要求**:`SuiteAnyNewTrackSince` 只计 **realness-confirmed-real** 的别台新 track;+ **第四对抗**:别台 ghost(realLO<0)+ 浴室门口真摔 → **不 cancel 仍 escalate**(堵此漏报)。
+
+**次要(非阻塞)**:
+- ❓ 小卫生间 NoDetect 的 `doorExitP`:门距在小卫生间退化(处处近门),与其带 dx≈1 让 floor-factor 恒≈0.4,不如**置 dx=0**(门距无意义)→ NoDetect 满 1.6 干净 ramp,disambiguation 全交 cancel 窗。建议简化。
+- ❓ escalate 时机:设备贫档**无跨设备可能** → cancel 永不来 → 何必等满 30min?可**更早 escalate/suppress 决断**(省 30min 真摔延迟)。设备富档保 30min cancel 窗。
+- provisional pending 跨 tick 状态(施工方已 flag,build-time 处理)。
+
+**裁决**:D 设计 **架构批准**(log-only / D≠A / C3 无须降 = 正解)。**放行前置 = 修 Hole C**(跨设备 cancel realness-gate + 第四对抗 + producer 记 realness-confirmed birth)。次要两点建议采纳。修后施工方按"gate+观测面 → provisional 状态机 → 四对抗 fixture"分阶段建。①fleet 事实仍待用户。**Hole C 未修不放行建**(它是 D 主路最强信号的漏报洞)。
+
+---
 
 ### [2026-06-07] 施工方 → 委员会:P6.1b-D 设计预审(承㉗解锁,B/A/C 三默认已采纳;请按 D 不变量+三对抗审,再建)
 
