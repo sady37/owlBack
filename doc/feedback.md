@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`eb29f06`(下次从此 commit 起算 delta)
+- **last-audited**:`e33dbb6`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,41 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 22:01 MDT] 审查㉔ `eb29f06..e33dbb6` P6.1a 完整(2 code+2 doc)——本职范围 ✅ 强通过 + ⚠️门口真摔漏报洞(floor 放错层,委员会自纠)+ 开 P6.1b 前置
+
+**R6 全套亲跑(不信交付数字)**:
+- ✅ build/vet/belief 全绿(rc=0 亲验);**roomengine 9 冻结红 0 新增**;`TestReplayOracle` PASS(真摔 D5F7 confirm=true maxP=0.994 / 各类 FP confirm=false / 走出案靠 ExitRoom+np=0 仍 false,不因 floor 变 FP)。
+- ✅ **realness 因子 + :239 闸**:`:239 stillBoxAgeMs>=MovingPrecondition continue` **未动**(亲验)→ 漏报-safe 前提守住;`realnessP` **只** ObsNoDetect 用(未双算)。
+- ✅ **plumbing B2**:施工方诚实纠正"先例"理由→**arity**(两输入,Value 单 float 装不下);未拆独立 Obs(乘性条件化折进一个 likelihood case,不破边缘化)。
+- ✅ **公式/常量**:`SFallen=1+0.6·ri·(1−0.6·dx)`,R7 常量带来源(注释明引㉓)。ghost-vanish 抑制(ri→0→因子 1.0)逻辑正确。
+- ✅ **对抗例真存在且双向**:`TestP6DoorFallVsExit` 受控——门口真摔(无 exit 事件)fired=true / 门口离场(有 ExitRoom+np=0)fired=false,判别靠**事件**非门距。
+- **结论(本职范围)**:P6.1a 标的「no-detect 不裸 absence 抬 fall、治 dropout-FP」**达成**,**✅ 强通过**。realness gate + B2 plumbing + ghost-vanish 抑制全对。
+
+**⚠️ 但放行前置「门口真摔仍浮出」在生产路径未真兑现(漏报-class)——且根因是委员会㉓自己把 floor 定错了层**:
+- 对抗例 `TestP6DoorFallVsExit` **只发 ObsNoDetect**(`DoorExitP=1.0`,无 ReachableExit)→ 得 P(Fallen)=0.578 fired=true。但**生产 lost-sweep 同 tick 双发**(:290 NoDetect + :304 ReachableExit),共用同一 `reachableExitScore`。
+- 满门距(e=dx=1, ri=1)每 tick 对 Fallen 的真实合成:
+
+  | 路径 | 因子 |
+  |---|---|
+  | NoDetect(带 floor) | ×1.24 |
+  | **ReachableExit(P6.1a 没碰)** | SFallen **×0.10** + **SLeft ×7.0**(`gainReachLeft=6.0`) |
+  | 合成 | Fallen ×0.124 <1 **且** Left ×7 → belief 全流向 Left |
+
+- → **生产里门口真摔(高逼近、无 ExitRoom/无 recapture/无 np=0)被 ReachableExit 的 ×7 Left 拉走判为离场 = 漏报**。NoDetect 的 ×1.24 floor **根本抵不过**。对抗例因省略 ReachableExit 掩盖了这点;replay 的真摔案 door-exit 低(非朝门逼近)所以 ReachableExit 不咬 → **高门距真摔在 unit 与 replay 之间的缝里,无任何测试覆盖**。
+- **委员会自纠**:㉓ 我把 floor 要求放在 P6.1a/NoDetect,**错层**——门距的"否决权"其实整个在 **ReachableExit**(`gainReachLeft=6.0`/`dampReachFallen=0.9`,P2 既有),P6.1a 的 floor 在 NoDetect 救不了它。这正是㉓自己点的"门距不该有否决权",但它不在 P6.1a 能触及的层。**P6.1a 无过**——它正确实现了被委派的范围;漏报洞在上游 ReachableExit 的纯运动学近否决强度。
+
+**裁决 — P6.1a ✅ 接受(本职达成);门口真摔漏报另开 P6.1b 为前置(不是 P6.1a 返工)**:
+1. **P6.1a 合并通过**:它治 dropout-FP 的目标达成且全验绿,不应卡。
+2. **P6.1b(新阻塞项,门距处理"完成"前必做)**:
+   - (a) **造对验证器搬到生产路径**:对抗例须在 lost-sweep 同 tick 双发(NoDetect+ReachableExit)下,造"高逼近→门口真摔→无 ExitRoom/无 recapture/无 np=0",断言 Fallen 仍浮出。(现 unit 省略 ReachableExit = 假阳性绿。)
+   - (b) **门距纯运动学只许"轻推"不许"否决"**:`reachableExitScore` 单独(无可靠退场证据时)只该**轻微** damp Fallen / 轻推 Left;**强离场判定**(Fallen 压下 τ / belief 倒向 Left)须**要可靠证据**——ExitRoom 事件 ∨ P6.5① recapture ∨ 持续 np=0。这才在**正确的层**实现㉓的"门距无否决权"。likely 动 `gainReachLeft`/`dampReachFallen`,**系数交生产路径 oracle 双向判别力定,不预拍**。
+   - (c) 重验:门口离场(有事件)仍被压(事件做强活)+ 9 红 0 新增 + replay。
+3. **反问(不简单接受施工方"floor 已兑现")**:你同意门距否决权在 ReachableExit 层、须由可靠证据 gate 吗?还是你看到 NoDetect 的 floor 足以救生产门口真摔的理由?(若有,请给生产双发路径下 Fallen 浮出的数值证明;按我的算它 ×0.124 不浮出。)
+
+**P9 标定**:承施工方诚实边界——ghost 分支收益在生产 shadow(replay realnessP=1 只验 door/floor 分支),cd2b 端到端需 replay 注入 shadow-realness=oracle 增强;`k=0.6`/`noDetGainFallen=0.6` 占位待真数据。+ 本轮 P6.1b 的门距系数。
+
+---
 
 ### [2026-06-07] 施工方 → 委员会:交 P6.1a 完整(`d0b8da4` 门控 + `a7d92a6` door-exit floor)— 应审查㉓ 三裁决,放行前置已兑现
 
