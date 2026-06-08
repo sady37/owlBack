@@ -45,6 +45,25 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:P6.1b 放行前置经验调查**已做**(真 CABB fixture)→ (b)假设经验为假,二义坐实 → 安全权衡列选项待裁
+
+承㉕:放行前置=真 CABB 立项 fixture 上验 np=0/recapture 到不到。**已亲跑调查 `doc/cases/hunzi-cabb-lost-0601-2247-FP`(CABB 离场-FP 立项案)**:
+
+**经验发现(硬数据,非假设)**:
+- **无 ExitRoom**(firmware 漏发,grep window.json 确认:仅 EnterRoom+number_people,无 exit)——坐实"reachableExit 为漏 ExitRoom 而生"。
+- `number_people 1→0` **+335s 才到**(replay_test.go:374 注释"+335s,正当 vanish")——离 track 丢失晚 **~5.5min**。
+- **单设备**小卫生间 → P6.5① recapture **无法触发**(无第二设备做 track 守恒);人走出非回床 → 无 sleepad recapture。
+- ⟹ **早窗 [0,335s] 内,reachableExit 是唯一及时离场信号**。np=0 太晚、recapture 缺席。
+
+**结论:委员会(b)"强离场靠可靠证据"在立项工况经验为假**。门口真摔 vs 门口离场在早窗**无及时可靠信号区分**——**不可分二义坐实**(同㉓§2/§11.2)。**降 reachableExit 必同时**:① 救门口真摔漏报(㉔);② 放回 CABB 离场-FP 于 [0,335s] 早窗(np=0 确认前)。一刀两刃,数据证实不能只取一边。
+
+**这是真安全权衡(漏报 vs FP),非纯实现 → 列选项请委员会/用户裁(不擅决产品级安全取舍)**:
+- **选项 A(㉕安全不对称方向:倾向浮出 + 显式 LOG)**:C3 两层降 reachableExit → 门口真摔浮出;**接受 CABB 离场-FP 早窗回归**,但 reachableExit-weakened 且无可靠证据即 fire 时**显式 LOG**(如 `belief_shadow_reachexit_weak_fp_risk`,no silent caps,不许悄悄回归 CABB FP 当"修好")。净:拿一个已知离场-FP 换闭一个 fall 漏报(elder-care 漏报≫FP,安全正)。**施工方倾向 A**(养老语义:漏真摔 ≫ 多一声误报)。
+- **选项 B(保持现状)**:reachableExit 不动 → CABB 离场-FP 续压;**门口真摔漏报留存**(㉔ 洞不闭)。零回归但漏报不治。
+- **选项 C(时限 Left 先验衰减,㉕第三选项)**:丢失瞬给强 Left、沿窗衰减。**但经验数据显示对此案无效**:np=0 在 +335s,任何能让门口真摔及时(~2min 内)浮出的衰减窗,都会在 [衰减完, 335s] 让 CABB 离场 Fallen 累积越 τ = 仍 FP。衰减窗 >335s 则门口真摔 fire 太晚(失跌倒时效)。**二义在时间轴上同样不可分**(np=0 太晚是根因)。→ C ≈ A 的结局,徒增复杂。
+
+**待裁**:A / B / C?(施工方倾向 A + 强制 LOG。)裁后:A→降 C3 两层系数(oracle 双向:门口真摔浮出 + CABB-FP LOG 暴露 + replay 其余不破 + 9红0新增)；B→P6.1b 关闭(漏报记 P9 已知残差);C→按时限结构建(但上述经验示其难两全)。**未裁不建**(这是漏报-vs-FP 安全取舍,该用户/委员会定调不该我拍)。
+
 ### [2026-06-07 22:14 MDT] 审查㉕ `e33dbb6..957f854` P6.1b 方向裁决(零代码)——①C3同步降确认 ✅ + 拆"靠可靠证据"硬前提 ⚠️(reachableExit 身世=没有可靠证据)
 
 **性质**:`957f854` 仅 doc(答㉔反问 + P6.1b 设计 + C3 选项)。施工方完全同意㉔、亲跑复现门口真摔生产双发 P=0.000(坐实漏报)、不打太极接 P6.1b。**诚实满分**。
