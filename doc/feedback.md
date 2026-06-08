@@ -42,6 +42,26 @@
 
 
 
+
+### [2026-06-08] 施工方 → 委员会:用户机理细化 — Enter-β 是「雷达边界盲区」非「墙太内」,**外扩 wall 反作用**(治法相反,记给 cell engine 勿误开外扩)
+
+**用户 2026-06-08**:Enter 处丢失因雷达安装限制——雷达边界内缩 wall ~20cm,门贴 wall → 门口在雷达 FOV 极边 → 轻微偏差要么读 ExitRoom 要么走出雷达边界(丢轨)。
+
+**关键区分(两个不同机理,治法相反)**:
+| | 墙太内(委员会 P-wall v1) | **Enter 雷达边界盲区(用户本条)** |
+|---|---|---|
+| track | 越 WallPolygon **外** → InRoom=false → lost | 在 wall **内** ~20cm(雷达 FOV 边)丢锁,InRoom 仍 true |
+| 机理 | wall 画太小,真人漂出 wall | 雷达覆盖 < wall(内缩 20cm),门口贴 wall=覆盖极边 |
+| 治法 | 外扩 wall 含进漂移点 | **外扩 wall 反作用**(wall↑→"wall 内但雷达外"区↑→lost-in-room FP↑) |
+
+→ **⚠️ 对 cell engine 的告诫**:把 Enter-β 当"墙太内"开 wall 外扩 = **治错方向且加重**。Enter-β 的 last-seen 在 wall 内 20cm(雷达边界),从不越 wall 外 → v2 的「墙外≤30∧返回」判据**抓不到**它(它从不到 wall 外)。
+
+**治本归属(守 v3,cell engine/layout)**:雷达 BoundaryVertices(已知 == firmware,radar_layout_device_invariant)vs WallPolygon 调和——**Enter 区"丢失是否有意义"应按雷达边界判,非 wall**:track 在雷达边界外丢失 = "到雷达盲带" ≠ "lost in room"(非摔)。cell engine/layout 域,DBN 零参与不写边界几何。
+
+**DBN 侧(已有,不新增,守界)**:Enter geom(NearestEntry≤beliefEnterMargin30)+ reachableExit/ExitRoom/np=0 正向退场门控已在压门区丢失的 fall。**红线维持**(feedback_signal_loss_lost_track_not_suppressible):门口真摔不可因"门口=雷达盲带"盲压,须**正向 exit 证据**(ExitRoom event ∨ 定向逼近门 reachableExit ∨ np=0 corrob),非"门区=盲带→盲压"。
+
+**对 β 诊断的更新**:β(np→0 lost)分两支——(a) **Enter 雷达边界盲区丢锁**(本条,治=cell engine 雷达边界调和,非 wall 外扩);(b) 真·室内突然丢信号(不可抑制,雷达硬件局限)。原 C 诊断 β"归 P3/P6.1a"仍对(DBN 侧正向证据门控),但**治本侧 Enter-β 归 cell engine 雷达边界**(layout),记此细化。
+
 ### [2026-06-08] 施工方 → 委员会:收 ㊵(P5 PASS⭐ + P6.2 裁)+ P-wall v3 边界 + 用户"穿墙60s→cell engine"答复 + P6.2 γ bed 拓扑实证→记残差
 
 **收讫 ㊵**:P5【干净 PASS⭐】(R6 亲跑合取门控/滚下床对抗/R5 IgnoresZ/leak让位/9红0新增)——治 α 落地确认,谢复核。P6.2 裁收讫(驳 Opt-b 全局软化;Opt-a 前提为假[ObsFirmwareFall 无 track_id + Track 层无 Fall 态]=大活勿急;Opt-c 须先验 γ bed 拓扑;γ minor 记残差或建c)。
