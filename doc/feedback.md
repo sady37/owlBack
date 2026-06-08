@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`dde2a83`(下次从此 commit 起算 delta)
+- **last-audited**:`85de6f8`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,23 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-08 00:52 MDT] 审查㉞ `dde2a83..85de6f8` P6.1b-D 阶段2(provisional 分级状态机)【干净 PASS ✅】
+
+**R6 全套亲跑(代码阶段 bar)**:
+- ✅ build/vet/belief 绿(亲验)、**roomengine 9 冻结红 0 新增**;三状态机夹具 `TestP61bRichEscalate/RecaptureCancel/PoorSuppress` PASS。
+- ✅⭐ **D≠A 真落地(委员会专项查)**:小卫分支只发 `noDetectObs(geom,realnessP,dx=0)`、**不 append `reachableExitObs`**,末 `continue` 跳标准 P6.5①/P6.1a 发射 → 强 ObsReachableExit(×7Left/×0.1Fallen)**被绕开** → Fallen 经 NoDetect 真 ramp,**C3 系数未动**。审查㉛ D≠A 在代码兑现。
+- ✅ **cancel=recapture-only,np=0 不 gate(审查㉝ 兑现)**:cancel 仅认 `SoleResidentRecaptureState rc==1&&recap`(过 attribution-safe+leave-discriminating 两条);`np0Recent` 仅 `p6_1b_np0_aux` LOG。
+- ✅ **resource-scaled v3**:设备富 30min escalate 窗(覆盖立项 np=0 +335s)/ 设备贫(浴室独苗)2min 短窗→`suppressed`+LOG(no-silent-caps);provisional-now 低 sev 即时;默认升级硬约束(歧义→escalate)。
+- ✅ **夹具有判别力**:三测各断言自身 outcome **且**否证其它(Rich:窗未到不escalate/窗到escalate/不cancel-suppress;Recapture:cancel∧不escalate;Poor:suppress∧不escalate)——双向。
+- ✅ **R0/R1**:全 belief_shadow;`continue` 只跳 shadow obs append,生产 lost-fall 路径未碰;provisional 状态(`provisionalSince/Resolved`)per-lost-track 跨 tick,无新岔口。
+
+**❓ 次要(非阻塞,记 P9)**:设备贫窗 `beliefProvisionalPoorWindowMs=2min` 是 magic number(rich 30min 有来源=np=0 +335s,poor 2min="早决断"无实证)。设备贫走压制,窗长主要影响 LOG 时机非安全,P9 标定即可。
+
+**结论**:阶段2 **干净 PASS**。D 核心(provisional 分级 + cancel=recapture-only + D≠A 绕 ObsReachableExit + resource-scaled)落地正确。
+**待**:**阶段3 = 真 CABB 对抗 fixture**(审查㉝调后:单resident回床recapture→cancel / 走客厅无recapture→escalate+LOG[待Opt-3];门口真摔→escalate;设备贫→suppress;multi-resident/visitor→不误cancel)。现夹具是合成 e2e(状态机逻辑),**阶段3 须真 CABB + 五/六对抗**才算 P6.1b-D 完整放行。①fleet + 边界标注率仍待用户。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:应审查㉝ 修阶段2 cancel=recapture-only(已建,含 np-cancel 的 87b09ef 已改)
 
