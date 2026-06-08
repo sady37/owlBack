@@ -45,6 +45,45 @@
 **建议**:...
 -->
 
+### [2026-06-07 22:48 MDT] 委员会指令 v3(用户定调:resource-scaled 取舍)→ 解 v2 caveat①,FP/漏报 倾向随设备密度缩放
+
+用户纠正委员会 v2 的 caveat①(浴室独苗 unit 当"未解 gap"):**不是 gap,是资源约束下的取舍**。委员会据此修正一个**全局错误假设**:
+
+**修正**:委员会此前默认"漏报≫FP"**全局成立**——**错**。**护士注意力是稀缺资源**;FP/漏报 的代价比**随部署资源水平变**。
+
+**核心洞见(用户)**:**设备密度 = 机构资源水平的代理**。
+- **设备富(unit 多雷达)**= 机构资源足 → ① 有跨设备 track 守恒可干净分辨(不FP∧不漏报);② 护士追得起 FP → **倾向浮出**。
+- **设备贫(浴室独苗,无跨设备信号)**= 机构资源大概率也紧、护士更少 → 太多误报 = **alarm fatigue 偷走稀缺护理注意力**(系统被忽略/关停,更糟)→ **倾向压制**,接受部分门口真摔漏报 = 资源约束下的理性代价。
+- **设备数一举两用**:富时**使能**分辨(30min 跨设备守恒),贫时**指示**取舍方向(压制)。
+
+**P6.1b-D 最终策(三档,按 unit 设备密度)**:
+1. **大卫生间**(bbox 最小边 >200)→ 不进此路,门距/常规。
+2. **小卫生间 + unit 有≥1 其它设备**(设备富)→ provisional-now + 30min 跨设备守恒:窗内别台冒新 track→软 cancel(P3.4 离场);无→升全 severity(真摔)。**两不误**。
+3. **小卫生间 + 浴室独苗 unit**(设备贫)→ 无分辨信号 → **倾向压制**:provisional **过期→降级/不报**(护注意力优先);但 **LOG 被压的疑似摔**(no silent caps,审计/分析留痕,机构可回看"这里压了一次")。**不静默漏报,只是不 page**。
+
+**委员会补一个 refine(供用户定)**:设备数是**代理**非真值("可能机构资源不足")。建议=**设备密度当默认启发**,但留**显式 per-机构/unit resource-tier 配置覆盖**(富机构里偶有设备贫 unit、或反之)。纯代理简单自配置;显式 knob 更准但需配置。倾向:默认代理 + 可选覆盖。
+
+**待用户定**:(A) 设备贫档"过期→压制 + LOG"方向对吗?(B) 设备富档延迟模型=provisional-now+cancel(建议)还是等30min再fire?(C) resource-tier 纯设备代理 vs +显式覆盖?定后施工方出 D 设计预审。
+
+---
+
+### [2026-06-07 22:43 MDT] 委员会指令 v2(用户细化)→ P6.1b-D 机制定为「小卫生间 gate + 30min 跨设备 track 守恒」,替 np=0
+
+用户进一步定 D 的机制(覆盖 v1 里 np=0∧realness 的降级信号——**改用更强的跨设备守恒**):
+
+**(1) Scope gate —— 小卫生间才走此机制**:`bbox(WallPolygon ∥ radar BoundaryVertices)` **最小边 ≤200cm** = 小卫生间。**理由**:小卫生间人活动范围≈全程贴门 → 门距信号退化(审查⑳ 立项"处处近门")→ 正因门距没用,才用跨设备守恒替。大卫生间门距仍可用,不走此路。**wiring 在**:WallPolygon(engine.go:40)/ grid bbox(Width×Height,cap600)。
+
+**(2) 分辨信号 = 30min 跨设备 track 守恒**(替 np=0,因 np=0 ghost 假报不可靠):小卫生间 enter 区 track 丢失 → 30min 窗内**同 unit 任一其它设备冒新 track** = 人移到别处 = exit → 弃 fall;**无新 track → fire**。**为何强**:别台设备的真 track 是**阳性证据**,ghost 在本台造不出别台的真 track → 堵死 np=0 的命门(㉖)。wiring:SuiteCensus `AnchorTrackID/AnchorSinceMs`,`UpdatePersonFromTrack` 为新 track 建 person。
+
+**委员会钉三个用户式子未覆盖的实质点(不橡皮图章)**:
+- **① 残余 gap = "本 unit 只有这一台浴室雷达、无其它设备"**:则永无"别台新 track"→ 永远"没有"→ 30min 后照 fire = **CABB FP 原样回归(仅延迟30min)**。机制解的是"小卫生间 + unit 有≥1 其它设备";**浴室独苗 unit 仍未解**。需用户确认 fleet 里有无此类 + 定其策(接受FP fire / 仅 provisional-LOG)。
+- **② 30min 当「等满再 fire」= 真摔静默30min(临床危险)**:建议改 **provisional-now + 30min cancel 窗**——lost 即发低 severity provisional;窗内冒别台新 track→**软 cancel(P3.4)**;不冒→升全 severity。真摔立刻有声、离场被撤,30min 是 cancel 窗非 fire 延迟。**待用户定** fire-now vs 等30min。
+- **③ wiring 微调**:census 现 person 升格"只在 bedroom"(`AnchorTrackID` 注释 bedroom 内)→ 客厅/另一浴室冒的新 track 未必升格。机制要"**同 unit 任一设备任一新 track**"→ 施工方需放宽观测面(非阻塞,建项)。
+
+**放行前置(更新)**:真 fixture oracle ——(i) 小卫生间离场+别台30min内冒新track→弃(不FP);(ii) 小卫生间门口真摔+30min无新track→fire(不漏报);(iii) **浴室独苗 unit** 按①定策验;(iv) 大卫生间不进此 gate(回归门距/常规);+ 9红0新增 + R0/R1 shadow + 全程 LOG(provisional起/cancel/fire/gate命中边长)。**待用户定 ①②后施工方出设计预审**。
+
+---
+
 ### [2026-06-07 22:37 MDT] 委员会指令(用户定调)→ P6.1b 取**选项 D(延迟确认/分级)**,非 A;规格 + 放行前置如下
 
 **用户裁决**(领域主,elder-care 产品判断):覆盖委员会/施工方倾向的 A(纯降+接受 FP 回归),取 **D —— 两者都要:门区 lost 走延迟确认/分级**。买"不漏报 ∧ 不回归 CABB FP",代价=门区真摔确认延迟 + 设计更重。委员会受理,翻译成可建规格(WHAT 必须成立,机制留施工方设计):
