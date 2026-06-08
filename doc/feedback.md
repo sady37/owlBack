@@ -45,6 +45,28 @@
 
 
 
+
+### [2026-06-08] 施工方 → 委员会:B(replay harness)已建 + 跑通真生产路径 + **首发现(交叉校验兑现):firmware Fall 未 wire 进 shadow** → reproduce-C 语义岔口待裁
+
+承㊸(批准 B + B-1=(a)直驱 handleMessage / B-2=(a)zap-observer 日志 / 保真自检硬条件 / 首 oracle 复现 C)。**B 已建**(`belief_b_replay_test.go`),全 test-only。
+
+**B 保真落地(过㊸ 硬条件)**:
+- 直驱 **真 `handleMessage`(monitor:track/sleepad)+ 真 `handleEventMessage`(event:InBed/LeftBed/EnterRoom/ExitRoom/number_people)**:fixture record→真 StreamMessage(device_uid→addr 翻译)→FromStreamMap→ParseRadarTracks→tm.ProcessFrame→SnapshotTrackStatuses→真 beliefShadowTick。
+- **保真自检 grep 全过**:B 体内**无** `TrackStatusBase{` 手搓字面量、**无**直调 beliefShadowTick/adapter/.Step(只 handleMessage/handleEventMessage + setup NewEngine/RegisterRoom/wire deviceRoom/mount + observer)。
+- **smoke 绿**(`TestBReplaySmoke`:8 案全跑通真路径无 panic,ai_emit/lost_fall_skipped 等生产日志确认 ProcessFrame/fall-rules 执行)。**0 新增 vs 冻结 9 红**;build/vet/belief 绿。
+
+**⚠️ 首发现(B 第一价值=交叉校验,亲验代码)——firmware Fall **从未** wire 进 shadow**:
+- `radarEventToObs`(belief_adapter:423)有 `alarm.Fall`→`ObsFirmwareFall`,**但** `beliefShadowEvent` 仅在 `handleEventMessage` 的 `ParseRadarTrackEvents` 分支(EnterRoom/ExitRoom/InBed/LeftBed)被调(engine.go:1790);**Fall/SittingOnGround 分支(1762)走 `RecordRadarAlarm`+`return`,从不调 beliefShadowEvent**;alarm 流 `handleAlarmMessage` 同不喂 shadow。→ **`ObsFirmwareFall` 是 dead-plumbed,shadow 永不见 firmware Fall**。
+- **后果 A**:C 诊断 α/β/γ **全基于 firmware Fall co-fire**,但 shadow 不见 firmware Fall → **C 分类不直接映射 shadow 决策**;shadow 纯靠 pose/dwell/nodetect/track-loss **独立判** fall。本回放窗 8 案 **0 shadow fall 确认**(含 γ)。
+- **后果 B(关键)**:P5 α 压制(bedAuthorityObs damp SFallen)**合成测**(TestP5Alpha)喂的是 `ObsFirmwareFall` co-fire;**生产 shadow 里 firmware Fall 不存在** → P5 实际压的是 **pose-driven SFallen**(床上翻身 pose=fallen@InBed 误读),非 firmware Fall。**P5 仍有意义但作用输入 ≠ 其合成测假设** —— **正是委员会㉟/㊟ 反复咬的"合成绿≠生产路径"gap。B 兑现了它的目的:把这个 gap 暴露出来。**
+
+**⚠️ reproduce-C 语义岔口(不擅决,请委员会裁)——firmware Fall 是否 wire 进 shadow?**:
+- **Opt-WF-a(wire firmware Fall→shadow)**:Fall category 也调 beliefShadowEvent → shadow 见 firmware Fall(同 gate-list 触发源)。则 P5 如设计压住真 firmware-Fall co-fire;reproduce-C 可比(shadow fall vs gate fall)。**但**:firmware Fall 是 pose 派生(R5 铁律 pose 不可信),喂 ObsFirmwareFall(LR 2.0)给它权重 —— 与 DBN"白盒独立判不信 firmware pose"初衷冲突。
+- **Opt-WF-b(firmware Fall 留 gate-only,不进 shadow)**:shadow = 独立白盒,从 raw pose/dwell/nodetect 自判 fall。则 **reproduce-C 须重框**:B 不复现 firmware-Fall 分类,而验 **shadow 独立决策**(α 床上翻身→shadow 正确不 fire;真摔→fire);C 的 α/β/γ 是 firmware 侧标签非 shadow 目标。P5 角色=压 pose-driven 床上 fall。
+- **施工方判断**:这是 DBN **根本设计问**(消费 firmware Fall 还是独立判?)。它决定 ① B oracle 断言语义 ② P5 合成测是否测了对的输入 ③ 整个 P2.4(ObsFirmwareFall LR)是否 live。**倾向需委员会拍**(涉 R5 与 DBN 初衷的张力),不擅决。
+
+**B 状态**:harness 就绪(真路径、保真过、smoke 绿);**reproduce-C oracle 阻塞于 WF 岔口裁定**(裁定决定断言什么)。已提交 smoke(证真路径跑通 + 暴露 gap)。**下一步**:委员会裁 **WF-a/b** → 据此定 reproduce-C 断言 + 补 `TestBReproduceCDiagnosis`(WF-b 则验独立决策;WF-a 则先 wire firmware Fall 再验压制)。P(Fallen) 数值若需,按㊸ 加进生产 shadow 日志(非 test 钩子)。333B 待 ghost。
+
 ### [2026-06-08 12:55 MDT] 审查㊸ `5be1075..4a10431`(doc-only)B 设计预审【批准 ⭐ 保真到位】+ 裁 B-1=(a)直驱handleMessage / B-2=日志为主(数值进生产日志非test钩子)
 
 **性质**:`4a10431` doc(B 设计预审)。无代码。
