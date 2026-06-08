@@ -145,14 +145,14 @@ RUN_PSQL -t -A -c "
   SELECT COALESCE(json_agg(rec ORDER BY ts_ms), '[]'::json)::text FROM (
     SELECT (extract(epoch FROM m.ts)*1000)::bigint AS ts_ms,
            json_build_object(
-             'device_uid', '$UID_ARG',
+             'device_uid', dm.device_uid,
              'timestamp',  (extract(epoch FROM m.ts)*1000)::bigint,
              'topic_type', 'monitor',
-             'category',   replace(m.stream_type::text, 'radar.', ''),
+             'category',   replace(replace(m.stream_type::text, 'radar.', ''), 'sleepad.', ''),
              'data_value', m.payload
            ) AS rec
-      FROM monitor_stream m
-     WHERE m.device_addr='${DEV_ADDR}'::inet
+      FROM monitor_stream m JOIN devices dm ON dm.device_addr=m.device_addr
+     WHERE m.device_addr <<= '$ROOM_ID'::inet
        AND m.ts BETWEEN to_timestamp($START_MS/1000.0) AND to_timestamp($END_MS/1000.0)
     UNION ALL
     SELECT (extract(epoch FROM e.ts)*1000)::bigint AS ts_ms,

@@ -143,11 +143,12 @@ func bReplay(t *testing.T, dir, file string) []bShadowLog {
 		case r.TopicType == "event":
 			// 床/门/人数事件 → 真 event 入口(InBed/LeftBed/EnterRoom/ExitRoom/number_people)。
 			e.handleEventMessage(mk(addr, devType, r.TopicType, r.Category, r.DataValue, r.Timestamp))
+		case !isRadar:
+			// sleepad monitor 帧(sleepad.track 含 bed_status/vital)→ 真 monitor 入口(ProcessSleepadObservation)。
+			// **须先于 category==track 判**:sleepad.track 经 export 也 category=track,但应走 sleepad 分支非 radar。
+			e.handleMessage(nil, mk(addr, devType, r.TopicType, r.Category, r.DataValue, r.Timestamp))
 		case r.Category == "track":
 			// radar track 帧 → 真 monitor 入口(ParseRadarTracks→ProcessFrame→beliefShadowTick)。
-			e.handleMessage(nil, mk(addr, devType, r.TopicType, r.Category, r.DataValue, r.Timestamp))
-		case !isRadar:
-			// sleepad monitor 帧(床占用/vital)→ 真 monitor 入口(ProcessSleepadObservation)。
 			e.handleMessage(nil, mk(addr, devType, r.TopicType, r.Category, r.DataValue, r.Timestamp))
 		default:
 			// radar 非 track monitor 子流(heart/activity 等)不入 shadow lost/bed 决策路径,跳过(非 fork:不喂≠手搓)。
