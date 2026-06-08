@@ -20,6 +20,7 @@ const (
 	ObsNoDetect                       // P(no-detect|s)：本 tick 看了没测到（前置=消失前60s在走动）。状态条件似然=可检测态压低/可合理消失态保留；时长→P3，非斜坡
 	ObsReachableExit                  // 丢失点可达退场证据 e=f_dist·f_reach [0,1]（P2 软门：近门+单帧可达→偏 Left 压 Fallen）
 	ObsZBand                          // P2.3 z 高度档(Value=z cm)：z>80→stand / 30–80→sit / <30→噪声无信息。只喂 posture,**绝不写 SFallen**(R5)
+	ObsDwellStill                     // P4.1 dwell 生存函数(Value=still 秒,Geom=zone)：-lnS_vol(d|zone) 平滑 ramp 取代"still≥阈即报"硬悬崖
 )
 
 // Geom 位置语义标签——由 device 坐标 ∩ layout polygon 现算（belief_input_normalization.md §1）。

@@ -27,6 +27,20 @@ func rawLikelihood(o Observation) Vector {
 		default:
 			return lk(nil)
 		}
+	case ObsDwellStill:
+		// P4.1(裁决⑮ B):dwell 生存函数 ramp S_vol(d|zone)=exp(−(d/scale)²) → fallLR=1+(d/scale)²(封顶),
+		// **平滑取代"still≥阈即报"硬悬崖**。**仅 toilet/shower**(Z_cell-无关:厕浴久留=异常,无论 cell 学没学,
+		// fixture 声明 toilet 即可在 replay 验证)。**开阔地 dwell-fall 依赖 Z_cell tolerance 抑制久站真人(§11.2 残差),
+		// bundle 到 P4.4 同 cell-tolerance gate 落+测**;rest/bed/enter 久驻正常不报。
+		if o.Geom != GeomInToilet || o.Value <= 0 {
+			return lk(nil) // 非厕浴 / 无 dwell → 不报(开阔地/deny 留 P4.4;bed/enter 是 rest)
+		}
+		r := o.Value / dwellScaleToiletSec
+		fallLR := 1 + r*r
+		if fallLR > dwellFallCap {
+			fallLR = dwellFallCap
+		}
+		return lk(map[State]float64{SFallen: fallLR})
 	case ObsVitalPresent:
 		// 有生命体征 → 必有真人，压 Empty/Artifact。
 		if o.Value >= 0.5 {

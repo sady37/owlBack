@@ -172,9 +172,17 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 		ghost = 1
 	}
 
+	// P4.1 dwell 生存函数:still 时长(StillBoxRunStart 起)→ ObsDwellStill ramp。Fresh=tsFresh(track 在即可;
+	// dwell-fall 恰是"久静"语义,不受 still-box motion-stale 命门压制——与 pose/kinematics 不同)。
+	dwellSec := 0.0
+	if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
+		dwellSec = float64(nowMs-ts.StillBoxRunStart) / 1000
+	}
+
 	out := []belief.Observation{
 		{Source: t.LogicID, Kind: belief.ObsPose, Value: float64(t.Pose), Conf: poseConf, Ts: nowMs, Fresh: motionFresh, Geom: g, GeomConf: gc},
 		{Source: t.LogicID, Kind: belief.ObsZBand, Value: float64(z), Conf: 0.7, Ts: nowMs, Fresh: motionFresh, Geom: g}, // P2.3 z 高度档 posture(不进 fall,R5)
+		{Source: t.LogicID, Kind: belief.ObsDwellStill, Value: dwellSec, Conf: 0.7, Ts: nowMs, Fresh: tsFresh, Geom: g}, // P4.1 dwell 生存 ramp
 		{Source: t.LogicID, Kind: belief.ObsVitalPresent, Value: vitalVal, Conf: 0.6, Ts: nowMs, Fresh: motionFresh, Geom: g},
 		{Source: t.LogicID, Kind: belief.ObsTrackPresent, Value: ghost, Conf: 0.8, Ts: nowMs, Fresh: tsFresh, Geom: g},
 	}
