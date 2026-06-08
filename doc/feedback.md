@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`0b66d5b`(下次从此 commit 起算 delta)
+- **last-audited**:`bc1fdba`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,21 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 18:25 MDT] 0b66d5b..bc1fdba — 委员会裁决⑮:P4.1 撞 §11.2 残差 → 裁 **B(精化)**,A 否决
+
+**表扬**:施工方又是开工撞硬墙即停手报会 —— 且诊断准:Hunzi-CABB FP 根因 = 规划期 §11.2 残差(开阔地静止真人 vs 倒地,信息论唯一杠杆 Z_cell)在代码层撞上,replay 跑不了 ToleratedStill 学习 → Z_cell 保护测不到。委员会复核 §11.2 + Hunzi 是 lost-FP(站立静止),诊断属实。
+
+**不简单选 A —— 拆 A 的代价**:A=land 开阔地 dwell-ramp + 把 Hunzi-CABB 标"Z_cell-gated 已知残差"塞进 replay 期望集。**问题**:(a) **侵蚀 oracle 的"0 新增 FP"信号** —— 一旦开个"expected-FP-pending-Z_cell"桶,未来真的开阔地 FP 回归会被混进去藏住;(b) **land 一个当前无验证器的特性**(开阔地 dwell-fall 的判别保护 Z_cell 在 replay 里测不到 → 现在 land 它零可测价值,只增桶)。**违"挑实质不橡皮章"——不接受测不到的残差进 oracle。**
+
+**裁定:B(精化)= 落可验证的、耦合不可验证的与其验证器**:
+- **P4.1 现在只做 Z_cell-无关 的 dwell 域**:toilet/shower/deny + 缺席(Stay/LeftBed/NightAbsence)。**这些靠时长本身判,与 cell-tolerance 无关**(toilet 不是 rest 区,"久留=异常"无论 cell 学没学;只读 AreaType 选档,fixture 有声明 toilet 即可测)→ **0 新增 FP 可在 replay 验证**。critical-path 进度不停。
+- **开阔地 dwell-fall(依赖 Z_cell 抑制久站)整体 bundle 到 P4.4**,与 **cell-tolerance gate 同落、同测**;并**新建 tolerance-bearing fixture**(replay 先跑 ToleratedStill 学习,或合成预学 AreaSit/tolerance 的 cell)—— 这才**真正修掉**"replay 测不到 Z_cell"的 gap(造对的验证器),而非 A 的"接受测不到"。
+- **A 否决**(勿污染 oracle 信号 + 勿 land 无验证器特性);**C 不必**(toilet/缺席域可验证且在 critical path,无需整体推迟)。
+
+**根因归类**:这是 §11.2 的 **架构级信息论残差**(dropout-FP 邻类:真人久站→FP),非调参可解 —— 正解是 Z_cell 学习(P4.4)+ 对的 fixture,B 把二者绑在一起落,honest 且可测。
+
+**裁决**:**裁 B(精化)**:P4.1 = toilet/shower/deny/缺席 dwell-ramp(Z_cell-无关,可验证,0 新增 FP);开阔地 dwell-fall + Z_cell gate + tolerance-bearing fixture **bundle P4.4 同落同测**。本地已写的开阔地 ramp 代码留作 P4.4 基础。按此调整 P4.1 再交。
 
 ### [2026-06-07] 施工方 → 委员会:⚠️ P4.1 撞 §11.2 残差 —— dwell ramp 单独必 FP 真人久站,待裁(A/B/C)
 
