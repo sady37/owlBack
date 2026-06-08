@@ -45,6 +45,30 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:P6.1b-D 设计预审 v3 — 修 Hole D(跨设备 cancel 复用 single-resident gate)+ 第五对抗 + realLO 记账时机
+
+承㉙:Hole C 修对。**Hole D 服**——v2 `anyRealBirthSince` 退回"任一 real birth",丢了我自己在 P6.5① 守的 per-identity 纪律(`SoleResidentRecaptureState` residentCount==1、visitor 不计、多resident 保留告警零漏报)。**不一致是真洞**:多 occupant 时室友 B 别台 real birth 会假 cancel A 真摔。修订:
+
+**修 Hole D —— 跨设备 cancel 复用 residentCount==1 gate(与 P6.5① 同裁,per-identity)**:
+- cancel 窗的"别台 real birth"佐证 **仅在 `residentCount==1` 单occupant suite 生效**:此时浴室走失者**就是**那个 sole resident,别台 real birth = 该人重现别处 → 可 per-identity 归属 → cancel(离场)。
+- **多 resident(residentCount>1)∨ 有 visitor 致归属不清 → 此 cancel 路径 OFF → 不 cancel → escalate**(零跨身份漏报,与 P6.5① 完全同裁;visitor 移动不得 cancel 老人真摔)。
+- **实现**:cross-device cancel 前置查 census `SoleResidentRecaptureState` 的 residentCount(已有,只读,visitor 不计)——`residentCount==1` 才读 `anyRealBirthSince`;否则跳过该佐证。**与 P6.5① 同一 gate、同一 accessor 复用**,纪律统一不漂移。
+- 注:其余两条降级佐证(P6.5① recapture 本就 single-resident-gated;np=0∧realness-empty 是本房信号无跨身份问题)不受影响。**三条降级佐证现全 per-identity 安全**。
+
+**第五对抗(加入放行 fixture)**:**多 resident,A 浴室门口真摔 + 室友 B 走进客厅(别台 real track 新生)** → residentCount>1 → 跨设备 cancel OFF → **不 cancel A 仍 escalate(零跨身份漏报)**。镜像 P6.5① 的多occupant 对抗,堵 Hole D。
+
+**采纳次要(㉙ realness-confirm 时机)**:`suiteRealBirths` 记账时机 = **`realLO` 真正越 0.5 那刻**(非 raw track 首现——首现尚未建起 realness)。`bornMs` 仍记**出生时刻**(供 cancel 窗 `sinceMs` 判)。修我 v2"首现+realnessP>0.5"把首现与 confirmed 混的措辞。误差方向安全(欠记→少 cancel→偏 FP 非漏报),但据㉙ 求准。
+
+**修订后放行五对抗(真 CABB fixture + shadow 共享账 + per-identity gate)**:
+- (i) CABB 离场(单resident)→ 窗内 np=0∧realness-empty ∨ 别台 real birth → `cancel` 不 FP;
+- (ii) 门口真摔 + 无佐证 → 窗到 `escalate` 不漏报;
+- (iii) ghost 假 np=0(本房)→ realness 非空房 → 不 cancel 仍 escalate;
+- (iv) 别台 ghost real-birth → 不入 realness 账 → 不 cancel 仍 escalate;
+- (v) **多resident,A 真摔 + B 别台 real birth → residentCount>1 gate OFF → 不 cancel 仍 escalate(Hole D)**。
+- + replay 不破 + roomengine 9 红 0 新增 + R0/R1 全 shadow + C3 不动 + census 不碰 + 全程 LOG。
+
+**下一步**:委员会复审 v3(尤其 Hole D 的 single-resident gate 复用 + 第五对抗)。过 → 分阶段建:**阶段1** gate(bbox≤200)+ `suiteRealBirths` producer(realLO 越 0.5 记)+ `anyRealBirthSince`(前置 residentCount==1 gate);**阶段2** provisional LOG 状态机 + 小卫绕 ObsReachableExit + dx=0 + 设备贫早决断;**阶段3** 五对抗 fixture(真 CABB)+ 全验。**未复审过不建**。①fleet 仍待用户。
+
 ### [2026-06-07 23:58 MDT] 审查㉙ `df4efcb..e5f1cff` P6.1b-D v2 复核 — Hole C 修对 ✅ + ⚠️ Hole D(多occupant 漏报,镜像 P6.5①,须复用 single-resident gate)
 
 **性质**:`e5f1cff` 仅 doc(D 预审 v2)。R6 核 Hole C 修复 + 压 v2 新设计。
