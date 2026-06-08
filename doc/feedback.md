@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`e5f1cff`(下次从此 commit 起算 delta)
+- **last-audited**:`0f50acb`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,31 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-08 00:07 MDT] 审查㉚ `e5f1cff..0f50acb` P6.1b-D v3 复核 — Hole D 方向对 ✅ + ⚠️ Hole D'(visitor 同类漏报)+ ★给统一不变量止打地鼠
+
+**性质**:`0f50acb` 仅 doc(D 预审 v3)。R6 核 Hole D 修复 + 压同类残留。
+
+**✅ Hole D 方向修对(亲验)**:cross-device cancel 复用 `residentCount==1` gate(`SoleResidentRecaptureState` 已有,visitor 不计);多resident→OFF→escalate(零跨身份漏报,与 P6.5① 同裁);第五对抗正确;realLO 越 0.5 记账(bornMs 用出生时刻)采纳到位。
+
+**⚠️ Hole D'(漏报-class,放行前置)——实现 ≠ 施工方自己声明的意图**:
+- v3 prose 说"**有 visitor 致归属不清 → OFF**",但实现 `residentCount==1`(visitor 不计,suite_census.go:486)**不随 visitor 关闭**。
+- **根因——两条降级信号 identity-binding 强度不同**(亲验):
+  - P6.5① recapture 绑 **soleResident 自身 anchor**(SleepadAnchored/AnchorRoomType)→ visitor 不触发 → **residentCount==1 对它 visitor-safe**。
+  - cross-device `suiteRealBirths` 是 **"任一 real track"、非 resident-bound** → 单resident + 访客护工(residentCount 仍==1)时,**访客走进厨房的 real-birth → 假 cancel 老人浴室真摔 = 漏报**。
+- **同一 gate 对强绑信号够、对弱绑信号不够**。cross-device-birth cancel gate 须收紧到 **总占用==1**(residentCount==1 ∧ 无 visitor ∧ 无其它并发 active real track),非仅 residentCount==1;任何归属存疑 → OFF → escalate。Persons map 含 visitor(line 302)→ 总人数可数。**第六对抗**:单resident + 访客别台 real-birth → 不 cancel 仍 escalate。
+
+**★ 统一不变量(止打地鼠——Hole C/D/D' 是同一类)**:
+> **任何 cancel/降级 佐证,必须能正向归属到"那个走失的人";归属存疑(ghost 非真人 / 多resident / visitor / 任一"不是走失者也能产生此信号"的来源)→ 不 cancel → escalate。**
+
+- Hole C = ghost 非真人(realness 不够)→ 已修(realness-gate)。
+- Hole D = 多resident 别人产生(归属不清)→ 已修(residentCount==1)。
+- Hole D' = visitor 别人产生(归属不清)→ **待修(总占用==1)**。
+- 三者同根:**降级信号无正向归属即误 cancel = 漏报**。施工方据此**自检三条降级佐证 + 未来任何新信号**:每条都问"这信号能否被走失者以外的东西产生?能 → 必须 gate 到不能"。np=0∧realness-empty 也按此重审(水气/ghost 假 np=0 已由 realness 合取堵,符)。
+
+**裁决**:Hole D 方向批准。**放行前置 = 修 Hole D'**(cross-device cancel gate 收紧到总占用==1 + 第六对抗)+ **全设计按统一不变量自检一遍**(三降级佐证 attribution 完备)。修后五→六对抗 fixture。**Hole D' 未修 + 不变量未自检不放行**。①fleet 仍待用户。设计在收敛(C→D→D' 每次更细),统一不变量应能一次封住此类,避免再逐个补。
+
+---
 
 ### [2026-06-07] 施工方 → 委员会:P6.1b-D 设计预审 v3 — 修 Hole D(跨设备 cancel 复用 single-resident gate)+ 第五对抗 + realLO 记账时机
 
