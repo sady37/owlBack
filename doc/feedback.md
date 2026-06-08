@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`ecf97ad`(下次从此 commit 起算 delta)
+- **last-audited**:`5be1075`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -43,6 +43,23 @@
 
 
 
+
+### [2026-06-08 12:34 MDT] 审查㊷ `ecf97ad..5be1075`(doc-only)确认下一节=P9 oracle 载体 B + 钉保真约束(防合成绿) + 预裁实施岔口取(i)
+
+**性质**:`5be1075` doc(收㊶ + 建议 B)。无代码。
+
+**✅ 确认 B(replay harness)为下一活跃节点**——理由成立:
+- **真缺口确证(且认我㊵ 一个过 claim)**:我㊵"P5 PASS ⭐ 治α落地可证"——准确说是 **belief-level 合成测**(`TestP5Alpha/RollOff/IgnoresZ` 构造 Observation 序列)+ 9 红 0 新增;**"8 CD2B α 案端到端 shadow 压制"(P5放行前置)未真跑**(无 harness 喂 fixture 过 beliefShadowTick)。施工方主动揭此缺口——诚实。B 正补。**㊵ 的"PASS"应读作"α 机理合成验过",非"8 真案端到端压住"**。
+- 公共基建(D/P6.1a/P5 真数据 oracle 共用)、不阻塞(8 CD2B 真值干净,333B ghost 只阻 D/P3 不阻 B)、低风险(测试基建,R0/R1 天然)。
+
+**⚠️ 钉一个 B 的命门(不简单确认)——保真度,否则 B 又是"合成绿"**:
+- B 的价值 = **它驱动的是否生产同一路径**。若 harness 用失真桩(Engine/TrackManager 不忠实复刻 adapter→beliefShadowTick),B 的"绿"只是把合成-gap 上移一层——**正是审查㉟/㉔ 反复咬的"合成绿≠生产路径对"**。
+- **预裁实施岔口(施工方列 i/ii,委员会先定)**:**取 (i) 直驱真 beliefShadowTick + 真 adapter**(fixture radar/sleepad 帧 → 真 radarAdapter/sleepadAdapter → Observation → 真 beliefShadowTick)。**驳 (ii) 抽 pure replay 核**——它造**第二条 shadow 代码路径**,会与生产 beliefShadowTick 漂移(replay-核绿 ≠ 真路径对 = 同一合成-divergence 陷阱)。重一点的真桩 ≫ 干净但分叉的核。**B 设计预审须保证:走生产同一 shadow 路径 + 真 adapter,不 fork shadow 逻辑。**
+- **B 首个 oracle = 复现 C 诊断**:8 CD2B 过 B 应得 α→压制(P5)/ β→P3·P6.1a 门控 / γ→escalate(残差)。**若 B 结果与 C 手工诊断分歧 → 暴露 pipeline 问题**(B 同时是 C 的交叉校验)。这是 B 的第一个验收点。
+
+**裁决**:**B 确认为下一节**(closes 端到端真验缺口 + 公共基建)。施工方出 **B 设计预审**,**保真约束**:取 (i) 真路径真 adapter、驳 (ii) 分叉核;首 oracle 复现 C 诊断(分歧即 pipeline bug)。次选 P6.3 缓(γ 残差 minor);P7/P8 标定待 B 出真数据更有据。**B 设计预审未审不建**。333B 待用户 ghost。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会/用户:收㊶✅(全一致)+ 建议下一活跃节点 = P9 oracle 载体 B(replay harness)— 请确认
 
