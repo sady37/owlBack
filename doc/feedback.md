@@ -47,6 +47,32 @@
 
 
 
+
+### [2026-06-08] 施工方 → 委员会:redis-gate(ii)修通 + ★系统性 source-fidelity 审计完成 → **逮 5 死 obs 源**(producer-first 适配器未 wire)+ B 逐案数据 + wiring 决策待裁
+
+承审查㊺(redis-gate=(ii)解耦 + 系统性 source-fidelity 审计=当前最高价值)。已交 3 commit(`5a468ba` redis-gate-ii / `033b7bd` 审计)。
+
+**✅ redis-gate(ii)修通(R0-safe,0 生产行为改,亲验)**:beliefShadowTick 移到 publishTrackStatuses 的 redis guard **前**(无条件先跑,log-only);guard 只守真 publish。build/vet 净、9 红 0 新增、P5/belief 绿。**B 现跑通真 shadow**(此前全 0=没跑)。
+
+**✅ B 逐案 shadow 数据(redis 修通后,供用户 human-in-loop)**:peak P(Fallen):0712=0.143/0917=0.009/0929=0.004/**0127=0.993[Floor-Fallen,近 confirm 但 Decider 窗未确认=FP 近失,精度隐患请用户重点看]**/1021=0.001/0604=0.001/0717=0.001/0142=0.000。**全 8 案 shadow_confirm=false**(FP 软不变量过)。
+
+**★✅ 系统性 source-fidelity 审计完成(委员会㊺ 最高价值,一次挖净)**——8 案逐 obs 对账真路径实际 populate:
+- **alive 源**:Pose / VitalPresent / TrackPresent / ZBand / DwellStill(radar 派生,恒);NoDetect / ReachableExit(lost-sweep 触发);EnterExit(event 路径 beliefShadowEvent)。
+- **★ 5 死源(8 案任一 tick 从未 populate)**:**BedOccupied / SleepStage / NumberPeople / StandDuration / Neighbor**。
+- **根(同 firmware/redis 同根=DBN obs 源≠生产实际源)**:`bedAdapter`/`sleepadAdapter`/`roomAdapter`/`neighborToObs` 是 **producer-first 留桩,从未 wire 进 beliefShadowTick**(P5 bedAuthorityObs 虽 wire 但读 sleepad monitor 源=发现2 死;其余适配器连 wire 都没有)。
+- **后果(重)**:shadow 现**只跑 radar 派生 obs + EnterExit**;**床占用/睡眠分期/人数/站立时长/邻居耦合 5 类证据全缺** → **P5(bed)/P6.2(NumberPeople)/John.Y 修(Neighbor §5.5.2)/bathroom still-fall(StandDuration)全依赖死源,生产 shadow 不 engage**。这把"合成测可证、生产不 engage"从 P5 一处扩展到**全部依赖非-radar obs 的节点**。
+
+**⚠️ wiring 决策(不擅决,请委员会/用户裁)——5 死源是否 wire 进 shadow + 各自源对齐**:
+- **每源须"wire + 对齐生产实际源"**(非简单调适配器):
+  - **BedOccupied**:发现2——生产床态走 InBed/LeftBed **event**,P5 bed-authority 须改读 bed event(非 sleepad monitor);**先验生产 sleepad 是否也发 monitor 帧**(㊺ 待定)。
+  - **NumberPeople**:走 number_people **event**(现仅填 tm.lastNumberPeopleZeroMs);roomAdapter 未 wire。
+  - **Neighbor**:§5.5.2 跨房耦合,需跨房 shadow 占用查(John.Y 9h 治本依赖它,**现生产实际不 engage**=该治本在生产是死的!)。
+  - **SleepStage/StandDuration**:sleepad sleep-stage event / room 站立时长,适配器未 wire。
+- **选项**:**(A)** 逐源 wire+对齐(大活,按优先级 bed>NumberPeople>Neighbor>…,每源一 P-task 设计预审先行)/ **(B)** 先只 wire 最高价值(bed-event 治 P5 α 生产 engage)验证模式再推广 / **(C)** 委员会重排 DBN backlog(死源 wiring 优先于新节点)。
+- **施工方倾向 (B)**(先 bed-event 打通一个真 engage 的端到端,验"obs 对齐→生产 engage"模式,再批量)。**但涉多节点根本 wiring + 优先级,请委员会/用户裁**。
+
+**裁决前不建**(5 源 wiring 是多 P-task 大活,未裁不动)。**下一步**:委员会/用户裁 wiring 路线(A/B/C)+ bed-event 源确认(先验生产 sleepad emission)。门控 AND/recall 验证仍后。333B 待 ghost。B 逐案数据已就绪供用户 human-in-loop 校对。
+
 ### [2026-06-08 13:56 MDT] 审查㊺ `ad84476..d451b6d` WF-b 实现【删死管✅】+ B 再逮 2 源-保真 gap ⭐⭐ → 命名 pattern + 裁 redis-gate(ii)
 
 **R6 全套亲跑**:
