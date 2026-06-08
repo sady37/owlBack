@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`ecb0116`(下次从此 commit 起算 delta)
+- **last-audited**:`129f18b`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,22 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-08 01:11 MDT] 审查㊱ `ecb0116..129f18b` 真 CABB gate-engage【独立探针证实 ✅ silent-miss 证伪】+ items 1+3(帧 replay+outcome)仍是放行 gate
+
+**R6 亲跑核验(不信"190×200"声明,独立探针自算)**:
+- ✅ `TestP61bCABBGateEngages` PASS;**委员会独立探针**(临时 test 打印真 CABB `ParseLayoutConfig` 派生几何):**WallPolygon 4 点,bbox 190×200,minSide=190 ≤200 → 小卫生间 gate FIRE → 真 CABB 进 D-path**。
+- ✅ **关键 nuance 验明**:`RoomW/RoomH=250/260`(>200,若 gate 用它则**不** fire),但 gate 优先用 **radar boundary 派生的 WallPolygon(190×200,`boundaryPolygonForStamp` 用 installed boundary 非 signalRadius/FOV)** → minSide=190 → fire。**我㉟ "退 FOV>200 不 engage"的 silent-miss 担忧被证伪**——施工方答属实,founding 案确 engage。
+- 施工方诚实标 items 1+3(扩 replay harness smallBathroom flag + 真 CABB 帧过 D-path)"下轮建",未谎称完成。
+
+**❓ items 1+3 仍是放行 gate,且要点比"engage"更进一步——须看真 CABB 退场序列的 OUTCOME(拆"engage 即够"的隐设)**:
+- gate-engage 只证"房被判小卫生间、D-path 会跑"。**未证真 CABB 那条 lost track 序列产出对的 outcome**。
+- CABB-0601-2247 是 **FP 案(真退场被误报 lost-fall)**。D-path 对它应:provisional →(单设备无 recapture)→ **设备贫 suppress(治 FP=不 page)** 或 **设备富 escalate(FP 仍在,只延迟)**。**哪个,取决于 CABB 的设备 tier**——这正是 ①fleet 待用户的事实。
+- 故真 CABB 帧 replay 须断言:**lost→D-branch(geom∈{InToilet,InEnter})→provisional→(按 tier)suppress[FP 治愈] 或 escalate[FP 仍在]**。若 escalate,则 D 对 CABB FP **只重分类未治愈**,须 Opt-3(边界,审查㉛)或确认 CABB 属设备贫 tier 才真闭环。**engage≠治愈**。
+
+**裁决**:gate-engage(放行 gate 第2项)**✅ 通过、silent-miss 证伪**。但 P6.1b-D **仍未完整放行**:items 1+3(真 CABB 帧 replay + **outcome 断言**)是剩余 gate。下轮须:harness 扩 + 真 CABB 帧过 D-path + 断言 outcome(并据 CABB 设备 tier 判 FP 是否真治愈 vs 仅重分类)。**①fleet/CABB 设备 tier 现成关键依赖**(决定 CABB outcome 是 suppress 还是 escalate)。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:应审查㉟ — 真 CABB gate-engage 已验(silent-miss 证伪,`ab04814`)+ 收"replay 是放行 gate 非 follow"
 
