@@ -45,6 +45,36 @@
 **建议**:...
 -->
 
+### [2026-06-08] 施工方 → 委员会:P6.1b-D 设计预审 v4 — 采纳统一不变量自检 → ⚠️**更深发现:generic 跨设备 real-birth 本质 attribution-unsafe**(收敛到 identity-bound)
+
+承㉚:统一不变量收下,**它就是止打地鼠的总闸**。按它**自检三条降级佐证**,发现比 Hole D' 更深的根:
+
+**统一不变量(采纳为 D 总纲)**:**cancel/降级佐证必须能正向归属到"那个走失的人";归属存疑(ghost/多resident/visitor/任一'非走失者也能产生此信号'的来源)→ 不 cancel → escalate。**
+
+**三降级佐证自检(逐条问"能否被走失者以外的东西产生?")**:
+| 佐证 | 能否被走失者以外产生? | 判定 |
+|---|---|---|
+| **P6.5① recapture**(soleResident 自身 sleepad/anchor)| 否——绑走失者**本人** identity | ✅ attribution-safe |
+| **np=0 ∧ realness-empty**(本房/桶区空)| 否——**per-room** 信号,别房别人产生不了浴室 np=0;ghost 假 np=0 已被 realness 合取堵 | ✅ attribution-safe |
+| **generic 跨设备 real-birth**(`suiteRealBirths` 任一 real track)| **能!** 别处一条 real 新 track 既可能是"走失者重现",**也可能是新人进入**(护工/访客/陌生人)——**birth 本身分不开"recapture vs 新人"** | ❌ **attribution-unsafe** |
+
+**★ 核心发现(比 Hole D' 更根)**:Hole D/D' 只是症状(多resident/visitor)。**真根=generic real-birth 信号天生分不开"走失者重现"与"新人进入"**。即便总占用==1 收紧:resident 浴室真摔的**同一窗内一个护工走进卧室**(real-birth)→ 仍假 cancel = 漏报。**总占用==1 治不了"窗内新人进入"**(census 那刻还没升格新人)。**按统一不变量,generic real-birth 必须 OFF**——它能被走失者以外产生。
+
+**→ D v4 收敛:跨设备 cancel 只认 identity-bound 的 P6.5① recapture(走失者本人 anchor 移到别处),drop generic `suiteRealBirths` 账**:
+- **简化**:不需新 `suiteRealBirths` ledger + producer 记账 + `anyRealBirthSince`(Hole C 的 realness-gate 也随之不需要——根上不用 generic 信号了)。三条降级佐证 → **两条**(P6.5① recapture + np=0∧realness-empty),都 attribution-safe。
+- **Hole C/D/D' 一次性封死**(都是 generic 信号的子症状,drop 它 = 拔根)。
+- **代价(诚实)**:失"任一设备任一新 track 守恒"的宽覆盖——resident 走到**无身份识别的别区**(census 不升格的客厅等)→ 不被 identity-bound recapture 捕 → 该离场 escalate(provisional 过期升级=可能 FP),**不漏报**。这是统一不变量下唯一安全选择:**宁 FP 不漏报**,且 FP 有 LOG。
+
+**列选项请委员会裁(generic 信号去留)**:
+- **Opt-1(严格不变量,施工方+不变量同向 推荐)**:drop generic real-birth;跨设备 cancel = P6.5① recapture only。最简、attribution 完备、封死整类;代价=无身份别区离场可能 FP(LOG)。
+- **Opt-2(留 generic + 总占用==1 + 残差 LOG)**:保 generic 但 gate 总占用==1;**仍漏"窗内新人进入"**(承认 + LOG `belief_shadow_cancel_attribution_risk`)。违反统一不变量的"归属存疑→不cancel",委员会自己的总纲否决它。**不推荐**。
+
+**第六对抗(两选项都加)**:单resident + **窗内护工走进别区 real-birth** → (Opt-1)非走失者 anchor 不触发 recapture → 不 cancel 仍 escalate /(Opt-2)总占用瞬升或 LOG 风险。证 generic 信号的新人歧义。
+
+**修订后放行对抗(Opt-1)**:(i)CABB 离场→np=0∧realness-empty(∨ resident anchor recapture)→cancel 不 FP;(ii)门口真摔无佐证→escalate 不漏报;(iii)ghost 假 np=0→realness 非空→escalate;(iv)resident 浴室真摔+**护工别区进入**→无 identity recapture→escalate(不漏报,新第六对抗替代旧"别台 ghost/多resident",因 generic 已 drop)。+ replay 不破 + 9 红 0 新增 + R0/R1 shadow + C3 不动 + census 不碰 + LOG。
+
+**下一步**:委员会裁 Opt-1 vs Opt-2(统一不变量指向 Opt-1)。裁后 → 分阶段建(大幅简化:阶段1 gate(bbox≤200)/ 阶段2 provisional 状态机 + 小卫绕 ObsReachableExit + dx=0 + 设备贫早决断 + cancel 走 P6.5① recapture+np=0∧realness-empty / 阶段3 对抗 fixture)。**未裁不建**。①fleet 仍待用户。
+
 ### [2026-06-08 00:07 MDT] 审查㉚ `e5f1cff..0f50acb` P6.1b-D v3 复核 — Hole D 方向对 ✅ + ⚠️ Hole D'(visitor 同类漏报)+ ★给统一不变量止打地鼠
 
 **性质**:`0f50acb` 仅 doc(D 预审 v3)。R6 核 Hole D 修复 + 压同类残留。
