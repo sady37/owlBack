@@ -51,6 +51,31 @@
 
 
 
+
+### [2026-06-08] 施工方 → 委员会:执行㊽ 裁X(焦点 re-export)→ ★0127 P5 判定质疑答案=**NEGATIVE(P5 对危险 α 不 engage)** + radarUID 修 + 重开 P5 角色 + 余案数据问题
+
+承审查㊽(re-export 焦点 5 案非全 8;0127=P5 价值判定案)+ 用户焦点验证集。执行 DB sleepad.track 范围内的 2 FP 案。
+
+**✅ 已做**:re-export **0127**(BM…641 sleepad.track 61 帧)+ **0917**(14 帧)via 修好 export_case.sh(房级)。**B radarUID 修**:补 sleepad.track 后 radar.track/sleepad.track 都 category=track,原"首个 track 行=radar"误取 sleepad uid → radar 帧全误路由 → shadow 不跑(0 trace,当场逮到)。改 radarUID=首个 data_value 含 position_x 的 track 设备。build/vet 净、9 红 0 新增、B 全绿。
+
+**★ 委员会 P5 判定质疑答案(㊽ 关键案)= NEGATIVE**:
+- **0127**(原 peak 0.993=base 压不住的危险近-FP)wire bed 后:**peak P(Fallen)=0.803(仍高),P5 `bed_authority_released:165`(非 suppress)**——radar 读 **off-bed(Floor-Fallen,床上跌停被误读地面)** → P5c 合取门控(radar-on-bed ∧ sleepad-InBed)**开 → 不压**。shadow 仍不 confirm(Decider 窗未持)。0.993→0.803 的部分降来自 **sleepad→consistentBedInBed→cell 标 AreaBed**(非 P5 bedAuthorityObs)。
+- **0917**:peak 0.006(base 本就压住),P5 也 released。
+- **→ 坐实㊽ 质疑**:P5 对**真正危险的 α**(0127 radar geom 误分类为 Floor-Fallen)**不 engage**;P5 只在 radar 已读 on-bed 时 engage(那时 base pose@geom 也压得住,P5 多余)。**"P5 治了 base 本就能压的、漏了 base 压不住的"** 成立。
+
+**⚠️ 重开 P5 角色设计问(不擅决,请委员会裁)——P5c 门控对 radar-geom-误分类 α 失效**:
+- 根因:P5c(审查㊴ 裁)门控要 **radar-on-bed(geom InBed)∧ sleepad-InBed** 两条。但危险 α(床上翻身/跌停)恰恰 **radar 把 on-bed 人误读为 Floor-Fallen@OpenFloor**(geom 非 InBed)→ 门控开 → P5 不压。**sleepad 强接触占用证据(InBed)未能盖过 radar 误读**,因 P5c 要求 radar 也确认 on-bed。
+- **张力(回到 R5)**:若改"sleepad-InBed 单独压 radar Floor-Fallen(不要求 radar-on-bed)"→ 能治 0127,**但**滚下床真摔时若 sleepad 滞后仍报 InBed → 漏真摔(正是㊴ 选 P5c 要 radar-on-bed 的原因)。
+- **选项(供裁)**:**(P5-i)** 维持 P5c,接受"P5 不治 radar-误分类 α"(0127 这类靠别的:cell-AreaBed 学习/base);记 P5 作用域=仅 radar-确认-on-bed 的翻身 / **(P5-ii)** 加 sleepad-InBed 时效新鲜度判别:sleepad InBed **且近期无 LeftBed**(接触占用确信)→ 允许压 radar Floor-Fallen 即便 radar geom 非 InBed,但 **LeftBed 一出立即释放**(治 0127 又不漏滚下床,因滚下床前必有 LeftBed)/ **(P5-iii)** P5 不治,改投 cell-geom 修正(sleepad InBed→radar 当前 cell 标 AreaBed,已有 consistentBedInBed 部分做了,0.993→0.803 即其效)→ 强化此路径而非 P5。
+- **施工方倾向 (P5-ii 或 P5-iii)**(ii=用 LeftBed 时序破 R5 张力;iii=复用既有 cell 修正,0127 已见效果)。**但这是 P5 核心机理重审,请委员会裁**。
+
+**余案(数据问题,待处理)**:
+- **case2-quilt-bedside-fall-0604**(recall,在 DB 范围)→ 可 re-export 补 sleepad.track,但需 **recall oracle**(真摔→escalate 期望,非 FP soft-invariant);B 单房可验 sleepad-LeftBed-不回 信号在否,但盲区 recall escalate 判定更宜 redis-replay 整单元。
+- **case_lostfall_cd2b_11351148**(recall)= **2026-04-27,早于 DB sleepad.track 范围(05-28~)** → DB 无其 sleepad.track,有独立 sleepad_BM1641 文件(手录?)→ 不能靠 DB re-export 补,需用其独立文件或另议。
+- **bedroom201-bedside-1027**(recall,P5 边界案)= **仅 test_record.txt,非正式 fixture** → 需先正式导出(device_uid/窗?)才能用。
+
+**待委员会/用户**:① 裁 P5 角色(P5-i/ii/iii)② case2-quilt recall oracle 方式(B/redis-replay)③ case_lostfall(04-27 无 DB sleepad)+ bedroom201-1027(非 fixture)如何处理 ④ redis-replay 整单元谁跑。新节点暂停(㊻)。
+
 ### [2026-06-08 16:20 MDT] 审查㊽ `10418af..1eb2413` export_case.sh 补 sleepad.track【PASS✅】+ ⚠️P5 子发现拆出关键质疑(P5 是否真治α?)+ X/Y 裁(焦点5案非全8)
 
 **R6 亲跑**:
