@@ -1,6 +1,8 @@
 package roomengine
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"go.uber.org/zap"
@@ -142,5 +144,55 @@ func TestP61bVisitorDoesNotCancel(t *testing.T) {
 	}
 	if !hasMsg(logs, "belief_shadow_lostfall_escalate") {
 		t.Fatalf("护工在场无 recapture 仍应 escalate(不漏报)")
+	}
+}
+
+// TestP61bCABBRealLayoutEngagesDPath — 审查㉟ 放行gate第1+3项:真 CABB 立项 layout 帧过真 beliefShadowTick D-path。
+// 用真 CABB grid(boundary 派生)+ 真 layout 算 smallBathroom + lost track 在浴室内部(geom=OpenFloor,真 CABB
+// 无 toilet 对象)→ 断言 D-branch engage(provisional→escalate)。证 D-path 在 founding 案真 engage 非 silent-miss,
+// 且广义 geom 条件(非仅 InToilet/InEnter)接住 CABB OpenFloor。
+func TestP61bCABBRealLayoutEngagesDPath(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("../../../doc/cases", "hunzi-cabb-lost-0601-2247-FP/room_layout.json"))
+	if err != nil {
+		t.Skipf("CABB fixture 缺失: %v", err)
+	}
+	cfg, err := ParseLayoutConfig("fd00:0:3:411::/128", b)
+	if err != nil {
+		t.Fatalf("ParseLayoutConfig: %v", err)
+	}
+	cfg.RoomType = card.RoomTypeBathroom
+	grid, _ := buildGridFromLayout(t, "hunzi-cabb-lost-0601-2247-FP/room_layout.json")
+	const room, suite, dev = "fd00:0:3:411::/88", "fd00:0:3:411::/80", "fd00:0:3:411:1:200:10d5:cabb"
+	lostX, lostY := -50, 250 // CABB 浴室内部(radar 处),真 grid geom
+	g := geomFromGrid(grid, lostX, lostY)
+	if g == belief.GeomInToilet || g == belief.GeomInEnter {
+		t.Logf("注:CABB 内部 geom=%v(若是门区则旧窄条件也接;本测专证非门区也 engage)", g)
+	}
+	nowMs := int64(10_000_000)
+	core, logs := observer.New(zapcore.InfoLevel)
+	e := &Engine{
+		logger:        zap.New(core),
+		rooms:         map[string]*TrackManager{room: {roomID: room, tracks: map[int]*TrackState{}, bedCount: 1}},
+		grids:         map[string]*RoomGrid{room: grid},
+		roomSuiteID:   map[string]string{room: suite, "fd00:0:3:411:r::/88": suite}, // 别台房同 suite
+		roomType:      map[string]int{room: card.RoomTypeBathroom},
+		smallBathroom: map[string]bool{room: isSmallBathroomCfg(cfg, cfg.RoomW, cfg.RoomH)}, // 真 layout 算
+		deviceRoom:    map[string]string{dev: room, "fd00:0:3:411:r::1": "fd00:0:3:411:r::/88"}, // 设备富(别台)
+		beliefShadows: map[string]*beliefShadow{},
+		suiteCensus:   NewSuiteCensusManager(nil, DefaultSuiteCensusConfig(), nil),
+	}
+	if !e.smallBathroom[room] {
+		t.Fatalf("真 CABB layout 应判小卫生间(gate fire);否则 D-path 不 engage=silent-miss")
+	}
+	sh := e.beliefShadowFor(room)
+	sh.tracks[7] = &beliefShadowTrack{lastSeenMs: nowMs - 70_000, stillBoxAgeMs: 0, geom: g, lastX: lostX, lastY: lostY, lostAnchor: nowMs - 70_000}
+	sh.tlayer[7] = &beliefShadowTLayer{tb: belief.NewTrackBelief(), device: dev, realLO: 2.0}
+	e.beliefShadowTick(room, nil, nowMs)
+	if !hasMsg(logs, "belief_shadow_lostfall_provisional") {
+		t.Fatalf("真 CABB lost track(geom=%v)应进 D-branch → provisional(广义 geom 条件接住非门区)", g)
+	}
+	e.beliefShadowTick(room, nil, nowMs+beliefProvisionalRichWindowMs+2000)
+	if !hasMsg(logs, "belief_shadow_lostfall_escalate") {
+		t.Fatalf("真 CABB 无 recapture → 窗到应 escalate(预期 lean-surface,founding 案 engage 证实)")
 	}
 }

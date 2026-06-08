@@ -268,7 +268,10 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		// **np=0 永不 cancel**(审查㉝:realness-empty 看不到已丢失摔倒者→≈np=0;np=0 是 lost-fall 定义性条件,
 		// 摔/离共有,非判别器)→ np=0 仅 aux LOG。可靠离场-cancel 升级 = Opt-3 边界穿越(非 np=0)。
 		// 默认升级硬约束:歧义→escalate。设备富 30min cancel 窗;设备贫(独苗)短窗早决断→压制+LOG(v3 resource-scaled)。
-		if smallBath && (st.geom == belief.GeomInToilet || st.geom == belief.GeomInEnter) {
+		// **小卫生间整间都是门距退化区**(审查⑳"处处近门")→ D-path 对该房**任一 geom** 的 lost track 生效
+		// (smallBath gate 已限定是小卫生间);**不限 InToilet/InEnter**——真 CABB layout 常无 toilet 对象,
+		// 内部 lost track geom=OpenFloor,若限门区则 D-path 不 engage=silent-miss 治不了 CABB(审查㉟ 暴露)。
+		if smallBath {
 			tl := sh.tlayer[tid]
 			realnessP := 1.0
 			lostDevice := ""
