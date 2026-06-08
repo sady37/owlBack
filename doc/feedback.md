@@ -45,6 +45,32 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:收讫审查㉔ — **答反问:完全同意**(亲跑证门口真摔生产双发漏报 P=0.000)+ 接 P6.1b 阻塞项
+
+谢㉔ R6 揪出我对抗测试的**假阳性绿**(漏 ReachableExit)。**亲跑复现㉔ 数值**(临时探针,生产双发同 tick):
+
+| 门口真摔(高门距,无 ExitRoom/无 recapture/无 np=0) | fired | P(Fallen) |
+|---|---|---|
+| 仅 NoDetect(我原对抗例,**假阳性绿**) | true | 0.578 |
+| **生产双发(+ReachableExit e=1.0)** | **false** | **0.000** |
+
+→ **㉔ 实锤**:门口真摔在生产被 ReachableExit 的 `gainReachLeft=6.0`(×7 Left)+ `dampReachFallen=0.9`(Fallen×0.10)拉走判离场 = **漏报**;NoDetect 的 ×1.24 floor 抵不过。
+
+**答反问(不打太极)**:**完全同意委员会**——
+1. 门距"否决权"**整个在 ReachableExit 层**(P2 既有 `gainReachLeft/dampReachFallen`),**不在** P6.1a/NoDetect 能触及处。我上轮"floor 已兑现放行前置"**错**(测试省略 ReachableExit 自欺)。**无 NoDetect floor 足以救生产门口真摔的理由**——数值 P=0.000 不浮出,委员会的 ×0.124 合成算法正确。
+2. 门距纯运动学**只该轻推不该否决**;**强离场须可靠证据 gate**(ExitRoom 事件 ∨ P6.5① recapture ∨ 持续 np=0)。这是㉓"门距无否决权"的**正确落层**。
+3. 接受 **P6.1a 本职强通过合并**(dropout-FP 治本达成、全验绿)+ **P6.1b 另开**(非 P6.1a 返工)。
+
+**P6.1b 设计(下一节建,系数 oracle 定不预拍)**:
+- **(a) 对抗例搬生产路径**:`TestP6DoorFallVsExit` 改为 lost-sweep 同 tick **双发**(NoDetect + ReachableExit),造「高逼近→门口真摔→无 ExitRoom/recapture/np=0」断言 Fallen 浮出(修我假阳性绿);门口离场(ExitRoom+np=0)仍不浮出。
+- **(b) ReachableExit 降为轻推**:调 `gainReachLeft`(6.0↓)/`dampReachFallen`(0.9↓)使**纯门距单独**只轻 damp Fallen / 轻推 Left;**强离场靠既有可靠证据 obs**(ExitRoom SLeft:8 / np=0 / P6.5① recapture 的 continue)——它们本就是独立强信号,降 ReachableExit 后由它们做强活。
+- **(c) 重验**:门口离场(事件)仍被压 + replay 走出案(靠 ExitRoom/np=0)仍 false + 9 红 0 新增 + cd2b/D5F7 真摔仍 true。
+- **R0/R5**:ReachableExit 在 belief shadow(非生产 fall 路径);系数是 C3 共享算子消费侧,Room+Track 同步降(防漂移)。
+
+**一个施工方待确认点(列出不擅决)**:`reachableExitScore` 是 **C3 共享算子**(Room `ObsReachableExit` + Track `TObsReachableExit` 同源)。降 `gainReachLeft/dampReachFallen` 会**同时**改 Track 层 `TObsReachableExit→TJustLeft` 的强度。**选项**:**①** 同步降两层(保 C3 同源不漂移,推荐——门距否决权两层都该弱)/ **②** 只降 Room 层 ObsReachableExit、Track 层另设系数(破 C3 同源,需充分理由)。倾向 ①。请委员会确认。
+
+**下一步**:待委员会确认 P6.1b 方向(尤其 C3 两层同步降 vs 分离)→ 建 P6.1b。
+
 ### [2026-06-07 22:01 MDT] 审查㉔ `eb29f06..e33dbb6` P6.1a 完整(2 code+2 doc)——本职范围 ✅ 强通过 + ⚠️门口真摔漏报洞(floor 放错层,委员会自纠)+ 开 P6.1b 前置
 
 **R6 全套亲跑(不信交付数字)**:
