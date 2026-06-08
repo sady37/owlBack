@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`7328f12`(下次从此 commit 起算 delta)
+- **last-audited**:`dde2a83`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,30 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-08 00:40 MDT] 审查㉝ `7328f12..dde2a83` 阶段2 recon ✅ + ❌ 否决 np=0∧realness-empty 当 cancel(扩展不变量 + 委员会自纠 ㉕/㉚)
+
+**性质**:`dde2a83` 仅 doc(阶段2 recon + 1 澄清)。recon 信号源落实(np via `tm.LastNumberPeopleZeroMs`、设备数 via `deviceRoom`+`roomSuiteID`、provisional 扩 `beliefShadowTrack`)——结构合理 ✅。但施工方请确认的"np=0∧realness-empty cancel 安全(§11.2 floor)"——**委员会不能确认,反须纠,且牵出㉕/㉚ 自身一个判断错误**。
+
+**❌ 否决"np=0∧realness-empty 当 cancel"——它不是离场判别器,是 lost-fall 共有条件(亲验)**:
+- 施工方框架:此 cancel 只在"零残留摔(§11.2 硬件 floor)"漏报。**低估**。
+- 亲验:`realness-empty`="房内无**其它** live 真 track";**摔倒者正是那条已丢失的 track**(lost-sweep 前提,belief_shadow.go:236 TTL 丢失)→ realness-empty **永远看不到他** → 单occupant 时 realness-empty 恒真 → `np=0∧realness-empty ≈ np=0`。
+- 而 **np=0 = lost-fall 的定义性条件**(`lastNumberPeopleZeroMs`="屋内空"断言;track 丢失=firmware 丢了人=才 np=0)。**"摔倒"和"离场"都有 np=0**——它不是判别器,是两者共有。**用它 cancel = cancel 掉真 lost-fall = 漏报**,且这是 lost-fall 主场景非零残留边角。
+
+**★ 扩展统一不变量(㉚ 只覆盖了一半)**:cancel 佐证须满足**两条**:
+1. **attribution-safe**:非走失者以外的实体能产生(㉚ 原条);
+2. **leave-discriminating(新)**:是"那人**离开了**"的**正向**证据,**非"未检测到"的缺证**。
+- **np=0∧realness-empty 过 #1(per-room 别人造不出)但败 #2**(absence-of-detection,真摔也产生)。㉕/㉚ 把它当合法 cancel = **混淆了 #1 与 #2**——**委员会自纠**(如㉓ 自纠 floor 错层)。
+- **recapture 过两条**(正向重现=正向离场证据 + identity-bound);**Opt-3 边界穿越过两条**(正向 boundary-crossing)。**只有正向重现/边界穿越是合法 cancel;缺证(np=0)永不是。** 与守恒律一致:absence-of-detection ≠ 跨边界 ≠ 离开 unit。
+
+**裁决**:
+- **cancel = recapture ONLY**(单resident-gated,过两条);**np=0 → 降为 LOG/aux,永不 cancel**。取施工方自己给的退路,但**不变量 mandate 它**,非"更保守选项"。
+- 代价:单resident 小卫离场但未回床(走客厅,无 recapture)→ escalate=FP(LOG)。按 resource-scaled(设备富 lean surface)接受 + measure;**可靠的离场-cancel 升级 = Opt-3(边界穿越),永不是 np=0**。
+- **简化阶段2**:cancel 单条(recapture);np=0 进 LOG。状态机其余(provisional/escalate/设备贫早决断/dx=0/绕 ObsReachableExit)结构批准。
+
+**放行**:阶段2 按"cancel=recapture-only + np=0 LOG"建;对抗 fixture 据此调(原 (i)CABB 离场靠 np 改为:单resident 回床 recapture→cancel / 走客厅无 recapture→escalate+LOG[待 Opt-3])。①fleet + 边界标注率仍待用户。
+
+---
 
 ### [2026-06-08 00:31 MDT] 审查㉜ `a690420..7328f12` P6.1b-D 阶段1(小卫生间 gate)【干净 PASS ✅】
 
