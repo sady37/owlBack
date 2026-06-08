@@ -243,18 +243,10 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	}
 
 	// P6.1b-D(审查㉛ Opt-1)小卫生间 provisional 分级 的 room 级前置(每 tick 一次)。
-	// realnessEmpty=房内本 tick 无 live 真 track(realnessP>0.5)= 真空房(np=0 的 realness 佐证,堵 ghost 假 np=0)。
 	smallBath := e.IsSmallBathroom(roomID)
 	suiteID := ""
-	realnessEmpty := true
 	if smallBath {
 		suiteID = e.SuiteIDForRoom(roomID)
-		for tid2 := range curTL {
-			if tl2 := sh.tlayer[tid2]; tl2 != nil && realnessPFromLO(tl2.realLO) > 0.5 {
-				realnessEmpty = false
-				break
-			}
-		}
 	}
 
 	// 丢失扫掠：track 超 TTL 无帧 + 消失前走动（still-box<60s）+ 非门区 → lost-fall ramp。
@@ -271,8 +263,10 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 
 		// P6.1b-D(审查㉛ Opt-1)小卫生间 lost → provisional/分级状态机(替标准 reachableExit 抑制)。
 		// 门距退化(处处近门)→ 不靠 door-distance;Fallen 经 NoDetect 真 ramp(dx=0),离场判别交 cancel 窗。
-		// cancel 仅 **attribution-safe** 佐证(统一不变量 审查㉚):recapture(走失者本人 anchor,per-identity)
-		// ∨ np=0∧realness-empty(本房真空;zero-residual 摔=已知 §11.2 硬件极限,非 D 新漏报)。
+		// cancel 须**既 attribution-safe 又 leave-discriminating**(扩展不变量 审查㉝):正向离场证据,非缺证。
+		// **cancel = recapture ONLY**(走失者本人 anchor 正向重现,per-identity,过两条)。
+		// **np=0 永不 cancel**(审查㉝:realness-empty 看不到已丢失摔倒者→≈np=0;np=0 是 lost-fall 定义性条件,
+		// 摔/离共有,非判别器)→ np=0 仅 aux LOG。可靠离场-cancel 升级 = Opt-3 边界穿越(非 np=0)。
 		// 默认升级硬约束:歧义→escalate。设备富 30min cancel 窗;设备贫(独苗)短窗早决断→压制+LOG(v3 resource-scaled)。
 		if smallBath && (st.geom == belief.GeomInToilet || st.geom == belief.GeomInEnter) {
 			tl := sh.tlayer[tid]
@@ -288,24 +282,24 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 					zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
 					zap.String("last_geom", st.geom.String()))
 			}
-			// cancel 佐证(attribution-safe 二选一)
+			// cancel 佐证 = recapture ONLY(审查㉝:正向重现,过 attribution-safe + leave-discriminating 两条)
 			recaptured := false
 			if e.suiteCensus != nil {
 				if rc, recap := e.suiteCensus.SoleResidentRecaptureState(suiteID); rc == 1 && recap {
 					recaptured = true
 				}
 			}
-			np0Recent := tm.lastNumberPeopleZeroMs > 0 && nowMs-tm.lastNumberPeopleZeroMs <= beliefProvisionalRichWindowMs
-			if recaptured || (np0Recent && realnessEmpty) {
+			np0Recent := tm.lastNumberPeopleZeroMs > 0 && nowMs-tm.lastNumberPeopleZeroMs <= beliefProvisionalRichWindowMs // 仅 aux LOG,不 gate cancel
+			if recaptured {
 				if !st.provisionalResolved {
-					e.logger.Info("belief_shadow_lostfall_cancel", // 可佐证离场 → 软降(P3.4),不 ramp Fallen
+					e.logger.Info("belief_shadow_lostfall_cancel", // recapture 正向重现 → 软降(P3.4),不 ramp Fallen
 						zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
-						zap.Bool("p6_1b_recapture", recaptured),
-						zap.Bool("p6_1b_np0_realness_empty", np0Recent && realnessEmpty),
+						zap.Bool("p6_1b_recapture", true),
+						zap.Bool("p6_1b_np0_aux", np0Recent), // np=0 仅 aux observability(㉝:absence≠leave,不 cancel)
 						zap.Int64("p6_1b_provisional_ms", nowMs-st.provisionalSince))
 					st.provisionalResolved = true
 				}
-				continue // 离场确认 → 不喂 lost-fall 发射
+				continue // 离场确认(recapture)→ 不喂 lost-fall 发射
 			}
 			rich := e.SuiteHasOtherDevice(suiteID, lostDevice) // 设备密度=机构资源代理(v3)
 			elapsed := nowMs - st.provisionalSince
