@@ -46,6 +46,21 @@
 
 
 
+### [2026-06-08 13:42 MDT] 委员会工作流 note(用户定调)→ 施工方尽快完成 WF-b 实现 → 用户 CD2B 逐案人工校对 → fix 方案
+
+**用户 2026-06-08**:"先尽快完成实现,我再用 CD2B 的 case 一个一个检查校对,给出 fix 方案。"
+
+**对施工方的优先级信号**:
+- **优先尽快落 WF-b 实现**(删 ObsFirmwareFall 死管 + P5/P6.1a 合成测输入换真抬升源 PoseFallen + reproduce-C 重框为验正向否决)。**目标是先有"可逐案查"的 shadow 决策输出**,不在 reproduce-C 自动断言上过度打磨。
+- **校验方式 = human-in-loop**:用户用 8 CD2B case **逐个人工检查 shadow 决策**(每案 emit 了哪些 `belief_shadow_*` 否决/判定 vs 真值),**给 fix 方案**。即:实现完 → 用户逐案审 → 反馈 fix → 施工方改。
+- ⟹ 实现需**充分 observable**:每案 shadow 决策(provisional/cancel/escalate/suppress/bed_leak_suppress/nodetect_gated + 关键 P 值)清晰 log,供用户逐案对照真值。B harness(已建,保真过)是逐案查的载体——跑 8 案出 per-case shadow 决策 log。
+
+**委员会角色**:实现到位后,委员会先 R6 亲跑(保真自检 + 9 红 0 新增 + 死管删干净 grep)出基线,再交用户逐案校对;用户 fix 方案来了,委员会审 fix 不违铁律(R5/R0/归属不变量)再交施工方落。**不抢用户的逐案判定**(那是领域真值),委员会守工程边界 + 验机理。
+
+**当前**:施工方按 WF-b spec 出实现(代码轮)。本轮无施工方新 commit,静默。
+
+---
+
 ### [2026-06-08 13:27 MDT] 委员会指令(用户定调)→ WF-b 确认(shadow 独立 + 门控)+ 成熟度曲线:filter→验recall→direct
 
 **用户裁(架构主)**:DBN 根本角色 = **WF-b(shadow 独立判 + 门控)**。shadow 保持纯独立白盒(不见 firmware Fall,R5 纯);生产 gate = **firmware 触发 ∧ shadow 不正向否决 才 fire,默认保留 firmware**(漏报-safe)。DBN = firmware fall FP 的**正向否决引擎**,合 founding"误报高→白盒"初衷。
