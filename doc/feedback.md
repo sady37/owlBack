@@ -48,6 +48,34 @@
 
 
 
+### [2026-06-08 14:17 MDT] 委员会指令(用户指)→ source-fidelity / 死源 wiring 用 **redis-replay 工具**做权威端到端验证(且直接答 finding-2)
+
+**用户 2026-06-08**:"有 redis 重放工具可以验证 dbn。"委员会找到并核实:
+- **`tools/redis-replay/`**:DB `monitor_stream`/`event_log` 历史行 → 时间戳 rebase 到 now → **重放回真 redis 实时流**(信封格式同 qinglan XADD)→ wisefido-sensor 当**实时真消费** → handleMessage→ProcessFrame→**beliefShadowTick**。**最保真端到端**(真 redis + 真 consumer + DB 录得的**全部**消息类型)。`roomengine-playback` = 出 HTML 可视化(非流验证)。
+
+**与 B 互补(收回㊸ "拒 B 接真 redis"的张力)**:
+| | B(fixture→handleMessage) | redis-replay(DB→真redis→真consumer) |
+|---|---|---|
+| 路径 | 跳 redis-consumer,NewEngine(nil) | **全真含 redis** |
+| 数据 | fixture 导出的(可能漏 monitor 帧) | **DB 全部录得消息** |
+| 角色 | infra-free 单元 CI 逐案断言 | **权威端到端 source-fidelity + 将来 recall** |
+- B 保持 infra-free 单元;**真 redis 重放用此专用工具**(对本地/测试 redis,非污染生产)。㊸ 的"拒 B 接真 redis"仍对——真 redis 验证归 redis-replay,不混进 B。两者并用。
+
+**★ redis-replay 直接答 finding-2(不用猜)**:它从 **DB monitor_stream** 重放 → 重放 201(CD2B / sleepad BM…641)即可看 **DB 里到底有没有 sleepad monitor 帧**:
+- **有** → P5 bed-authority 的 monitor 源在生产存在(只是 fixture 导漏)→ B 的 fixture-export 需补 monitor 帧,P5 wiring 不必改源。
+- **无** → 坐实 sleepad event-only → P5 bed-authority **必须改读 InBed/LeftBed event**。
+- **replay 一跑即知**,替代"先验生产 sleepad emission"的待定项。
+
+**裁定(整合进 wiring 路线 C+B)**:
+1. **死源 wiring 验证用 redis-replay 做权威 source-fidelity**:每 wire 一个源(bed-event 先),用 redis-replay 重放真 201 数据 → 确认该 obs 在**全真路径**实际 populate + shadow engage(B 做 CI 单元回归,redis-replay 做生产保真确认)。
+2. **先用 redis-replay 重放 201 答 finding-2**(sleepad monitor 帧有无)→ 定 bed wiring 源 → 再 wire。
+3. **将来 recall 验证**(DBN-direct gate):redis-replay 重放真摔流是天然载体(需真摔数据集)。
+- **R6 升级**:今后"生产是否 engage / 源是否对齐"类声明,**redis-replay 重放真数据**是比合成测/B-fixture 更高一档的核验(全真路径)。委员会今后对 wiring/engage 声明优先要 redis-replay 实证。
+
+**待用户/施工方**:跑 redis-replay 重放 201(--device-uids 含 CD2B + BM…641,--t1/t2 覆盖 8 案窗)→ 看 sleepad monitor 帧有无 + 5 死源哪些在真流 populate。这是死源 wiring 的事实基础。**新 DBN 节点仍暂停(㊻ 战略 reset)**。333B 待 ghost。
+
+---
+
 ### [2026-06-08 14:12 MDT] 审查㊻ `d451b6d..295e0ad` redis-gate(ii)【PASS✅含并发亲验】+ ★★★ source-fidelity 审计逮 5 死 obs 源 → 战略 reset + wiring 裁(C+B)
 
 **R6 全套亲跑**:
