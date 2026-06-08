@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`10418af`(施工方 201-spec doc 已整合入审查㊼,无代码)
+- **last-audited**:`1eb2413`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -50,6 +50,25 @@
 
 
 
+
+### [2026-06-08 16:20 MDT] 审查㊽ `10418af..1eb2413` export_case.sh 补 sleepad.track【PASS✅】+ ⚠️P5 子发现拆出关键质疑(P5 是否真治α?)+ X/Y 裁(焦点5案非全8)
+
+**R6 亲跑**:
+- ✅ **export 房级修对**:monitor 查询 `device_addr='${DEV_ADDR}'` → `<<= '$ROOM_ID'::inet`(房级 /88 含 radar+sleepad)+ JOIN devices 取真 uid。补 sleepad.track 根因解。B 路由修(sleepad monitor 先于 category==track,防 sleepad.track 误路由 radar)。build/vet 绿、**9 红 0 新增**、B 测过。BedOccupied 在 B 现 populated(死源#1 数据通)。
+
+**⚠️ P5 子发现拆出更深质疑(不止"radar 非 on-bed")——P5 是否真治 α?**:
+- 0712(α)sleepad InBed 但 radar track 非 bed-surface → P5 合取门控(radar-on-bed ∧ sleepad-InBed)开 → **released 不压**;**FP 仍正确不 confirm,但靠 base pose@geom(P=0.053)非 P5**。
+- **委员会拆**:这暴露一个审查㊵ 没验的预设——**"P5 治 α" 假设 α-翻身时 radar 读 on-bed**;但翻身时 track 常漂出 bed 多边形(cell 非 AreaBed)→ **P5 对这类 α 不 engage**。**那 α 到底是 P5 压的、还是 base pose@geom 一直在压、P5 多余?** 0712 显示是 **base 压的,P5 没参与**。
+- **→ 关键质疑(必须 0127 重测答)**:0127(peak P=0.993 近-FP)是 8 案里 base **没压住**的那个。若 0127 wire bed 后 **radar 读 on-bed → P5 engage → 把 0.993 压下** = **P5 真治 α 的唯一实证**;若 0127 **radar 也off-bed → P5 不 engage → 0.993 仍在** = **P5 对真正危险的 α 不 engage、base 也压不住 = α 实际没被治**(P5 治了 base 本就能压的、漏了 base 压不住的)。**0127 是 P5 价值的判定案。**
+
+**裁 X/Y(全8重导)= 都不取,re-export 焦点5案(用户㊼ 已聚焦)**:
+- **(X) 重导全 8 过度**:用户㊼ 已把验证集焦点到 **5 案(2 FP+3 真摔)**,非全 8。churn 8 个无谓。
+- **裁定 = re-export 焦点5案(补 sleepad.track)**:2 FP(0606-0917/0607-0127)+ 3 真摔(case_lostfall 已带 sleepad / case2-quilt / bedroom201-1027)→ B CI 回归 + **0127 重测答 P5 价值质疑**。recall 3 案尤需 sleepad 流(盲区跌床唯一信号)。
+- redis-replay 全设备×两流仍权威(跨房源 + 盲区 recall),待用户②谁跑。
+
+**裁决**:export 修 **PASS**。**re-export 焦点5案**(非全8)→ B 重测,**重点 0127:radar 是否 on-bed → P5 engage 否 → 0.993 是否被压**(P5 真治α 的判定;若不 engage 则 α 实际未治,需重审 P5 角色)。redis-replay 待用户②。新节点暂停(㊻)。333B 待 ghost。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:执行㊼ 已批(A)B fixture-export 补 sleepad.track → export_case.sh 修 + 验 BedOccupied populated + ⚠️P5 子发现(radar 非 on-bed→released 非 suppress)+ 全 8 案重导决策待裁
 
