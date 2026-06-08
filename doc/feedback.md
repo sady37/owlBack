@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`85de6f8`(下次从此 commit 起算 delta)
+- **last-audited**:`ecb0116`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,25 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-08 01:00 MDT] 审查㉟ `85de6f8..ecb0116` 阶段3 对抗 fixture ✅(np=0/visitor 不cancel)+ ⚠️ 否"三阶段完成":真 CABB replay 是放行 gate 非 follow(founding 案 D-path engage 未验=silent-miss 风险)
+
+**R6 亲跑**:5 个 P61b fixture 全 PASS、9 红 0 新增。
+- ✅ **阶段3 两对抗到位且漏报-critical**:`TestP61bNp0DoesNotCancel`(np=0 在场+无recapture→escalate 不cancel,证 np=0 非判别器)/ `TestP61bVisitorDoesNotCancel`(护工在场+resident未回床→escalate 不cancel,证 cancel 绑走失者本人 anchor)。两条都断言 escalate(不漏报)∧ 不cancel——㉝/㉚ 要的 cancel-逻辑漏报-safe **已验**。
+
+**⚠️ 但否决"Opt-1 三阶段完成"——真 CABB replay 是放行 gate,施工方降级成 follow 不成立**:
+- 施工方自陈"真 CABB json-replay 走 D-path 需 replay harness 扩 smallBathroom flag+镜像 D-path,作 follow(e2e 已覆盖 D-path 逻辑)"。**这正是审查㉔ 教训:合成绿 ≠ 生产路径对。** 我㉛/㉝ 明确"造对验证器须在**真 CABB 立项 fixture** 上跑"=放行 gate。
+- **委员会 R6 自查真 CABB layout**(`doc/cases/hunzi-cabb-lost-0601-2247-FP/room_layout.json`):**只有 2 objects = Radar + Enter zone,无 WallPolygon、无显式 RoomW/RoomH**。而小卫生间 gate=「bbox 优先 WallPolygon,无 wall 退 rawW×rawH/radar 边界」。
+- → **真 CABB 案的 gate(bbox 最小边≤200)是否 fire 完全未验证**:若无 wall 时 bbox 退到 **radar FOV**(雷达量程,可能 >200)→ **gate 不 fire → D-path 在立项 CABB 案上根本不 engage → P6.1b-D 治不了它为之而生的那个案 = silent miss**(核心错误类:漏报/silent-miss,CLAUDE.md 最忌)。合成 e2e 硬编 `poly(180)` 测的是状态机逻辑,**没碰"真 CABB 会不会进 D-path"这个 founding 问题**。
+
+**裁决**:阶段3 cancel-逻辑对抗 **✅ 通过**(np=0/visitor 漏报-safe 已验)。但 **P6.1b-D 不予完整放行**——**放行 gate = 真 CABB replay 验 founding 案 engage D-path**:
+1. 扩 replay harness(smallBathroom flag + D-path 镜像)——施工方已识别的 follow,**提级为放行前置**;
+2. **专项验**:真 CABB 案(无 wall)的 bbox 最小边解析值 = ?是否 ≤200 gate fire?**追 RoomW/RoomH 在无 wall 时的来源**;若退 radar FOV 且 >200 → **gate 不 fire** → 须修 bbox 源(用 Enter-zone/实际覆盖轮廓,非 FOV)或 founding 案永不 engage。
+3. 真 CABB replay 跑通:lost track 进 D-branch、provisional→(回床 recapture cancel / 否则 escalate)、9 红 0 新增。
+
+**未验 founding 案 engage 不算 P6.1b-D 完成**(这是"合成全绿但真案不触发"的 silent-miss,正是审查⑳→D 整条链要治的 CABB 案本身)。①fleet + 边界标注率仍待用户。
+
+---
 
 ### [2026-06-08 00:52 MDT] 审查㉞ `dde2a83..85de6f8` P6.1b-D 阶段2(provisional 分级状态机)【干净 PASS ✅】
 
