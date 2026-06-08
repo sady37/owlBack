@@ -54,6 +54,25 @@
 
 
 
+### [2026-06-08] 施工方 → 委员会:收审查54 PASS⭐ + 死源#4 SleepStage 源保真预审(doc-only)→ 岔口 SS-A 接活 / SS-B 退役(#1.2,倾向),请委员会裁 locus
+
+**收审查54 PASS⭐**(R5-lock 机械化总闸落地、双向锁认可)。承"#4 SleepStage 可单 agent 直推预审",做源保真勘察(只读,**未建**):
+
+**源保真发现(死源#4,比预期更尖锐)**:
+- `bedAdapter`(belief_adapter.go:458)**已 emit** `ObsSleepStage`(Value=`b.SleepStage`,Conf=`b.SleepConfidence/100`,Geom=InBed)。
+- 但其**唯一喂入** = tick 的 `bedAdapter(tm.BedOccupancyState(nowMs))`,而 `BedOccupancyState`(P5-rework 合成)只填 `BedStatus/BedStatusTs/BedConfidence`——**SleepStage/SleepConfidence/SleepStageTs 恒零** → Conf=0 → likelihood=I 不更新 → **永久 dead**(B 源保真审计 8/8 案 SleepStage 未populate 坐实)。
+- `SleepadObservation`(进 TrackManager 的 raw sleepad 帧)**无 sleep_stage 字段**;权威睡眠分期由**独立** `SleepStageConsumer`(internal/consumer,订 `iot:event:stream` cat=`alarm.SleepStage` → confidence ladder → 写 `sensor:derived:stream` cat=`bed.sleepstage` → projector 字段级 merge 进 card.BedState)算出。roomengine tick **无路径**读它。
+- **关键定性**:ObsSleepStage 似然(likelihood.go:76)只压 SBedRestless/SBedLying(在床细分),**绝不写 SFallen** → **对 fall 检测零价值**(R5-lock 已把它归"对 SFallen 不写"注记)。
+
+**岔口(locus,请委员会裁,不擅建)**:
+- **SS-A(接活 wire-live)**:`SleepStageConsumer` 与 roomengine **同进程**(均 `cmd/wisefido-sensor/main.go` 实例化),令其额外喂 `tm.RecordSleepStage(stage,conf,ts)` 单 latch(镜像 np/bed latch),`BedOccupancyState` 从 latch 填 SleepStage → ObsSleepStage 转 live。**代价**:新增跨组件边(consumer→roomengine)+ 按房路由(consumer 以 cardID/spatialPrefix 为键,需对齐 room);**价值**:仅在床 Restless/Lying 细分,**不影响 fall**。
+- **SS-B(退役 dead emit,#1.2,倾向)**:删 `bedAdapter` 那行 ObsSleepStage append(一条永久 Conf=0 的 no-op stub = #1.2"不留 no-op stub"正违)。likelihood/calibration/enum 词汇可留(非 dead,若将来喂入即生效)或一并清,委员会定净度。**理由**:①对 fall 零价值(不触 SFallen)②当前是"看似 wire 实则永空跑"的 dead plumbing——正是本审计要杀的同类(=firmware-Fall-dead-plumbed 同根)③YAGNI:为非-fall 细分拉跨组件边不划算。待 bed-state-quality / HSMM roadmap 真需要时走 SS-A。
+- **不取"读 projected card.BedState"**:roomengine 是 card 投影的**上游**,回读自家下游投影 = 倒置 + 违 #1.3(睡眠分期单源 = SleepStageConsumer),故不列为选项。
+
+**倾向 SS-B**(退役),因 fall 零价值 + #1.2 no-op-stub 正违 + 跨组件边 YAGNI;若 roadmap 要在床细分则 SS-A。**裁前不建**:locus 未裁不写代码。**余**:#5 StandDuration(下一个可直推预审)/#3 Neighbor(跨房需 redis-replay 整单元,待用户)。**待委员会**:裁 SS-A/SS-B + #5 StandDuration locus。
+
+---
+
 ### [2026-06-08 17:40 MDT] 审查54 `65ba1c6..8f072b6` R5-calibration-lock 测试【干净 PASS ⭐ 机械化 R5 总闸】
 
 **R6 全套亲跑**:4 测全 PASS、build/vet 绿、**roomengine 9 红 0 新增**。忠实落地审查53 B-纠正版,且**双向锁**(比裁定更严):
