@@ -50,6 +50,24 @@
 
 
 
+
+### [2026-06-08] 施工方 → 委员会:执行㊼ 已批(A)B fixture-export 补 sleepad.track → export_case.sh 修 + 验 BedOccupied populated + ⚠️P5 子发现(radar 非 on-bed→released 非 suppress)+ 全 8 案重导决策待裁
+
+收㊼(finding-2 推翻受理/死源重分类受理/redis-replay 范围=unit 全设备×两流)。执行其中**我可做的 (A)**(redis-replay 全设备×两流仍待用户 ② 谁跑)。
+
+**✅ export_case.sh 修(已批 + 已验)**:根因=monitor_stream 查询 `WHERE device_addr=单 radar`(只导 radar.track,漏 sleepad.track;event 查询本房级故 sleepad event 在)。修=monitor 查询改**房级**(`<<= ROOM_ID /88` 含 radar+sleepad,同 /88 前缀已验)+ 按行 JOIN devices 取真 device_uid + strip radar./sleepad. 双前缀。**验证(临时重导 0712-test)**:导出含 **BM…641 sleepad.track 59 帧(bed_status=0=InBed)**;B source-fidelity **0712 BedOccupied 现 populated**(原缺)。+ B 路由修(sleepad monitor 先于 category==track,否则 sleepad.track 误路由 radar)。build/vet 净,9 红 0 新增,B 全绿。`05cbd0e`。
+
+**⚠️ P5 子发现(bed wire 后冒出,非死源)**:0712(α)sleepad 报 InBed,但 **radar track geom 非 InBed → P5 合取门控开 → `bed_authority_released:15`(非 `bed_leak_suppress`)**——P5c 门控需「位置 radar-on-bed ∧ 占用 sleepad-InBed」两条,0712 床上翻身时 **radar 没读 bed-surface**(cell 非 AreaBed / track 位置出床多边形)→ P5 不压 0712。**但 FP 仍正确不 confirm(peak P=0.053,由 pose@geom 动态压)**。
+- **raises**:① α 床上翻身时 radar 是否读 on-bed = P5 engage 前提(若 radar 常不读 bed-surface,P5 对很多 α 不 engage,bed 几何/cell-学习是另一关)② 0127 近-FP(P=0.993)wire bed 后是否被 P5 压 = 关键,**待全 8 案重导 + 重测**。
+
+**⚠️ 决策待裁——全 8 案 fixture 是否即刻重导(补 sleepad.track)?**:
+- **(X) 即刻重导全 8**:export_case.sh 已修,逐案按现窗 bounds 重导(补 sleepad.track)→ B CI 回归看 P5 engage + 0127 变化。**代价**:churn 8 个已 push fixture(且 filename tz 从 MDT→UTC,或我用 --tz America/Denver 保 MDT 名);8 案 P 重测交用户逐案。
+- **(Y) 暂不重导 B fixture,靠 redis-replay 全设备×两流做权威 bed engage 验**(待用户 ② 谁跑)+ B 留 radar-only CI(现状)。
+- **施工方倾向 (X)**(B fixture 补 sleepad.track 是㊼ 明批的 CI 回归;让 B 单房 CI 也能验 P5 bed engage,不必每次等 redis-replay infra)。**但 churn 8 fixture + 重测交用户,请委员会/用户拍**。
+- **注**:无论 X/Y,**redis-replay 全设备×两流仍是权威**(B 单房无法验 Neighbor/census 跨房源)。
+
+**待委员会/用户**:① 裁全 8 案重导 (X)/(Y) ② redis-replay 谁跑(待用户 ②)③ 0127 逐案。新节点暂停(㊻)。333B 待 ghost。
+
 ### [2026-06-08] 用户澄清 + 施工方记:redis-replay 须**整单元重放**(非单设备)→ 单元 201 = 3 设备(CD2B+sleepad1641+333B),细化 redis-replay 执行 spec
 
 **用户 2026-06-08**:"重放时,是整个单元重放。"
