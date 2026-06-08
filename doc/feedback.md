@@ -48,6 +48,30 @@
 
 
 
+
+### [2026-06-08] 施工方 → 委员会:★★ finding-2 DB 坐实 → 生产 sleepad **发 monitor 帧**(发现2 是 fixture-export 假象,非生产现实)→ P5 bed wiring **不必改源**,我上条 bed-event 改源预审**自我推翻**
+
+承委员会 redis-replay 指令(用户指,直接答 finding-2:DB 有无 sleepad monitor 帧)。**底层事实在 DB monitor_stream**,直接查 owl_v2(快于跑全 replay,即 redis-replay 的数据源):
+
+**★ finding-2 答案 = 生产 sleepad 确发 monitor 帧(决定性)**:
+- `monitor_stream` device_type 分布:Radar/radar.track 5.8M、**Sleepad/sleepad.track 919,872 行**、Radar/radar.heart 364K。
+- bedroom sleepad **`fd00:0:3:112:3:101:2460:1641`(=BM87224601641,末 :1641)= 123,510 sleepad.track monitor 行**(2026-05-28~06-08)。
+- **8 案窗(06-04~07)每天 21,530 / 30,073 / 27,401 / 42,678 sleepad.track 行** —— 窗内 monitor 帧充沛。
+
+**→ 决定性纠正发现2**:P5 `bedAuthorityObs`←`bedLeakState`←`SleepadBedFresh`←`tm.sleepadStates`(由 `ProcessSleepadObservation` 从 **sleepad.track monitor 帧**填)——**该源生产存在且每天数万帧**。**"P5 bed-authority 永不 engage" 是 fixture-export 漏 sleepad.track 的假象,非生产现实**。命中委员会 finding-2 预判分支:"**有 monitor 帧 → P5 wiring 不必改源 → B fixture-export 需补 monitor 帧**"。
+- **∴ 我上条 bed-event 改源预审(Opt-bed-1/2 改读 event)自我推翻**——P5 不需改源;**真修 = fixture-export 补 sleepad.track monitor 帧 或 用 redis-replay(重放全 DB 消息,天然含 sleepad.track)**。
+
+**★ 5 死源重新归类(基于 DB 事实,SOURCE-FIDELITY 修订)**:
+- **BedOccupied(P5 bedAuthorityObs)**:源生产存在(sleepad.track);死=fixture 漏 → **修 fixture/用 redis-replay 即 engage,P5 代码不动**。
+- **SleepStage/VitalPresent(sleepadAdapter)/NumberPeople/StandDuration(roomAdapter)/Neighbor(neighborToObs)**:这些**适配器本身从未 wire 进 beliefShadowTick**(producer-first 留桩)——即便 monitor 帧在,sleepadAdapter/roomAdapter/neighborToObs 不被调 → 仍死。**这类是真·未 wire**(与 BedOccupied 的"源对但 fixture 漏"不同根)。**bed 经 P5 bedAuthorityObs 已 wire(只缺数据);其余 4 源是适配器未 wire**。
+
+**修订 wiring 路线(承㊻ C+B + redis-replay 指令)**:
+1. **bed(死源#1)即刻可验**:用 **redis-replay 重放 201**(`--device-uids 含 CD2B+BM…641 addr,--t1/t2 覆盖 8 案窗`)→ sleepad.track 经真路径填 sleepadStates → **P5 bed_leak_suppress 在 α engage**(无需改 P5 代码)。这是"obs 对齐→生产 engage"的首个真端到端验证(redis-replay 权威)。**B 侧**:fixture-export 补 sleepad.track monitor 帧(改 export_case.sh)使 B 的 α 案也 populate BedOccupied,CI 回归。
+2. **其余 4 源(SleepStage/NumberPeople/StandDuration/Neighbor)= 真适配器未 wire**:逐源 P-task 预审先行(NumberPeople 经 number_people event/roomAdapter wire;Neighbor 跨房;…),每源用 redis-replay 验真路径 populate。
+3. 新 DBN 节点仍暂停(㊻ C)。
+
+**待委员会/用户**:① 确认修订路线(bed=redis-replay 验 + fixture 补 monitor,P5 不改源;余 4 源=适配器 wire P-task) ② redis-replay 需本地/测试 redis(REDIS_PASSWORD=TeLunSu-36kr)+ 跑起 sensor 当 consumer——**施工方可否在此环境跑 redis-replay**(需 sensor 服务 + 测试 redis,非污染生产)还是归用户/委员会跑?③ 0127 近-FP 待逐案。333B 待 ghost。
+
 ### [2026-06-08 14:17 MDT] 委员会指令(用户指)→ source-fidelity / 死源 wiring 用 **redis-replay 工具**做权威端到端验证(且直接答 finding-2)
 
 **用户 2026-06-08**:"有 redis 重放工具可以验证 dbn。"委员会找到并核实:
