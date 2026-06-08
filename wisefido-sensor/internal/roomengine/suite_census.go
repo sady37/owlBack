@@ -617,3 +617,35 @@ func (m *SuiteCensusManager) LoadFromRedis(ctx context.Context, suiteIDs []strin
 	}
 	return nil
 }
+
+// SoleResidentRecaptureState 只读快照 P6.5① 跨设备 track 守恒所需事实(belief-shadow 调)。
+// **纯只读**:持 m.mu 读 Persons 一次返回值(非指针),不改 census、不触升格/anchor-flip。
+// 解决 belief-shadow 直接读 *SuiteBedroomCensus.Persons 与 UpdatePersonFromTrack 的 data race。
+//
+//   - residentCount: Role==resident 的人数(visitor 不计 —— 单老人+访客护工仍 ==1,gate 不被访客关)
+//   - recaptured: residentCount==1 且该 sole resident 已重现别处 = SleepadAnchored(回床铁证)
+//     ∨ AnchorRoomType 已翻回 bedroom(跨 BathroomGate 返回);residentCount!=1 恒 false。
+//
+// 多 resident(residentCount>1):anchor-flip 被 census 决定19 跳过 → 无人带 Bathroom anchor →
+// 无法 per-identity → recaptured=false(caller 据 residentCount 自行 skip+LOG,保留告警零漏报)。
+func (m *SuiteCensusManager) SoleResidentRecaptureState(suiteID string) (residentCount int, recaptured bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.buckets[suiteID]
+	if !ok {
+		return 0, false
+	}
+	var sole *SuitePerson
+	for _, p := range c.Persons {
+		if p.Role != SuitePersonResident {
+			continue
+		}
+		residentCount++
+		sole = p
+	}
+	if residentCount != 1 {
+		return residentCount, false
+	}
+	recaptured = sole.SleepadAnchored || sole.AnchorRoomType == card.RoomTypeDefault
+	return residentCount, recaptured
+}

@@ -242,6 +242,37 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		if st.lostAnchor == 0 {
 			st.lostAnchor = st.lastSeenMs
 		}
+		// P6.5①(审查㉑批准,选项A)跨设备 track 守恒:bathroom track 丢失时,若 sole resident 已重现别处
+		// (SleepadAnchored 回床铁证 ∨ 跨 BathroomGate 返回 bedroom)= 人移到别处 = exit 非 fall →
+		// 不喂 lost-fall 发射(shadow 抑制,只 log 不 fire,R1;自洽 P3.4 超窗重现=自救)。
+		// per-identity 绑 sole resident(census 只读 accessor 锁内读,visitor 不计);**多 resident → gate OFF**
+		// (census 决定19 跳过 anchor-flip → 无人带 Bathroom anchor → 无法 per-identity)= 漏报-safe 保留告警 + skip LOG(数据闸)。
+		if st.geom == belief.GeomInToilet && e.suiteCensus != nil {
+			residentCount, recaptured := e.suiteCensus.SoleResidentRecaptureState(e.SuiteIDForRoom(roomID))
+			switch {
+			case residentCount == 1 && recaptured:
+				e.logger.Info("belief_shadow_exit_recapture", // 仅 log,无 alarm(R1)
+					zap.String("room_id", roomID),
+					zap.Int("track_id", tid),
+					zap.Int64("ts_ms", nowMs),
+					zap.Int64("p6_5_lost_anchor_ms", st.lostAnchor),
+					zap.Int64("p6_5_gap_ms", nowMs-st.lastSeenMs),
+					zap.Bool("p6_5_exit_confirmed", true),          // track 守恒:sole resident 重现别处 = exit 非 fall
+					zap.Bool("p6_5_would_suppress_lostfall", true), // shadow 会抑制此 lost-fall(production 不动,R0)
+					zap.String("last_geom", st.geom.String()),
+				)
+				continue // exit 确认 → 不喂 lost-fall 发射(shadow 抑制)
+			case residentCount > 1:
+				e.logger.Info("belief_shadow_recapture_skip_multiresident", // 数据闸(no silent caps):量多resident浴室-lost FP频率
+					zap.String("room_id", roomID),
+					zap.Int("track_id", tid),
+					zap.Int64("ts_ms", nowMs),
+					zap.Int("p6_5_resident_count", residentCount),
+					zap.Bool("p6_5_recapture_skipped", true), // 多resident anchor-flip被census决定19跳过→gate OFF→保留告警(零跨身份漏报)
+				)
+				// fall through → 正常 lost-fall 发射(保留告警)
+			}
+		}
 		// P2：门区不再硬 continue；改软门——no-detect(状态条件抬 Fallen) 与 reachable-exit(近门+定向逼近→压 Fallen) 同 tick 对冲。
 		obs = append(obs, noDetectObs(st.geom, nowMs))
 		sh.lastLostGeom = st.geom // #3：记最近丢失点 geom，供 fall log 辨别床/桶区
