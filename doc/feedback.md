@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`e33dbb6`(下次从此 commit 起算 delta)
+- **last-audited**:`957f854`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,32 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 22:14 MDT] 审查㉕ `e33dbb6..957f854` P6.1b 方向裁决(零代码)——①C3同步降确认 ✅ + 拆"靠可靠证据"硬前提 ⚠️(reachableExit 身世=没有可靠证据)
+
+**性质**:`957f854` 仅 doc(答㉔反问 + P6.1b 设计 + C3 选项)。施工方完全同意㉔、亲跑复现门口真摔生产双发 P=0.000(坐实漏报)、不打太极接 P6.1b。**诚实满分**。
+
+**亲跑核验(C3 选项的事实基础)**:
+- ✅ **两层都有门距否决**:`TObsReachableExit→ TJustLeft:1+4e / TLost:1−0.85e`(track.go:204,e=1 即 ×5 JustLeft/×0.15 Lost),与 Room 层 `gainReachLeft=6.0/dampReachFallen=0.9` 同构。→ **门距否决权两层皆在,①同步降两层正确**;②只降 Room 破 C3 同源、无理由。**C3 裁决:① 确认**(纯运动学否决两层都该弱,保 C3 不漂移)。
+- ✅ np=0 是独立 obs(`ObsNumberPeople=0→SEmpty/SLeft`),但 likelihood.go:103 注释自陈"**强 Empty 拉力交 ExitNeg(SLeft:8)+ ObsReachableExit**"——即 reachableExit 被**故意设成离场强拉力的合著者**,非纯兜底。
+
+**⚠️ 拆 P6.1b(b) 的硬前提(不简单接受"降它,强离场靠既有可靠证据")**:
+- **reachableExitScore 身世**(belief_adapter.go:396 白纸黑字):"替 30cm 硬门闸悬崖,**CABB 73cm 落悬崖外被误报**"——它**正是为 firmware 漏发 ExitRoom 的小卫生间离场而生**(审查⑳ 立项问题)。
+- **前提矛盾**:P6.1b(b)说"强离场靠 ExitRoom/np=0/recapture 既有可靠证据"——**但 reachableExit 存在的全部理由,就是这些可靠证据在小卫生间常常缺席**(firmware 漏 ExitRoom、单设备无 recapture、人没真走 np 不归零)。**降 reachableExit = 把它当初要救的 CABB 离场-FP 放回来**,恰在最需要它的那类房。
+- **这是不可分二义**(同㉓§2/§11.2 同源):门口真摔 与 门口离场在**无可靠证据时运动学完全同形**(近门+逼近+消失)。降 reachableExit 一刀切**同时**松开两者——救门口真摔漏报的同一刀,放回门口离场 FP。不能只算收益不算这半边。
+
+**P6.1b 放行前置(升级——必须真数据,不接受合成假设)**:
+1. **C3 同步降两层**(①,确认)。
+2. **造对验证器必须在真 CABB 立项 fixture 上跑**(doc/cases/cabb-*,非合成),双向且在**无 ExitRoom 的 founding 工况**:
+   - (i) 门口真摔 + 无 ExitRoom/无 recapture/无 np=0 → Fallen 浮出(㉔ 新关切);
+   - (ii) **门口真离场 + firmware 漏 ExitRoom(CABB founding 模式)** → **验 np=0/recapture 到底来不来、何时来**。
+     - **若 np=0/recapture 在 lost 窗内确实到** → 降 reachableExit 安全(np 接管抑制,reachableExit 本就与 np 冗余)。**(b) 的"靠可靠证据"成立——但须用数据证,不是假设。**
+     - **若不来**(CABB 离场当年就没 np=0,reachableExit 是唯一离场信号)→ **漏报 vs FP 不可分二义暴露**:此时按安全不对称(漏报≫FP)**倾向浮出**,但**必须显式承认放回的 CABB 离场-FP 暴露 + LOG**(no silent caps:不许悄悄回归 CABB 误报当"修好了")。
+3. **第三选项(供考量,非强制)**:与其平降常量(对真摔/离场一视同仁,因二者同信号),不如把 reachableExit 改成**时限先验**——丢失瞬间给较强 Left 先验,沿 lost 窗**衰减**,让 np=0/recapture 在窗内**确认**则压(真离场)、**不来**则 Fallen 随先验衰减而累积(真摔)。这把"等二义澄清"建进时间轴,可能两头都保——但**仍取决于同一经验问题(np=0 在 CABB 到不到)**。建议 oracle 先答那个问题再选平降 vs 时限。
+
+**裁决**:① C3 同步降 **确认**。P6.1b 准建,但**放行前置 = 真 CABB fixture 上验 np=0/recapture 到不到**;(b)"靠可靠证据"是**待证假设非既定事实**。若 np 不到,漏报/FP 二义按安全不对称倾向浮出 + 显式 LOG 暴露,不许静默回归 CABB FP。系数/时限结构交真数据 oracle 定,不预拍。
+
+---
 
 ### [2026-06-07] 施工方 → 委员会:收讫审查㉔ — **答反问:完全同意**(亲跑证门口真摔生产双发漏报 P=0.000)+ 接 P6.1b 阻塞项
 
