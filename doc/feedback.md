@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`129f18b`(下次从此 commit 起算 delta)
+- **last-audited**:`02d7212`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,23 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-08 01:27 MDT] 审查㊲ `129f18b..02d7212` P6.1b-D Opt-1【完整 PASS ⭐ — 真CABB replay 揪出并修了 silent-miss bug,过程兑现】
+
+**R6 全套亲跑(完整放行验)**:
+- ✅ build/vet/belief 绿、**roomengine 9 冻结红 0 新增**;**8 个 P61b fixture 全 PASS**(gate/状态机三路径/np0/visitor/CABB-engage/CABB-poor-suppress)。
+- ✅ **真 CABB 帧过 D-path engage(item 1+3,放行 gate)**:`TestP61bCABBRealLayoutEngagesDPath` 用真 CABB grid(boundary 派生 190×200)+ 真 layout,lost track geom=**OpenFloor**(真 CABB 无 toilet 对象)→ 进 D-branch→provisional→escalate。**founding 案真 engage 非 silent-miss。**
+- ✅⭐ **replay 揪出真 bug(silent-miss)+ 已修**:D-branch 旧条件 `smallBath && geom∈{InToilet,InEnter}` → 真 CABB 内部 lost geom=OpenFloor **不满足** → D-path 不 engage = **治不了 CABB**。修为 **`smallBath` 单条**(小卫生间整间门距退化"处处近门",任一 geom 生效)。**放宽安全**:`:239` moving-precondition 仍在前(static→Still-fall 排除)→ 只及"小卫内 moving-before-loss 任一 geom",非回归(小卫 reachableExit 本退化);全 shadow(R0)。
+- ✅ **engage≠治愈(我㊱ 点)已测**:`TestP61bCABBPoorSuppresses` 设备贫→suppress(CABB FP 治愈)对照 rich→escalate(FP 仍在需 Opt-3)。施工方**诚实撤回"治 CABB"过 claim** → tier-conditional + 升 ①fleet 关键依赖。
+
+**⭐ 过程兑现(委员会价值的硬证据)**:我㉟ 顶住施工方"e2e 已覆盖 D-path、真 replay 作 follow",坚持**真 CABB-replay 是放行 gate**。结果 replay **真揪出 silent-miss bug**(窄 geom 让 D-path 在 CABB 永不触发)。**若当时放行,P6.1b-D 会在它为之而生的 CABB 案上静默失效**——正是"合成绿≠生产路径对"(审查㉔ 同源教训)的实锤。R6 不信声明、亲跑、真数据造对——闭环。
+
+**裁决**:**P6.1b-D Opt-1 代码完整 PASS ⭐**(gate+状态机+5对抗+真CABB engage+tier outcome,8 轮压测 ㉘-㊲)。
+**唯一剩余 = 部署事实(非代码)**:**CABB 实际设备 tier**(单浴室雷达=贫→suppress 治愈 / 有它设备=富→escalate FP 仍在→须 Opt-3)+ fleet 浴室独苗占比 + 边界标注率。待用户。代码已就绪,outcome 由 tier 事实定。
+
+**后续 backlog(用户 2026-06-08 指示)**:**CD2B 最近 2 天大量 Fall 事件、多为 false** → P6.1b-D 完成后,**用新 DBN replay CD2B 这批 Fall 复核过滤率**(真数据 oracle:验 D + 既有 belief 链对 CD2B FP 的实际压制)。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:应审查㊱ — 收"engage≠治愈"+ 补 CABB outcome 测试(`07ba0be`+poor-suppress)+ 撤回"治 CABB"过claim
 
