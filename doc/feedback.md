@@ -46,6 +46,27 @@
 
 
 
+
+### [2026-06-08] 施工方 → 委员会:WF-b 实现 1+2 完成 + B 加生产 trace/逐案查 + **2 发现(redis-gate 阻 shadow / bed 源是 event 非 sleepad-monitor)** + redis-gate 岔口待裁
+
+承 WF-b spec + 工作流 note(用户定调:reproduce-C 可逐案查不过度打磨自动断言;实现需充分 observable 供 human-in-loop 逐案校对)。已交 2 commit。
+
+**✅ WF-b 1+2 完成(R6 可亲跑)**:
+- **删 ObsFirmwareFall belief 死管(#1.2)**:radarEventToObs 删 alarm.Fall case / likelihood 删 case / observation 删 ObsKind / calibration 删 lrFirmwareFallen(P2.4)/ track 注释。firmware Fall 事件留生产 gate 不动。残留引用=0。
+- **合成测换真抬升源(damp 逻辑不变)**:P5 测 3 处 ObsFirmwareFall→PoseFallen(@InBed 床上翻身误读 / @OpenFloor 位移倒地)+ belief_test 3 处 + adapter_test 删 firmware Fall(genuine-fall 由 PoseFallen@OpenFloor 独立确认)。
+- **B-2 生产 observability**:beliefShadowTick 每 tick emit `belief_shadow_trace`(Debug:p_fallen+argmax+last_lost_geom),复用 decider 已算 Vector 零开销;生产默认不开 Debug,B observer 捕之取逐案 P 轨迹。
+- **B 逐案查 harness**:`TestBReproduceCInspect` 每案打印峰值 P(Fallen)/末态/否决·确认信号 + 软不变量(8 FP→不应 confirm)。
+- **验**:build/vet 净;belief 绿(genuine-fall/P5/IgnoresZ 全过);9 红=冻结基线(0 新增);保真自检全过。
+
+**⚠️ 发现1(阻塞,待裁岔口)——beliefShadowTick 被 redis-gate**:`publishTrackStatuses`(engine.go:1006)`if e.redisClient==nil { return }` 早返 → **beliefShadowTick(step1.8)永不执行**(无 redis 测试环境)。生产 redis 恒非 nil 故 shadow 总跑;但 B(NewEngine(nil))跑不到 shadow → **逐案 P 值全 0(shadow 未执行,B 已诚实标注非误导绿)**。`ai_emit` 等来自 event 路径 `tm.Tick` 非 publishTrackStatuses。
+- **岔口(不擅决,请裁)**:**(i)** B 接真 redis(本机 owl-redis 在跑但需 AUTH + 会污染真流,CI 脆)/ **(ii)** 解耦 shadow 与 redis-publish guard(shadow 是 log-only,把 redis 守卫下移到真正 publish 处 / beliefShadowTick 前置——R0/R1-safe 小重构,生产 redis 恒非 nil 故行为不变)/ **(iii)** 其它。**施工方倾向 (ii)**(shadow observability 不该依赖 redis publish 可用性;且让 B 无需 infra 即跑真路径),**但涉生产 shadow 路径结构**,请委员会裁。
+- **注**:(ii) 是正确性改进(shadow 当前若 redis 偶 nil 会静默失效),非纯为测试;但仍是生产改动,守"不擅碰生产"列岔口。
+
+**⚠️ 发现2(item-3,B 持续交叉校验)——bed 源是 event 非 sleepad-monitor**:8 fixture 床态(InBed/LeftBed)走 **event 流**(sleepad BM…641 **只发 event 无 monitor 帧**,验 0712/1021);但 **P5 bed-authority 读 `tm.sleepadStates`**(由 sleepad **monitor** 帧经 `ProcessSleepadObservation` 填),InBed/LeftBed **event 不填它** + `beliefShadowEvent` 不认 LeftBed → **shadow bed-authority 这些案永不 engage** → 即便 redis-gate 解了 shadow 跑通,**α veto 仍无信号可复现**。
+- **raises(待委员会/用户)**:P5 bed-authority 源(sleepad monitor 帧)vs 生产实际床态源(InBed/LeftBed event)需对齐?——要么 P5 bed-authority 也消费 bed event,要么 fixture-export 缺 sleepad monitor 帧(真生产 sleepad 是否持续发 monitor 帧填 sleepadStates?)。这决定 P5 在生产能否 engage,记为 B 的下一交叉校验追问。
+
+**下一步**:委员会裁 **redis-gate 岔口(i/ii/iii)** → B 跑通真 shadow → R6 亲跑出逐案基线交用户;并定 **发现2 的 bed 源对齐**(P5 生产 engage 前提)。门控 AND 仍未来步。333B 待 ghost。
+
 ### [2026-06-08 13:42 MDT] 委员会工作流 note(用户定调)→ 施工方尽快完成 WF-b 实现 → 用户 CD2B 逐案人工校对 → fix 方案
 
 **用户 2026-06-08**:"先尽快完成实现,我再用 CD2B 的 case 一个一个检查校对,给出 fix 方案。"
