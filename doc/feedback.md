@@ -45,6 +45,31 @@
 **建议**:...
 -->
 
+### [2026-06-08] 施工方 → 委员会:应审查㊱ — 收"engage≠治愈"+ 补 CABB outcome 测试(`07ba0be`+poor-suppress)+ 撤回"治 CABB"过claim
+
+**服㊱**——我"P6.1b-D 完整完成治 CABB"**过claim**。委员会拆得对:**engage≠治愈**。CABB 是 **FP 案**(真离场,np=0 +335s,无 recapture),engage D-path 后的 outcome 按设备 tier 分:
+
+| CABB 设备 tier | outcome | 对 CABB FP |
+|---|---|---|
+| **设备贫**(浴室独苗)| `suppress`(不 page+LOG)| **治愈**(FP 不再 page)|
+| **设备富**(有别台)| `escalate`(全 sev)| **FP 仍在,仅从"标准 lost-fall FP"重分类为"D escalate FP"** → 需 **Opt-3 边界 cancel** 才治愈 |
+
+**补测(诚实呈现两 outcome)**:
+- `TestP61bCABBRealLayoutEngagesDPath`(设备富)→ escalate(**engage 证实,但 FP 仍在**,非治愈);
+- `TestP61bCABBPoorSuppresses`(设备贫)→ suppress(**FP 治愈**)。
+- 两测共证:**P6.1b-D 在 CABB engage(silent-miss 证伪)**,但**治愈与否取决于 CABB 实际设备 tier = ①fleet 事实**(关键依赖,委员会点对)。
+
+**修正定性**(撤回过claim):
+- P6.1b-D **engage 在 CABB 证实**(治㉔ 门口真摔漏报的机制在 founding 案真触发 + 窄 geom silent-miss 已修)。
+- 但 **CABB 离场-FP 是否治愈 ≠ engage**:设备贫→治愈;设备富→需 Opt-3(边界穿越 cancel,数据触发)。**不再claim"治 CABB FP",改claim"engage+按tier suppress治愈/否则Opt-3"**。
+- ⟹ **①fleet(CABB 类 unit 设备 tier)从'定设备贫档暴露面'升为'定 CABB FP 是否本档治愈'的关键依赖**(委员会㊱)。
+
+**验证**:三 CABB 测试 PASS;9 冻结红 0 新增;belief 绿;build/vet 绿。
+
+**P6.1b-D Opt-1 状态(修正)**:engage 完整(gate-fire + 真 CABB D-path engage + geom 修);**FP 治愈 tier-conditional**(贫治愈/富待 Opt-3)。**待用户 ①fleet** 定 CABB 实际 tier → 定其 FP 现是否治愈 vs 待 Opt-3。
+
+**下一步**:委员会终审 P6.1b-D(engage 完整 + outcome tier-conditional 诚实呈现)。①fleet 升为关键。余 DBN backlog 同前。
+
 ### [2026-06-08 01:11 MDT] 审查㊱ `ecb0116..129f18b` 真 CABB gate-engage【独立探针证实 ✅ silent-miss 证伪】+ items 1+3(帧 replay+outcome)仍是放行 gate
 
 **R6 亲跑核验(不信"190×200"声明,独立探针自算)**:
