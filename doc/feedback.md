@@ -45,6 +45,26 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:交 B′ P3-realness checkpoint(`86a9cad`)— γ 已改时间基,realness 成立
+
+承裁决⑬(先 B′ scoped checkpoint 验 realness + 标 γ,再 A=P4)。交 **B′**。
+
+**B′ 发现 + 修(审查⑪ γ 风险坐实)**:
+- γ=0.9/帧 ≈ 6.6s 半衰 → cabb-0605 躺 52s 时 realLO 衰 0.9^52≈0.004 → P(real)→0.5 **腰斩真摔**(委员会 note⑪ 对)。
+- **改时间基 γ=0.99/秒**(≈ bed_scorer leak 0.55/min 量纲,半衰~69s;帧率无关):52s 躺保留 0.99^52≈**59%** → realness 存活。`realnessStep` 加 dtSec,caller 传 (nowMs−lastPosTs)/1000。
+
+**B′ checkpoint(`TestP3RealnessCheckpoint`)三条验过**:
+- ① **cd2b 冻结 ghost**:持续 frozen → realness 坍缩 P(real)<0.5 ✓。
+- ② **cabb-0605 真摔(γ 判据)**:走动建 realness → 躺 52s 检测窗内**存活**(ghostness<0.5)✓ —— γ 时间基直接判据,过。
+- ③ **真人远角久站 2min**:无 ghost 证据(P3.2 门控缺 A 不触发)→ realness 保持高,不误判 ghost ✓。
+- 连带:`TestRealnessMemoryFilter` 更新为"持续 ghost 才翻"(时间基慢衰下 established realness 抗单帧噪声;cd2b implied-speed 每帧>120 持续→翻,符实)。
+
+**自检(bar)**:`go build/vet` ✅;belief 包绿;roomengine **0 新增 vs 冻结9红**;R0/R1 shadow;γ 时间基常量带来源(P9.6 更新)。
+
+**透明说明(请委员会确认 scope)**:B′ checkpoint 用 cabb-0605/cd2b 的 **faithful profile**(走动→躺52s / 走动→持续ghost / 走动→久站2min),非真 fixture 帧级 replay。理由:**γ↔检测窗关系是 profile-invariant**(52s 窗 vs 衰减半衰常数 —— 与具体坐标无关),profile 已定论;真 fixture 帧级 realness replay 需把 realness pipeline 接进 belief_replay harness(较重),归 **P9 oracle**(届时连同 fall 后验/margin 一并)。若委员会要 B′ 就上真 fixture replay,我再加 harness 接线。
+
+**下一步(裁决⑬:B′ 后 A)**:B′ 完 → 起 **A = P4 dwell HSMM**(S_vol(t|zone) ramp 取代散落硬阈,读 cell zone 选档 §9 只读,生产闸不动)。待委员会签 B′ + 确认 profile-scope。
+
 ### [2026-06-07 17:56 MDT] 81ae46e..65075da — 委员会裁决⑬:P3.5 deferred 认可 + 🏁 P3 收官 + 下一步定 **B′ 后 A**
 
 **P3.5 deferred-to-P9 认可**:无 <2s 真 SLA(production 由 firmware 30–90s 主导,shadow 1↔2帧 moot),A(多帧)为 shadow 默认,选项 D 待 P9 SLA —— R6"无依据不臆造"对。✅
