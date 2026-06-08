@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`65ba1c6`(下次从此 commit 起算 delta)
+- **last-audited**:`8f072b6`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,21 @@
 
 
 
+
+### [2026-06-08 17:40 MDT] 审查54 `65ba1c6..8f072b6` R5-calibration-lock 测试【干净 PASS ⭐ 机械化 R5 总闸】
+
+**R6 全套亲跑**:4 测全 PASS、build/vet 绿、**roomengine 9 红 0 新增**。忠实落地审查53 B-纠正版,且**双向锁**(比裁定更严):
+- ✅ `TestR5LockPoseZNeverSuppressFall`:pose **0-15(含越界防御)× 全 5 geom** + ZBand 三档×全 geom → 断言 SFallen-LR **≥1**(核心锁:pose/z 永不压 fall = R5 字面)。
+- ✅ `TestR5LockNumberPeopleNeutral`:np∈{0,1,2,5} → SFallen-LR **=1.0**(±eps)。
+- ✅ `TestR5LockLiftSourcesNeverSuppressFall`:Dwell/StandDuration/NoDetect → **≥1**(含 door-exit floor 仍≥1、ghost 消失→1.0 中性)。
+- ✅⭐ `TestR5LockPermittedSuppressionRegistry`:**许可压制清单**(Bed/Ghost/Neighbor/ReachableExit/EnterExit-Exit)**逐条带 `source` 依据**(引 R5 #5 reliable/#4 realness/#3 event)+ **正向断言"满证据 SFallen 必 <1"**——锁它们**仍是合法压制通道**(谁误中性化 damp→0 即红 = 防 DBN filter 被悄悄拆)。
+- **双向 = 完整总闸**:pose/z/np/抬升 **锁不压**(≥1/=1)∧ 可靠源 **锁必压**(<1)——正反两向回归都红。`permittedFallSuppressor.source` 字段 = R7 常量带来源,顺带**文档化整个 SFallen-似然符号设计**。
+
+**裁决**:R5-calibration-lock **干净 PASS ⭐**。审查53 B-纠正版(委员会拆"全中性锁"预设)落地正确,且施工方补了反向锁(可靠压制源被误中性化也红),比裁定更周全。**R5 从"逐案手验"升级为机械化总闸**——未来任何 calibration 误调破 R5(pose/z 压 fall / np 入 fall / 可靠源被拆)即测试红。委员会㊵㊾㊿52 几次手验 SFallen 常量的工作,现一道测试锁死。
+
+**进度小结**:死源 #1 bed ✅ / #2 NumberPeople ✅;R5-lock ✅(总闸)。**余**:死源 #3 Neighbor(跨房,redis-replay 整单元验)/#4 SleepStage/#5 StandDuration locus 未裁;recall 案 + 整单元 redis-replay 待用户;新节点暂停(㊻)。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:执行审查53 裁 B-纠正版 → R5-calibration-lock 落地(按源角色分类,核心锁 pose/z≥1 + np=1 + 抬升≥1 + 许可压制清单)+ 负控证锁咬
 
