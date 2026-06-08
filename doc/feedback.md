@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`2c9a50b`(下次从此 commit 起算 delta)
+- **last-audited**:`ecf97ad`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -42,6 +42,33 @@
 
 
 
+
+### [2026-06-08 12:28 MDT] 审查㊶ `2c9a50b..ecf97ad`(doc-only)收㊵✅ + 委员会自纠 P-wall v1 + 用户定:两机制都要(不同情景)+ γ 残差实证确认
+
+**性质**:`b8c8c55`+`ecf97ad` 两 doc(收㊵ + 机理细化),**无 sensor 代码**(R6 代码-bar N/A;核实质)。
+
+**✅ 收㊵ 一致**:P5 PASS / P6.2 裁(驳b/a前提假/c须验γ) / P-wall v3 守界(belief 现状已只读 WallPolygon 单耦合边,**不写 wall-detection**=守#7)——施工方收讫无偏。
+
+**🔁 委员会自纠 P-wall v1**:我 v1 说"墙外扩顺带消一部分 β"——**半错(把两个机理混了)**。用户细化 + 我认:
+- Enter 区有**两个不同机理,治法相反**:
+  | | wall-too-tight(委员会 v1/v2) | radar-blind-spot(用户细化) |
+  |---|---|---|
+  | track | 越 WallPolygon **外** ≤30 + 返回 | lost 在 wall **内** ~20cm(雷达 FOV 边),**从不越 wall** |
+  | 因 | wall 画太小 < 真房 | 雷达覆盖 < wall(内缩20,门贴 wall=FOV 极边) |
+  | 治 | **外扩 wall** | **不可外扩**(wall↑→"墙内雷达外"带↑→lost-in-room FP↑);按雷达 BoundaryVertices 判"丢失是否有意义" |
+- → **β 不全是 wall-too-tight**;Enter-β 多是 radar-blind-spot,**外扩反而加重**。v2 判据「墙外≤30∧返回」抓不到 blind-spot(它从不越 wall)。**我 v1"外扩消β"撤回**,分两机理。
+
+**✅ 用户定调(2026-06-08):"两种机制都要,应对不同情景"** → cell engine 需**并存**两检测(判别据=track 是否越 WallPolygon 外):
+- 越 wall 外 ≤30 + 返回 → **wall-too-tight → 外扩**;
+- wall 内丢失于雷达 FOV 边(never 越 wall)→ **radar-blind-spot → 不外扩,按雷达边界判 loss-meaningful**(雷达边界外丢=到盲带≠摔);
+- 真·室内突丢(硬件局限)→ 不可抑制。
+- 三者皆 **cell engine/layout 域,DBN 零参与**(原则#7);DBN 侧门口真摔仍须**正向 exit 证据**(ExitRoom/reachableExit/np=0),不因"门口=盲带"盲压(红线,feedback_signal_loss 不可抑制)。
+
+**✅ P6.2 γ 残差实证(兑现㊵ 先验条件,数据驱动)**:施工方读 0142/0127 fixture → **均非"两人同时在床"**(0142 id1 持续床左 off-bed 地面 / 0127 全程 0 帧 2-track 同现,np=2 是先后)→ **Opt-c 合取(bed-count≥2)不 fire → c 不修 γ → 记残差**(非投机建)。**符㊵ 裁定**;γ=已知 minor 残差(≤2/8),真治待 Opt-a(扩 Track 层 per-track Fall,大活勿急)。诚实、数据驱动。
+
+**裁决**:doc 收讫 ✅;委员会自纠 v1(β 分 wall-tight/radar-blind 两机理,治法相反,均 cell engine 非 DBN);用户"两机制都要"记为 cell engine 并存检测规格;P6.2 γ 记残差证实。**当前活跃**:P5 闭、P-wall 归 cell engine、P6.2 γ 残差。**DBN backlog 待委员会/用户定下一活跃节点**:P6.3 P_id / P4.5 / P7 τ* / P8 health / P9 oracle(8 CD2B 端到端待 replay harness)/ Opt-a(γ 真治待 Track 层扩)。333B 待用户 ghost。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:用户机理细化 — Enter-β 是「雷达边界盲区」非「墙太内」,**外扩 wall 反作用**(治法相反,记给 cell engine 勿误开外扩)
 
