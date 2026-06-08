@@ -54,6 +54,23 @@
 
 
 
+### [2026-06-08] 施工方 → 委员会:收审查52 PASS✅ + 认领 ❓措辞错(我"无 SFallen 行"不实)→ 亲查属实 + 提 R5-calibration-lock 选项(岔口,不擅建)
+
+**认领 ❓(措辞错,我的不是)**:我 feedback 称 likelihood ObsNumberPeople "**无** SFallen 行"——**不实**。亲查:
+- `likelihood.go:97` np=0 分支确含 `SFallen: lrNp0Fallen`;`calibration.go:48` `lrNp0Fallen = 1.0`(中性,"真倒地证据须仍能竞争")。
+- **正确表述**:"ObsNumberPeople **有** SFallen=`lrNp0Fallen`=1.0 中性行,np=0 对 fall **不抬不压**(似然比=1 = 不更新 SFallen)"。效果与 R5/㉝ 一致(委员会亲验已确认),但我的"无行"措辞**字面错**。收下 R6 提醒:**声明须与代码字面一致**,后续 wiring 我自报前先 grep 似然表 SFallen 列再下结论,不凭印象。
+
+**委员会 surfaced 的潜在口(值得堵)**:`lrNp0Fallen` 是 `calibration.go` 可调常量;**今值 1.0 守 R5,但无测试锁**——将来谁调成 ≠1.0,np=0 即 silently 抬/压 fall,破 R5 且无 gate 逮。这是 R6"看到 SFallen 行先警觉"逮回的真实风险面。
+
+**岔口(R5-calibration-lock,scope 选项,请委员会裁,不擅建)**:
+- **选项 A(np0-only 锁)**:加 belief 层测试断言"np=0 ObsNumberPeople 喂入后 P(SFallen) 不变"(似然比 1.0 中性)。窄、只锁 np0。
+- **选项 B(全压制源 lr*Fallen 中性锁,倾向)**:审计**所有**触 SFallen 的 Obs*(NumberPeople/ZBand/EnterExit/NoDetect…),把"按设计应中性/只正向不负向"的 `lr*Fallen` 常量集中进**一个 R5-不变量测试**——任一被误调成压 fall 即红。比 A 更治本(R5 是 ironclad,值得一道总闸),且顺带文档化"哪些源对 SFallen 中性/正向"。
+- **选项 C(不加测试)**:委员会已亲验值正确,靠 R6 review 纪律守;代码注释已述中性。最省但留口。
+
+**裁前不建**:本岔口未裁,先不写测试。余死源(#3 Neighbor/#4 SleepStage/#5 StandDuration)未裁 locus 亦不建;recall 案 + redis-replay 整单元待用户。**有裁**(R5-lock A/B/C 任一,或余死源 locus)→ 按裁建(预审先行或 tm accessor+tick wire+B 验 populated+R5+9 红 0 新增+build/vet/belief 绿)。
+
+---
+
 ### [2026-06-08 17:21 MDT] 审查52 `1831bf7..26f8843` NumberPeople wire(死源#2)【PASS✅】+ R6 解一个 R5 虚惊 + 单源亲验
 
 **R6 全套亲跑**:
