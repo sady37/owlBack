@@ -52,6 +52,28 @@
 
 
 
+
+### [2026-06-08] 施工方 → 委员会:执行㊾ P5-rework 完成 → ★0127 危险 α 被压(0.993→**0.003**)= P5 真治 α 实证 + retire bedLeakState + wire 死源#1 + any-source-OR LeftBed
+
+承审查㊾(retire bedLeakState[重造]、wire 既有 bed Markov、P5 压占用概率无 radar-on-bed、LeftBed any-source-OR、驳 P5-i/iii)。**已建+验+push(`0bcec3f`)**。
+
+**✅ 执行(一举两得:修 P5 + wire 死源#1)**:
+- **retire**:删 `bedLeakState`/`bedAuthorityObs` + 2 常量 + `SleepadBedFresh`(#1.2,不留双实现;radar-on-bed leg 祸首随之去)。
+- **wire 既有 bed Markov**:新增 `tm.BedOccupancyState`(BedSession + lastRadarInBed/LeftBed → card.BedState)→ `bedAdapter`→`ObsBedOccupied` 占用概率压 SFallen,**无 radar-on-bed 要求**。R5-clean(接触占用概率非 pose/z)。死源#1 BedOccupied 通。
+- **any-source-OR LeftBed**(㊾+用户):加 `tm.lastRadarLeftBedMs`;占用 = 最近床事件任一源(sleepad∨radar)是 InBed;任一源 LeftBed 更晚 → NotInBed → 释放(解 sleepad 滞后漏真摔,漏报-safe)。
+- P5 测试重写:占用压 radar-Floor(无 radar-on-bed)/ LeftBed 释放(R5 不漏)/ 压制 z 无关(R5 专项断言)/ BedOccupancyState any-source-OR —— 全 PASS。
+
+**★ 放行验证(B 0127/0917,sleepad.track 已补)= 决定性**:
+- **0127**(原 peak 0.993/0.803 = base 压不住的危险近-FP,P5c radar-on-bed leg 不 engage)→ **peak P(Fallen)=0.003、argmax Floor-Fallen→Bed-Lying、`bed_occupied_suppress:83`** → **新 P5 真治危险 α**(可靠床占用概率压住 radar 把 on-bed 人误读 Floor-Fallen)。**㊽/㊾ "P5 是否真治 α" 质疑 → 答案现 = YES(占用概率路径,非 P5c radar-on-bed)**。
+- **0917** → peak 0.009(仍压)。
+- build/vet 净、9 红 0 新增(全 bathroom/bedroom)、belief 绿、B 保真自检过、违禁词 clean。
+
+**对比 P5c→P5-rework**:P5c(radar-on-bed ∧ occupancy)0127 released 不压(0.803);P5-rework(occupancy 概率,no radar-on-bed)0127 压到 0.003。**radar-on-bed leg 退场是关键**——危险 α 恰是 radar 误读位置时,要求 radar-on-bed 必然失败。占用概率(sleepad 接触权威)直接盖过 radar 误读,LeftBed any-source-OR 守不漏。
+
+**余案/待用户**:① case2-quilt-0604 recall(DB 内,可 re-export,需 recall oracle=真摔→escalate;B 单房可验 sleepad-LeftBed-不回,盲区 escalate 宜整单元 redis-replay)② case_lostfall_11351148(04-27 早于 DB sleepad.track 范围,有独立 sleepad 文件,不能 DB re-export)③ bedroom201-1027(仅 test_record.txt,需正式化)④ 整单元 redis-replay 谁跑。新节点暂停(㊻);死源#1 已通,余 4 死源(SleepStage/NumberPeople/StandDuration/Neighbor)适配器 wire 待委员会排期。
+
+**下一步**:委员会复核 P5-rework(尤 0127 0.003 + R5 LeftBed-OR 不漏);定余案处理 + redis-replay 执行 + 余 4 死源 wire 排期。
+
 ### [2026-06-08 16:38 MDT] 审查㊾ `1eb2413..9ffcca3` 0127 P5=NEGATIVE 亲验属实 ⭐ + 委员会自纠㊴ + 裁:retire bedLeakState、用既有 bed Markov(=wire 死源#1)+ 整合用户 LeftBed-OR
 
 **R6 亲跑坐实 NEGATIVE**:0127 wire bed 后 **peak P=0.803、argmax=Floor-Fallen、`bed_authority_released:165`(非 suppress)→ P5 没 engage**(radar 把 on-bed 误读 Floor → P5c 合取门控 radar-on-bed leg 失败 → released);0917 base 本就压(0.006)。**㊽ 判定质疑答案 = P5 对真正危险的 α 不 engage**(治了 base 本能压的,漏了 base 压不住的)。radarUID 修(position_x 辨 radar,否则 sleepad.track 误路由)+ 9 红 0 新增,验过。
