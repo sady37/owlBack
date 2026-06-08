@@ -54,6 +54,26 @@
 
 **裁决**:**设计输入折入认可**。施工方理解到位(尤其 tolerance fixture 双向 + R5 gate 走 cell 非 z + ① 推广)。P4.4/P6.5 按此施工时,委员会重点验:fixture 双向真有判别力(高/低 tolerance 两 case 都在)、③ 可达性闸不碰生产门距。可续(P4.4 或 P5/P6 视施工方 DAG)。
 
+### [2026-06-07] 施工方 → 委员会:P4.4 开工勘察 → 两个设计岔口需裁(开工前列选项,不擅自决)
+
+承审查⑰放行,据 DAG 选 **P4.4(开阔地 dwell bundle)**。勘 P0 契约 + cell tolerance 源后,实现 **Z_cell tolerance gate** 触到两处需委员会拍板,**未在岔口写码**:
+
+**勘察事实**:
+- cell tolerance 源 = `cell.go:400 (*Cell).toleranceFactor() ∈[1.0, MaxToleranceFactor=2.0]`,由 `FakeAlarmCount+ToleratedStillCount` 线性饱和(已存,cell engine 内部学习)。
+- P0 契约 `CellPrior` 现仅 `AreaTypeAt/SourceAt/NearestEntryDistCm`,**无 tolerance 读口** → P4.4(a)"DBN 只读 tolerance factor"无现成只读边。
+
+**岔口①:P0 契约扩边(冻结边能否加只读 accessor?)**
+- 需加 `ToleranceFactorAt(x,y) float64` 到 `CellPrior`(纯只读,不触学习,R3 安全;与现有三 accessor 同模)。
+- **选项**:**A1 同意扩边**(推荐:read-only 加方法,合 R3,P4.4(a) 本就要读)/ A2 不扩 P0,P4.4 改走别的 tolerance 通道(委员会指定)/ A3 P4.4 暂不读 tolerance,先只做开阔地 ramp **不带 gate** 验 ramp(但这=P4.1 已否的"裸开阔地必 FP",**不推荐**)。
+
+**岔口②:tolerance gate 如何接入 dwell 发射(不破 7 元组 schema / 不脏 belief 包)**
+likelihood.go(belief 包)无 cell 句柄,tolerance 必从 adapter(roomengine,能读 CellPrior)侧带入。三种接法:
+- **B1 adapter 预缩放 Value(推荐)**:开阔地 `有效dwell = rawDwell / toleranceFactor`,以 Value 传入;likelihood 保持纯净 `r=Value/dwellScaleOpenSec`。gate 落在 read-edge(adapter 本就读 cell)。**利**:零 schema 改动、gate 在该在的边。**弊**:开阔地 Value 语义从"raw still 秒"变"tolerance 归一秒"(toilet 仍 raw,需注释)。
+- **B2 Observation 加字段** `ToleranceFactor float64`(默认 1.0);likelihood `scale *= tol`。**利**:Value 保持 raw、显式。**弊**:7 元组→8 元组(schema 增字段,#1.x 谨慎)。
+- **B3 likelihood 按 Geom 选 scale + tolerance 经 GeomConf 复用**:无干净槽位(GeomConf 已表 provenance),**不推荐**。
+
+**施工方倾向**:A1 + B1(零 schema 改、gate 在 read-edge、likelihood 纯)。**等裁后**:扩 P0 → 接回 `dwellScaleOpenSec=480(8min)` 开阔地 ramp + tolerance gate → 建 tolerance-bearing 双向 fixture(Hunzi-CABB 高 tol→confirm=false / 开阔地真倒地 低 tol→confirm=true)→ build/vet+belief 绿+0 新增 vs 冻结9红 → commit。②③ exit 闸(可达性/趋势)与 P6.5 ① 拆后续 task,本 commit 先核心 bundle。**未裁前停在岔口。**
+
 ### [2026-06-07 18:59 MDT] bc1fdba..b2cfe12 — 委员会代码审查⑯:P4.1(B)dwell ramp toilet/shower【通过】+ 设计输入:小卫生间 exit 间接推断(P4.4/P6)
 
 **P4.1(B) 代码核验(R6 亲跑,对裁决⑮B)**:
