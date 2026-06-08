@@ -315,3 +315,52 @@ func TestP6NoDetectFallenGate(t *testing.T) {
 		t.Fatalf("真人非门区消失应比门区可达走出更抬 Fallen(门区不裸抬):real=%.3f door=%.3f", pReal, pDoor)
 	}
 }
+
+// TestP6DoorFallVsExit — 审查㉓ door-exit 放行前置对抗例:门口真摔 vs 门口离场。
+// 二者门距运动学相同(doorExit≈1),**判别靠 exit 事件非门距否决**:
+//   门口真摔 = 朝门逼近→末帧栽倒→**无** ExitRoom/track守恒重现 → door-exit 留 floor 的残余 Fallen 经 lost 窗累积 → 仍越 τ 浮出(不漏报)。
+//   门口离场 = 同逼近→**有** ExitRoom 事件(SLeft:8 强压)→ Fallen 不越 τ(不 FP)。
+// 证 door-exit 不全否决(floor 起作用),且真离场靠事件区分。
+func TestP6DoorFallVsExit(t *testing.T) {
+	const doorExitHi = 1.0 // 门口:近门+定向可达 → reachableExitScore≈1
+	walkIn := func(be *Belief, now *int64) {
+		for i := 0; i < 4; i++ { // 朝门走动(建立走动者在场)
+			*now += 1000
+			be.Step(*now, []Observation{ob(*now, ObsPose, float64(observation.PoseWalking), 0.8, GeomInEnter)})
+		}
+	}
+	// 门口真摔:逼近后栽倒消失,无 exit 事件 → 重复 no-detect(door-exit 留 floor) → 应浮出。
+	beFall := New(DefaultModel())
+	nowF := int64(1_000)
+	walkIn(beFall, &nowF)
+	firedFall := false
+	for i := 0; i < 40 && !firedFall; i++ {
+		nowF += 1000
+		beFall.Step(nowF, []Observation{{Kind: ObsNoDetect, Conf: 0.8, Ts: nowF, Fresh: true, Geom: GeomInEnter, RealnessP: 1.0, DoorExitP: doorExitHi}})
+		firedFall = beFall.Decide() == DecisionFall
+	}
+	// 门口离场:同逼近,但真离场 = ExitRoom 事件 + **房空 np=0 持续**(走出后房里没人)→ SLeft/SEmpty 持续压 → 不应浮出。
+	// (判别靠"离场事件+持续空房"强信号,非门距——door-exit floor 对两者相同,事件才是区分。)
+	beExit := New(DefaultModel())
+	nowE := int64(1_000)
+	walkIn(beExit, &nowE)
+	nowE += 1000
+	beExit.Step(nowE, []Observation{{Kind: ObsEnterExit, Value: -1, Conf: 0.9, Ts: nowE, Fresh: true, Geom: GeomInEnter}}) // ExitRoom
+	firedExit := false
+	for i := 0; i < 40 && !firedExit; i++ {
+		nowE += 1000
+		beExit.Step(nowE, []Observation{
+			{Kind: ObsNoDetect, Conf: 0.8, Ts: nowE, Fresh: true, Geom: GeomInEnter, RealnessP: 1.0, DoorExitP: doorExitHi},
+			{Kind: ObsNumberPeople, Value: 0, Conf: 0.8, Ts: nowE, Fresh: true, Geom: GeomInEnter}, // 房空(走出后)
+		})
+		firedExit = beExit.Decide() == DecisionFall
+	}
+	t.Logf("P6.1a door 对抗: 门口真摔 fired=%v P(Fallen)=%.3f / 门口离场 fired=%v P(Fallen)=%.3f",
+		firedFall, beFall.Vector().P(SFallen), firedExit, beExit.Vector().P(SFallen))
+	if !firedFall {
+		t.Fatalf("门口真摔(无exit事件)应越τ浮出(door-exit 不全否决,floor 累积):P(Fallen)=%.3f", beFall.Vector().P(SFallen))
+	}
+	if firedExit {
+		t.Fatalf("门口离场(有ExitRoom)不应浮出(SLeft 强压):P(Fallen)=%.3f", beExit.Vector().P(SFallen))
+	}
+}

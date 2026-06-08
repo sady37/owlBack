@@ -149,7 +149,7 @@ func rawLikelihood(o Observation) Vector {
 			SSit:         lrNoDetSit,
 			SBedRestless: lrNoDetBedRestless,
 			SBedLying:    lrNoDetBedLying,
-			SFallen:      1 + noDetGainFallen*ri*(1-dx),
+			SFallen:      1 + noDetGainFallen*ri*(1-noDetDoorSuppressK*dx), // door-exit 留 floor(审查㉓:不全否决,门口真摔仍浮出)
 			// SEmpty/SLeft/STransition/SArtifact 默认 1.0 中性，留给其它观测/转移仲裁
 		})
 	case ObsReachableExit:

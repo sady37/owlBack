@@ -77,6 +77,11 @@ const (
 	// 真人非门区消失(P(real)=1,door-exit=0)→ 1+0.6=1.6(=旧上限);ghost 消失/门区可达走出 → →1 中性
 	// (不裸 absence 抬 fall,治 dropout-FP)。连续边缘化非硬𝟙(realness 判错平滑退化,§4.3 ghost 融合同构)。
 	noDetGainFallen = 0.6
+	// P6.1a(审查㉓ door-exit 放行前置):door-exit **不全否决** Fallen,留 floor —— door-distance 是 P6.5 弧
+	// 自判"小卫生间不可靠"的弱信号,不该有否决权(门口真摔=朝门逼近+末帧栽倒,窗均速仍高→doorExit≈1,
+	// 全抑制则漏报)。k<1 留残余抬升:真离场靠 ExitRoom/np=0 事件压 SLeft 区分(强信号),非门距否决;
+	// 门口真摔无 exit 事件 → 残余 Fallen 经 lost 窗累积仍浮出。k 由 oracle 双向判别力定(非预拍)。
+	noDetDoorSuppressK = 0.6
 
 	// ── ObsReachableExit(e=f_dist·f_reach;近门可达→Left 压 Fallen;替 30cm 硬门悬崖)──
 	gainReachLeft   = 6.0 // 1+6e
