@@ -76,6 +76,28 @@
 
 ---
 
+### [2026-06-08] 施工方 → 委员会:bed-event wiring 设计预审(死源#1,承㊻ (C)重排+(B)bed先行+验源)— 含 wiring locus 岔口 + 用户源依赖
+
+承审查㊻(redis-gate(ii) PASS;source-fidelity 5 死源属实;战略 reset=新节点全暂停先 wire 死源;wiring=(C)重排+(B)bed-event 先行+**每源验生产实际源硬约束**+每源 P-task 预审先行)。出 **死源#1=bed-event** 设计预审,doc-only,审后建。
+
+**✅ 验生产实际源(㊻ 硬约束,亲验 fixture)**:8 CD2B fixture 床态 = **InBed/LeftBed event**(radar CD2B + sleepad BM…641 均发 event;sleepad **无 monitor 帧**,验 0712/1021)。→ **生产床态源 = event**(非 sleepad monitor)。fixture 即真录制生产数据,证据强;**用户确认 ① 生产 sleepad 是否也发 monitor 帧**可最终拍板(若也发则 event+monitor 双源,设计兼容)。
+
+**勘察现状(bed-event tm 路径)**:
+- `ParseRadarTrackEvents`(alarm_event:134)解 EnterRoom/ExitRoom/**InBed/LeftBed** → `RecordRadarEvent`;radar InBed → `lastRadarInBedMs`。
+- sleepad InBed/LeftBed → `ProcessSleepadBedEvent` → `BedSession` 状态机(InBed 启会话 / LeftBed 进等待矛盾;key=sleepad uid)。
+- **死因**:P5 `bedAuthorityObs`←`bedLeakState`←`SleepadBedFresh`=`tm.sleepadStates`(**仅 sleepad monitor 帧填**,event 不填)→ 事件床态从不到 bedLeakState → P5 永不 engage。
+
+**bed-event wiring 设计(治死源,对齐 event 源)**:P5 bed-occupancy 源改读**事件驱动床态**。
+- **⚠️ wiring locus 岔口(不擅决,请裁)**:
+  - **Opt-bed-1(tick 读事件态,改源不改结构)**:加 tm accessor `BedOccupiedFromEvents(nowMs)`(读 BedSession.InBed ∨ lastRadarInBed vs lastLeftBed 的事件态 + TTL),beliefShadowTick 里 P5 用它替/并 `SleepadBedFresh`。**bedLeakState 仍 tick 驱动**(每 tick 喂事件态),迟滞/leak 逻辑不变。**最小改、对齐既有 tick 结构**。
+  - **Opt-bed-2(event 直驱 bedLeakState)**:`beliefShadowEvent(InBed/LeftBed)` 直接更新 per-room bedLeakState(事件来即更）。更实时但 bedLeakState 现在 tick 里 lazy-init+更新,改 event 驱动需挪状态机+两路更新(tick 仍要读)。
+  - **施工方倾向 Opt-bed-1**(改源不改结构,bedLeakState 迟滞逻辑零改,只把"占用真值"从 sleepad-monitor 换成 event-derived;与㊻"对齐生产真发的源"最契合)。**请裁 1/2**。
+- **源对齐细节**:`BedOccupiedFromEvents` = 最近 InBed event(radar lastRadarInBedMs ∨ sleepad BedSession InBed)未被更晚 LeftBed 取代 ∧ 在 TTL 内。R5/R0 守(纯占用证据,非 pose/z)。
+
+**放行前置(建后验)**:B 重跑 → **BedOccupied 在 α 案 populated(不再死源)** + **P5 bed_leak_suppress 在 α engage**(床上翻身 + radar on-bed → 压 SFallen)+ 8 案逐案 P 重测(wire bed 后 0127 等会变,交用户 human-in-loop)+ 0 新增 vs 9 红 + 保真自检过。**滚下床真摔对抗例仍不压**(R5,bed-event 不改 P5c 门控,只换占用源)。
+
+**下一步**:委员会裁 **wiring locus(Opt-bed-1/2)** + 用户确认 ① 生产 sleepad 源(event-only / +monitor)→ 建 bed-event code。**未裁不建**。新 DBN 节点保持暂停(㊻ (C))。0127 近-FP 待用户逐案看。333B 待 ghost。
+
 ### [2026-06-08 14:12 MDT] 审查㊻ `d451b6d..295e0ad` redis-gate(ii)【PASS✅含并发亲验】+ ★★★ source-fidelity 审计逮 5 死 obs 源 → 战略 reset + wiring 裁(C+B)
 
 **R6 全套亲跑**:
