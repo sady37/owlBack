@@ -249,10 +249,16 @@ zone 选档只读 cell engine(R3)。
 - **改法**:生存尾尺度参数按 risk-time 二档(昼/夜),折进 P4.1 参数表,不另开闸。
 - **来源**:signal_map §4 risk-time;zonealarm 昼夜阈(45/30 等)。
 
-### P4.4 — per-cell 自适应放宽(读 cell tolerance,§9)
-- **现状**:`cell.go:400` toleranceFactor ×[1,2.0] by FakeAlarm/ToleratedStill —— **cell engine 内部学习**。
-- **本 task**:DBN 只**读** tolerance factor,乘到 S_vol 尾尺度(久站被容忍的 cell 尾拉长)。**不在 DBN 学**(R2/R3)。
-- **oracle**:cabb 那个 cell 若被 ToleratedStill 学成"可久站",尾拉长 → 久站不报;未学则正常 8min 尾。
+### P4.4 — 开阔地 dwell-fall bundle:per-cell tolerance gate + tolerance-bearing fixture(裁决⑮+审查⑯)
+P4.1(B) 只做了 toilet/shower(Z_cell-无关);开阔地 dwell-fall 必依赖 Z_cell tolerance 抑制"久站真人"(§11.2 残差),故 P4.1 把它推迟至此 **bundle 同落同测**(造对验证器,非"接受测不到")。
+- **(a) per-cell tolerance 只读**(原 P4.4):`cell.go:400` toleranceFactor ×[1,2.0] by FakeAlarm/ToleratedStill = cell engine 内部学习;DBN 只**读** factor 乘到 S_vol 尾尺度(被容忍 cell 尾拉长)。**不在 DBN 学**(R2/R3)。
+- **(b) 开阔地 ObsDwellStill 发射**:把 P4.1 暂存的开阔地 ramp(`fallLR=1+(d/dwellScaleOpenSec)²`,scale=480s/8min)接回 `GeomOpenFloor`/`GeomUnknown`,但**前置 Z_cell tolerance gate**:cell 学成"可久站"(rest-zone 倾向 / ToleratedStill)→ 尾拉长甚至豁免;未学 → 正常 8min 尾。**Z 只正向(R5)**:gate 走 cell tolerance(几何/历史方差),不用 z 反向压。
+- **(c) tolerance-bearing fixture**:新建夹具**声明** cell tolerance/AreaType,使 replay 能真正验证"开阔地久站真人(高 tolerance cell)不报 vs 开阔地倒地(低 tolerance)报"——补 P4.1 缺的 Z_cell 保护可观测性。Hunzi-CABB-0529 移入此夹具(带 tolerance 声明),验证开阔地 ramp 回归后**仍** confirm=false。
+- **小卫生间 exit 闸 ②③(承审查⑯设计输入,①归 P6)**:开阔地/小房 dwell-lost 判 exit-vs-fall 的弱/中佐证——
+  - **③ 可达性闸**:末门距 ≤ 老人速度(~60cm/s)×**实际帧隔**(非固定 60cm)→ 一帧可走出 → 中性;> 可达 → 室内 lost → fall 偏高。比 `ObsReachableExit` 的固定 `ExitDistMinCm=30` 更有据(改 `gainReach*`/门距归一用实际帧隔标定,P9.6)。
+  - **② 末 3 帧门距趋势**:朝门=exit-leaning,弱佐证低权(小房 1–2 帧采不全 + 摔门口也朝门)。
+- **oracle**:cabb cell 若 ToleratedStill 学成"可久站"→尾拉长→久站真人不报;未学→8min 尾正常;Hunzi-CABB(tolerance 高)开阔地 ramp 回归后仍 confirm=false;开阔地真倒地(tolerance 低)confirm=true。
+- **R0 守卫**:③ 不得碰生产 `ExitDistMinCm`/door-distance 生产闸;shadow 侧自带可达阈,镜像生产作占位待 P9.6。
 
 ### P4.5 — 缺席驻留同族归并(§10#8 scope 决议)
 - **现状**:Stay(独处45/30)/LeftBed(离床30)/NightAbsence(离室30,21–07)是**同族 S_vol 不同 anchor**(独处/离床/离室)。
@@ -363,7 +369,18 @@ zone 选档只读 cell engine(R3)。
 - **建议**:shadow 期先**因子化 + 期望值消息传递**(proposal L2:track→bed→room 逐级期望传递),实现简单;若 oracle 显示 cd2b 类必须联合(R_i 与 S_room Fallen 强耦合分不开)再升 4 态联合。**本 task 只出决策依据,不写码**。
 - **oracle 判据**:cd2b 在因子化下能否分出"冻结 ghost + 真人 Lost";不能则需联合。
 
-**P6 验收闸**:(a) firmware/exit 过权校正后 room FP 降;(b) N_r 软后验不被 ghost/镜面虚高;(c) P_id→zone→S_vol 链路在 bathroom 锚翻转 fixture 上通;(d) R_i–S_i 耦合决议有 oracle 依据。
+### P6.5 — 跨设备 track 守恒重捕(小卫生间 exit 推断①,审查⑯设计输入)
+小卫生间无相邻雷达直证、亚帧退化(1Hz × 处处近门)→ exit 确认**不靠纯 door-distance**,靠 **unit 级 track 守恒**:人在 bathroom 丢了,必在别处冒出来。
+- **一般式(最强,决定性)**:`bathroom radar track_lost →[t-window]→ 同 unit 任意其它设备/空间 +1 track`(人移到别处出现)= **exit 非 fall**。绕开亚帧(不靠门口采到人,靠人在别处重现)。
+- **特例(最强子证)**:其它设备=sleepad 且 InBed → 人回床(接触铁证);链 `sleepad LeftBed →≤60s→ bathroom 见人 → lost →≤60s→ sleepad InBed`。
+- **覆盖推广**:其它设备=相邻 radar +1 track(去客厅/卧室)→ 同样确认 exit,覆盖"非床区 exit",残留从"无 sleepad"收窄到"**unit 内全无任何设备覆盖的纯盲区**"。
+- **t-window**:双侧 ≤60s(进/出卫生间走动段按老人步速)。**自洽 P3.4**:超窗才重现 = 自救,fall 照报留低 severity(recapture 软恢复非硬 cancel,R6)。
+- **实现载体**:**= SuiteCensus/P_id 跨区 track 账(本 §6 已在跑节点),复用别另起**。shadow 侧记 `p6_5_lost_anchor`、`p6_5_recapture_dev`、`p6_5_gap_ms`、`p6_5_exit_confirmed(bool)`。
+- **组合判别树(与 P4.4 ②③、P6.1a NoDetect 门控合流)**:① InBed/+1track ≤60s → exit/安全;否则 ③ 可达 + ② 朝门 → 中性偏 benign(留 recapture 窗);③ 不可达 → fall-suspect;recapture 过 deadline 未回 → fire。
+- **残留(诚实)**:仅 卫生间→unit 内纯盲区 + 末门距可达 → 模糊 → deadline/代价偏置 或 硬件(L3)。凡相邻区有**任一设备**→ ① 的 +1 track 即确认 exit。
+- **oracle**:CABB/cd2b 小卫生间 lost —— 有 sleepad InBed 或相邻 radar +1track 在窗内 → exit 不报;全盲区 + 不可达 → fall-suspect 浮出。
+
+**P6 验收闸**:(a) firmware/exit 过权校正后 room FP 降;(b) N_r 软后验不被 ghost/镜面虚高;(c) P_id→zone→S_vol 链路在 bathroom 锚翻转 fixture 上通;(d) R_i–S_i 耦合决议有 oracle 依据;(e) P6.5 track 守恒重捕在 CABB 小卫生间 fixture 上正确分 exit(sleepad/邻 radar +1track)vs in-room-lost(纯盲区不可达)。
 
 ---
 
