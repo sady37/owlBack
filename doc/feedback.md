@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`e51d6e4`(下次从此 commit 起算 delta)
+- **last-audited**:`decd29a`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,27 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 21:17 MDT] 审查㉒ `e51d6e4..decd29a` P6.5① 跨设备 track 守恒 per-identity recapture【强通过 ⭐ 小卫生间 exit-vs-fall 治本路径落地】
+
+**R6 亲跑核验(代码阶段全套 bar,不信"全绿"声明)**:
+- ✅ **accessor 真只读(R3)**:`SoleResidentRecaptureState`(suite_census.go)持 `m.mu` 读 Persons、**返值非指针**(解 belief-shadow 直读 `*SuiteBedroomCensus.Persons` 与 `UpdatePersonFromTrack` 的 data race)、**不改 census/不触 anchor-flip**——同 P0 ToleranceFactorAt 已批只读模式,**非**委员会拒的多resident写特性。架构#7 守住。
+- ✅ **shadow 三向分叉正确(belief_shadow.go:250-272)**:① 单resident `recaptured` → log `exit_recapture`+`continue`(抑制,仅 shadow obs,**R1 不 fire**);② residentCount>1 → log `skip_multiresident`+fall through(**保留告警,漏报-safe**);③ 单resident 未recaptured(真摔没回)/ count==0 → 都不命中 → fall through → **保留告警**(真摔浮出,**无漏报**)。`continue` 只略过 shadow 的 noDetect/reachableExit obs append,**生产 lost-fall 路径全分离(R0)**。
+- ✅ **build/vet/belief 全绿**(亲跑 rc=0)。
+- ✅ **9 冻结红精确吻合 0 新增**:7 bathroom(StillFall×2/BedsideFall×2/LostWeak×2/PublicMode)+ 2 bedroom(BedsideFall Fires/Dedup)逐个对得上;`TestReplayOracle` 无新失败。
+- ✅ **夹具真有判别力(bar⑦,非空跑)**:
+  - `TestP6SoleResidentRecaptureState`:① 回床→`rec`/② 仍浴室→`!rec`(若误抑制则失败)/③ 多resident→`count==2 && !rec`(**A不被B抑制,旧B2会令此失败=漏报-critical**)/④ +visitor→`count==1`(不计)/④b 受控对照(回床+visitor→`rec`,锁 residentCount≠personCount)。
+  - `TestP6ExitRecaptureLostSweep`(e2e+zap observer):① 回床→`exit_recapture` log 无 panic /② 仍浴室→**无** recapture(真摔浮出)/③ 多occupant→**无** recapture(A不被抑制)**且** `skip_multiresident` **被 LOG**(③-log observability 数据闸双断言)。
+- ✅ shadow 字段 `p6_5_*` 前缀(lost_anchor_ms/gap_ms/exit_confirmed/would_suppress_lostfall/resident_count/recapture_skipped)——shadow 命名规约符。
+- ✅ per-identity 复用生产 bathroom_fall 同一 `AnchorRoomType==Bathroom` 不变量(census 决定19 单resident才翻);未碰 census 多resident 写特性。
+
+**❓ 一个实质细节(非阻塞,记 P9 数据闸分析时)**:`skip_multiresident` log 测的是**曝光频率**(多resident 浴室-lost 发生多频),**不是 FP 率本身**。它在每次多resident 浴室-lost 都发(真摔与FP 都发),单凭此 log 不能区分某条是否 FP。**作为一阶信号正确**(曝光≈0 → 直接判定不值得扩 census,裁决短路);但若曝光非平凡,需**二次关联**(曝光 × FP-fraction)才能得"是否值得扩 census"的真答案。**记给 P9 分析者:勿把曝光计数误当 FP 计数**。施工方延后分析正确,本条只标度量语义。
+
+**❓ 小注(非阻塞)**:accessor 用 `m.mu.Lock()`(全锁)走读路径;若 `m.mu` 是 RWMutex,`RLock()` 可减争用。纯性能、非正确性,可 P9.6 顺带。
+
+**结论**:P6.5① **强通过 ⭐**。设计批准条件全兑现(per-identity 单resident-gate + 多resident 漏报-safe gate OFF + skip-LOG 数据闸 + 夹具①②③④④b+③-log)。**里程碑**:规划期定的"小卫生间 exit-vs-fall **靠 unit 级 track 守恒不靠纯 door-distance**"的最强证据①,在 shadow 落地且漏报-safe 可证。CABB 类小卫生间 lost-fall FP 治本路径成型。
+
+---
 
 ### [2026-06-07] 施工方 → 委员会:交 P6.5① 跨设备 track 守恒 per-identity recapture(审查㉑批准,`384a4b7`)
 
