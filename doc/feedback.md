@@ -59,6 +59,27 @@
 **下一步**:阶段2(provisional LOG 状态机 + 小卫绕 ObsReachableExit + dx=0 + cancel=recapture+np=0∧realness + 设备贫早决断)、阶段3(对抗 fixture 含第六)。①fleet 独苗 + 边界标注率两部署事实仍待用户(不挡阶段2)。
 
 ---
+### [2026-06-08] 施工方 → 委员会:P6.1b-D 阶段2 build-ready scope(recon 完成,下轮专注建状态机)+ 1 微妙点澄清
+
+阶段1(gate)已交。阶段2(provisional 状态机)recon 完成,信号源全部落实,build-ready。先记 scope 供委员会预看 + 澄清一点,下轮专注建(状态机较重,不在长 turn 尾 rush)。
+
+**recon 落实(信号源全部可得)**:
+- **集成点**:`belief_shadow.go:235` lost-sweep,`e.IsSmallBathroom(roomID) ∧ st.geom∈{GeomInToilet,GeomInEnter}` 的 lost track → D 分支(替现 P6.1a noDetect+reachableExit 标准发射)。
+- **np=0**:`tm.lastNumberPeopleZeroMs`(track_manager.go:121,firmware np=0 时刻)——belief_shadowTick 已有 `tm`,可读。
+- **每-suite 设备数**(设备贫判定):`e.deviceRoom`(deviceAddr→roomID)+ `e.roomSuiteID`(roomID→suiteID)可数同 suite 设备;加 helper `suiteHasOtherDevice(suiteID, excludeDevice)`。
+- **provisional 状态**:扩 `beliefShadowTrack` +`provisionalSince int64`+`provisionalLogged bool`(per-lost-track,跨 tick)。
+- **cancel 信号**:① recapture=`SoleResidentRecaptureState`(已有,residentCount==1);② np=0∧realness-empty。
+
+**状态机(阶段2)**:smallBathroom lost track →
+- 绕强 ObsReachableExit + `noDetectObs(geom, realnessP, doorExitP=0)`(dx=0 干净 ramp,disambiguation 交状态机);
+- 首 lost tick → `provisionalSince=nowMs` + log `belief_shadow_lostfall_provisional`(低 sev);
+- 每 tick 查 cancel:recapture ∨ (np=0 近时 ∧ realness-empty)→ log `belief_shadow_lostfall_cancel`;
+- **设备富**:窗(30min)到未 cancel → log `belief_shadow_lostfall_escalate`(全 sev);**设备贫**(无其它设备):早决断(短窗)→ log `belief_shadow_lostfall_suppressed`(no-silent-caps);
+- 默认升级硬约束(歧义偏 escalate)。
+
+**❓ 1 微妙点澄清(建前确认,非阻塞)**:**`realness-empty` 操作化** = "lost track 没后,房内无 live 真 track(realnessP>0.5)残留"。**zero-residual 摔**(人贴地完全无回波)→ realness-empty=true → np=0∧realness-empty → cancel = 漏报。**施工方判定**:这是**已知 §11.2 硬件极限**(零证据 frozen-static 摔,记忆 feedback_signal_loss_lost_track_not_suppressible:硬件局限非软件,不抑制),**非 D 新引入的漏报** → np=0∧realness-empty cancel 在此边界内安全(有残留的摔被 realness-empty=false 接住,零残留摔是硬件floor)。**请委员会确认此判**(若委员会要 np=0∧realness-empty 更保守[如要求 recapture 才 cancel、np 仅辅证],则 cancel 只留 recapture 一条,np 降为 LOG)。
+
+**下一步**:委员会预看 scope + 确认 realness-empty 边界判定 → 下轮建阶段2(provisional 状态机 5 状态 + 信号接入)→ 阶段3 五/六对抗 fixture。**未确认微妙点不影响主结构,可先建 recapture-cancel 主干,np-cancel 按确认补**。
 
 ### [2026-06-08] 施工方 → 委员会:交 P6.1b-D 阶段1(Opt-1 批准现建,`65eb0ff`)— 小卫生间 gate
 
