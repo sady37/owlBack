@@ -54,6 +54,32 @@
 
 
 
+### [2026-06-08] 施工方 → 委员会:执行审查53 裁 B-纠正版 → R5-calibration-lock 落地(按源角色分类,核心锁 pose/z≥1 + np=1 + 抬升≥1 + 许可压制清单)+ 负控证锁咬
+
+**收下纠正**:我原"全压制源中性锁"表述**错**——会误红合法压制源(Bed/Ghost/Neighbor/ReachableExit/EnterExit 按 DBN filter 设计本就该压 fall),锁成中性=破 DBN。委员会"按 R5 角色分类锁"正解。亲枚举 likelihood SFallen 列后按裁建 `belief/r5_calibration_lock_test.go`(4 测试):
+
+**① pose/z 核心锁(R5 铁律)** — `TestR5LockPoseZNeverSuppressFall`:
+- 全 pose(0..15,含 Unknown+未来越界防御)× 全 geom(Unknown/InBed/InEnter/OpenFloor/InToilet)→ `SFallen-LR ≥ 1`。
+- ZBand 三档(z=10/50/100)× 全 geom → SFallen 恒 1.0(绝不写 SFallen)。
+- 红 = 谁把某 pose/geom 或 z 档 SFallen 调 <1 = 用 pose/z 压 fall = R5 违规。亲验 `lrPoseFallenInBed=1.5` 降权仍 >1 ✓。
+
+**② 中性锁** — `TestR5LockNumberPeopleNeutral`:ObsNumberPeople(np=0/1/2/5)→ `SFallen-LR == 1.0`(np=0 corroboration 非 substitution;np>0 只压 Empty)。
+
+**③ 抬升锁** — `TestR5LockLiftSourcesNeverSuppressFall`:DwellStill(toilet/open/bed)/StandDuration(toilet/非toilet)/NoDetect(real×door-exit 各组合,含 door-exit 留 floor + ghost 消失中性)→ `SFallen-LR ≥ 1`(只抬不压)。
+
+**④ 许可压制清单(豁免,机械化文档)** — `TestR5LockPermittedSuppressionRegistry`:`permittedFallSuppressors` 表逐条标 source 依据(R5 #5 reliable 通道):BedOccupied(接触式占用/P7.4)/TrackPresent-Ghost(realness 运动学/#4)/Neighbor(§5.5.2)/ReachableExit(近门可达替 30cm 硬闸)/EnterExit-Exit(事件正向退场/#3)。满证据时**断言 SFallen <1**——证其仍是 DBN 合法压制通道;谁被误中性化(damp→0 / lrExitFallen→1)破 DBN filter 同样红。与①②③合成 R5 总闸:**压制只许走本清单,pose/z/np/抬升永不压**。
+- 注:VitalPresent/SleepStage/TimeContext 对 SFallen 不写(恒 1.0),代码注记备 source-fidelity 对账,无需单测(由①②③守"非清单源不得 <1")。
+
+**放行前置全绿**:
+- `go build ./...` 干净;belief 包**全绿**(R5-lock 4 测试 + 原有)。
+- **负控证锁真咬**:临时 `lrNp0Fallen 1.0→0.5` → `TestR5LockNumberPeopleNeutral` **红**("SFallen-LR=0.5 ≠1.0 → np 入 fall 决策")→ 还原 1.0 复绿。锁非空跑。
+- **9 红 0 新增**:roomengine 仍 7 bathroom_fall + 2 bedroom_fall(production gate-list),无新增。
+- 低风险并行(非死源 critical-path,趁 SFallen 似然新鲜 cheap 做完)。
+
+**死源进度**:#1 bed ✅ / #2 NumberPeople ✅ / **R5-lock(横切硬化)✅**。**余死源**(#3 Neighbor 跨房需 redis-replay 整单元 / #4 SleepStage 可单 agent 直推预审 / #5 StandDuration 可单 agent 直推预审)locus 未裁不建;recall 案 + redis-replay 整单元待用户。**待委员会**:复核 R5-lock + 裁余死源 locus。
+
+---
+
 ### [2026-06-08 17:33 MDT] 审查53 `26f8843..65ba1c6`(doc-only)收措辞认领 + 裁 R5-calibration-lock = B 但纠"全中性"→按 R5 角色分类锁
 
 **性质**:`65ba1c6` doc(认领措辞错 + R5-lock A/B/C)。无代码。施工方诚实认领"无 SFallen 行"不实 + 自承"后续 wiring 先 grep 似然表 SFallen 列再下结论"——R6 纪律内化,好。
