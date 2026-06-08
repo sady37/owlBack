@@ -499,7 +499,7 @@ shadow 期为跑通对账,部分 LR 取保守占位,**终值待 P9 oracle 标定
 | ObsZBand 30–80 sit 权 | SSit:2 | 同上比例校 | P2.3 |
 | **firmware-fall LR** | SFallen:2(≤×2) | 按 **firmware_fall 真机 TP/FP 率**标定(可能 ≠2) | P2.4 |
 | pose-fallen@open_floor | SFallen:10 | 真机校(当前 genuine-fall 主证据) | 现存 |
-| **realness 记忆 γ** | 0.9/帧(≈6.6s 半衰) | ⚠️**疑偏快**(审查⑪ note1):真摔躺分钟级会衰回中性、腰斩边缘化 P(fall)。**疑应每分钟量纲**(同 bed_scorer leak 0.55/min≈46s);P9 用 cabb-0605(躺52s)/cd2b 标定 + 确认 frame-vs-minute 量纲 | P3.3 |
+| **realness 记忆 γ** | ~~0.9/帧~~ → **0.99/秒(时间基,半衰~69s)** | **B′ 已改时间基**(审查⑬):原 0.9/帧≈6.6s 半衰,cabb-0605 躺52s 必塌;改 per-sec 0.99(≈bed_scorer leak 0.55/min 量纲),52s 保留 0.99^52≈59%。B′ checkpoint 实证 cabb-0605 存活/cd2b 坍缩/真人久站2min 不误判。**终值仍 P9 用真 cabb-0605 replay 精标** | P3.3/B′ |
 | realness lnLR(move/jump/frozen) | +ln2 / −ln19 / −ln19 | 真机校(走动 real 抬幅 vs 跳变/冻结 ghost 压幅) | P3.3 |
 > 原则:**shadow 期勿拍脑袋抬权**,先保守占位跑对账;oracle 出真机分布再统一标。R7 每值带来源。
 

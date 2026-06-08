@@ -254,22 +254,27 @@ func TestRealnessMemoryFilter(t *testing.T) {
 	var gh float64
 	// 摔前走动 5 帧 → realness 累积,ghostness 远低于中性 0.5。
 	for i := 0; i < 5; i++ {
-		lo, gh = realnessStep(lo, true /*moving*/, false, false)
+		lo, gh = realnessStep(lo, 1, true /*moving*/, false, false)
 	}
 	if gh >= 0.5 {
 		t.Fatalf("走动 5 帧后应偏 real(ghostness<0.5),得 %.3f", gh)
 	}
 	walkGh := gh
 	// 倒地帧:v≈0 无当下证据(!moving,!ghost)→ L_R 经 γ 缓衰,ghostness 仍低(记忆带入,真摔不被误 ghost)。
-	loStill, ghStill := realnessStep(lo, false, false, false)
+	loStill, ghStill := realnessStep(lo, 1, false, false, false)
 	if ghStill >= 0.5 {
 		t.Fatalf("倒地静止帧 realness 应靠记忆带入仍偏 real(ghostness<0.5),得 %.3f —— 否则真摔被误判 ghost", ghStill)
 	}
 	_ = walkGh
-	// 跳变帧(jumpGhost)→ 即便摔前走动累积,一次近确定 ghost 也翻过中性 → 判 ghost。
-	_, ghJump := realnessStep(loStill, false, true /*jumpGhost*/, false)
+	// 持续跳变/急变 ghost(cd2b:implied-speed 一直>120,每帧 jumpGhost)→ realness 坍缩翻 ghost。
+	// (时间基慢衰下单帧异常不秒翻——established realness 抗单帧噪声;持续 ghost 证据才翻,正确。)
+	lo2 := loStill
+	var ghJump float64
+	for i := 0; i < 4; i++ {
+		lo2, ghJump = realnessStep(lo2, 1, false, true /*jumpGhost*/, false)
+	}
 	if ghJump <= 0.5 {
-		t.Fatalf("跳变 ghost 帧应翻向 ghost(ghostness>0.5),得 %.3f", ghJump)
+		t.Fatalf("持续跳变 ghost 应翻向 ghost(ghostness>0.5),得 %.3f", ghJump)
 	}
 }
 
@@ -287,5 +292,46 @@ func TestSelfRescueRecapture(t *testing.T) {
 	// 从未丢失(lostAnchor=0)→ 非 recapture。
 	if isSelfRescueRecapture(0, now-1000, now) {
 		t.Fatalf("从未丢失不该判 recapture")
+	}
+}
+
+// B′ scoped P3-realness checkpoint(委员会裁决⑬):cabb-0605/cd2b 时序下验 realness 节点轨迹 + 标 γ。
+// 只验 realness 输出(P(real)/ghostness),不碰 fall 后验/τ*(留 P9)。1Hz 帧,dtSec=1。
+func TestP3RealnessCheckpoint(t *testing.T) {
+	const dt = 1.0
+	// ② cabb-0605 真摔(γ 判据):走动 5 帧建立 realness → 倒地静止 52s(无 moving/无 ghost)。
+	//    realness 须在 52s 检测窗内**存活**(P(real)>0.5),否则真摔被腰斩(审查⑪ γ 风险)。
+	lo := 0.0
+	var gh float64
+	for i := 0; i < 5; i++ {
+		lo, gh = realnessStep(lo, dt, true, false, false) // 走动
+	}
+	for s := 0; s < 52; s++ {
+		lo, gh = realnessStep(lo, dt, false, false, false) // 倒地静止 52s
+	}
+	if gh >= 0.5 {
+		t.Fatalf("②cabb-0605:躺 52s 后 realness 应存活(ghostness<0.5),得 %.3f —— γ 过快腰斩真摔(应改时间基)", gh)
+	}
+	// ① cd2b 冻结 ghost:走动后跳椅冻住,frozen 每帧施加 → realness 坍缩(P(real)→低)。
+	lo = 0.0
+	for i := 0; i < 5; i++ {
+		lo, _ = realnessStep(lo, dt, true, false, false)
+	}
+	for s := 0; s < 10; s++ {
+		lo, gh = realnessStep(lo, dt, false, false, true) // 冻结伪迹持续
+	}
+	if gh <= 0.5 {
+		t.Fatalf("①cd2b:冻结 ghost 持续应坍缩 realness(ghostness>0.5),得 %.3f", gh)
+	}
+	// ③ 真人远角久站:走动后久站(无 ghost 证据,frozen 门控因缺 A 不触发)→ realness 保持高,绝不误判 ghost。
+	lo = 0.0
+	for i := 0; i < 5; i++ {
+		lo, _ = realnessStep(lo, dt, true, false, false)
+	}
+	for s := 0; s < 120; s++ {
+		lo, gh = realnessStep(lo, dt, false, false, false) // 久站 2min(P3.2 门控 A 失败→frozenGhost=false)
+	}
+	if gh >= 0.5 {
+		t.Fatalf("③真人久站 2min 不该被判 ghost(ghostness<0.5),得 %.3f", gh)
 	}
 }

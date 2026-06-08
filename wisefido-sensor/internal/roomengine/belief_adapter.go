@@ -36,11 +36,13 @@ const (
 
 	// P3.3 记忆 L_R filter(承审查⑨:二值检测→连续 P(real) log-odds 带遗忘 γ;shadow 占位,P9.6 待 oracle)。
 	// 摔倒瞬间 v≈0 无当下证据 → realness 靠摔前走路累积的 L_R 经 γ 带进倒地窗(cabb-0605)。
-	beliefRealnessGamma = 0.9  // 每帧遗忘率(realness 缓衰,走路段存活到倒地窗;= Boyen-Koller mixing)
-	beliefRealnessLOCap = 5.0  // log-odds 截断 [-5,5]
-	lnLRMoveReal        = 0.69 // ln2:每走动帧 +realness(MoveActive,XY 派生,R5-safe)
-	lnLRJumpGhost       = 2.94 // ln19:P3.1 跳变/急变 近确定 ghost(强 −)
-	lnLRFrozenGhost     = 2.94 // ln19:P3.2 冻结伪迹 近确定 ghost(强 −)
+	// **B′ 标定(审查⑬/⑪ γ 风险)**:γ 改**时间基 per-sec**(原 0.9/帧≈6.6s 半衰过快,cabb-0605 躺52s 必塌)。
+	// 0.99/s ≈ bed_scorer leak 0.55/min 量纲(半衰~69s);52s 躺保留 0.99^52≈59% → realness 存活。终值 P9 用 cabb-0605 标。
+	beliefRealnessDecayPerSec = 0.99 // realness log-odds 每秒遗忘率(帧率无关;cabb-0605 52s 窗存活)
+	beliefRealnessLOCap       = 5.0  // log-odds 截断 [-5,5]
+	lnLRMoveReal              = 0.69 // ln2:每走动帧 +realness(MoveActive,XY 派生,R5-safe)
+	lnLRJumpGhost             = 2.94 // ln19:P3.1 跳变/急变 近确定 ghost(强 −,每帧施加不靠衰减)
+	lnLRFrozenGhost           = 2.94 // ln19:P3.2 冻结伪迹 近确定 ghost(强 −,每帧施加)
 
 	// P3.4 recapture 软恢复:曾丢失(lost-fall ramping)的 track 返回 ≥ 此 = self-rescue candidate
 	// (跌后自救可能,不硬 cancel 抹真摔)。shadow 占位(cd2b 5.85min 返回合格),P9.6 待 oracle。
@@ -237,7 +239,8 @@ func shadowFrozenArtifact(ts *TrackState, poseZLock int, grid *RoomGrid, x, y in
 // 摔倒瞬间 v≈0 无当下证据,realness 靠摔前走路累积的 L_R 经 γ 带进倒地窗(cabb-0605:走动→倒地不塌)。
 // L>0 偏 real,L<0 偏 ghost。返回 (新 L_R, ghostness=P(ghost)=1−σ(L_R))。
 // (WeakBio/出生地 real 证据 v2 接:base 暂无 vital;走动 MoveActive 是 XY 派生 real 证据,R5-safe。)
-func realnessStep(prevLO float64, moving, jumpGhost, frozenGhost bool) (float64, float64) {
+// dtSec=本帧距上帧秒数(帧率无关遗忘);首帧/dtSec≤0 → 不衰(prevLO 一般为 0)。
+func realnessStep(prevLO, dtSec float64, moving, jumpGhost, frozenGhost bool) (float64, float64) {
 	d := 0.0
 	if moving { // 走动 = 人(累积 realness,摔前)
 		d += lnLRMoveReal
@@ -248,7 +251,11 @@ func realnessStep(prevLO float64, moving, jumpGhost, frozenGhost bool) (float64,
 	if frozenGhost { // P3.2 冻结伪迹 → 近确定 ghost
 		d -= lnLRFrozenGhost
 	}
-	lo := beliefRealnessGamma*prevLO + d
+	decay := 1.0
+	if dtSec > 0 {
+		decay = math.Pow(beliefRealnessDecayPerSec, dtSec) // 时间基遗忘(半衰~69s,cabb-0605 52s 窗存活)
+	}
+	lo := decay*prevLO + d
 	if lo > beliefRealnessLOCap {
 		lo = beliefRealnessLOCap
 	} else if lo < -beliefRealnessLOCap {

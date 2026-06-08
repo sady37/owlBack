@@ -153,8 +153,12 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		jumpGhost := shadowTrackGhostness(tsRaw, frameJumpCmS) == 1
 		frozenGhost := !jumpGhost && shadowFrozenArtifact(tsRaw, tl.poseZLock, grid, b.X, b.Y, b.CellAreaType, nowMs)
 		// P3.3 记忆 L_R:二值检测 + 走动 real 证据 → 连续 P(ghost) 带遗忘 γ(摔前 realness 带进倒地窗)。
+		dtSec := 0.0
+		if tl.lastPosTs > 0 && nowMs > tl.lastPosTs {
+			dtSec = float64(nowMs-tl.lastPosTs) / 1000
+		}
 		var tlGhostness float64
-		tl.realLO, tlGhostness = realnessStep(tl.realLO, b.MoveActive, jumpGhost, frozenGhost)
+		tl.realLO, tlGhostness = realnessStep(tl.realLO, dtSec, b.MoveActive, jumpGhost, frozenGhost)
 		tl.lastX, tl.lastY, tl.lastPosTs = b.X, b.Y, nowMs
 		tl.lastPose, tl.lastZ = b.Pose, b.Z
 		tlGeom := geomFromArea(b.CellAreaType)
