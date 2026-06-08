@@ -45,6 +45,23 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:收讫审查㉒ P6.5①强通过(记2个P9 note)+ 宣布下一节 P6.1a NoDetect门控(勘察:plumbing 按 B2 先例无新岔口)
+
+谢审查㉒ P6.5① **强通过 ⭐**。两非阻塞 note **已记 P9**(见末):
+- **skip-LOG 度量语义**:`recapture_skip_multiresident` 测**曝光频率**(多resident 浴室-lost 发生多频),**非 FP 率**——真摔与FP都发。一阶信号:曝光≈0→直接判不值得扩 census(短路);曝光非平凡→需**二次关联 曝光×FP-fraction** 才得"是否值得扩"真答案。**勿把曝光计数误当 FP 计数**(记给 P9 分析者)。
+- **accessor 锁**:`SoleResidentRecaptureState` 用 `m.mu.Lock()`(全锁)走读路径;`m.mu` 是 RWMutex → `RLock()` 可减争用。纯性能非正确性,P9.6 顺带。
+
+**下一节 = P6.1a NoDetect→Fallen 门控**(plan §5 标的**阻塞项#1**;跌倒误报主线:no-detect 误抬 Fallen 是 dropout-FP 历史来源,治 cd2b/D5F7/D523)。据 DAG(P6.5 已落 P6 一部分)+ 主线连续性选此。
+
+**勘察(belief/likelihood.go:134 + belief_adapter noDetectObs:291 + plan §5 P6.1a)**:
+- 现状:`ObsNoDetect→SFallen: lrNoDetFallen=1.6`(**固定**)= 裸 absence 抬 fall。`noDetectObs` 只带 geom。
+- P6.1a:改 `SFallen = 1 + 0.6·P(R_i=real)·(1−P(door-exit))`(连续边缘化,非硬𝟙)。需两输入:**R_i**(realness)+ **door-exit**。
+- **两输入 lost-sweep 都可得**:R_i = `1−ghostness(sh.tlayer[tid].realLO)`(同 trackID 跨层取,丢失时用最后已算 realLO=消失前真实度,正合"消失时是不是真人");door-exit = `reachableExitScore(dist, st.approachSpeedCmS)`(lost-sweep 已为 reachableExitObs 算)。
+- **plumbing 无新岔口——P4.4 裁决⑱ B2 先例已定**:显式字段入 Observation(`+RealnessP +DoorExitP`,默认0)+ **公式留 likelihood**(不在 adapter 预算,formula 可审);ObsNoDetect 现 Value 未用,但按 B2"显式输入+公式在 likelihood"精神加字段比塞 Value 更合先例。
+- **R0/R1**:ObsNoDetect 仅 belief shadow(noDetectObs 在 belief_shadow lost-sweep 发);生产 lost-fall 路径不碰。roomengine 9 红测生产 fall**不受影响**;但 **replay oracle 会变**(cd2b 是 P6.1a 的正向 oracle:真人 lost 仍抬 / ghost 消失不抬)→ 建后须重验 replay 断言。
+
+**下一步**:留下一轮专注建 P6.1a(触核心 ObsNoDetect 发射 + 须重验 replay oracle,不在长turn尾rush)。按 B2 先例:`+RealnessP/DoorExitP` 字段 + likelihood `1+0.6·Ri·(1−doorExit)` + lost-sweep 填 R_i/door-exit + shadow 字段 `p6_1a_*` + replay 重验(cd2b 真人lost仍浮出/ghost消失不抬)+ 0新增vs冻结9红。如委员会对 plumbing(B2 加字段 vs 复用 Value)或选 P6.1a 有异议,请示下;否则按此建。
+
 ### [2026-06-07 21:17 MDT] 审查㉒ `e51d6e4..decd29a` P6.5① 跨设备 track 守恒 per-identity recapture【强通过 ⭐ 小卫生间 exit-vs-fall 治本路径落地】
 
 **R6 亲跑核验(代码阶段全套 bar,不信"全绿"声明)**:
