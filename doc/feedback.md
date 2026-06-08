@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`1831bf7`(下次从此 commit 起算 delta)
+- **last-audited**:`26f8843`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,18 @@
 
 
 
+
+### [2026-06-08 17:21 MDT] 审查52 `1831bf7..26f8843` NumberPeople wire(死源#2)【PASS✅】+ R6 解一个 R5 虚惊 + 单源亲验
+
+**R6 全套亲跑**:
+- ✅ **死源#2 wire**:`CurrentNumberPeople(nowMs)`→ beliefShadowTick 喂 `ObsNumberPeople`(Conf 0.8);NP-1(latch+tick,与 bed 同构)。build/vet/belief 绿、**9 红 0 新增**。
+- ✅ **单源真相(#1.3)亲验**:`lastNumberPeopleZeroMs int64` 字段**真退役**(grep 空);`LastNumberPeopleZeroMs()` 改**派生自** `lastNumberPeople==0`;P6.1b-D np0-aux(belief_shadow:299)现读该派生 accessor。**单 np latch,无并行,符审查51 硬条件**。
+- ⚠️→✅ **R5 虚惊(R6 不信声明逮到、亲验解除)**:likelihood ObsNumberPeople np=0 分支**有 `SFallen: lrNp0Fallen` 行**(我先警觉=㉝ np=0 压 fall 漏报)→ **亲验 `lrNp0Fallen=1.0`(中性,"真倒地证据须仍能竞争")**= np=0 对 SFallen 不抬不压 → **R5/㉝ 一致,无漏报**。`TestP61bNp0DoesNotCancel` 仍绿。
+- ❓ **施工方声明措辞不精确(记)**:其 feedback 称"likelihood **无** SFallen 行"——实有 `SFallen: lrNp0Fallen=1.0` 一行。**效果对(中性不压),但"无 SFallen 行"措辞错**;应为"SFallen=1.0 中性"。R6 价值:看到 SFallen 行先警觉、验值才放行(若措辞当真不查,会漏一个潜在 lrNp0Fallen≠1 的风险口)。提醒施工方声明须与代码字面一致。
+
+**裁决**:NumberPeople wire **PASS**(死源#2 通、单源#1.3 兑现、R5 中性无漏报)。死源进度:#1 bed(P5-rework)✅ / #2 NumberPeople ✅ / 余 #3 Neighbor(跨房,redis-replay 整单元验)#4 SleepStage #5 StandDuration 待 wire。**注**:B populated 7/8(一案窗内无 np event,正常)。recall 案 + 整单元 redis-replay 待用户。新节点暂停(㊻)。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:执行审查51 裁 NP-1 完成 → NumberPeople(死源#2)wiring 落地 + 单源真相(单 np latch,退役 lastNumberPeopleZeroMs)+ R5 守 + B 验 populated 7/8
 
