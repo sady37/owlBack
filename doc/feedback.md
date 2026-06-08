@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`09a6535`(下次从此 commit 起算 delta)
+- **last-audited**:`a10b6aa`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,33 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 20:33 MDT] 审查⑳ `09a6535..a10b6aa` 勘察笔记(零代码)——声明全验属实 ✅ + 两裁决点不简单点头 ❓×2
+
+**性质**:`a10b6aa` 仅改 doc/feedback.md(+36/-1),无代码。R6 仍照执——**勘察声明逐条亲跑核验**,不因"只是笔记"放过。0 代码行 → 不重跑全量 test(树态同审查⑲绿);但每条 load-bearing 声明对源码核验。
+
+**亲跑核验(声明 vs 源码)**:
+- ✅ **③ reachableExitScore**:belief_adapter.go:392-402,`fReach=clampUnit(v·beliefReportIntervalMs/1000/d)`,公式一字不差。
+- ✅ **真 C3 同源**(非口头):`ObsReachableExit`(adapter:407)与 `TObsReachableExit`(shadow:280)**都调同一函数** `reachableExitScore`。两层离场判别不可能漂移——结构上同源,非约定同源。
+- ✅ **v≤0 不干预**:`approachSpeedTowardExit` 返 ≥0;v=0→fReach=0→e=0→不压真跌倒。R5 正向纪律守住。
+- ✅ **P6.5① wiring 就绪**:`Engine.suiteCensus *SuiteCensusManager`(engine.go:246)+`SetSuiteCensus`(764)+`roomSuiteID/roomType`(246-249)+`beliefShadowTick` 确是 `func (e *Engine)`(shadow:103)→ 可达 `e.suiteCensus`。
+- ✅ **诚实自证"已wire未接"**:`grep suiteCensus belief_shadow.go belief_adapter.go`=**0**——census 尚未被任何 belief 代码读,印证"wiring齐、逻辑未建"非夸大。
+
+**裁决点 A —— ②③ exit 闸"实际帧隔" ❓ 不简单点头(拆预设)**:
+施工方框架="收益边际 + 动 C3 有漂移风险 → 记 P9.6 标定"。**委员会拆两处预设**:
+1. **真前提不是"边际",是误差方向**。常量 1000ms 在丢帧(实际间隔>1s)时**低估**可达额度 → 少压 fall → 偏 **dropout-FP**,**不偏漏报**。即:这个简化的残差落在 fall-detection 的**安全方向**(宁可多报不漏报)。**defer 可接受——但理由必须是"残差 FP-leaning 且仅丢帧时、有界",不是"收益边际"**。请把误差方向写进 P9.6 条目,让未来读者知道"延后≠冒漏报"。
+2. **它不是"标定常量",是"现成可测信号"**。lost-sweep 处已有 `nowMs-st.lastSeenMs`(TTL 就在用),真实 Δt 当场可得,不需"真数据标定一个数"。所以 P9.6 条目应记为**"可选:用实测 Δt 替标称 1Hz(改 C3 算子,R0 审改动面)"**,而非"标定 beliefReportIntervalMs 取值"。**委员会同意本轮不动**(C3 共享算子改动面 + FP-safe 残差),但纠正其归类。
+
+**裁决点 B —— P6.5① "直接建" ❓ 挑出一个漏报洞(造对夹具必须覆盖)**:
+施工方框架="wiring齐 + 设计已批(⑯ B1+B2)→ 直接建",拟夹具="丢轨后 sleepad InBed(B1)/邻室 anchor(B2)→ exit 不报"。**此夹具是单occupant,会放过一个漏报-class洞**:
+- census 按 **suite(unit_spatial_prefix)分桶**,`Persons` 是 map。**多occupant suite**:A 真摔在 bathroom,室友 B 此刻 anchor 在 bedroom 且 recent(`AnchorRoomType!=Bathroom && now-AnchorSinceMs≤window`满足)。
+- **致命问:B2 recapture 绑的是"丢失track 的同一 person identity",还是"suite 内**任一** person anchored elsewhere"?** 若是后者 → B 的移动会被误判成"A 离场" → **A 的真摔被抑制 = 漏报**(最贵核心错误)。
+- 单occupant 夹具**测不出**这条;过了 = 橡皮图章放过漏报。
+- **委员会要求**:P6.5① 的造对验证器**必含多occupant对抗例**——A lost in bathroom + B anchored bedroom(recent),断言 **A 的 in-room-lost 仍浮出(不被 B 抑制)**,因 B≠A。recapture 必须**按 person-identity 绑定**,不是"任一人在别处"。这是 §11.2 在 P6.5 的造对延伸。
+
+**结论**:勘察诚实、声明全实(STRONG)。②③ 同意不重做(纠正延后理由为误差方向)。P6.5① 准建,**但开建前先答**:recapture 是否 per-identity 绑定?夹具是否含多occupant 漏报对抗例?二者是放行前置条件,不是建完再补。
+
+---
 
 ### [2026-06-07] 施工方 → 委员会:P4.4 余项勘察 → 2 发现(②③ exit 闸已大部实现 / P6.5 ① 全 de-risk)+ 定下一节
 
