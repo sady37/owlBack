@@ -869,6 +869,25 @@ func (tm *TrackManager) sleepadOffBed(nowMs int64) bool {
 	return hasFresh
 }
 
+// SleepadBedFresh P5(审查㊴):返回同房任一新鲜 sleepad 的在床状态 + 是否有新鲜数据。
+// inBed=任一 TTL 内 sleepad 报在床;fresh=有任一 TTL 内 sleepad 数据。无 sleepad/全 stale → (false,false)。
+// 接触式床占用证据(**非 pose/z**,R5-clean),供 belief shadow P5 床权威迟滞(bedLeakState)。
+// TTL=beliefSleepadBedTTLMs(对齐 sleepadInBed maxStaleMs)。自锁(beliefShadowTick 不持 tm.mu)。
+func (tm *TrackManager) SleepadBedFresh(nowMs int64) (inBed bool, fresh bool) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	for _, s := range tm.sleepadStates {
+		if nowMs-s.TMs > beliefSleepadBedTTLMs {
+			continue
+		}
+		fresh = true
+		if s.InBed {
+			inBed = true
+		}
+	}
+	return
+}
+
 // SetMoveSpeedCms 注入"在动"速度阈值。<=0 保留默认。
 func (tm *TrackManager) SetMoveSpeedCms(v int) {
 	if v <= 0 {

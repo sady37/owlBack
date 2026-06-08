@@ -66,6 +66,7 @@ type beliefShadow struct {
 	tlayer       map[int]*beliefShadowTLayer // DBN P1 Track 层
 	deviceSpeed  map[string]*deviceSpeedStat // P2.1：per-device 学习走速封顶（device→room 稳定，跨 track 累积）
 	lastLostGeom belief.Geom                 // #3：最近一次丢失点 geom（fall log 辨床/桶区误报用）
+	bedLeak      *bedLeakState               // P5(审查㊴)：接触式床占用权威迟滞（治 α LeftBed-co-fire；首见新鲜 sleepad 时 lazy init）
 }
 
 // tLostLogThresh Track 层 P(TLost) 超此即 log（对照 gate-list lost_track 报警）。
@@ -135,6 +136,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	var obs []belief.Observation
 	cur := make(map[int]struct{}, len(bases))
 	curTL := make(map[int]struct{}, len(bases))
+	radarOnBed := false // P5：本 tick 是否有 real track 仍在 bed-surface（geom InBed，cell 几何算，非 z/pose）
 	for i := range bases {
 		b := &bases[i]
 
@@ -217,6 +219,9 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		st.lastSeenMs = nowMs
 		st.lostAnchor = 0
 		st.geom = geomFromArea(b.CellAreaType)
+		if st.geom == belief.GeomInBed { // P5：real track 仍在 bed-surface → 允许 bed 权威压制（位置条件，非 z/pose）
+			radarOnBed = true
+		}
 		st.lastX, st.lastY = b.X, b.Y
 		// P2.1：track 仍活时学本设备走速 → 个性化封顶。A：算好朝门定向逼近（丢失后 ts 可能已销毁）。
 		ds := sh.deviceSpeed[b.DeviceAddr]
@@ -443,6 +448,35 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			)
 		}
 		tl.loggedLo = pLost >= tLostLogThresh
+	}
+
+	// P5(审查㊴ P5c)：sleepad 接触式床占用迟滞 → R5-clean 合取门控压制 SFallen（治 α LeftBed-co-fire）。
+	// 占用(leaked InBed)∧ 位置(radarOnBed) 两条**非 pose/z** 皆满足才压；任一不足 → bedVal=0 不压 → Fall 浮出。
+	// 首见新鲜 sleepad 时 lazy init；之后每 tick 更新（无新鲜数据仍 leak，不强制清零）。
+	inBed, freshSleepad := tm.SleepadBedFresh(nowMs)
+	if freshSleepad || sh.bedLeak != nil {
+		if sh.bedLeak == nil {
+			sh.bedLeak = &bedLeakState{}
+		}
+		authority := sh.bedLeak.update(inBed, nowMs)
+		obs = append(obs, bedAuthorityObs(authority, radarOnBed, nowMs))
+		switch {
+		case authority > 0 && radarOnBed && !inBed:
+			// brief LeftBed blip 被迟滞接住（radar 仍 on-bed）→ 压床上翻身/坐起伪迹（治 α）。
+			e.logger.Info("belief_shadow_bed_leak_suppress",
+				zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),
+				zap.Float64("p5_bed_authority", authority),
+				zap.Bool("p5_radar_on_bed", true),
+				zap.Bool("p5_sleepad_in_bed", false), // LeftBed blip，迟滞仍高
+			)
+		case authority > 0 && !radarOnBed:
+			// 占用迟滞高但 radar 离床/无 on-bed track → 闸打开（不压）→ 默认 escalate（滚下床/真离床保护，R5 不漏）。
+			e.logger.Info("belief_shadow_bed_authority_released",
+				zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),
+				zap.Float64("p5_bed_authority", authority),
+				zap.Bool("p5_radar_on_bed", false), // displaced → 不压 → Fall 浮出
+			)
+		}
 	}
 
 	sh.b.Step(nowMs, obs)

@@ -39,6 +39,26 @@
 ## 审查记录(倒序,最新在上)
 
 <!-- 每次 audit 追加一条:
+
+### [2026-06-08] 施工方 → 委员会:P5 已建(治 α LeftBed-co-fire)— bed O_b 迟滞 + R5-clean 合取门控(按㊴ P5c 裁定)
+
+承㊴ 裁定(R5 岔口 = **P5c 重构**:suppressor 走「位置 geom-on-bed ∧ 占用 sleepad-InBed」两条非-pose/z;z 只正向 escalate;默认 escalate;leak 让位滚下床)。**已建 P5 code,全 belief shadow(R0/R1 不碰生产),0 新增 vs 冻结 9 红**。
+
+**实现(4 文件)**:
+1. **bed O_b 迟滞替二值瞬时**(`belief_adapter.go` `bedLeakState`):接触式床占用权威按时间 leak(`beliefBedLeakDecayPerSec=0.99/s` ≈ 半衰 69s,对齐 [[bed_stale_leftbed_vetoes_radar_inbed]] L*=0.55/min)。InBed→即时回满;LeftBed/无新鲜数据→缓降。**brief LeftBed blip(InBed 很快返回)→ authority 粘滞高 → 仍 damp SFallen**(床上翻身/坐起伪迹被压=治 α);**sustained LeftBed no-return → authority 衰减 → 床权威掉 → firmware Fall 浮出**(不掩盖真离床)。
+2. **R5-clean 合取门控**(`belief_adapter.go` `bedAuthorityObs`):bedVal 透为 leaked authority **仅当 占用(leak InBed)∧ 位置(radarOnBed=radar track geom InBed,cell 几何算)**——两条**皆非 pose/z**。任一不足(radar 离床 displaced ∨ authority 衰减)→ bedVal=0 → 不 damp(中性)→ Fall 浮出(**默认 escalate**)。z/pose **绝不**作压制因子(R5);滚下床(位移离床+z低)由 radar geom=OpenFloor 打开闸 + PoseFallen@Open 正向 escalate(既有路径)。
+3. **wire 进 shadow tick**(`belief_shadow.go`):此前 `sleepadAdapter`/`bedAdapter` 是 producer-first 留桩(ObsBedOccupied **从未注入** shadow),P5 首次接通。tick 内 per-track 累 `radarOnBed`(real track geom InBed),lost-sweep 后读 sleepad 床态 + 更新 leak + emit gated bed obs;`bed_leak_suppress`/`bed_authority_released` 两 observability log(对账)。
+4. **床占用 accessor**(`track_manager.go` `SleepadBedFresh`):返回同房新鲜 sleepad 在床态(TTL 30s,接触式非 pose/z),只读不改生产判定。
+
+**放行前置(委员会㊴ 三项)均验过**:
+- **① α 压制**(`TestP5AlphaSuppressed`):床上翻身 blip + firmware Fall + radar on-bed → 有床 P(Fallen) ≪ 无床基线 + 不确认 Fall(治 ≥5/8 CD2B 卧室 FP 机理)。+ `TestP5BedLeakBlipSticky`(blip 粘滞)/`TestP5BedLeakSustainedDecays`(sustained 衰减)/`TestP5GateConjunction`(合取门控)。
+- **② 滚下床真摔对抗例**(`TestP5RollOffBedNotSuppressed`,R5 红线):sustained LeftBed + radar 位移离床(OpenFloor)+ z低 + firmware Fall + PoseFallen@Open → 闸打开 bedVal=0 → **不压 → 确认 Fall**(不漏报)。
+- **③ R5 专项断言**(`TestP5SuppressorIgnoresZ`,防 P5a 残留):z低(15,P5a 会判"位移躺地真摔"放行)时,只要 radar on-bed ∧ authority → **仍压制**(P5c 不看 z)= 证压制路径无 z/pose 因子。
+
+**守**:build/vet 绿;belief 包全绿;roomengine 仅 9 红 = 冻结基线(7 bathroom_fall + 2 bedroom_fall 生产 gate 测试,与 belief shadow 无关),**0 新增**。grep 自检违禁词/事件字面量 clean。
+
+**下一步**:委员会复核 P5(尤其 R5-clean 门控:压制只走位置+占用,z 只正向)。P6.2 N_r(治 γ 2人床边)可并行。333B ghost 待用户查(D 真验 + P3 oracle 阻塞)。8 CD2B fixture 端到端 oracle 待 replay harness(载体 B)。
+
 ### [YYYY-MM-DD HH:MM TZ] <last>..<new>
 **变更摘要**:...
 **对照审查**:✅/⚠️/❓ 逐条

@@ -69,6 +69,13 @@ const (
 	beliefSpeedCapFactor     = 1.5   // 封顶 = 1.5×EWMA 走速（mean→ceiling 余量）
 	beliefSpeedCapFloorCmS   = 30    // 封顶下限（防学得过低误压真退场）
 	beliefSpeedCapCeilCmS    = 150   // 封顶上限（生理：挡噪声伪造超人速度）
+
+	// P5(审查㊴ R5 裁定 P5c)bed O_b 迟滞:接触式床占用权威按时间 leak,治 α LeftBed-co-fire。
+	// 对齐 [[bed_stale_leftbed_vetoes_radar_inbed]] L*=0.55/min(半衰~69s)+ realness decay 同量纲。
+	// brief LeftBed 翻拍(InBed 很快返回)→ authority 粘滞高 → 仍 damp SFallen(床上翻身伪迹被压);
+	// sustained LeftBed no-return → authority 衰减 → bed-authority 掉 → firmware Fall 浮出(不掩盖真离床)。
+	beliefBedLeakDecayPerSec = 0.99    // 床占用迟滞每秒遗忘率(帧率无关;brief blip 粘滞,sustained 衰减)
+	beliefSleepadBedTTLMs    = 30_000  // sleepad 床占用新鲜窗(对齐 sleepadInBed maxStaleMs)
 )
 
 // geomFromArea cell AreaType → belief.Geom。
@@ -456,6 +463,46 @@ func bedAdapter(b card.BedState, nowMs int64) []belief.Observation {
 		out = append(out, belief.Observation{Source: "bed", Kind: belief.ObsSleepStage, Value: float64(b.SleepStage), Conf: float64(b.SleepConfidence) / 100, Ts: b.SleepStageTs, Fresh: true, Geom: belief.GeomInBed})
 	}
 	return out
+}
+
+// bedLeakState P5(审查㊴ P5c):per-room 接触式床占用权威迟滞(替二值瞬时,治 α LeftBed-co-fire)。
+// InBed→即时回满(接触占用铁证;翻拍返回=blip 恢复);LeftBed/无新鲜数据→按 beliefBedLeakDecayPerSec
+// 时间 leak(brief blip 粘滞,sustained no-return 衰减→床权威掉→Fall 浮出)。**只用 sleepad 接触占用,非 pose/z**(R5)。
+type bedLeakState struct {
+	authority  float64 // leaked 床占用 [0,1]
+	lastTickMs int64
+}
+
+// update 喂一次 sleepad 床占用观测 → 返回 leaked authority [0,1]。
+// 先按 dt 时间衰减(每 tick 必衰),再若本 tick 在床则回满 → InBed 粘高 / LeftBed 缓降。
+func (b *bedLeakState) update(rawInBed bool, nowMs int64) float64 {
+	if b.lastTickMs > 0 && nowMs > b.lastTickMs {
+		dtSec := float64(nowMs-b.lastTickMs) / 1000
+		b.authority *= math.Pow(beliefBedLeakDecayPerSec, dtSec)
+	}
+	if rawInBed {
+		b.authority = 1 // 接触式 InBed = 占用铁证 → 即时回满(brief LeftBed blip 返回 = 迟滞接住)
+	}
+	if b.authority < 0 {
+		b.authority = 0
+	}
+	b.lastTickMs = nowMs
+	return b.authority
+}
+
+// bedAuthorityObs P5(审查㊴ P5c)R5-clean 床权威压制观测。suppressor **合取两条非 pose/z 证据**:
+//   ① 占用 = leaked sleepad InBed authority(接触式,bedLeakState);
+//   ② 位置 = radar track 仍在 bed-surface(radarOnBed,geom InBed 由 cell 几何算,非 z)。
+//
+// 两条皆满足才把 bedVal 透为 leaked authority → damp SFallen(=床上翻身/坐起伪迹被压,治 α);
+// 任一不足(radar 离床 displaced ∨ authority 衰减)→ bedVal=0 → 不 damp(中性)→ firmware Fall 浮出(**默认 escalate**)。
+// z/pose **绝不**作压制因子(R5):滚下床(位移离床+z低躺地)→ radar geom=OpenFloor 打开闸 + PoseFallen@Open 正向 escalate。
+func bedAuthorityObs(leakedAuthority float64, radarOnBed bool, nowMs int64) belief.Observation {
+	v := 0.0
+	if radarOnBed {
+		v = clampUnit(leakedAuthority) // 合取:占用(leak)∧ 位置(on-bed radar);否则 0=不压
+	}
+	return belief.Observation{Source: "bed", Kind: belief.ObsBedOccupied, Value: v, Conf: 0.9, Ts: nowMs, Fresh: true, Geom: belief.GeomInBed}
 }
 
 // roomAdapter room 聚合状态 → []Observation。
