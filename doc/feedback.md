@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`8f072b6`(下次从此 commit 起算 delta)
+- **last-audited**:`908b5f7`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,31 @@
 
 
 
+
+### [2026-06-08 17:49 MDT] 审查55 `8f072b6..908b5f7`(doc-only)SleepStage 预审 → 裁 SS-B 退役 + ★reframe 死源 backlog 按 fall-relevance
+
+**性质**:`908b5f7` doc(SleepStage 源保真预审 + SS-A/SS-B)。无代码。
+
+**✅ 亲验 SS-B 前提(零 fall 价值)**:ObsSleepStage 似然(likelihood:76)**只碰 SBedRestless/SBedLying、绝不写 SFallen**。+ 现 `BedOccupancyState` 不填 SleepStage → Conf=0 → likelihood=I 永空跑(8/8 案未 populate)= **永久 no-op stub**。施工方"看似 wire 实则永空跑"判定属实。
+
+**裁 SS-B(退役,#1.2)**:
+- **取 SS-B**:删 bedAdapter 的 ObsSleepStage append(永久 Conf=0 no-op = #1.2 正违)。**净度:一并清 likelihood case + enum + calibration lrSleep***(#1.2 不留 future-code;睡眠分期是**独立 SleepStageConsumer 的域**,非 DBN fall-purpose)。**注:r5-lock 测试有 1 处 ObsSleepStage 引用,退役须一并清以保 build 绿**(grep 已确认)。
+- **驳 SS-A(接活)**:为**零 fall 价值**的在床细分拉跨组件边(consumer→roomengine + 按房路由)= YAGNI;若将来 sleep-quality/HSMM roadmap 真需要,届时走 SS-A,不是现在。
+- **认可施工方排除"读 projected card.BedState"**(roomengine 是 card 投影上游,回读下游 = 倒置 + #1.3 睡眠分期单源违)——正确。
+
+**★ reframe 死源 backlog(纠我㊻"5 死源都 wire"的预设)**:**死源是否 wire,取决于它是否 fall-relevant(碰 SFallen / Empty-Left 仲裁)**:
+| 死源 | fall-relevant? | 裁 |
+|---|---|---|
+| #1 BedOccupied | ✅(占用压 radar-floor 误读) | 已 wire(P5-rework) |
+| #2 NumberPeople | ✅(Empty/Left corroboration) | 已 wire |
+| #4 **SleepStage** | ❌(只在床 Restless/Lying 细分,不碰 fall) | **退役 SS-B** |
+| #5 StandDuration | ✅(SFallen 抬升源,bathroom still-fall) | wire |
+| #3 Neighbor | ✅(SFallen 压制源 §5.5.2) | wire(跨房,redis-replay 整单元验) |
+→ **4 wire + 1 retire**,非"5 都 wire"。死源审计的正确动作 = **按 fall-relevance 分流**:碰 fall 的接活、不碰的按 #1.2 退役。
+
+**裁决**:SleepStage **SS-B 退役**(全清 emit+likelihood+enum+r5-lock 引用,#1.2)。死源 backlog reframe:#5 StandDuration / #3 Neighbor 仍 wire(fall-relevant),SleepStage 退役。施工方下一步:建 SS-B 退役 + #5 StandDuration locus 预审。**未裁不建** #5 locus;#3 Neighbor + recall 案 + redis-replay 待用户。9 红 0 新增/build 绿(退役后验)。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:收审查54 PASS⭐ + 死源#4 SleepStage 源保真预审(doc-only)→ 岔口 SS-A 接活 / SS-B 退役(#1.2,倾向),请委员会裁 locus
 
