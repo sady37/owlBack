@@ -115,6 +115,7 @@ type TrackManager struct {
 	// 仅当 |sleepadInBed - radarInBed| ≤ 15s 时，sleepad HR/RR 视作可信，触发 AreaBed cell refresh。
 	lastSleepadInBedMs int64
 	lastRadarInBedMs   int64
+	lastRadarLeftBedMs int64 // 审查㊾:radar LeftBed ts(any-source-OR bed 占用 veto)
 
 	// lastNumberPeopleZeroMs：固件最近一次上报 number_people=0（"屋内空"断言）的 ts。
 	// 门区 exit 推断用：np=0 是离开的「确认证据」，须与最后帧门区位置合取才采信，单独不可信。
@@ -869,23 +870,42 @@ func (tm *TrackManager) sleepadOffBed(nowMs int64) bool {
 	return hasFresh
 }
 
-// SleepadBedFresh P5(审查㊴):返回同房任一新鲜 sleepad 的在床状态 + 是否有新鲜数据。
-// inBed=任一 TTL 内 sleepad 报在床;fresh=有任一 TTL 内 sleepad 数据。无 sleepad/全 stale → (false,false)。
-// 接触式床占用证据(**非 pose/z**,R5-clean),供 belief shadow P5 床权威迟滞(bedLeakState)。
-// TTL=beliefSleepadBedTTLMs(对齐 sleepadInBed maxStaleMs)。自锁(beliefShadowTick 不持 tm.mu)。
-func (tm *TrackManager) SleepadBedFresh(nowMs int64) (inBed bool, fresh bool) {
+// BedOccupancyState P5(审查㊾):既有 bed 贝叶斯 Markov(BedSession)+ **any-source-OR LeftBed** → card.BedState。
+// 占用 = 最近一次床事件(任一源 sleepad∨radar)是 InBed(BedStatus=0);任一源 LeftBed 更晚 → NotInBed(=1,释放)。
+// BedConfidence=90(sleepad 接触式)/30(radar-only 降档)/0(无床数据→bedAdapter Fresh=false 不喂)。
+// 供 belief shadow P5:bedAdapter→ObsBedOccupied 占用概率压 SFallen(无 radar-on-bed 要求,R5-clean 接触占用非 pose/z)。
+// 自锁(beliefShadowTick 不持 tm.mu)。
+func (tm *TrackManager) BedOccupancyState(nowMs int64) card.BedState {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	for _, s := range tm.sleepadStates {
-		if nowMs-s.TMs > beliefSleepadBedTTLMs {
-			continue
+	var latestInBed, latestLeftBed int64
+	inBedFromSleepad := false
+	for _, s := range tm.bedSessions {
+		if s.InBedSinceMs > latestInBed {
+			latestInBed, inBedFromSleepad = s.InBedSinceMs, true
 		}
-		fresh = true
-		if s.InBed {
-			inBed = true
+		if s.LeftBedAtMs > latestLeftBed {
+			latestLeftBed = s.LeftBedAtMs
 		}
 	}
-	return
+	if tm.lastRadarInBedMs > latestInBed {
+		latestInBed, inBedFromSleepad = tm.lastRadarInBedMs, false
+	}
+	if tm.lastRadarLeftBedMs > latestLeftBed {
+		latestLeftBed = tm.lastRadarLeftBedMs
+	}
+	if latestInBed == 0 {
+		return card.BedState{} // 无床数据 → BedConfidence=0 → bedAdapter Fresh=false,不喂 shadow
+	}
+	if latestLeftBed >= latestInBed {
+		// 任一源 LeftBed ≥ 最近 InBed(any-source-OR veto)→ 离床 → 不压 → Fall 浮出(漏报-safe,审查㊾)
+		return card.BedState{BedStatus: 1, BedStatusTs: latestLeftBed, BedConfidence: bedConfSleepad}
+	}
+	conf := bedConfSleepad // sleepad 接触式权威=90
+	if !inBedFromSleepad {
+		conf = bedConfSleepad - bedConfRadar // radar-only InBed 降档
+	}
+	return card.BedState{BedStatus: 0, BedStatusTs: latestInBed, BedConfidence: conf}
 }
 
 // SetMoveSpeedCms 注入"在动"速度阈值。<=0 保留默认。
@@ -1034,6 +1054,10 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	// count=0 不等于人离开（可能盲区/水气丢信号），须与门区空间证据合取才采信（见 bathroom_fall）。
 	if e.EventName == EventNameNumberPeople && e.NumberPeople == 0 && e.TMs > tm.lastNumberPeopleZeroMs {
 		tm.lastNumberPeopleZeroMs = e.TMs
+	}
+	// radar LeftBed 落 ts(审查㊾ any-source-OR:bed 占用 veto 须 OR 所有源,非只 sleepad → radar 先报 LeftBed 立即释放压制)。
+	if e.EventName == alarm.LeftBed && e.TMs > tm.lastRadarLeftBedMs {
+		tm.lastRadarLeftBedMs = e.TMs
 	}
 	// 占用账：EnterRoom→占用，ExitRoom→空（np=0 另在 lastNumberPeopleZeroMs）。np≥1 不计占用（镜面虚增）。
 	if e.EventName == alarm.EnterRoom && e.TMs > tm.lastEnterMs {
