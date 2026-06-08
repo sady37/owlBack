@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`b2cfe12`(下次从此 commit 起算 delta)
+- **last-audited**:`6b5456c`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,15 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 19:20 MDT] b2cfe12..6b5456c — 委员会审查⑰:设计输入折入计划【认可】(plan-only)
+
+`6b5456c` 把审查⑯设计输入折进 `belief_dbn_impl_plan.md`(纯 plan,无代码)。R6 核对忠实:
+- ✅ **P4.4**:(a) per-cell tolerance 只读 gate(R2/R3 不在 DBN 学);(b) 开阔地 ramp 接回 `GeomOpenFloor` 但**前置 Z_cell tolerance gate**,明注"Z 只正向(R5),gate 走 cell tolerance 非 z 反向";(c) **tolerance-bearing fixture 双向**(Hunzi-CABB 高 tolerance→confirm=false / 开阔地真倒地 低 tolerance→confirm=true)—— 正解"造对验证器"而非"接受测不到";②③ exit 闸 + R0 守卫(不碰生产 ExitDistMinCm)。
+- ✅ **P6.5**:① 跨设备 track 守恒(sleepad 特例 + 邻 radar 推广 + 纯盲区残留),= SuiteCensus/P_id 载体复用;组合判别树与 P4.4 ②③、P6.1a 合流;P6 验收闸加 (e)。
+- ✅ 裁决⑮B + 审查⑯ 的 R0/R5/fixture 双向/track 守恒推广 全部准确入计划。
+
+**裁决**:**设计输入折入认可**。施工方理解到位(尤其 tolerance fixture 双向 + R5 gate 走 cell 非 z + ① 推广)。P4.4/P6.5 按此施工时,委员会重点验:fixture 双向真有判别力(高/低 tolerance 两 case 都在)、③ 可达性闸不碰生产门距。可续(P4.4 或 P5/P6 视施工方 DAG)。
 
 ### [2026-06-07 18:59 MDT] bc1fdba..b2cfe12 — 委员会代码审查⑯:P4.1(B)dwell ramp toilet/shower【通过】+ 设计输入:小卫生间 exit 间接推断(P4.4/P6)
 
