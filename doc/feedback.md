@@ -45,6 +45,34 @@
 **建议**:...
 -->
 
+### [2026-06-08] 施工方 → 委员会:C 完成 — 8 个 CD2B 卧室 fall 诊断 → P5 失败模式清单 + scope/优先级
+
+承㊳ 裁(C=P5-scoping,先 C de-risk P5)。**只读分析**(python 读 8 个 `doc/cases/cd2b-fall-*/window.json`,不改代码)。逐 case bed/sleepad + track/np vs Fall fire:
+
+| # | Fall | bed 信号(相对 fire) | track/np | 模式 |
+|---|---|---|---|---|
+| 0604-2233 | 22:33:28 | 无 | np 1→**0**@fire / track0 | β |
+| 0605-0142 | 01:42:32 | 无 | **双 track(1+2),np=2**→1 | γ |
+| 0605-0712 | 07:12:32 | **LeftBed×3 同秒(bs=1)** | np 2→1→0 / track0+1 | **α** |
+| 0605-0717 | 07:17:55 | 无 | np 1→**0**@fire / track0 | β |
+| 0606-0917 | 09:17:21 | **LeftBed×3 同秒** | np 翻拍 / track0+1 | **α** |
+| 0606-0929 | 09:29:14 | InBed→**LeftBed**(fire前36s) | np 1→0 / track0 | α |
+| 0607-0127 | 01:27:29 | InBed(前24s)→**LeftBed×2 同秒** | np 2→1 / track0+1 | **α(在床误报)** |
+| 0607-1021 | 10:21:14 | **LeftBed×3**(fire前7s) | np→0 / track0 | α |
+
+**3 大失败模式(P5 真实失败模式清单)**:
+- **α — LeftBed-co-fire(主导,≥5/8:0712/0917/0929/0127/1021)**:resident **翻身/坐起/短暂离床** → sleepad 报 **LeftBed(bs=1)** 于/近 Fall 同刻 + radar 同步把该床上运动误读 Fall。**这是核心卧室 FP**——radar pose-fall 在床区把"床上动作"当倒地。**直答用户原始关切**:"在床仍误报"(0127:InBed 24s→LeftBed 同秒 fire)= 翻身被误读;LeftBed 翻拍 = sleepad 接触失/复得伴 radar 误判。
+- **β — track 消失/np→0 @fire(0604/0717)**:fire 时 np→0 / 丢轨 = lost-lock(人没真倒,radar 失锁)。**这是 P3 realness/P6.1a 域**(已治 dropout-FP),非 P5。
+- **γ — 2 人床边(0142;0127 也 np=2)**:np=2 / 双 radar track → 2 人场景一人动作触另一人 Fall。**N_r(P6.2)/床占用 2 人域**。
+
+**C → P5 scope/优先级(数据驱动,不盲建)**:
+- **P5 优先级 #1 = sleepad 床区权威压制 radar 卧室 Fall(治 α)**:bed O_b 用 sleepad InBed/LeftBed 接触式权威,在 bed 区 **dominate radar pose-Fall**——尤其 **InBed→LeftBed 翻拍 / LeftBed 与 Fall 同刻 = 床上运动伪迹**,不是真摔。对齐记忆 [[bed_fusion_authority_model]](sleepad 接触式权威 + radar 印证)+ [[bed_stale_leftbed_vetoes_radar_inbed]](陈旧/翻拍 LeftBed 治本)。**注意 R5/铁律**:压制走"sleepad 床区权威"(reliable 接触证据),非 pose/z 反向;且不漏真摔(真摔=离床后倒地非床上运动)。
+- **P5 不独管 β/γ**:β 归 P3/P6.1a(已有);γ 归 P6.2 N_r。P5 聚焦 α(床上运动伪迹)。
+- **量化**:8 卧室 FP 中 **α 占 ≥5(主导)** → P5 治 α 即砍掉过半 CD2B 卧室 FP。
+
+**下一步**:C 产出(P5 失败模式 + α 优先)交委员会。**建议 P5 设计预审**(bed O_b:sleepad 床区权威压 radar 卧室 Fall,治 α LeftBed-co-fire;R5 守不漏真摔)→ 委员会审 → 建。P6.2 N_r 可并行(治 γ/N_r)。333B(D 真验 + ghost→P3 oracle)待用户查 ghost。
+**待委员会**:确认转 **P5 设计预审(治 α)** 还是先 P6.2?8 卧室 fall 真值已诊断,P5 可数据驱动开建。
+
 ### [2026-06-08 02:05 MDT] 审查㊳ `eee4998..f084ff2` A/B/C 裁决(收用户 333B-ghost 定调)+ 拆 C=P5-scoping / B=载体 / 序列
 
 **性质**:`31c1c0f`+`f084ff2` 两 doc(施工方 A/B/C + 用户定调 A 暂缓转 C)。无代码。委员会一并裁。
