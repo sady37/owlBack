@@ -45,6 +45,44 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:P6.1b-D 设计预审(承㉗解锁,B/A/C 三默认已采纳;请按 D 不变量+三对抗审,再建)
+
+承㉗:B=provisional-now+cancel / A=设备贫压制+LOG / C=设备代理+可选覆盖 三默认采纳;①fleet 事实留用户(只定设备贫档暴露面,不挡主路)。出 D 设计预审(机制+wiring+窗长来源+C3 判定)。
+
+**★ 核心架构洞见(决定整个 D 形态)**:belief shadow **只 log 不 fire** → **provisional/分级/cancel/升级 全是 LOG 状态,非 belief 隐状态**。belief 照常算 P(Fallen);D 逻辑**包在 lost-sweep 外**做 provisional 日志 + 30min 跨设备 cancel 窗。**这让 D≠A 自然成立**:小卫生间分支**绕过强 ObsReachableExit**(让 Fallen 经 NoDetect[P6.1a floor]真实 ramp,不被 ×7Left 压平),离场判别从"reachableExit 抑制"**移到 cancel 窗的跨设备守恒** → **C3 系数无须降**(印证㉕/D 裁)。
+
+**1. Scope gate(小卫生间)**:`smallBathroom = bbox(WallPolygon)最小边 ≤200cm ∧ room 是 bathroom`。wiring:RegisterRoom 时算(WallPolygon engine.go:40 / grid RoomW×RoomH,已有 bbox cap600 逻辑 engine.go:1327),存 per-room flag 传 belief_shadow。**非小卫生间/大卫生间 → 现有路径(ObsReachableExit 等)全不动**。
+
+**2. reachableExit 角色变(D≠A,小卫生间分支)**:小卫生间 lost-sweep 分支**不发强 ObsReachableExit**(或发 Conf≈0 哑化)→ Fallen 经 NoDetect 真实 ramp(P6.1a 已治 ghost/floor)。**C3 共享算子系数不改**(Room/Track 两层 reachableExitScore 原值;只是小卫生间分支不喂该 obs)→ 不破 C3 同源、不碰 ㉕ 顾虑。大卫生间仍走 ObsReachableExit。
+
+**3. provisional 分级(LOG 状态机,挂 lost-sweep)**:小卫生间 enter/toilet track 丢失 →
+- **立即** log `belief_shadow_lostfall_provisional`(低 severity,**provisional-now**,B 默认:真摔即时有声不静默 5.5min)。
+- **30min cancel 窗内**,命中任一**可佐证离场** → log `belief_shadow_lostfall_cancel`(P3.4 软,离场/自救):
+  - (i) **跨设备守恒**:同 unit 任一**其它设备**窗内冒新 track(v2 强证据,ghost 本台造不出别台真 track);∨
+  - (ii) P6.5① recapture(sleepad 回床/anchor 返);∨
+  - (iii) **np=0 ∧ realness-empty 合取**(D 不变量2,堵 ghost 假 np=0:realness 判残留非 frozen-artifact/非真人静止才算真空房;np=0 单独**不**降级)。
+- **窗到未佐证** → log `belief_shadow_lostfall_escalate`(全 severity,真摔,延迟但不漏)。
+- **默认升级硬约束**(D 不变量1):歧义永远偏升级;无可佐证降级即 escalate。
+- **设备贫档**(unit 无其它设备=浴室独苗,C 资源代理判定):无跨设备信号 → 窗到 **压制/不 page** 但 log `belief_shadow_lostfall_suppressed_resource_poor`(A 默认 + no-silent-caps:审计留痕,机构可回看"这里压了一次疑似摔")。**①待用户确认 fleet 有无此类 unit 定其是否值得建**。
+
+**4. 跨设备守恒观测面放宽(v2③)**:现 census person 升格**只 bedroom**(suite_census.go:7)。D 需"同 unit **任一设备任一新 track**"。设计:加只读 accessor `SuiteAnyNewTrackSince(suiteID, sinceMs, excludeDevice) bool`(查 suite 内**除丢失那台外**任一设备在 sinceMs 后有新 track birth)。需 census 记 per-device last-new-track-birth ms(轻量,producer 维护)。**与 P6.5① 的 SoleResidentRecaptureState 并列,只读不写**(R3 同模)。
+
+**5. resource-tier(C 默认)**:设备密度代理 = unit 内设备数(`e.suiteCensus`/deviceRoom 可数)。≥1 其它设备=设备富→cancel 窗活;浴室独苗=设备贫→压制+LOG。+ 可选 per-unit/机构显式覆盖(config,兜富机构偶有贫 unit)。
+
+**6. 窗长来源**:30min(v2)宽覆盖立项 np=0 +335s。**escalate-to-full 在窗到(30min)** → full-severity 对真摔有 ≤30min 延迟,**provisional-now 低 severity 即时缓解**(nurse 立即有低 sev 提示)。⚠️ **待 P9**:full-sev 延迟 vs 离场-FP 的窗长权衡须**更多离场 fixture 的 np=0/跨设备守恒到达分布**定(单 fixture 不够,委员会 D#5),先保守 30min + LOG 到达时刻。
+
+**7. C3 判定**:**无须降**(reachableExit 角色在小卫生间分支 restructure 为"不喂/哑化"而非系数调小;大卫生间原样)。回答㉕ C3 同步降——**D 下不需要**。
+
+**放行三对抗(committee D,真 CABB fixture 双向 + ghost)**:
+- (i) **CABB 离场**(hunzi-cabb-0601,np=0 +335s)→ 30min 窗内 np=0∧realness-empty(∨若有别台则跨设备守恒)佐证 → `cancel` 不 FP;
+- (ii) **门口真摔**(无 ExitRoom/recapture/np=0)→ 窗到未佐证 → `escalate` 浮出不漏报;
+- (iii) **ghost 假 np=0**(frozen-artifact 残留报 np=0)→ realness 判非真空房 → **不 cancel 仍 escalate**(堵 D 命门)。
+- + replay 其余不破 + roomengine 9 红 0 新增 + R0/R1 全 shadow + 全程 LOG(provisional 起/cancel/escalate/suppressed/gate 命中边长/到达时刻)。
+
+**一个施工方 flag(非阻塞,实现细节)**:provisional cancel 窗(30min)跨多 tick,需在 belief_shadow per-room state 存 provisional pending(lostAnchor+geom+severity),每 tick 检查 cancel 条件——类似现 `beliefShadowTrack.lostAnchor` 扩展。无新岔口,实现期处理。
+
+**下一步**:委员会按 D 不变量(默认升级/合取降级/provisional/小卫gate)+三对抗审本预审;过 → 施工方建 P6.1b-D(分阶段:gate+observation面 → provisional 状态机 → 三对抗 fixture)。**未审过不建**。①fleet 事实仍待用户(定设备贫档建不建)。
+
 ### [2026-06-07 23:38 MDT] 审查㉗ `4e90d53..dcf8586` 收讫 D 复核 ✅(无 drift)+ 委员会裁 3 默认解锁施工方,1 留用户(fleet 事实)
 
 **性质**:`dcf8586` 仅 doc,施工方收讫 D+v2+v3。R6 复核内容是否真采纳 D(不被 commit-msg 误导):
