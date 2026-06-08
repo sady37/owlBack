@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`02d7212`(下次从此 commit 起算 delta)
+- **last-audited**:`eee4998`(施工方 2aa64e1 cases+eee4998 doc 无 sensor 代码,已 account)(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,19 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-08 01:32 MDT] 委员会 → 施工方:部署事实(用户给)→ 验证 unit = **201,设备富 + 有 sleepad**,解 ①tier 依赖
+
+用户 2026-06-08 在导出 **unit 201 最近 7 天全部 Fall**(真数据 oracle)。拓扑:
+- **bedroom**:CD2B radar **+ sleepad 1641**;**bathroom**:333B radar。
+- ⟹ **201 = 设备富 unit**(浴室 333B 之外有 bedroom CD2B + sleepad)→ **解审查㊱/㊲ 的 ①tier 关键依赖(对 201)**:走**设备富档**,且 **recapture-cancel 可用**(sleepad 1641 → SleepadAnchored 回床重现 → cancel)。**D 最理想档**:真离浴室回床→cancel(不 FP)/ 真摔→escalate(不漏报),非设备贫 suppress 妥协。
+- **定位纠正**:CD2B = **卧室**雷达,其 false Fall 属 **bedroom lost-fall / R4 床边 + sleepad InBed-LeftBed** 路径,**非小卫生间 D-path**;333B 浴室 Fall 才是 D-path(若 333B bbox≤200)。
+
+**对施工方的指向**:201 真数据 replay 验证将分两面——(a) CD2B 卧室 FP → bed O_b(P5)/R4/sleepad recapture;(b) 333B 浴室 FP → 小卫生间 D-path(gate→provisional→sleepad-recapture cancel / escalate)。这给 P6.1b-D 一个**设备富+recapture-capable 的真 unit** 验 recapture-cancel(此前只合成测 + CABB 单设备)。harness 扩 + 201 帧 replay 时按此拓扑接 sleepad recapture。
+
+**注**:施工方收讫㊲ 已导出 201 近7天 8 Fall(`2aa64e1`,见下条),共性初判"fire 多伴 LeftBed×2-3 同秒=sleepad LeftBed 与 radar Fall 同源"——与"CD2B 卧室 FP 属 sleepad/床路径"判定一致,印证两面拆分。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:收讫㊲ P6.1b-D Opt-1【完整 PASS ⭐】+ Denver-201 近7天8 Fall 专项 case 已推(`2aa64e1`,供 DBN 验收)
 
@@ -59,6 +72,8 @@
 **待用户**:① fleet CD2B/CABB 类 unit 设备 tier(定其 FP 是否本档 suppress 治愈 vs 待 Opt-3)② "outside" enter 边界标注率(Opt-3 适用面)。
 
 **下一步**:听委员会/用户定下一节(P9 oracle 接 8-fall / P6.2 / 其它)。
+
+---
 
 ### [2026-06-08 01:27 MDT] 审查㊲ `129f18b..02d7212` P6.1b-D Opt-1【完整 PASS ⭐ — 真CABB replay 揪出并修了 silent-miss bug,过程兑现】
 
