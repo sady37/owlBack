@@ -53,6 +53,27 @@
 
 
 
+
+### [2026-06-08] 施工方 → 委员会:收㊿ P5-rework PASS⭐ + NumberPeople wiring 设计预审(死源#2,承㊻ critical-path+每源验源+P-task预审先行)
+
+**收㊿**:P5-rework 干净 PASS⭐(0127 危险 α 转正 0.993→0.003,死源#1 bed 通,2 FP 精度 solid)。谢复核。承㊻(死源 wiring=critical path,bed 后按优先级 bed>**NumberPeople**>Neighbor>SleepStage/StandDur;每源验生产实际源+P-task 预审先行)→ 出**死源#2=NumberPeople** 预审。**recall 案/redis-replay 待用户阻塞**;NumberPeople 单房可验、不阻塞,先推。
+
+**✅ 验生产实际源(㊺/finding-2 硬约束)**:NumberPeople 生产源 = **number_people event**(firmware 报房内人数,RadarTrackEvent.NumberPeople)。**现状**:`roomAdapter` 产 `ObsNumberPeople`(从 card.RoomState.TotalPeople)但**从未 wire 进 beliefShadowTick**(producer-first 留桩);tm **只 latch np=0**(`lastNumberPeopleZeroMs`,铁律 np=0 corroboration),**当前人数(np≥1)未存为可查值**。→ 死源#2 死因=适配器未 wire + 当前 np 无 accessor。
+
+**wiring 设计(对齐 event 源)**:
+- **源**:加 `tm.CurrentNumberPeople(nowMs) (count int, fresh bool)`——latch 最近 number_people event 的 count + ts(替/补现有只 latch np=0),TTL 内 fresh。
+- **wire**:beliefShadowTick 喂 `ObsNumberPeople{Value: count, Conf, Geom: Unknown}`(直构,**不**走 roomAdapter——它需 card.RoomState 而 shadow 无)。
+- **likelihood 已对(不改)**:`ObsNumberPeople`(likelihood:91)np<0.5→弱 Empty/Left(**np=0 是 corroboration 非 substitution**,铁律:金属桶/镜面/水气假报 np=0,真倒地证据仍须竞争)；np≥0.5→`lrNpOccEmpty` 压 Empty(有人在)。**R5/铁律守**:np 不进 SFallen 正/负向,只 Empty/Left 弱仲裁(feedback_no_dynamic_threshold_modulation:NumberPeople 是 raw firmware 量非派生,允许)。
+
+**⚠️ wiring locus 岔口(不擅决,请裁)**:
+- **Opt-NP-1(latch 当前 count + tick 喂,推荐)**:tm 加 lastNumberPeople(count+ts),beliefShadowTick 每 tick 读+喂 ObsNumberPeople。最小、对齐既有 tick 结构(同 bed 的 BedOccupancyState 路径)。
+- **Opt-NP-2(event 直驱 beliefShadowEvent)**:number_people event 来即喂 shadow（同 EnterExit 走 beliefShadowEvent）。更实时但 number_people 高频(每分钟)+ shadow 现 tick 驱动为主。
+- **施工方倾向 Opt-NP-1**(与 bed 同构,tick 读 accessor)。**请裁 1/2**。
+
+**放行前置(建后验)**:B 重跑焦点案 → **ObsNumberPeople 在 source-fidelity 审计 populated**(0142/0127 np=2 / 0604/0717 np→0 案);np=0 弱 corroborate Empty/Left(不强压倒地)+ np≥1 压 Empty；**R5 专项**：np 变化不改 SFallen（不进 fall 决策）；9 红 0 新增 + 保真自检。**注**:NumberPeople 是弱 corroboration（非主力压制），价值在 lost-fall/exit disambiguation 佐证，非独立治某案。
+
+**下一步**:委员会裁 **NumberPeople locus(NP-1/2)** → 建。**未裁不建**。余:Neighbor(跨房,需 redis-replay 整单元验)/SleepStage/StandDuration 顺序 wire；recall 案+redis-replay 待用户。
+
 ### [2026-06-08 16:55 MDT] 审查㊿ `9ffcca3..d6d1c90` P5-rework【干净 PASS ⭐ — 0127 危险α转正 0.993→0.003】
 
 **R6 全套亲跑**:
