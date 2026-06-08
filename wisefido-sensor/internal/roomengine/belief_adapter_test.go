@@ -3,7 +3,6 @@ package roomengine
 import (
 	"testing"
 
-	"owl-common/alarm"
 	"owl-common/card"
 	"owl-common/observation"
 	"wisefido-sensor/internal/roomengine/belief"
@@ -95,8 +94,7 @@ func TestAdapterGenuineFallFires(t *testing.T) {
 	ts := &TrackState{LastObservedMs: now, LastZ: 20, Verdict: VerdictReal}
 	tr := observation.Track{LogicID: "L1", Pose: observation.PoseFallen, PositionX: ptr(50), PositionY: ptr(50), PositionZ: ptr(20), PoseConfidence: 80}
 	frame := radarFrameAdapter(tr, ts, nil, now)
-	fallEvt, _ := radarEventToObs(alarm.Fall, now, belief.GeomOpenFloor)
-	be.Step(now, append(frame, fallEvt))
+	be.Step(now, frame) // WF-b:firmware Fall 不进 shadow;genuine-fall 由 PoseFallen@OpenFloor 独立抬升确认
 
 	fired := be.Decide() == belief.DecisionFall
 	for i := 0; i < 6 && !fired; i++ {

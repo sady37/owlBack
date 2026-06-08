@@ -66,7 +66,6 @@ func TestGenuineFall(t *testing.T) {
 	// production fall 走 firmware Device_ALARM 独立路径);单帧响应议题挂 P3 选项D(可信 XY-jerk),不回退 pose/firmware 提权。
 	ts += 1000
 	be.Step(ts, []Observation{
-		ob(ts, ObsFirmwareFall, 1, 0.9, GeomOpenFloor),
 		ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomOpenFloor),
 	})
 	fired := be.Decide() == DecisionFall
@@ -221,7 +220,6 @@ func TestFallGeomRouting(t *testing.T) {
 	}
 	ts += 1000
 	be.Step(ts, []Observation{
-		ob(ts, ObsFirmwareFall, 1, 0.9, GeomOpenFloor),
 		ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomOpenFloor),
 	})
 	fired := be.Decide() == DecisionFall
@@ -242,7 +240,6 @@ func TestFallGeomRouting(t *testing.T) {
 	}
 	ts += 1000
 	be.Step(ts, []Observation{
-		ob(ts, ObsFirmwareFall, 1, 0.9, GeomInToilet),
 		ob(ts, ObsPose, observation.PoseFallen, 0.8, GeomInToilet),
 	})
 	fired = be.Decide() == DecisionFall

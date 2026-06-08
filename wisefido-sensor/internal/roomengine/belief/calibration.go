@@ -31,9 +31,6 @@ const (
 	lrSleepRestless = 2.0 // stage 0/8 过渡/醒
 	lrSleepLying    = 2.0 // stage 1/2/3 睡
 
-	// ── ObsFirmwareFall(P2.4 / §10#2:pose 派生不可信,降权;终值待 P9 真机 TP/FP)──
-	lrFirmwareFallen = 2.0 // 原 ×10,委员会#5 ≤×2
-
 	// ── ObsEnterExit(event present 正向;absence≠负向 / 原则#3)──
 	lrEnterEmpty     = 0.2 // EnterRoom 压 Empty
 	lrEnterStandWalk = 2.0

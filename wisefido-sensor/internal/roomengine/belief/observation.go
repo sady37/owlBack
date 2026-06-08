@@ -10,7 +10,6 @@ const (
 	ObsVitalPresent                   // HR>0 ∨ RR>0
 	ObsBedOccupied                    // bed 贝叶斯 P(InBed)，嵌套 belief 子证据
 	ObsSleepStage                     // sleepad 睡眠分期（S1 躺细分）
-	ObsFirmwareFall                   // firmware pose2→5 升级确认
 	ObsEnterExit                      // EnterRoom=+1 / ExitRoom=-1
 	ObsNumberPeople                   // 房间人数 0-8
 	ObsStandDuration                  // 连续站立分钟（bathroom still-fall 时长门，v2 由 HSMM 替代）

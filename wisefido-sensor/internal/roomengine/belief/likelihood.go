@@ -80,15 +80,6 @@ func rawLikelihood(o Observation) Vector {
 			return lk(map[State]float64{SBedRestless: lrSleepRestless})
 		}
 		return lk(map[State]float64{SBedLying: lrSleepLying})
-	case ObsFirmwareFall:
-		// P2.4(§10#2/R5):firmware pose=5 是 pose 派生(不可信),原 ×10 极权与"pose 不可信"矛盾。
-		// shadow 期降到保守 SFallen:2(委员会#5 ≤×2),且**不再强压** SStandWalk/SBedLying ——
-		// 降权信号不该用 off-diag 压制竞争真态(误 firmware-fall 时让 stand/bed 证据能竞争)。
-		// 终值待 P9 用 firmware_fall 真机 TP/FP 率标定;现网 Device_ALARM 直发不动(R1,本改仅 shadow LR)。
-		if o.Value >= 0.5 {
-			return lk(map[State]float64{SFallen: lrFirmwareFallen})
-		}
-		return lk(nil)
 	case ObsEnterExit:
 		if o.Value > 0 { // EnterRoom：有人进来
 			return lk(map[State]float64{SEmpty: lrEnterEmpty, SStandWalk: lrEnterStandWalk, SLeft: lrEnterLeft})

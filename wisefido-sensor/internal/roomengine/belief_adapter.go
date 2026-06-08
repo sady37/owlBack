@@ -419,15 +419,15 @@ func reachableExitObs(distCm int, approachSpeedCmS float64, g belief.Geom, nowMs
 	return belief.Observation{Kind: belief.ObsReachableExit, Value: reachableExitScore(distCm, approachSpeedCmS), Conf: 0.8, Ts: nowMs, Fresh: true, Geom: g}
 }
 
-// radarEventToObs 离散 radar 事件 → Observation（EnterRoom/ExitRoom/Fall）。
+// radarEventToObs 离散 radar 事件 → Observation（EnterRoom/ExitRoom）。
+// WF-b(委员会 2026-06-08):firmware Fall **不进 shadow**——shadow 独立白盒由 pose/dwell/nodetect 自判
+// (R5-纯,不可信 firmware pose 不污染 belief);firmware Fall 事件仅留生产 gate/RecordRadarAlarm 路径。
 func radarEventToObs(eventName string, nowMs int64, g belief.Geom) (belief.Observation, bool) {
 	switch eventName {
 	case alarm.EnterRoom:
 		return belief.Observation{Kind: belief.ObsEnterExit, Value: +1, Conf: 0.9, Ts: nowMs, Fresh: true, Geom: g}, true
 	case alarm.ExitRoom:
 		return belief.Observation{Kind: belief.ObsEnterExit, Value: -1, Conf: 0.9, Ts: nowMs, Fresh: true, Geom: g}, true
-	case alarm.Fall:
-		return belief.Observation{Kind: belief.ObsFirmwareFall, Value: 1, Conf: 0.9, Ts: nowMs, Fresh: true, Geom: g}, true
 	}
 	return belief.Observation{}, false
 }

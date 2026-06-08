@@ -77,12 +77,12 @@ func TestP5AlphaSuppressed(t *testing.T) {
 			}
 			be.Step(tt, o)
 		}
-		// co-fire tick:sleepad 瞬 LeftBed(blip)+ firmware Fall,radar 仍 on-bed(geom InBed)。
+		// co-fire tick:sleepad 瞬 LeftBed(blip)+ radar 把床上翻身误读 pose=fallen@InBed(真生产抬升源,
+		// WF-b:shadow 独立判,无 firmware Fall),radar 仍 on-bed(geom InBed)。
 		tt += 1000
 		auth := leak.update(false, tt) // LeftBed blip → 迟滞仍高
 		o := []belief.Observation{
-			p5ob(tt, belief.ObsFirmwareFall, 1, 0.9, belief.GeomInBed),
-			p5ob(tt, belief.ObsPose, observation.PoseLying, 0.8, belief.GeomInBed),
+			p5ob(tt, belief.ObsPose, observation.PoseFallen, 0.8, belief.GeomInBed),
 		}
 		if withBed {
 			o = append(o, bedAuthorityObs(auth, true, tt)) // radarOnBed=true → 合取成立 → 压制
@@ -122,10 +122,9 @@ func TestP5RollOffBedNotSuppressed(t *testing.T) {
 		tt += 1000
 		auth := leak.update(false, tt) // 持续 LeftBed
 		be.Step(tt, []belief.Observation{
-			p5ob(tt, belief.ObsFirmwareFall, 1, 0.9, belief.GeomOpenFloor),
-			p5ob(tt, belief.ObsPose, observation.PoseFallen, 0.8, belief.GeomOpenFloor),
-			p5ob(tt, belief.ObsZBand, 10, 0.7, belief.GeomOpenFloor), // z低躺地(只正向,不压)
-			bedAuthorityObs(auth, false, tt),                         // radarOnBed=false → bedVal=0 不压
+			p5ob(tt, belief.ObsPose, observation.PoseFallen, 0.8, belief.GeomOpenFloor), // 位移离床倒地=真抬升源
+			p5ob(tt, belief.ObsZBand, 10, 0.7, belief.GeomOpenFloor),                    // z低躺地(只正向,不压)
+			bedAuthorityObs(auth, false, tt),                                            // radarOnBed=false → bedVal=0 不压
 		})
 		fired = be.Decide() == belief.DecisionFall
 	}
@@ -153,8 +152,7 @@ func TestP5SuppressorIgnoresZ(t *testing.T) {
 		tt += 1000
 		auth := leak.update(false, tt) // LeftBed blip
 		be.Step(tt, []belief.Observation{
-			p5ob(tt, belief.ObsFirmwareFall, 1, 0.9, belief.GeomInBed),
-			p5ob(tt, belief.ObsPose, observation.PoseLying, 0.8, belief.GeomInBed),
+			p5ob(tt, belief.ObsPose, observation.PoseFallen, 0.8, belief.GeomInBed), // 床上翻身误读=真抬升源
 			p5ob(tt, belief.ObsZBand, zVal, 0.7, belief.GeomInBed),
 			bedAuthorityObs(auth, true, tt), // radarOnBed=true,z 不参与门控
 		})

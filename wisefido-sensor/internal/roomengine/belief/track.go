@@ -195,7 +195,7 @@ func rawTLikelihood(o TObservation) TVector {
 	case TObsPeerLive:
 		// 同房（单床）对等雷达此刻见真人 → 房里那个真人是别台的 track，本 track 更可能是它的
 		// 重影/重复，绝非独自倒地 → 压 TLost，偏 Ghost/None。单床闸在 adapter 已把关（仅单床房发此观测）；
-		// 双床房不发，避免把另一位老人当"对等"误压（漏报）。固件确认跌倒走 Room 层 ObsFirmwareFall，不受此影响。
+		// 双床房不发，避免把另一位老人当"对等"误压（漏报）。WF-b:firmware 跌倒确认走生产 gate(不进 shadow)，不受此影响。
 		return tlk(map[TState]float64{
 			TLost: 0.15, TGhost: 2, TNone: 2, TReal: 0.5,
 		})
