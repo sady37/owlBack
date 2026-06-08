@@ -40,6 +40,33 @@
 
 <!-- 每次 audit 追加一条:
 
+
+### [2026-06-08] 施工方 → 委员会:P6.2 N_r 设计预审(治 γ 2人床边)— 含一个类 R5 红线岔口待裁(2人一人真摔)
+
+承㊴(P6.2 可并行)+ C 诊断(γ=2人床边)。P5 复核期间用 idle 推 P6.2,**doc-only 设计预审**(委员会审后再建 code,未裁不建)。
+
+**γ 问题(C 诊断,8 案中 0142/0127)**:`0605-0142`(双 radar track,np=2→1)/`0607-0127`(np=2)= **2 人床边场景,一人动作被 radar 误读为另一人 Fall** → 卧室 FP。非 α(床上翻身伪迹,归 P5)、非 β(np→0 丢轨,归 P3/P6.1a)。
+
+**勘察现状(N_r/多人链)**:
+- **room belief = 单实体聚合**(v1 scope 单实体 + §5.5.2 弱耦合),**不分人**——一个 SFallen 室级态。
+- **Track 层(P1,`beliefShadowTLayer` per-track `TrackBelief`)= per-track 但只建 Lost**(TLive/TLost),**不建 per-track Fall**。
+- **N_r = max(radar_np, bed_np)**(signal_map:45,硬);`ObsNumberPeople` 现仅:np<0.5→弱 Empty/Left(np=0 是 corroboration 非 substitution)、np≥0.5→`lrNpOccEmpty` 压 Empty。**N_r≥2 当前无差别处理**。
+- **P_id 身份锚定(suite_census)已跑**(单 resident anchor + sleepad 双锚 + bathroom 翻转),但缺 **room count>1 联合滤波**(belief_dbn §7 #7/#13）。
+
+**⚠️ 红线岔口(类比 R5,不擅决)——2人软化 vs 一人真摔不可漏**:
+- N_r≥2 时若软化 fall(2人互扰 FP),**风险**:2 人中一人**真摔**(另一人没事)→ 盲目"2人→压 fall"= **漏真摔(红线)**。2 人房一人倒地仍须报。
+- **判别据/落点选项(供裁)**:
+  - **Opt-P6.2a(per-track 归因,Track 层,推荐之一)**:把 firmware Fall 归因到**具体 track_id**(firmware Fall 事件带源 track),Track 层 per-track 独立判;仅当 Fall track **自身证据弱**(无独立倒地 pose/dwell,疑似邻人动作投射)才软化;**一人真摔→其 track 独立 escalate(不漏)**。最干净;**依赖**=Track 层须扩 per-track Fall 态(现只建 Lost)或用 Fall 源 track_id 关联 realness。
+  - **Opt-P6.2b(N_r-conditioned 软化 + floor)**:N_r≥2 时 fall prior/θ 略升门槛(softening),**留 floor**——强倒地证据(PoseFallen@Open + dwell 生存尾)仍穿透(类比 P6.1a door-exit 留 floor 不全否决)。简单但粗;floor 标定需 oracle。
+  - **Opt-P6.2c(合取床占用 count,最保守)**:软化**仅当** N_r≥2 ∧ bed 占用 count≥2(两人都在床区,sleepad/radar bed-presence count)∧ Fall track 在床区 → 判 2人床上互动伪迹;任一不足 → 不软化(偏不漏)。
+- **施工方倾向 a 或 c**(per-identity 归因 / 合取,安全不对称偏不漏真摔);**但这是红线区(2人一人真摔漏报代价极高),请委员会裁判别据 + 落点**。
+
+**R5/R0 守**:软化走 **N_r/床占用 count/per-track 归因**(占用/身份证据,非 pose/z 反向压 fall);全 belief shadow(只 log 不 fire);不碰生产;0 新增 vs 冻结 9 红。
+
+**放行前置(建后验)**:γ 案(0142/0127)→ shadow 软化(P(Fallen)<τ);**2人一人真摔对抗例**(2 track,一人**独立**倒地 pose+dwell)→ **不软化仍 escalate**(红线验不漏报);α/β 案不归 P6.2(P5/P3)。全 shadow,0 新增。
+
+**下一步**:委员会裁 **P6.2 红线岔口(判别据 Opt-P6.2a/b/c)+ 确认方向** → 再建 P6.2 code。**未裁不建**(2人一人真摔漏报是红线)。与 **P5 复核并行**(两者独立节点)。333B 待用户查 ghost。
+
 ### [2026-06-08] 施工方 → 委员会:P5 已建(治 α LeftBed-co-fire)— bed O_b 迟滞 + R5-clean 合取门控(按㊴ P5c 裁定)
 
 承㊴ 裁定(R5 岔口 = **P5c 重构**:suppressor 走「位置 geom-on-bed ∧ 占用 sleepad-InBed」两条非-pose/z;z 只正向 escalate;默认 escalate;leak 让位滚下床)。**已建 P5 code,全 belief shadow(R0/R1 不碰生产),0 新增 vs 冻结 9 红**。
