@@ -60,6 +60,26 @@
 **裁决**:gate-engage(放行 gate 第2项)**✅ 通过、silent-miss 证伪**。但 P6.1b-D **仍未完整放行**:items 1+3(真 CABB 帧 replay + **outcome 断言**)是剩余 gate。下轮须:harness 扩 + 真 CABB 帧过 D-path + 断言 outcome(并据 CABB 设备 tier 判 FP 是否真治愈 vs 仅重分类)。**①fleet/CABB 设备 tier 现成关键依赖**(决定 CABB outcome 是 suppress 还是 escalate)。
 
 ---
+### [2026-06-08] 施工方 → 委员会:交 P6.1b-D 放行 gate 第1+3 项(`07ba0be`)— 真 CABB 过 D-path engage + ⚠️真 fixture 揪出真 bug(窄 geom 条件 silent-miss,已修)
+
+放行 gate 第1+3 项(真 CABB 帧过真 beliefShadowTick D-path)建毕。**委员会坚持真 fixture 是对的——它揪出一个合成 e2e 掩盖的真 bug**:
+
+**⚠️ 真 bug(真 CABB 暴露,我服)**:阶段2 D-branch 条件 `smallBath ∧ geom∈{InToilet,InEnter}`。**真 CABB layout 无 toilet 对象** → 浴室内部 lost track geom=**OpenFloor** → 旧条件**不触发** → 落标准 reachableExit → **CABB silent-miss(治不了它本身)**。合成 e2e 硬编 `geom=InToilet` 掩盖了这点——正是㉟/㉔ 警示的"合成绿≠生产对"。
+- **修**:D-branch 条件 = **`smallBath` only**(小卫生间**整间**都是门距退化区,审查⑳"处处近门";smallBath gate 已限定是小卫生间)→ 任一 geom 的 lost track engage D-path。
+
+**真 CABB D-path engage 验证**(`TestP61bCABBRealLayoutEngagesDPath`,真 beliefShadowTick):
+- 真 CABB grid(boundary 派生)+ 真 layout 算 `isSmallBathroomCfg`=true(gate fire)+ lost track 真内部位置(geom=OpenFloor)→ **D-branch engage** → `provisional` → `escalate`(设备富)。
+- **founding 案真 engage 证实**(非 silent-miss);广义 geom 条件接住 CABB OpenFloor。预期 escalate=已知 lean-surface(CABB 离场无 recapture)→ Opt-3 数据触发。
+
+**P6.1b-D 放行 gate 全达成**:第2项 gate-fire(`ab04814`,boundary 190×200 minSide190≤200 非 FOV)+ 第1+3项 真 CABB 过 D-path engage(`07ba0be`)。
+
+**验证**:全 P61b 测试 PASS(状态机三路径 + np=0/visitor 对抗 + gate-engage + 真CABB-D-path);9 冻结红 0 新增;belief 绿;replay PASS;build/vet 绿。R0/R1 全 shadow;C3 不动;census 不碰;不建 suiteRealBirths。
+
+**P6.1b-D Opt-1 完整完成**(commits:gate `65eb0ff` + 状态机 `87b09ef` + ㉝修正 `85de6f8`段 + 对抗 `ca3adee` + gate-engage `ab04814` + 真CABB-D-path+geom修 `07ba0be`)。历经委员会 8 轮压力测试(㉘-㉟):Hole C/D/D' → 统一不变量 → 扩展不变量(leave-discriminating)→ 窄 geom silent-miss。治㉔ 门口真摔漏报 + 守 CABB 不放回 FP + founding 案真 engage。
+
+**已知残差/follow**:单resident 离场无 recapture→escalate-FP(LOG,lean-surface)→ **Opt-3 边界穿越**(数据触发);①fleet 独苗 + ②边界标注率待用户。
+
+**下一步**:委员会终审 P6.1b-D 完整。过 → P6.1b 闭。余 DBN:P6.2 N_r/P6.3 P_id/P5 bed O_b/P4.5 缺席/P7 τ*/P8 health/P9 oracle。
 
 ### [2026-06-08] 施工方 → 委员会:应审查㉟ — 真 CABB gate-engage 已验(silent-miss 证伪,`ab04814`)+ 收"replay 是放行 gate 非 follow"
 
