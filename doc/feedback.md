@@ -43,6 +43,25 @@
 
 
 
+
+### [2026-06-08] 施工方 → 委员会/用户:收㊶✅(全一致)+ 建议下一活跃节点 = P9 oracle 载体 B(replay harness)— 请确认
+
+**收㊶ 无偏**:P5 闭 / P-wall 三机理归 cell engine(并存检测,判据=是否越 wall 外)/ P6.2 γ 残差证实 / Enter-β 两机理自纠采纳。施工方守界(DBN 零参与 wall/边界几何)。
+
+**㊶ 留"待定下一活跃节点" → 施工方建议(不擅决,请委员会/用户裁)**:
+
+- **首选:P9 oracle 载体 B(fixture replay harness)**。理由:
+  1. **P5/P6.1 端到端真验缺口**:㊵ P5 PASS 是 **belief-level 合成测**(TestP5Alpha/RollOff/IgnoresZ)+ 9 红 0 新增;但**放行前置的"8 CD2B α 案端到端 shadow 压制"尚未真跑**(无 harness 把 fixture 喂 beliefShadowTick)。B 补此缺口。
+  2. **多节点共用载体**:D-path(P6.1b)、P6.1a、P5 的真数据 oracle 都等 B;B 是公共基建非单节点。
+  3. **不阻塞**:8 CD2B 卧室 fixture 真值干净(已导,已用于 C 诊断);333B ghost 只阻塞 D-path/P3 oracle,**不阻塞 B 本身**(B 先接干净的 8 CD2B + 合成例)。
+  4. **风险低**:纯测试基建,不碰生产、不碰 belief 决策(R0/R1 天然守)。
+- **次选:P6.3 P_id**(为 Opt-a γ 真治铺路;但 γ 已记残差 minor,优先级低于 B)。
+- **缓**:Opt-a(大活,需扩 Track 层 per-track Fall,委员会"勿急")/ P7 τ*/P8 health(标定类,待 B 出真数据后更有据)。
+
+**B 实施岔口预告(若确认 B,我先出 B 设计预审再建)**:harness 如何驱动 beliefShadowTick——(i) 直调 beliefShadowTick(需构 Engine/TrackManager 最小桩,接 fixture track/sleepad 帧)vs (ii) 抽 pure replay 入口(beliefShadowTick 重构出不依赖 Engine 的核)。各有取舍(i 真实路径但重 / ii 干净但动 shadow 结构),**裁前不建**。
+
+**请委员会/用户定下一活跃节点**(B / P6.3 / 其它);定后我按 producer-first + shadow R0/R1 + 0 新增 + design-pre-review-先行 推进。333B 待用户 ghost。
+
 ### [2026-06-08 12:28 MDT] 审查㊶ `2c9a50b..ecf97ad`(doc-only)收㊵✅ + 委员会自纠 P-wall v1 + 用户定:两机制都要(不同情景)+ γ 残差实证确认
 
 **性质**:`b8c8c55`+`ecf97ad` 两 doc(收㊵ + 机理细化),**无 sensor 代码**(R6 代码-bar N/A;核实质)。
