@@ -109,3 +109,38 @@ func TestP61bPoorSuppress(t *testing.T) {
 		t.Fatalf("设备贫不该 escalate(走压制路径)")
 	}
 }
+
+// ④ 审查㉝ 关键对抗:np=0 在场(firmware 报屋内空)但无 recapture → 仍 escalate(np 永不 cancel)。
+// 证 np=0 是 lost-fall 共有条件非判别器(摔/离共有);用它 cancel 会 cancel 真摔=漏报。
+func TestP61bNp0DoesNotCancel(t *testing.T) {
+	nowMs := int64(10_000_000)
+	e, logs := mkP61bEngine(t, nowMs, true, NewSuiteCensusManager(nil, DefaultSuiteCensusConfig(), nil))
+	e.rooms[p61bRoom].lastNumberPeopleZeroMs = nowMs - 1000 // firmware np=0(屋内空断言)在场
+	e.beliefShadowTick(p61bRoom, nil, nowMs)
+	e.beliefShadowTick(p61bRoom, nil, nowMs+beliefProvisionalRichWindowMs+2000)
+	if hasMsg(logs, "belief_shadow_lostfall_cancel") {
+		t.Fatalf("np=0 在场不该 cancel(㉝:absence≠leave,cancel 真摔=漏报)")
+	}
+	if !hasMsg(logs, "belief_shadow_lostfall_escalate") {
+		t.Fatalf("np=0 在场无 recapture 仍应 escalate(不漏报)")
+	}
+}
+
+// ⑤ 审查㉝/㉚ 对抗:护工(visitor)在场 + sole resident 未回床(仍在浴室)→ 不 cancel 仍 escalate。
+// 证 cancel 绑走失者本人 anchor(per-identity);visitor 移动非走失者重现 → 不触发 recapture。
+func TestP61bVisitorDoesNotCancel(t *testing.T) {
+	nowMs := int64(10_000_000)
+	census := NewSuiteCensusManager(nil, DefaultSuiteCensusConfig(), nil)
+	c := census.GetOrCreate(p61bSuite)
+	c.Persons["r"] = &SuitePerson{PersonID: "r", Role: SuitePersonResident, SleepadAnchored: false, AnchorRoomType: card.RoomTypeBathroom} // 仍在浴室,未回床=未 recapture
+	c.Persons["v"] = &SuitePerson{PersonID: "v", Role: SuitePersonVisitor, AnchorRoomType: card.RoomTypeDefault}                            // 护工在别区
+	e, logs := mkP61bEngine(t, nowMs, true, census)
+	e.beliefShadowTick(p61bRoom, nil, nowMs)
+	e.beliefShadowTick(p61bRoom, nil, nowMs+beliefProvisionalRichWindowMs+2000)
+	if hasMsg(logs, "belief_shadow_lostfall_cancel") {
+		t.Fatalf("护工在场+resident未回床不该 cancel(cancel 绑走失者 anchor,visitor 非重现)")
+	}
+	if !hasMsg(logs, "belief_shadow_lostfall_escalate") {
+		t.Fatalf("护工在场无 recapture 仍应 escalate(不漏报)")
+	}
+}
