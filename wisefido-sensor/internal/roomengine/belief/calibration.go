@@ -83,8 +83,10 @@ const (
 	// ── ObsDwellStill(P4.1 裁决⑮B:dwell 生存函数 ramp;S_vol=exp(−(d/scale)²) → fallLR=1+(d/scale)² 封顶)──
 	// **仅 toilet/shower**(Z_cell-无关,fixture 声明可验证)。scale 镜像生产 ToiletShowerSec 作 **shadow 占位**
 	// (R0:不碰生产),P9.6 待 oracle。封顶温和(真 dwell-fall 靠 Decider 窗累积)。
-	// **开阔地 8min(dwellScaleOpenSec)dwell-fall 依赖 Z_cell tolerance → bundle P4.4 同落,届时再引入。**
+	// **开阔地 dwell-fall(P4.4 裁决⑱ B2):scale=dwellScaleOpenSec×ToleranceFactor**——前置 Z_cell tolerance gate
+	// (被容忍久站的 cell 尾拉长→久站真人不报;tol 走 cell 几何/历史方差,**Z 只正向 R5**,不用 z 反向压)。
 	dwellScaleToiletSec = 900.0 // toilet/shower 15min(对齐生产 ToiletShowerSec)
+	dwellScaleOpenSec   = 480.0 // 开阔地 8min(对齐生产 StillTimeoutSec 量级;P4.4,P9.6 待 oracle)
 	dwellFallCap        = 2.5   // fallLR 封顶(温和;真 dwell-fall 靠 Decider 窗累积)
 
 	// ── poseLikelihood(P2.2:对 fall 只正向;SStandWalk/SSit/SBedLying 是 posture 区分非 fall 压制)──

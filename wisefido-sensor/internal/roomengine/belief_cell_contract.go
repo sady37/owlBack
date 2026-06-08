@@ -19,6 +19,7 @@ type CellPrior interface {
 	AreaTypeAt(x, y int) (AreaType, bool)
 	SourceAt(x, y int) (Source, bool)
 	NearestEntryDistCm(x, y int) int
+	ToleranceFactorAt(x, y int) float64
 }
 
 var _ CellPrior = (*RoomGrid)(nil)
@@ -54,4 +55,19 @@ func (g *RoomGrid) NearestEntryDistCm(x, y int) int {
 		return 1<<31 - 1
 	}
 	return g.NearestEntryDist(x, y)
+}
+
+// ToleranceFactorAt 只读该 cell 的自适应容忍因子 ∈[1.0, MaxToleranceFactor]。
+// 严格只读:读 cell 既有 toleranceFactor()(由 FakeAlarmCount+ToleratedStillCount 算),
+// 不递增计数、不触学习/promote(R3)。cell 缺失=未学过=无容忍证据→1.0(中性,不放宽)。
+// P4.4:开阔地 dwell 生存尾按此 factor 拉长(被容忍久站的 cell 尾更长→久站真人不报)。
+func (g *RoomGrid) ToleranceFactorAt(x, y int) float64 {
+	if g == nil {
+		return 1.0
+	}
+	c := g.CellAt(x, y)
+	if c == nil {
+		return 1.0
+	}
+	return c.toleranceFactor()
 }

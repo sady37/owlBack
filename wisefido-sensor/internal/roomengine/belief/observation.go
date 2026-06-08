@@ -58,6 +58,10 @@ type Observation struct {
 	// 0 或未设=1.0（全信 geom，向后兼容）。<1 时把 geom 条件似然向 geom-中性(Unknown) blend——
 	// 软先验替硬闸：暂定 rest-zone(InBed/InToilet) 抑制跌倒更弱，强跌倒证据仍能盖过，不漏真摔。
 	GeomConf float64
+	// ToleranceFactor cell 自适应容忍因子 ∈[1.0, MaxToleranceFactor]（P4.4 裁决⑱ B2；adapter 经 CellPrior.ToleranceFactorAt 读入）。
+	// 仅 ObsDwellStill 开阔地消费：dwell 生存尾 scale*=tol（被容忍久站的 cell 尾更长→久站真人不报）。
+	// 0 或未设=1.0（向后兼容，非 dwell 观测留零值即可）。语义=容忍越高尾越长，Value 恒 raw（不缩放）。
+	ToleranceFactor float64
 }
 
 // effConf 有效置信度：stale 观测当缺失。

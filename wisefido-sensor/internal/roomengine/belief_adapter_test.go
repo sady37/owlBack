@@ -335,3 +335,94 @@ func TestP3RealnessCheckpoint(t *testing.T) {
 		t.Fatalf("③真人久站 2min 不该被判 ghost(ghostness<0.5),得 %.3f", gh)
 	}
 }
+
+// TestP4OpenFloorDwellToleranceGate — P4.4(裁决⑱ B2)tolerance-bearing 双向 fixture(委员会重点验:
+// fixture 真有判别力,高/低 tolerance 两 case 都在)。同一开阔地久站(stillBox 命门→ pose/z stale,只 ObsDwellStill
+// 驱动 Fallen),唯一差异 = cell 的 tolerance:
+//   • 无 tol(ToleratedStillCount=0→factor 1.0,scale=480):开阔地 dwell-fall 抬起 → confirm。
+//   • 高 tol(ToleratedStillCount=8≥阈和→factor 2.0,scale=960):生存尾拉长 → 久站真人被压住 → 不 confirm。
+// 这是 §11.2 残差的"造对验证器":开阔地久站真人(被容忍 cell)vs 倒地(未容忍 cell)靠 Z_cell tolerance 分开,
+// 而非 P4.1 否的"接受测不到"。tol 走 cell 几何/历史(R3 只读),Z 只正向(R5)。
+func TestP4OpenFloorDwellToleranceGate(t *testing.T) {
+	const (
+		px, py    = 50, 200
+		nowBase   = 10_000_000 // 高起点:确保 StillBoxRunStart=now−dwell 恒 >0(否则 stillBox 失效→pose 不 stale→竞争压 Fallen)
+		dwellMs   = 560_000    // 固定 dwell 560s:落 ramp 带内(lo r=1.17 未饱和 / hi r=0.58)避免 cap 抹判别
+		frames    = 16         // 实测判别窗:lo P≈0.84 fired / hi P≈0.04 not,两侧远离 θ_fire 0.55
+		cadenceMs = 2_000
+	)
+	mkGrid := func(tolCount int) *RoomGrid {
+		g := NewRoomGrid(800, 400, 0) // cellSize=0 → 内部默认
+		c := g.CellAt(px, py)
+		c.Belief[0].Type = AreaActive // 开阔地(→ GeomOpenFloor)
+		c.ToleratedStillCount = tolCount
+		return g
+	}
+	// 前置:坐标须判为开阔地,否则测的不是开阔地 dwell。
+	if g := geomFromGrid(mkGrid(0), px, py); g != belief.GeomOpenFloor {
+		t.Fatalf("前置失败:(%d,%d) geom=%v 期望 OpenFloor", px, py, g)
+	}
+
+	run := func(tolCount int) (belief.Vector, bool) {
+		be := belief.New(belief.DefaultModel())
+		grid := mkGrid(tolCount)
+		now := int64(nowBase)
+		fired := false
+		for i := 0; i < frames; i++ {
+			now += cadenceMs
+			ts := &TrackState{LastObservedMs: now, StillBoxRunStart: now - dwellMs, LastZ: 30, Verdict: VerdictReal}
+			tr := observation.Track{LogicID: "L1", Pose: observation.PoseStanding, PositionX: ptr(px), PositionY: ptr(py), PositionZ: ptr(30)}
+			be.Step(now, radarFrameAdapter(tr, ts, grid, now))
+			if be.Decide() == belief.DecisionFall {
+				fired = true
+			}
+		}
+		return be.Vector(), fired
+	}
+
+	bLo, firedLo := run(0) // 无 tolerance → dwell-fall 应抬起
+	bHi, firedHi := run(8) // 高 tolerance → 被尾拉长压住
+
+	pLo, pHi := bLo.P(belief.SFallen), bHi.P(belief.SFallen)
+	t.Logf("P4.4 tolerance gate: 无tol P(Fallen)=%.3f fired=%v / 高tol P(Fallen)=%.3f fired=%v", pLo, firedLo, pHi, firedHi)
+
+	// 方向①:无 tol 开阔地久站 → dwell-fall 抬起(confirm)。
+	if !firedLo {
+		t.Fatalf("无 tol 开阔地久站(560s)应判 dwell-fall(P(Fallen)=%.3f)", pLo)
+	}
+	// 方向②:高 tol 同样久站 → 被容忍尾压住,不 confirm。
+	if firedHi {
+		t.Fatalf("高 tol cell 开阔地久站应被容忍(不 confirm),却 fired(P(Fallen)=%.3f)", pHi)
+	}
+	// 判别力:同输入仅 tolerance 不同 → Fallen 后验显著分离。
+	if pLo <= pHi {
+		t.Fatalf("tolerance gate 无判别力:无tol P=%.3f 应 > 高tol P=%.3f", pLo, pHi)
+	}
+}
+
+// TestP4ToiletDwellFires — P4.1(裁决⑮ B)toilet/shower dwell-fall **正向能发**闭合(此前只验过不发的 case,
+// 正向从未实证;P4.4 施工时 adapter probe 发现并补)。厕浴久站(stillBox 命门→只 ObsDwellStill 驱动)
+// 经 scale=900(15min)生存 ramp 累积应 confirm。Z_cell-无关(厕浴久留=异常,无 tolerance gate)。
+func TestP4ToiletDwellFires(t *testing.T) {
+	g := NewRoomGrid(800, 400, 0)
+	g.CellAt(50, 200).Belief[0].Type = AreaToilet // → GeomInToilet
+	if got := geomFromGrid(g, 50, 200); got != belief.GeomInToilet {
+		t.Fatalf("前置:(50,200) geom=%v 期望 InToilet", got)
+	}
+	be := belief.New(belief.DefaultModel())
+	now := int64(10_000_000)
+	const dwellMs, frames = 1_100_000, 16 // dwell 1100s(>15min scale)经实测判别窗 16 帧确认
+	fired := false
+	for i := 0; i < frames; i++ {
+		now += 2_000
+		ts := &TrackState{LastObservedMs: now, StillBoxRunStart: now - dwellMs, LastZ: 30, Verdict: VerdictReal}
+		tr := observation.Track{LogicID: "L1", Pose: observation.PoseStanding, PositionX: ptr(50), PositionY: ptr(200), PositionZ: ptr(30)}
+		be.Step(now, radarFrameAdapter(tr, ts, g, now))
+		if be.Decide() == belief.DecisionFall {
+			fired = true
+		}
+	}
+	if !fired {
+		t.Fatalf("厕浴久站 1100s 应判 dwell-fall(P(Fallen)=%.3f)", be.Vector().P(belief.SFallen))
+	}
+}

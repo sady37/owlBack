@@ -178,11 +178,17 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 	if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 		dwellSec = float64(nowMs-ts.StillBoxRunStart) / 1000
 	}
+	// P4.4(裁决⑱ B2):开阔地 dwell 生存尾按 cell tolerance 拉长(被容忍久站→尾长→不报)。
+	// 只读 CellPrior(R3),不触学习;非开阔地不消费此值(toilet Z_cell-无关 / rest 不报)。
+	dwellTol := 1.0
+	if g == belief.GeomOpenFloor {
+		dwellTol = grid.ToleranceFactorAt(x, y)
+	}
 
 	out := []belief.Observation{
 		{Source: t.LogicID, Kind: belief.ObsPose, Value: float64(t.Pose), Conf: poseConf, Ts: nowMs, Fresh: motionFresh, Geom: g, GeomConf: gc},
 		{Source: t.LogicID, Kind: belief.ObsZBand, Value: float64(z), Conf: 0.7, Ts: nowMs, Fresh: motionFresh, Geom: g}, // P2.3 z 高度档 posture(不进 fall,R5)
-		{Source: t.LogicID, Kind: belief.ObsDwellStill, Value: dwellSec, Conf: 0.7, Ts: nowMs, Fresh: tsFresh, Geom: g}, // P4.1 dwell 生存 ramp
+		{Source: t.LogicID, Kind: belief.ObsDwellStill, Value: dwellSec, Conf: 0.7, Ts: nowMs, Fresh: tsFresh, Geom: g, ToleranceFactor: dwellTol}, // P4.1+P4.4 dwell 生存 ramp(开阔地带 tol gate)
 		{Source: t.LogicID, Kind: belief.ObsVitalPresent, Value: vitalVal, Conf: 0.6, Ts: nowMs, Fresh: motionFresh, Geom: g},
 		{Source: t.LogicID, Kind: belief.ObsTrackPresent, Value: ghost, Conf: 0.8, Ts: nowMs, Fresh: tsFresh, Geom: g},
 	}
