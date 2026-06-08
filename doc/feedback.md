@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`f084ff2`(下次从此 commit 起算 delta)
+- **last-audited**:`a8730e8`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,32 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-08 07:21 MDT] 审查㊴ `f084ff2..a8730e8` C诊断✅ + P5设计预审 — ⚠️ R5 裁:Opt-P5a 用 z高压制=违规;suppressor 必走位置+占用,z 只正向
+
+**性质**:`33d4351`(C 诊断)+`a8730e8`(P5 设计预审)两 doc。无代码。
+
+**✅ C 诊断扎实(P5-scoping 兑现)**:8 case 只读分析 → 3 模式:**α LeftBed-co-fire ≥5/8 主导**(radar 把床上翻身/坐起误读 Fall + sleepad 同刻 LeftBed)/ β np→0(归 P3/P6.1a)/ γ 2人床边(归 P6.2)。数据驱动、答用户"在床仍误报"(0127:InBed24s→LeftBed 同秒 fire)、印证㊳ 预测。模式归属正确(β/γ 不塞 P5)。
+
+**✅ P5 机理对路(亲验 bed 链)**:`ObsBedOccupied` damp SFallen(likelihood.go:71 `1-dampBedFallen*p`);LeftBed→`bedVal=0`(adapter:435 二值瞬时)→不 damp→firmware Fall 透过=α。P5 给 bed O_b **加迟滞/leak**(brief LeftBed 翻拍不瞬掉 bed-authority)→ 同刻 Fall 仍被 damp。修在正确层。
+
+**⚠️ R5 关键岔口裁决(施工方诚实抛红线,但 Opt-P5a 自身踩 R5)**:
+- LeftBed-co-fire 二义:翻身坐起伪迹(该压)vs **滚下床真摔(绝不可压)**——都给 LeftBed+radar 动。盲 leak 压制 = 漏滚下床真摔(红线)。
+- **❌ 驳 Opt-P5a(z高→压制)**:它的伪迹压制条件含"**z 高**"。**R5 铁律 = pose/z 对 fall 只正向不负向,任何用 z 抑制 fall = 违规**。P5a 用 z高压 fall **正踩 R5**。z 只能**正向抬**(z低+离床→escalate 滚下床),**绝不能当压制条件**。
+- **✅ 裁定 = P5c(合取)按 R5 重构**:
+  - **suppressor 只走「位置 + 占用」两条可靠证据**:geom **on-bed-surface**(位置,非 pose)∧ sleepad **InBed 近期活跃/翻拍返回**(接触式占用,可靠)。**两者皆非 pose/z** → R5-clean。
+  - **z/位移 只正向**:`z低 ∧ 离 bed-surface(displaced)` → **escalate 滚下床真摔**(加 fall,R5 正向)。永不压制。
+  - **默认 escalate(安全不对称)**:`sleepad LeftBed 持续不返回 ∨ geom displaced ∨ z低近地` 任一 → **不压 → escalate**。歧义偏不漏报。
+  - **leak 必须让位于滚下床签名**:迟滞对 brief-LeftBed-blip(InBed 返回)粘滞=压;但 sustained-LeftBed-no-return ∨ displaced → **authority 掉 → Fall 浮出**。**不可是盲时间衰减掩盖滚下床**。
+- **scope 边界(记)**:on-bed 非滚下床医疗事件(癫痫/床上抽搐)radar 读 Fall 会被"on-bed∧InBed"压——这非 P5 目标(P5 治翻身伪迹),on-bed 医疗事件属 vital/HR 模态非 fall;接受 P5 不捕它,**但 leak 不得把"显著位移/z骤降"也当 on-bed**(否则滑向漏报)。
+
+**放行前置(建后验)**:8 CD2B α 案 → shadow 压制 P(Fallen)<τ;**滚下床真摔对抗例**(sustained LeftBed + 位移躺地 + z低)→ **不压仍 escalate**(R5 验不漏报);**+ R5 专项断言:压制路径不含任何 z高/pose 作压制因子**(防 P5a 残留)。β/γ 不归 P5。9 红 0 新增、全 shadow。
+
+**裁决**:C ✅;P5 方向(bed leak 治 α)批准;**R5 岔口裁定 = P5c 重构(suppressor=位置∧占用,z 只正向,默认 escalate)**,驳 P5a 的 z高压制。施工方按此建 + 滚下床对抗例 + R5 专项断言。**未含 R5 专项断言不放行**(漏滚下床真摔=红线)。
+
+**用户 333B 定调(2026-06-08)**:"333B ghost 后面再查,**无触发事件、不易过滤**" → **A(导 333B 验 D)继续阻塞**,D 真数据验 parked;C→P5 为活跃路径,P6.2 可并行。**注**:333B ghost"无触发事件"=持续性 ghost(非离散 fall/event),过滤须 P3 realness 持续判而非事件触发——记 P3 ghost oracle 待 ghost 理清。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:P5 设计预审(治 α LeftBed-co-fire)— 含一个 R5 关键岔口待裁(滚下床真摔)
 
