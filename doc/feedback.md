@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`295e0ad`(下次从此 commit 起算 delta)
+- **last-audited**:`23f90d4`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -72,6 +72,29 @@
 **对 B 的影响(互补再确认)**:B 是**单房 fixture**(只 CD2B 一房记录),**结构上无法**验跨房源(Neighbor/census/NumberPeople);这些**只能整单元 redis-replay 验**。B 留 infra-free 单房 CI(Pose/Bed[补fixture后]/NoDetect 等单房源回归),跨房源归 redis-replay 整单元。
 
 **待委员会/用户**:确认整单元 redis-replay 执行(谁跑:需测试 redis + sensor consumer 起整单元 3 设备路由)。我可解 333B 的 uid + 备好重放命令;**裁前不抢跑服务**。333B ghost 待查不阻 obs-populate 审计。
+### [2026-06-08 14:33 MDT] 审查㊼ `295e0ad..23f90d4` finding-2 被 DB 推翻【补强2 当场兑现 ⭐】+ 死源重分类裁定 + 整合 CD2B-FP/recall
+
+**性质**:`47760cc`(bed-event 改源预审)+`23f90d4`(DB 坐实推翻 finding-2)。无代码。**我上轮㊼ 草稿(裁 Opt-bed-1 改源)因 23f90d4 作废,已 reset 未推**,此为修订版。
+
+**⭐ 补强2 当场兑现(委员会价值)**:我㊼ 草稿补强2 = "源确认别只靠 fixture(嫌疑源),用 redis-replay/DB 拍板"。施工方据 redis-replay 指令查 DB monitor_stream → **生产 sleepad 确发 monitor 帧**(sleepad.track 919K 行;bedroom :1641=123K;8 案窗每天 2-4 万帧)→ **finding-2("P5 bed-authority 永不 engage")是 fixture-export 漏 sleepad.track 的假象,非生产**。**redis-replay/DB > fixture 的纪律当场逮回一个错判**(否则会去"改 P5 源"治一个不存在的病)。
+
+**R6 核验(DB 本地不可达,代码路径亲验 + 依施工方 DB 证据)**:
+- ✅ 代码路径:P5 `bedAuthorityObs`←`sleepadStates`←`ProcessSleepadObservation`(track_manager:666)←sleepad monitor —— **源路径在**;生产发 sleepad.track 则 P5 源存在。
+- ✅ **重分类代码亲验**:`sleepadAdapter/roomAdapter/neighborToObs` 在 belief_shadow **=0**(真未 wire);`bedAuthorityObs` 已 wire。
+
+**裁定:5 死源重分类(接受施工方,代码证)**:
+- **BedOccupied(P5)= "源存在、fixture 漏"** → **P5 代码不动**;修 = ① redis-replay 重放 201(含 sleepad.track,真路径填 sleepadStates → P5 engage)做权威验 ② B fixture-export 补 sleepad.track monitor 帧(改 export_case.sh)做 CI 回归。**我㊼ 草稿的 Opt-bed-1 改源 + 补强1 TTL/BedSession 顾虑全作废**(P5 留 monitor 源,不改 event,无 TTL 问题)。
+- **SleepStage/VitalPresent/NumberPeople/StandDuration/Neighbor = 真适配器未 wire** → 各一 P-task wire 预审,每源 redis-replay 验真路径 populate。
+
+**★ 整合用户真值(仍有效,2026-06-08 "CD2B 除专门跌倒测 case 基本全 FP")**:
+- 8 CD2B 案 = **FP 集确证** → shadow 全压 confirm=false **是正确精度**;**0127 peak 0.993 近-confirm = 唯一精度隐患**(用户重点逐案,wire bed 数据后重测会变)。
+- **CD2B = 精度 oracle**;**"专门跌倒测 case" = 真阳性 = recall oracle 存在** → 补㊻"recall 从没验缺真摔集"缺口:**真摔集 = deliberate-fall-test**(DBN-direct 毕业用,记 backlog)。
+
+**★ 用户定 redis-replay 范围(2026-06-08)= unit 下所有 device × (monitor_stream + event_log)**:重放 201 须含**全部 unit 设备**(CD2B 卧室 radar + BM…641 sleepad + 333B 浴室 radar)× **两条流**(monitor 帧 + event 日志),非只 CD2B/单流。**理由**:shadow 全 engage 依赖完整 unit 上下文——P5 需 CD2B pose + BM641 sleepad 并存;NumberPeople/Neighbor/suite-census/跨设备守恒需全设备+跨房;monitor(连续帧)+event(状态转移)缺一不可。**只重放子集 = 又一 partial-input 假象**(正是 finding-2 fixture-漏 的教训)。redis-replay `--device-uids` 列全 unit 设备 + `--streams monitor,event`。
+
+**裁决**:finding-2 推翻**受理**(补强2 redis-replay>fixture 纪律兑现);死源重分类**受理**(bed=源存在修 fixture/redis-replay 不改 P5;余 4=适配器 wire P-task)。**下一步**:redis-replay 重放 201 **全设备×两流**验 P5 bed engage(权威首个真端到端)+ B fixture 补 sleepad.track。**待用户**:② **施工方能否在本地跑 redis-replay**(需测试 redis + sensor consumer,非污染生产)还是归用户/ops?③ 0127 逐案。新节点仍暂停(㊻)。333B 待 ghost。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:★★ finding-2 DB 坐实 → 生产 sleepad **发 monitor 帧**(发现2 是 fixture-export 假象,非生产现实)→ P5 bed wiring **不必改源**,我上条 bed-event 改源预审**自我推翻**
 
