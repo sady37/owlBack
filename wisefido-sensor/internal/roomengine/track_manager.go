@@ -117,9 +117,11 @@ type TrackManager struct {
 	lastRadarInBedMs   int64
 	lastRadarLeftBedMs int64 // 审查㊾:radar LeftBed ts(any-source-OR bed 占用 veto)
 
-	// lastNumberPeopleZeroMs：固件最近一次上报 number_people=0（"屋内空"断言）的 ts。
-	// 门区 exit 推断用：np=0 是离开的「确认证据」，须与最后帧门区位置合取才采信，单独不可信。
-	lastNumberPeopleZeroMs int64
+	// lastNumberPeople：固件最近一次上报的房内人数(单一 np latch,审查51 #1.3 单源真相)。
+	// np=0 ≡ count==0(原 lastNumberPeopleZeroMs subsume 进此,不留两个独立 latch 防 drift)。
+	// 喂 belief ObsNumberPeople(弱 corroboration:np=0 弱 Empty 非 substitution / np≥1 压 Empty,R5 不入 SFallen)。
+	lastNumberPeople   int   // 最近人数;仅当 lastNumberPeopleTs>0 才有效(0=有效计数,非"未上报")
+	lastNumberPeopleTs int64 // 最近 number_people 事件 ts(0=从未上报)
 	// noTargetSinceMs：固件最近一次明示"无目标"（track_id=88 心跳 / 全零帧）起始 ts；收到真 track 帧即清 0。
 	// 供 88-加速驱逐：持续无目标 ≥ heartbeat88EvictMs 时陈旧 track 不必等满 MaxMissCount
 	// （稀疏心跳下要 >120s，见 Case2 142s）即可快速进 lost_fall/vanish。镜像 cardagg ClearDeviceTracks。
@@ -1052,8 +1054,9 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	}
 	// number_people=0：固件「屋内空」断言。只落 ts，不直接驱动任何取消——
 	// count=0 不等于人离开（可能盲区/水气丢信号），须与门区空间证据合取才采信（见 bathroom_fall）。
-	if e.EventName == EventNameNumberPeople && e.NumberPeople == 0 && e.TMs > tm.lastNumberPeopleZeroMs {
-		tm.lastNumberPeopleZeroMs = e.TMs
+	if e.EventName == EventNameNumberPeople && e.TMs > tm.lastNumberPeopleTs {
+		tm.lastNumberPeople = e.NumberPeople // 单 latch:任一 count(含 0)都 latch;np=0 ≡ count==0
+		tm.lastNumberPeopleTs = e.TMs
 	}
 	// radar LeftBed 落 ts(审查㊾ any-source-OR:bed 占用 veto 须 OR 所有源,非只 sleepad → radar 先报 LeftBed 立即释放压制)。
 	if e.EventName == alarm.LeftBed && e.TMs > tm.lastRadarLeftBedMs {
@@ -1090,12 +1093,27 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	// 与「最后帧在门区」合取后推断离开（见 evaluateLostFallStrong），不在此单独成立。
 }
 
-// LastNumberPeopleZeroMs 固件最近一次 number_people=0 的 ts（0 = 从未上报）。
+// LastNumberPeopleZeroMs 固件最近一次 number_people=0 的 ts（0 = 从未上报/最近 count≠0）。
+// 审查51 #1.3:派生视图(非独立 latch)——仅当单 latch 最近 count==0 才返回其 ts。
 // 门区 exit 推断的「确认证据」分量；调用方须再校验最后帧门区位置，不可单凭此判离。
 func (tm *TrackManager) LastNumberPeopleZeroMs() int64 {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	return tm.lastNumberPeopleZeroMs
+	if tm.lastNumberPeopleTs > 0 && tm.lastNumberPeople == 0 {
+		return tm.lastNumberPeopleTs
+	}
+	return 0
+}
+
+// CurrentNumberPeople 单 np latch:最近房内人数 + 是否新鲜(TTL 内)。count=-1/fresh=false=从未上报。
+// 审查51 NP-1:belief shadow tick 读它喂 ObsNumberPeople(弱 corroboration,R5 不入 SFallen)。自锁。
+func (tm *TrackManager) CurrentNumberPeople(nowMs int64) (count int, fresh bool) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.lastNumberPeopleTs == 0 || nowMs-tm.lastNumberPeopleTs > beliefNumberPeopleTTLMs {
+		return -1, false
+	}
+	return tm.lastNumberPeople, true
 }
 
 // evictOldRadarAlarms / evictOldRadarEvents：删除超出 recentBufferMs 的旧记录。
@@ -1481,7 +1499,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 					zap.String("logic_id", ts.LogicID),
 					zap.Int64("last_enter_ms", tm.lastEnterMs),
 					zap.Int64("last_exit_ms", tm.lastExitMs),
-					zap.Int64("last_np0_ms", tm.lastNumberPeopleZeroMs),
+					zap.Int("last_np", tm.lastNumberPeople), zap.Int64("last_np_ms", tm.lastNumberPeopleTs),
 					zap.Int64("ts_ms", nowMs),
 				)
 				tm.emitDecision(ts.DeviceAddr, ts.LogicID, id, ts.LastRawH, ts.LastRawV, ts.LastRawZ,

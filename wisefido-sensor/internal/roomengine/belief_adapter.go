@@ -70,6 +70,7 @@ const (
 	beliefSpeedCapFloorCmS   = 30    // 封顶下限（防学得过低误压真退场）
 	beliefSpeedCapCeilCmS    = 150   // 封顶上限（生理：挡噪声伪造超人速度）
 
+	beliefNumberPeopleTTLMs = 70_000 // 审查51:number_people event 新鲜窗(firmware 分钟级 push,>1min stale 不喂 ObsNumberPeople)
 )
 
 // geomFromArea cell AreaType → belief.Geom。

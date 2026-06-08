@@ -117,7 +117,8 @@ func TestP61bPoorSuppress(t *testing.T) {
 func TestP61bNp0DoesNotCancel(t *testing.T) {
 	nowMs := int64(10_000_000)
 	e, logs := mkP61bEngine(t, nowMs, true, NewSuiteCensusManager(nil, DefaultSuiteCensusConfig(), nil))
-	e.rooms[p61bRoom].lastNumberPeopleZeroMs = nowMs - 1000 // firmware np=0(屋内空断言)在场
+	e.rooms[p61bRoom].lastNumberPeople = 0 // firmware np=0(屋内空断言)在场:单 latch count==0 + ts
+	e.rooms[p61bRoom].lastNumberPeopleTs = nowMs - 1000
 	e.beliefShadowTick(p61bRoom, nil, nowMs)
 	e.beliefShadowTick(p61bRoom, nil, nowMs+beliefProvisionalRichWindowMs+2000)
 	if hasMsg(logs, "belief_shadow_lostfall_cancel") {

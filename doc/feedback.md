@@ -54,6 +54,40 @@
 
 
 
+### [2026-06-08] 施工方 → 委员会:执行审查51 裁 NP-1 完成 → NumberPeople(死源#2)wiring 落地 + 单源真相(单 np latch,退役 lastNumberPeopleZeroMs)+ R5 守 + B 验 populated 7/8
+
+**承 51 裁**:NP-1(单 latch + tick wire),**含**"单源真相:别留两个 np latch"硬前置("未含单源 latch 不放行")。已按裁全做:
+
+**① 单 np latch(#1.3 单源真相,退役 lastNumberPeopleZeroMs)** — `track_manager.go`:
+- 删字段 `lastNumberPeopleZeroMs int64`,改单 latch `lastNumberPeople int` + `lastNumberPeopleTs int64`。
+- `RecordRadarEvent`:`if EventNameNumberPeople && e.TMs>lastNumberPeopleTs { lastNumberPeople=e.NumberPeople; lastNumberPeopleTs=e.TMs }`——任一 count(含 0)都 latch,`np=0 ≡ count==0`,不再为 0 单开 latch。
+- `LastNumberPeopleZeroMs()` 改**派生视图**(非独立字段):`if lastNumberPeopleTs>0 && lastNumberPeople==0 { return lastNumberPeopleTs }; return 0`——P6.1b-D 的 np0-aux(belief_shadow:299)沿用此 accessor,**读统一 latch 的 count==0**,无第二 latch drift。
+- 新增 `CurrentNumberPeople(nowMs)(count int,fresh bool)`:TTL(`beliefNumberPeopleTTLMs=70s`,firmware 分钟级 push)内才 fresh;stale/从未上报→`(-1,false)`。
+
+**② tick wire ObsNumberPeople(死源#2 通)** — `belief_shadow.go`(bed obs 块后):
+```
+if npCount, npFresh := tm.CurrentNumberPeople(nowMs); npFresh {
+    obs = append(obs, belief.Observation{Kind: belief.ObsNumberPeople, Value: float64(npCount),
+        Conf: 0.8, Ts: nowMs, Fresh: true, Geom: belief.GeomUnknown})
+}
+```
+likelihood 已对(无须改):np<0.5→弱压 Empty/Left(**corroborate 非 substitution** 铁律,镜面 ghost/水气衰减都假报 0)、np≥1→`lrNpOccEmpty` 压 Empty。
+
+**③ R5 守** — ObsNumberPeople 只调 Empty/Left/Occupied 间分布,**不进 SFallen**(不抬不压 fall);likelihood 无 SFallen 行,代码侧 wire 不碰 fall 通道。`TestP61bNp0DoesNotCancel` 仍绿(np=0 永不 cancel 真摔,absence≠leave)。
+
+**放行前置全绿**:
+- `go build ./... && go vet ./internal/roomengine/...` 干净。
+- **9 红 0 新增**:仍 7 bathroom_fall + 2 bedroom_fall(production gate-list,与 belief 无关),无新增失败。
+- belief 包全绿;P5 四件(SuppressesRadarFloor/LeftBedReleases/SuppressIgnoresZ/AnySourceOR)全 PASS。
+- **B 验 ObsNumberPeople populated**:`TestBSourceFidelityAudit` 8 案 7 案 NumberPeople 进 populated 集(唯 `1021` 窗内无 np event=数据驱动非 wiring bug);死源#2 由"未 wire"→**live**。
+- np0-aux 无回归:`TestP61bNp0DoesNotCancel` PASS(改读派生视图后语义不变)。
+
+**死源进度**:#1 BedOccupied(P5-rework,审㊿ PASS⭐)✅、#2 NumberPeople(本次)✅。**剩**:Neighbor(跨房,需 redis-replay 整单元——待用户定谁跑)、SleepStage、StandDuration。
+
+**下一步待委员会**:复核本 NumberPeople wiring;裁余死源 locus(SleepStage / StandDuration 可单 agent 直推预审;Neighbor 阻于 redis-replay 整单元归属)。**裁前不建**(余源未裁不建/recall 案 + redis-replay 整单元待用户/不抢跑服务)。
+
+---
+
 ### [2026-06-08 17:06 MDT] 审查51 `d6d1c90..1831bf7`(doc-only)NumberPeople wiring 设计预审 → 裁 NP-1 + ⚠️单源真相(别留两个 np latch)+ R5/corroboration 守
 
 **性质**:`1831bf7` doc(死源#2 NumberPeople 预审)。无代码。验源=number_people event(roomAdapter 产 ObsNumberPeople 但未 wire;tm 现仅 latch np=0)。

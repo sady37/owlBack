@@ -296,7 +296,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 					recaptured = true
 				}
 			}
-			np0Recent := tm.lastNumberPeopleZeroMs > 0 && nowMs-tm.lastNumberPeopleZeroMs <= beliefProvisionalRichWindowMs // 仅 aux LOG,不 gate cancel
+			np0Recent := tm.LastNumberPeopleZeroMs() > 0 && nowMs-tm.LastNumberPeopleZeroMs() <= beliefProvisionalRichWindowMs // 审查51:读统一 latch 派生视图(count==0),仅 aux LOG 不 gate cancel
 			if recaptured {
 				if !st.provisionalResolved {
 					e.logger.Info("belief_shadow_lostfall_cancel", // recapture 正向重现 → 软降(P3.4),不 ramp Fallen
@@ -461,6 +461,16 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),
 				zap.Float64("p5_bed_occupancy", o.Value), zap.Float64("p5_bed_conf", o.Conf))
 		}
+	}
+
+	// 死源#2(审查51 NP-1):wire firmware number_people 单 latch → ObsNumberPeople(弱 corroboration)。
+	// likelihood 铁律:np=0 弱压 Empty/Left(corroborate 非 substitution,镜面 ghost/水气衰减都假报 0);np≥1 压 Empty。
+	// R5:np 不进 SFallen(只调 Empty/Left/Occupied 间分布,不抬不压 fall);TTL 内才喂(stale 当缺失)。
+	if npCount, npFresh := tm.CurrentNumberPeople(nowMs); npFresh {
+		obs = append(obs, belief.Observation{
+			Kind: belief.ObsNumberPeople, Value: float64(npCount), Conf: 0.8,
+			Ts: nowMs, Fresh: true, Geom: belief.GeomUnknown,
+		})
 	}
 
 	// source-fidelity 审计(审查㊺ 系统性逐 obs 对账):emit 本 tick 真路径**实际 fresh**(populate 了)的 obs 源
