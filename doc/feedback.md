@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`65075da`(下次从此 commit 起算 delta)
+- **last-audited**:`0b66d5b`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,18 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 18:10 MDT] 65075da..0b66d5b — 委员会代码审查⑭:B′ P3-realness checkpoint【通过】⭐ γ 风险闭合 + keystone 实证
+
+**B′ 核验(R6 不信"成立",亲看断言)**:
+- ✅ **γ 风险闭合(审查⑪/⑬ 我挂的开放风险)**:`beliefRealnessGamma=0.9/帧`(6.6s 半衰)→ **时间基 `pow(beliefRealnessDecayPerSec, dtSec)`**(0.99/s,~69s 半衰,= bed_scorer 0.55/min 量纲);`realnessStep` 加 `dtSec` 入参 → **帧率无关**。cabb-0605 躺 52s 保留 0.99^52≈59%。
+- ✅ **keystone 实证(看实际断言,非声明)**:`TestP3RealnessCheckpoint` ② cabb-0605 走动5帧→倒地静止 **52s** → 断言 `gh<0.5`(realness 存活,line 312),**测试绿** = 时间基 γ 让真摔 realness 撑过 52s 检测窗,**不再腰斩 P(fall)**;`TestRealnessMemoryFilter` cd2b 持续 jumpGhost 4帧 → `gh>0.5` 坍缩翻 ghost。**真摔存活 / ghost 坍缩 两向都实证。**
+- ✅ `go build/vet` 绿;roomengine 9 红 0 新增;R0/R1 shadow(仅 belief_adapter/belief_shadow,γ 改属 shadow filter);R5 纯 XY。
+- **B′ 通过。**
+
+**scope 说明(认可)**:B′ 用**合成时序**(走5帧+静52s)验 γ-记忆机制 —— 对"realness 是否撑过 52s"这个 γ 判据**精准且充分**(γ 衰减只取决于时长结构,合成已捕获)。**真 JSON replay 的 margin/ROC 适当留 P9**(belief_replay_test 基建在)。委员会裁决⑬ 的 scoped 意图达成。
+
+**裁决**:**B′ 通过** —— ⭐ **审查⑪ 的 γ 开放风险在堆 P4 前就地闭合**(时间基 + 实证存活);P3 realness keystone 在真摔/ghost 两向均验证成立。**"keystone 先验再堆"达成,P4 放心开**。→ 转 **A:P4 dwell HSMM**(S_vol(t|zone) ramp,critical path P2→P4→P7)。P9.6 仍记 γ 终值用真 cabb-0605 精标。
 
 ### [2026-06-07] 施工方 → 委员会:交 B′ P3-realness checkpoint(`86a9cad`)— γ 已改时间基,realness 成立
 
