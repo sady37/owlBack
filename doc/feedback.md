@@ -54,6 +54,27 @@
 
 
 
+### [2026-06-08] 施工方 → 委员会:执行审查55 裁 SS-B → SleepStage 全清退役落地(#1.2)+ 收下 backlog reframe(fall-relevance 分流 4 wire+1 retire)
+
+**收下 reframe**:死源审计正确动作 = **按 fall-relevance 分流**(碰 SFallen/Empty-Left 仲裁→接活;不碰→#1.2 退役),非"5 都 wire"。纠我㊻ 预设,采纳。按裁 SS-B **全清** ObsSleepStage(6 文件,#1.2 不留 future-code):
+- `belief/observation.go`:删 enum `ObsSleepStage` + obsKindLabel 的 `"SleepStage"`(iota 后续值左移 1,belief 是内存 shadow 无持久化 int 依赖,安全)。
+- `belief/likelihood.go`:删整个 `case ObsSleepStage`(SBedRestless/SBedLying 分支)。
+- `belief/calibration.go`:删 `lrSleepRestless`/`lrSleepLying` + 注释段。
+- `belief_adapter.go`:删 bedAdapter 的 ObsSleepStage append(原 `if b.SleepConfidence>0` 守卫,因 BedOccupancyState 永不填 SleepConfidence→永 false→永空跑)+ 改注释 doc。
+- `belief/r5_calibration_lock_test.go`:删"对 SFallen 不写"注记里的 ObsSleepStage(剩 VitalPresent/TimeContext)。
+- `belief_b_replay_test.go`:删 `allObsKinds` 的 `"SleepStage"`(源保真审计全集对账,退役后不应再列)。
+
+**放行前置全绿**:
+- `go build ./...` + `go vet` 干净;**残留 ObsSleepStage/lrSleep grep 空**(全清验证)。
+- belief 包**全绿**(R5-lock 4 测试 + 原有);**9 红 0 新增**(roomengine 仍 7+2 production gate-list)。
+- **B 源保真审计**:`SleepStage` 已从「未populate」列消失 → 剩 `未populate=[BedOccupied〔data-driven〕/StandDuration/Neighbor]` = **恰好 reframe 后的 wire-backlog**(BedOccupied 已 wire,仅无床数据案窗 Conf=0 不 populate=数据驱动非 bug)。
+- #1.6 自查:改动文件无 dead-plumbing 标记(belief_adapter 仅余 P2.1 speed-cap 既有"兜底"注释,与本退役无关)。
+
+**死源 backlog(reframe 后)**:#1 BedOccupied ✅wire / #2 NumberPeople ✅wire / **#4 SleepStage ✅退役(SS-B,本次)** / #5 StandDuration ⬜wire(fall-relevant,SFallen 抬升源)/ #3 Neighbor ⬜wire(fall-relevant,SFallen 压制源,跨房需 redis-replay 整单元)。R5-lock ✅总闸。
+**下一步**:#5 StandDuration locus 预审(可单 agent 直推)。**裁前不建**:#5 locus 未裁不建;#3 Neighbor + recall 案 + redis-replay 待用户。**待委员会**:复核 SS-B 退役 + 裁 #5 StandDuration locus。
+
+---
+
 ### [2026-06-08 17:49 MDT] 审查55 `8f072b6..908b5f7`(doc-only)SleepStage 预审 → 裁 SS-B 退役 + ★reframe 死源 backlog 按 fall-relevance
 
 **性质**:`908b5f7` doc(SleepStage 源保真预审 + SS-A/SS-B)。无代码。

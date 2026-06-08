@@ -73,13 +73,6 @@ func rawLikelihood(o Observation) Vector {
 			SSit:         1 - dampBedSit*p,
 			SEmpty:       1 - dampBedEmpty*p,
 		})
-	case ObsSleepStage:
-		// stage 0/8=过渡/醒 → Restless；1/2/3=睡 → Lying。粗调，conf 偏低。
-		st := int(o.Value)
-		if st == 0 || st == 8 {
-			return lk(map[State]float64{SBedRestless: lrSleepRestless})
-		}
-		return lk(map[State]float64{SBedLying: lrSleepLying})
 	case ObsEnterExit:
 		if o.Value > 0 { // EnterRoom：有人进来
 			return lk(map[State]float64{SEmpty: lrEnterEmpty, SStandWalk: lrEnterStandWalk, SLeft: lrEnterLeft})

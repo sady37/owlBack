@@ -9,7 +9,6 @@ const (
 	ObsPose            ObsKind = iota // radar Track.Pose 枚举
 	ObsVitalPresent                   // HR>0 ∨ RR>0
 	ObsBedOccupied                    // bed 贝叶斯 P(InBed)，嵌套 belief 子证据
-	ObsSleepStage                     // sleepad 睡眠分期（S1 躺细分）
 	ObsEnterExit                      // EnterRoom=+1 / ExitRoom=-1
 	ObsNumberPeople                   // 房间人数 0-8
 	ObsStandDuration                  // 连续站立分钟（bathroom still-fall 时长门，v2 由 HSMM 替代）
@@ -23,7 +22,7 @@ const (
 )
 
 var obsKindLabel = [...]string{
-	"Pose", "VitalPresent", "BedOccupied", "SleepStage", "EnterExit", "NumberPeople",
+	"Pose", "VitalPresent", "BedOccupied", "EnterExit", "NumberPeople",
 	"StandDuration", "TrackPresent", "Neighbor", "TimeContext", "NoDetect", "ReachableExit", "ZBand", "DwellStill",
 }
 

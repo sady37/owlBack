@@ -444,20 +444,16 @@ func sleepadAdapter(o SleepadObservation, nowMs int64) []belief.Observation {
 	}
 }
 
-// bedAdapter bed 贝叶斯 scorer 输出 → ObsBedOccupied（嵌套 belief 子证据）+ ObsSleepStage。
+// bedAdapter bed 贝叶斯 scorer 输出 → ObsBedOccupied（嵌套 belief 子证据）。
 // BedConfidence(0/60/90) 透传为 Conf；0=无数据→不更新。
 func bedAdapter(b card.BedState, nowMs int64) []belief.Observation {
 	bedVal := 0.0
 	if b.BedStatus == 0 { // 0=InBed
 		bedVal = 1
 	}
-	out := []belief.Observation{
+	return []belief.Observation{
 		{Source: "bed", Kind: belief.ObsBedOccupied, Value: bedVal, Conf: float64(b.BedConfidence) / 100, Ts: b.BedStatusTs, Fresh: b.BedConfidence > 0, Geom: belief.GeomInBed},
 	}
-	if b.SleepConfidence > 0 {
-		out = append(out, belief.Observation{Source: "bed", Kind: belief.ObsSleepStage, Value: float64(b.SleepStage), Conf: float64(b.SleepConfidence) / 100, Ts: b.SleepStageTs, Fresh: true, Geom: belief.GeomInBed})
-	}
-	return out
 }
 
 // roomAdapter room 聚合状态 → []Observation。

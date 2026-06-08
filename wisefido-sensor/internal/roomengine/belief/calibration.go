@@ -27,10 +27,6 @@ const (
 	dampBedSit       = 0.5 // 1−0.5p
 	dampBedEmpty     = 0.5 // 1−0.5p
 
-	// ── ObsSleepStage(粗调,conf 偏低)──
-	lrSleepRestless = 2.0 // stage 0/8 过渡/醒
-	lrSleepLying    = 2.0 // stage 1/2/3 睡
-
 	// ── ObsEnterExit(event present 正向;absence≠负向 / 原则#3)──
 	lrEnterEmpty     = 0.2 // EnterRoom 压 Empty
 	lrEnterStandWalk = 2.0
