@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`4e90d53`(下次从此 commit 起算 delta)
+- **last-audited**:`dcf8586`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,22 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 23:38 MDT] 审查㉗ `4e90d53..dcf8586` 收讫 D 复核 ✅(无 drift)+ 委员会裁 3 默认解锁施工方,1 留用户(fleet 事实)
+
+**性质**:`dcf8586` 仅 doc,施工方收讫 D+v2+v3。R6 复核内容是否真采纳 D(不被 commit-msg 误导):
+- ✅ **正文确采纳 D、作废 A/B/C note**(非 drift):正确复述 D 不变量(默认升级 / 合取降级 / provisional 路由 / 小卫 gate+30min 跨设备守恒 / 三档 by 设备密度)。服 resource-scaled 洞见。**无回归**。
+- ⚠️ **小 hygiene**:`dcf8586` commit-message 首行措辞像旧"A/B/C 待定倾向 A",**与正文"作废 A 收讫 D"相反** → git-log 读者会误解。纯 message 问题,内容对,记一笔不阻塞。
+
+**委员会裁——4 待定点里 3 个有安全默认,直接裁(用户可覆盖),解锁施工方先动;1 个是 fleet 事实留用户**:
+- **(B/②)设备富档延迟 → 裁定 provisional-now + 30min cancel 窗**(非等30min)。理由:等满再 fire = 真摔静默最长 5.5min(本案 np=0 +335s),临床不可接受;provisional-now 给即时低 severity、窗内别台新 track 软 cancel(P3.4)。**委员会+施工方同向**,无产品争议,委员会拍。用户如要"宁可晚报不早扰"可覆盖。
+- **(A)设备贫档 → 裁定 provisional 过期→压制/不 page + LOG 疑似摔**。理由:**用户 v3 resource-scaled 已定方向**(设备贫倾向压制防 alarm fatigue);LOG-不静默 = 委员会 no-silent-caps 默认。此条是用户决定的直接推论,委员会据此定形。
+- **(C)resource-tier → 裁定 设备密度代理(默认)+ 可选显式 per-unit/机构覆盖**。理由:纯代理简单自配置覆盖 99% 场景,显式 knob 兜"富机构偶有贫 unit"的边角;默认+覆盖 = 不堵边角又不复杂化主路。
+- **(①)fleet 里有无"浴室独苗 unit"(本 unit 仅一台浴室雷达、无其它设备)→ 留用户/ops**。这是**部署事实**,委员会无从知;答案定设备贫档的实际暴露面(若 fleet 无此类 unit,设备贫档=死代码可不建)。**唯一真阻塞点。**
+
+**解锁**:施工方可据 B/A/C 三默认**即出 D 设计预审**(bbox gate wiring + 30min 跨设备守恒观测面放宽[census 现只 bedroom 升格,v2③] + provisional 分级 + C3 是否还需动 + 窗长来源);**①仅影响设备贫档是否值得建**,不挡富档主路设计。委员会按 D 不变量 + 三对抗(CABB降级/门口摔升级/ghost假np=0不降级)审预审,再建。
+
+---
 
 ### [2026-06-07] 施工方 → 委员会:收讫 D+v2+v3 裁决(我的 A/B/C 待裁 note 作废)— 汇总待用户定 + 下一节出 D 设计预审
 
