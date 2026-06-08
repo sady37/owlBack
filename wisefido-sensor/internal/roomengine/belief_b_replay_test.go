@@ -203,6 +203,59 @@ func bFindWindowFile(t *testing.T, dir string) string {
 	return ""
 }
 
+// allObsKinds — source-fidelity 审计的全 obs 全集(belief 引擎认的源;对账"真路径 populate 了哪些")。
+var allObsKinds = []string{
+	"Pose", "VitalPresent", "BedOccupied", "SleepStage", "EnterExit", "NumberPeople",
+	"StandDuration", "TrackPresent", "Neighbor", "NoDetect", "ReachableExit", "ZBand", "DwellStill",
+}
+
+// TestBSourceFidelityAudit — 系统性 source-fidelity 审计(审查㊺ 当前最高价值):8 案逐 obs 对账。
+// 每案统计真路径上**实际 populate(fresh)**的 obs 源 → 对全集找 **dead/未 populate** 的源
+// (firmware/redis/bed 三连同根=DBN obs 源≠生产实际源)。一次挖净,非 piecemeal。**纯 observability,不刚性断言。**
+func TestBSourceFidelityAudit(t *testing.T) {
+	everPopulated := map[string]bool{} // 跨 8 案任一 tick populate 过的源(全局视角)
+	for _, c := range bCases {
+		c := c
+		file := bFindWindowFile(t, c.dir)
+		logs := bReplay(t, c.dir, file)
+		casePop := map[string]bool{}
+		for _, l := range logs {
+			if l.Msg != "belief_shadow_obs" {
+				continue
+			}
+			if ks, ok := l.Fields["populated_kinds"].([]interface{}); ok {
+				for _, k := range ks {
+					if s, ok := k.(string); ok {
+						casePop[s] = true
+						everPopulated[s] = true
+					}
+				}
+			} else if ks, ok := l.Fields["populated_kinds"].([]string); ok {
+				for _, s := range ks {
+					casePop[s] = true
+					everPopulated[s] = true
+				}
+			}
+		}
+		var pop, dead []string
+		for _, k := range allObsKinds {
+			if casePop[k] {
+				pop = append(pop, k)
+			} else {
+				dead = append(dead, k)
+			}
+		}
+		t.Logf("source-fidelity case=%s C类=%s | populated=%v | 未populate=%v", c.dir, c.class, pop, dead)
+	}
+	var globalDead []string
+	for _, k := range allObsKinds {
+		if !everPopulated[k] {
+			globalDead = append(globalDead, k)
+		}
+	}
+	t.Logf("★source-fidelity 全局:8案任一tick从未populate的obs源(疑死管/源错配,待逐个核生产实际源)=%v", globalDead)
+}
+
 // TestBReplaySmoke — B harness 冒烟:每案跑通真生产路径无 panic(保真 + 全路径走通)。
 func TestBReplaySmoke(t *testing.T) {
 	for _, c := range bCases {

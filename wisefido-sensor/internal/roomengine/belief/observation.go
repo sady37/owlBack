@@ -22,6 +22,19 @@ const (
 	ObsDwellStill                     // P4.1 dwell 生存函数(Value=still 秒,Geom=zone)：-lnS_vol(d|zone) 平滑 ramp 取代"still≥阈即报"硬悬崖
 )
 
+var obsKindLabel = [...]string{
+	"Pose", "VitalPresent", "BedOccupied", "SleepStage", "EnterExit", "NumberPeople",
+	"StandDuration", "TrackPresent", "Neighbor", "TimeContext", "NoDetect", "ReachableExit", "ZBand", "DwellStill",
+}
+
+// String ObsKind 标签（source-fidelity 审计 / observability）。
+func (k ObsKind) String() string {
+	if int(k) < 0 || int(k) >= len(obsKindLabel) {
+		return "Unknown"
+	}
+	return obsKindLabel[int(k)]
+}
+
 // Geom 位置语义标签——由 device 坐标 ∩ layout polygon 现算（belief_input_normalization.md §1）。
 // belief 隐状态 S 不含坐标，位置只作 P(o|s) 的条件。
 type Geom int

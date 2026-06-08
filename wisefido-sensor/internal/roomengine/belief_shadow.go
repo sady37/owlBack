@@ -100,6 +100,10 @@ func (e *Engine) beliefShadowEvent(roomID, eventName string, nowMs int64) {
 	e.beliefShadowMu.Lock()
 	defer e.beliefShadowMu.Unlock()
 	sh := e.beliefShadowFor(roomID)
+	if o.Fresh && o.Conf > 0 { // source-fidelity 审计:event 路径喂的 obs(EnterExit)也计入 populated
+		e.logger.Debug("belief_shadow_obs", zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),
+			zap.Strings("populated_kinds", []string{o.Kind.String()}))
+	}
 	sh.b.Step(nowMs, []belief.Observation{o})
 
 	// DBN P1 Track 层：firmware ExitRoom → 各 track 喂 TObsExit（→JustLeft，压 Lost）。
@@ -477,6 +481,21 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				zap.Bool("p5_radar_on_bed", false), // displaced → 不压 → Fall 浮出
 			)
 		}
+	}
+
+	// source-fidelity 审计(审查㊺ 系统性逐 obs 对账):emit 本 tick 真路径**实际 fresh**(populate 了)的 obs 源
+	// (Debug,生产默认不开;B 聚合每案 populated/dead obs 集,挖"obs 源≠生产实际源/死管"类 gap)。
+	if len(obs) > 0 {
+		seenKind := map[belief.ObsKind]bool{}
+		var kinds []string
+		for _, o := range obs {
+			if o.Fresh && o.Conf > 0 && !seenKind[o.Kind] {
+				seenKind[o.Kind] = true
+				kinds = append(kinds, o.Kind.String())
+			}
+		}
+		e.logger.Debug("belief_shadow_obs", zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),
+			zap.Strings("populated_kinds", kinds))
 	}
 
 	sh.b.Step(nowMs, obs)
