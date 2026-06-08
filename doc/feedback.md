@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`eee4998`(施工方 2aa64e1 cases+eee4998 doc 无 sensor 代码,已 account)(下次从此 commit 起算 delta)
+- **last-audited**:`f084ff2`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,29 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-08 02:05 MDT] 审查㊳ `eee4998..f084ff2` A/B/C 裁决(收用户 333B-ghost 定调)+ 拆 C=P5-scoping / B=载体 / 序列
+
+**性质**:`31c1c0f`+`f084ff2` 两 doc(施工方 A/B/C + 用户定调 A 暂缓转 C)。无代码。委员会一并裁。
+
+**✅ A 暂缓——用户理由 sound 且比委员会㊳ 原虑更强**:委员会本要 flag"A 前提=333B 有 fall 未验(只导 8 CD2B 卧室、0 个 333B)"。用户给了更硬的理由:**333B 有未查 ghost → 导它=ghost 噪声当 D-path 真数据 → 污染 oracle 真值**(造对验证器须真值干净,ghost 未分离则 cancel-vs-escalate 验不了)。**A 暂缓正确**,等用户理清 333B ghost。
+- **加值**:333B ghost 一旦分类,**不是废数据**——是 **P3 realness/ghost 链的专属 oracle**(小浴室 ghost 多正印证 P3+审查㉚ 归属不变量的价值)。施工方已识此点,确认。
+
+**✅ 实质推论确认**:8 个 CD2B fall 全卧室 FP(走 P5 bed/R4/sleepad,**非 D-path**)→ **D-path recapture-cancel 至今无真数据验**(合成 e2e + CABB 单设备无 recapture),且现**阻塞于 333B ghost**。真缺口,记账。
+
+**拆 C / B(不简单接受"转 C")**:
+- **🔁 C 重定性**:C=析 8 CD2B 卧室 fall——但它们走 **P5 bed O_b(尚未建)**。**C 不是"验已完成代码",是诊断+给 P5 定 scope**(`fire 伴 LeftBed×2-3 同秒`共性 → radar 把翻身/离床误读 Fall → 需 P5 用 sleepad InBed/LeftBed 压制 radar 卧室 Fall)。C 产出 = **P5 规格/优先级**,非 pass/fail。
+- **❌ B 不是 A/C 替代,是载体**:A/C 数据都得过 beliefShadowTick 才有判定 → 需最小 oracle harness。不是三选一。
+
+**裁决(序列,非三选)**:
+1. **转 C 确认**——但定位为 **P5-scoping**:8 CD2B 卧室 fall 过(现有 P5雏形/R4/sleepad + P3/P6.1a shadow)→ 量卧室 FP 压制率 + 看 LeftBed-co-fire 是否被 sleepad/bed 接住 → **直接答用户原始关切**(在床误报/2人床边/LeftBed 翻拍/lost 2h)+ **导出 P5 真实失败模式清单**。
+2. **C → P5 数据驱动**:C 的诊断喂 P5 bed O_b 设计(别盲建 P5;让真 FP 定形)。**推荐 C-then-P5**。
+3. **P6.2 N_r 可并行**(与 333B/卧室 FP 无关,纯代码节点,独立 DAG)。
+4. **D-path 真数据验**(333B)= 阻塞用户查 ghost;ghost 清后 → 333B fall 喂 D-oracle + 333B ghost 喂 P3-oracle。
+
+**待用户**:333B ghost 排查(解锁 D 真验 + P3 ghost oracle)。**近期施工方可动**:C(析 8 卧室 fall→P5 scope)或 P6.2(并行纯代码)。委员会倾向 **先 C(de-risk P5)**。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:用户定调 — 333B 有未查 ghost 情景 → **选项 A(导 333B 验 D-path)暂缓,转选项 C**(先析 8 个 CD2B 卧室 fall)
 
