@@ -41,6 +41,25 @@
 <!-- 每次 audit 追加一条:
 
 
+
+### [2026-06-08] 施工方 → 委员会:收 ㊵(P5 PASS⭐ + P6.2 裁)+ P-wall v3 边界 + 用户"穿墙60s→cell engine"答复 + P6.2 γ bed 拓扑实证→记残差
+
+**收讫 ㊵**:P5【干净 PASS⭐】(R6 亲跑合取门控/滚下床对抗/R5 IgnoresZ/leak让位/9红0新增)——治 α 落地确认,谢复核。P6.2 裁收讫(驳 Opt-b 全局软化;Opt-a 前提为假[ObsFirmwareFall 无 track_id + Track 层无 Fall 态]=大活勿急;Opt-c 须先验 γ bed 拓扑;γ minor 记残差或建c)。
+
+**P-wall v3 边界收讫(守 #7,不越界)**:P-wall 归 cell engine 慢周期 + layout,**DBN 零参与只读 WallPolygon**。确认 belief 现状已只读 WallPolygon(geomFromGrid/ParseLayoutConfig 单耦合边 P0 契约),**不会在 belief 写 wall-detection / wall-too-tight 检测**(=越界 ⚠️)。亦不 patch 漂移/不写 wall 逻辑。
+
+**答用户问(穿墙 60s 统计 → 告知 cell engine)**:
+- **能检出**:穿墙 = real track 越 WallPolygon 外。判据(承 v2)= **≤30cm 越墙外 ∧ 返回** = wall-too-tight(镜面 ghost 对称离真人远不贴墙≤30 + ㉚ realness 滤 ghost);>30cm/单向 = exit/ghost。需 track XY + WallPolygon + realness;60s 聚合 = 墙缘 real-track 样本数 + 最大穿透深度 + 是否返回。
+- **归属(守 v3)**:WallPolygon 是 layout 概念,firmware 分钟 stat 无 layout → 检测必 server 侧。**cell engine 本就读 track + 持 layout → 慢周期自检自学(同 dwell/AreaType 日级),单源无跨层 notify 无 drift**=最省。独立 60s-stat producer 观测再告知亦可但引新通道(须带 realness + 不与 cell engine 自累计重复 rule 2.4)。**DBN 守界零参与**,只读最终(可能已外扩)WallPolygon。
+
+**P6.2 γ bed 拓扑实证(兑现 ㊵ 先验条件)**:读 0142/0127 fixture(bed bbox x[-70,150]y[90,240] / wall x[-300,250]y[40,460]):
+- **0605-0142**:2 track 同现,但 **id1 持续床左 x≈-150~-210 off-bed**(墙内非墙太内,真·床边地面),id2 部分在床 → **非两人同时在床**。
+- **0607-0127**:**全程 0 帧含 2 track 同现**(np=2 是先后非同时)→ 非"两人在床"。
+- **结论**:两 γ 案均**非"两人同时在床"** → **Opt-c 合取(N_r≥2 ∧ bed-count≥2 ∧ Fall track 在床)不成立 → c 不 fire 不修 γ**。
+- **裁后动作**:按委员会"记残差 或 建c"——**c 既不修 γ,记残差**(不投机建)。**γ = 已知 minor 残差(≤2/8)**,真治待 **Opt-a per-track 归因**(需扩 Track 层 per-track Fall 态 / firmware Fall 带 track_id,大活,委员会"勿急")。残差记此,留 P_id/Track 层成熟时回。
+
+**当前活跃路径**:P5 已闭(PASS)。P-wall 不归 DBN(cell engine/layout)。P6.2 γ 记残差。**DBN backlog 余**:P6.3 P_id / P4.5 缺席驻留 / P7 τ* / P8 health / P9 oracle(8 CD2B fixture 端到端复核待 replay harness)+ Opt-a(P6.2 真治,待 Track 层扩)。**听委员会定下一活跃节点**;333B 待用户查 ghost。
+
 ### [2026-06-08 12:13 MDT] 委员会指令 v3(用户架构归位)→ P-wall 归 cell engine 慢周期,DBN 零参与只读 layout(原则#7)
 
 用户定调:**"往返漂移、又没 fall、正常 track → 应该是 cell engine 慢周期处理,不要在 DBN 中处理,DBN 直接用 layout 结论。"** → **架构归位**(正合原则#7 cell engine 独立 / DBN 只读):
