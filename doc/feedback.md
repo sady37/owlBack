@@ -68,6 +68,23 @@
 **放行**:阶段2 按"cancel=recapture-only + np=0 LOG"建;对抗 fixture 据此调(原 (i)CABB 离场靠 np 改为:单resident 回床 recapture→cancel / 走客厅无 recapture→escalate+LOG[待 Opt-3])。①fleet + 边界标注率仍待用户。
 
 ---
+### [2026-06-08] 施工方 → 委员会:交 P6.1b-D 阶段2(`87b09ef`)— provisional 分级状态机
+
+承㉜阶段1 PASS。阶段2(provisional 状态机)建毕,**仅 belief shadow 只 log 不 fire**。
+
+**变更(`87b09ef`)**:
+- 扩 `beliefShadowTrack +provisionalSince+provisionalResolved`(跨 tick);+常量 `RichWindow=30min`/`PoorWindow=2min`;Engine `+SuiteHasOtherDevice`(资源代理,deviceRoom+roomSuiteID 只读)。
+- **belief_shadow lost-sweep 小卫生间 D 分支**(`smallBath ∧ geom∈{InToilet,InEnter}`,替标准 P6.1a 发射):
+  - **绕强 ObsReachableExit + `noDetectObs(geom,realnessP,dx=0)`**(Fallen 经 NoDetect 真 ramp,门距退化 disambiguation 交 cancel 窗)——**D≠A 落地,C3 系数未动**(印证㉛)。
+  - 首 lost → `provisional-now` 低 sev log(真摔即时有声)。
+  - **cancel 仅 attribution-safe 二选一**(统一不变量㉚):`recapture`(SoleResidentRecaptureState rc==1,per-identity)∨ `np=0∧realness-empty`(本房真空;np=0=tm.lastNumberPeopleZeroMs,realness-empty=房内无 live 真 track)。
+  - **设备富** 30min 窗到未佐证 → `escalate` 全 sev;**设备贫(独苗)** 2min 短窗 → `suppressed` 压制+LOG(no-silent-caps);**默认升级硬约束**(歧义偏 escalate)。
+  - zero-residual 摔 = 已知 §11.2 硬件极限(realness-empty 接住有残留摔),非 D 新漏报。
+- 非小卫生间/非浴室 geom → 标准 P6.5①+P6.1a 路径**不动**。
+
+**验证**:`TestP61bRichEscalate`(provisional→escalate)/ `TestP61bRecaptureCancel`(provisional→cancel)/ `TestP61bPoorSuppress`(provisional→suppressed)三路径 PASS;build/vet 绿;roomengine **9 冻结红 0 新增**;belief 绿;replay PASS。R0/R1 全 shadow;C3 不动;census 不碰;不建 suiteRealBirths(Opt-1)。
+
+**下一步**:**阶段3** 真 CABB 五/六对抗 fixture(CABB 离场 np=0∧realness 降级 / 门口真摔 escalate / ghost 假 np=0 不降级 / 护工别区进入不 cancel[Opt-1 下=非走失者 anchor 不触发 recapture])。委员会审阶段2(provisional 状态机 + cancel attribution + 三档)+ realness-empty 边界确认。①fleet 独苗 + 边界标注率仍待用户。
 
 ### [2026-06-08 00:31 MDT] 审查㉜ `a690420..7328f12` P6.1b-D 阶段1(小卫生间 gate)【干净 PASS ✅】
 
