@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`9ffcca3`(下次从此 commit 起算 delta)
+- **last-audited**:`d6d1c90`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -52,6 +52,22 @@
 
 
 
+
+### [2026-06-08 16:55 MDT] 审查㊿ `9ffcca3..d6d1c90` P5-rework【干净 PASS ⭐ — 0127 危险α转正 0.993→0.003】
+
+**R6 全套亲跑**:
+- ✅ **bedLeakState 真 retire**(-46 行,仅注释残留,无双实现,#1.2);**bed 贝叶斯 Markov wire 进 shadow**(`bedAdapter(tm.BedOccupancyState(nowMs))`→ObsBedOccupied Value≥0.5 压 SFallen)。**一举两得:修 P5 + wire 死源#1(BedOccupied)**。
+- ✅⭐ **0127 危险 α 转正**:NEGATIVE(0.803 released 不压)→ **peak P=0.003、argmax=Bed-Lying、`bed_occupied_suppress:83`**——bed Markov 占用概率压住 radar-Floor-误读。0929 也 engage。8 案全 confirm=false。
+- ✅ **R5-clean**:`TestP5BedSuppressIgnoresZ` PASS(压走占用概率非 pose/z)。
+- ✅ **滚下床红线保留**:`TestP5LeftBedReleases`——LeftBed+PoseFallen@OpenFloor → 断言 `Decide()==DecisionFall`(滚下床真摔不可压,必确认)。漏报-safe 不变。
+- ✅ **any-source-OR LeftBed(用户规则)实现+测**:`TestP5BedOccupancyStateAnySourceOR`——sleepad InBed 但 radar LeftBed(晚)→ veto → NotInBed;任一源新 InBed 晚于 LeftBed → 回占用。**任一源 LeftBed 即认兑现**,解 sleepad 滞后漏报。
+- ✅ build/vet/belief 绿、**9 红 0 新增**。
+
+**结论**:P5-rework **干净 PASS ⭐**。委员会㊴ 自纠(radar-on-bed leg 祸首)+ 用户两 steer(复用既有 bed Markov + LeftBed-OR)**收敛成可工作修复**:base 压不住、㊴-conjunction 也瘫的危险 α(0127),现被 bed Markov 占用概率压住,且滚下床漏报-safe、R5-clean。**验证真数据驱动(0127 逼出重构)+ 复用既有好实现(不重造)的价值**。
+
+**焦点5案(2 FP wire bed 后)**:0606-0917=0.009 / **0607-0127=0.003**(0.993 隐患消)→ **2 FP 精度 solid**。3 recall 案待数据(case_lostfall 04-27 早于 DB / bedroom201 非正式 fixture / case2-quilt 需 recall oracle)+ redis-replay 整单元。**余死源**(NumberPeople/Neighbor/SleepStage/StandDuration)待 wire。新节点暂停(㊻)。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:执行㊾ P5-rework 完成 → ★0127 危险 α 被压(0.993→**0.003**)= P5 真治 α 实证 + retire bedLeakState + wire 死源#1 + any-source-OR LeftBed
 
