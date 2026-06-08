@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`a8730e8`(下次从此 commit 起算 delta)
+- **last-audited**:`2c9a50b`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -40,6 +40,26 @@
 
 <!-- 每次 audit 追加一条:
 
+
+### [2026-06-08 12:05 MDT] 审查㊵ `a8730e8..2c9a50b` P5 代码【干净 PASS ⭐ R5裁定全兑现】+ P6.2 设计裁(驳b/a前提为假/c须验γ覆盖/γ minor 勿急)
+
+**Part 1 — P5 bed O_b 迟滞+合取门控代码(`05cc62f`)【干净 PASS ⭐】**:R6 全套亲跑——
+- ✅ build/vet/belief 绿、**9 红 0 新增**、6 个 P5 fixture 全 PASS。
+- ✅ **R5-clean 合取门控落地**:`bedAuthorityObs` suppressor=占用(leaked sleepad InBed authority,`bedLeakState` 0.99/s leak)∧ 位置(`radarOnBed`=geom InBed by cell 几何,**非 z/pose**,belief_shadow.go:139 注释明示);任一不足→bedVal=0→默认 escalate。**z/pose 绝不作压制因子**(我㊴ R5 裁定)。
+- ✅ **滚下床红线对抗 `TestP5RollOffBedNotSuppressed` PASS**:sustained LeftBed+位移 OpenFloor+z低+Fall → 不压仍 escalate(R5 不漏报)。
+- ✅ **我㊴ 强制的 R5 专项断言 `TestP5SuppressorIgnoresZ` PASS**(压制路径无视 z)。`TestP5BedLeakSustainedDecays`:120s sustained→authority<0.5 让位真离床(leak 让位滚下床签名,非盲衰减)。R0 全 shadow。
+- **结论**:P5 忠实落地㊴ P5c 重构,放行前置(α压制+滚下床对抗+R5专项断言)全兑现。**治 α(≥5/8 主导卧室 FP)落地可证。**
+
+**Part 2 — P6.2 N_r 设计预审(`2c9a50b`,治 γ 2人床边)裁决**:
+- **❌ 驳 Opt-P6.2b(N_r 全局软化+floor)**:全局抬 fall 门槛=非归因软化,**回退 ㉚/㊴ 建立的"归因/合取非全局压"主线**;同 P6.1a door-exit floor 类问题(全局 damp 可被打穿/软化真摔赌 floor 接住)。不取。
+- **⚠️ Opt-P6.2a(per-track 归因)前提为假(亲验)**:`ObsFirmwareFall`(adapter:430)**不带 track_id**(只 Geom);Track 层 5 态**无 per-track Fall 态**(只 Lost)。→ 施工方"firmware Fall 带源 track"**不成立**。(a) 需 **空间关联(Fall geom→最近 real track)+ 扩 Track 层 per-track Fall 证据**(P1 §7 大活),归因还是"最近 track"模糊猜。**(a) 是原则终态但非现成,勿按假前提建。**
+- **🔁 Opt-P6.2c(合取 bed-count+位置)= 现成可行的漏报-safe 选项**:用 Fall 自带 Geom + bed 占用 count(都现成,不需 track_id)→ N_r≥2 ∧ bed-count≥2 ∧ Fall-geom 在床 → 软化;任一不足→不软化(默认 escalate)。R5-clean(count/占用非 pose/z)。**但须先验:γ 案(0142/0127)是"两人都在床"还是"一人床上+一人床边"?** 若"一人床边"→bed-count=1→(c)不触发→γ FP 仍在=(c)安全但对这些案无效。
+- **★ γ 是 minor 模式(≤2/8),勿为它急上 (a) 大活**:α(≥5/8)P5 已治、β 归 P3/P6.1a。**裁定**:(1) 先 cheap-verify γ 案 bed 占用拓扑;(2) 若"两人都在床"→建 (c)(漏报-safe 现成);(3) 若"一人床边"或 (c) 不覆盖 → **记 γ 为已知残差,待 (a) per-track**(Track 层 Fall 态扩展是更大 P1 节点,数据/架构触发再建,不为 1-2 案投机建)。**驳 b、(a) 待真前提、(c) 须验 γ 覆盖。**
+- 共性:R5-clean(软化走 count/占用/归因非 pose/z)+ 默认 escalate + **2人一人真摔对抗例**(一人独立倒地 pose+dwell→不软化仍 escalate,红线)= 建任一选项的放行前置。
+
+**裁决**:P5 **代码 PASS ⭐**(α 治愈落地)。P6.2:**驳 b;(a) 前提为假需大活勿急;(c) 现成但须先验 γ 拓扑覆盖;γ minor 不投机**。施工方先 verify γ 案 bed 拓扑 → 定 (c) vs 记残差。**P6.2 未裁落点不建**。333B 待用户 ghost。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:P6.2 N_r 设计预审(治 γ 2人床边)— 含一个类 R5 红线岔口待裁(2人一人真摔)
 
