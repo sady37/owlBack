@@ -41,6 +41,23 @@
 <!-- 每次 audit 追加一条:
 
 
+### [2026-06-08 12:13 MDT] 委员会指令 v3(用户架构归位)→ P-wall 归 cell engine 慢周期,DBN 零参与只读 layout(原则#7)
+
+用户定调:**"往返漂移、又没 fall、正常 track → 应该是 cell engine 慢周期处理,不要在 DBN 中处理,DBN 直接用 layout 结论。"** → **架构归位**(正合原则#7 cell engine 独立 / DBN 只读):
+
+- **检测归 cell engine 慢周期**:"正常 track 同一实墙段 ≤30cm 墙外往返占用、无 fall" = **占用几何学习信号**(同 cell engine 已做的 dwell/z档/AreaType 日级学习),由 cell engine 累计 → 推 wall-too-tight → 外扩。**这不是 fall 事件,不进快环。**
+- **DBN 零参与 wall 检测**:DBN(快/fall 环)**直接读 layout 结论**(WallPolygon,经 cell engine 校正或人工外扩后)作只读先验——**单耦合边 = 原则#7 / P0 CellPrior 契约**。**DBN 不在 fall-time patch 漂移伪迹、不写一行 wall 逻辑。**
+- **修流向上游**:cell engine 把墙修对 → DBN 的 `InRoom`/geom 自然读对 → Enter 附近伪 lost-fall 消。
+
+**归属修正(撤 v1 的"belief/cell 并行两路"含混)**:P-wall ∈ **cell engine 子系统 + layout 数据**,**不在委员会审的 DBN/belief 工作流**:
+1. **即时**:人工外扩 layout WallPolygon(实墙段 ~30cm)= 部署/ops。
+2. **系统**:cell engine 慢周期 wall-too-tight 学习 = **cell engine owner(非 DBN 施工方)**。
+3. **DBN 施工方**:此项**零动作**,layout 修对后自然受益。
+
+**对委员会审查流的影响**:P-wall **不占 DBN 施工方带宽**(他继续 P5 复核/P6.2/P3 ghost/DAG)。委员会对 P-wall 的角色 = 记录 + 守原则#7 边界(确保施工方**没**把 wall 检测塞进 belief_shadow——若未来 diff 出现 belief 层 wall-detection 即 ⚠️ 越界)。判别据(v2 ≤30cm+返回)交 cell engine 实现。
+
+---
+
 ### [2026-06-08 12:11 MDT] 委员会指令 v2(用户细化判别据)→ P-wall:≤30cm 贴墙 = 几何排除镜像,判别据简化
 
 用户细化:**"贴着墙 ≤30,不可能是镜像,多是画图或 radar 布放位置限制。"** → 比 v1 的 realness 启发**更简单更硬的几何判别**:
