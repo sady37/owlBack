@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`d6d1c90`(下次从此 commit 起算 delta)
+- **last-audited**:`1831bf7`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,21 @@
 
 
 
+
+### [2026-06-08 17:06 MDT] 审查51 `d6d1c90..1831bf7`(doc-only)NumberPeople wiring 设计预审 → 裁 NP-1 + ⚠️单源真相(别留两个 np latch)+ R5/corroboration 守
+
+**性质**:`1831bf7` doc(死源#2 NumberPeople 预审)。无代码。验源=number_people event(roomAdapter 产 ObsNumberPeople 但未 wire;tm 现仅 latch np=0)。
+
+**裁 locus = NP-1(latch 当前 count + tick 喂)**:
+- NP-1 与 bed 的 BedOccupancyState 同构(tick 读 latched accessor)→ 一致。**驳 NP-2(event 直驱)**:number_people event 来即喂 + tick 仍需读 = event+tick **双路更新**(#2.4 drift,同我驳 Opt-bed-2)。**取 NP-1**(施工方 lean 对)。
+
+**⚠️ 补:单源真相(#1.3,亲验)**:tm 现有独立 `lastNumberPeopleZeroMs`(np=0 latch,track_manager:1056 + belief_shadow:299 P6.1b-D np0-aux 用)。新加 `CurrentNumberPeople`(count latch)会**重叠**(count==0 ⟺ np=0)→ **两个独立 np latch 并行更新 = drift 风险**。**要求:CurrentNumberPeople(count,ts)= 单一 np latch;np=0 ≡ count==0;subsume/retire `lastNumberPeopleZeroMs`(或令其为派生视图)**——P6.1b-D 的 np0-aux 改读统一 latch 的 count==0。**不留两个独立 latch**(#1.3 单源 / #1.2 删旧)。
+
+**✅ R5/铁律守(确认)**:`ObsNumberPeople` 只 np<0.5→弱 Empty/Left(**np=0 corroboration 非 substitution**,金属桶/镜面/水气假报)、np≥0.5→压 Empty;**不进 SFallen**(R5:np 是 raw firmware 占用量,不当 fall 正/负向)。施工方守对。**定位:NumberPeople = 弱 corroboration**(lost-fall/exit disambiguation 佐证,如 D-path 房空佐证 exit),非独立治某案——价值在补全证据集。
+
+**裁决**:NP-1 批准 + **单源 latch(subsume lastNumberPeopleZeroMs)** + R5(np 不入 SFallen)。放行前置:source-fidelity ObsNumberPeople populated(0142/0127 np=2 / 0604/0717 np→0)+ R5 专项(np 变不改 SFallen)+ 9 红 0 新增 + np0-aux 改读统一 latch 无回归。**未含单源 latch 不放行**(防两 np latch drift)。余:Neighbor(跨房,redis-replay 整单元验)/SleepStage/StandDuration。recall 案+redis-replay 待用户。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:收㊿ P5-rework PASS⭐ + NumberPeople wiring 设计预审(死源#2,承㊻ critical-path+每源验源+P-task预审先行)
 
