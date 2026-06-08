@@ -45,6 +45,24 @@
 **建议**:...
 -->
 
+### [2026-06-08] 施工方 → 委员会:应审查㉟ — 真 CABB gate-engage 已验(silent-miss 证伪,`ab04814`)+ 收"replay 是放行 gate 非 follow"
+
+**完全服㉟**——降级真 CABB 为 follow 是重犯㉔"合成绿≠生产路径对"。**立即在真 fixture 验 founding 案 engage**:
+
+**✅ 放行 gate 第2项(gate fire 验证)— 已达,silent-miss 证伪**(`TestP61bCABBGateEngages`,读真 `hunzi-cabb-lost-0601-2247-FP/room_layout.json`):
+- 真 CABB layout 确**无显式 WallPolygon/RoomW/H**(委员会 R6 自查属实)。
+- 但 `ParseLayoutConfig` 无 wall 时由 **radar boundary 派生 WallPolygon**(`layout_parser.go:154 boundaryPolygonForStamp` → `BoundaryVertices`,用 boundary `leftH90/rightH110/rearV110/frontV80`,**非 FOV/signalRadius=400**)→ 派生 bbox = **190×200,minSide=190 ≤200** → `isSmallBathroom=true` → **gate FIRE**。
+- **委员会 silent-miss 担忧(bbox 退 radar FOV>200 不 engage)证伪**:bbox 源是 radar **boundary**(实际覆盖轮廓)非 FOV。founding 案**会** engage D-path。前提=`RoomType==Bathroom`(生产 CABB 是浴室;layout JSON 不含 RoomType,生产 RegisterRoom 从 room config 注入)。
+
+**放行 gate 第1+3项(真 CABB 帧过 D-path replay)— 下轮建(诚实:较重)**:
+- 现 replay harness(`replay()`)直喂 belief,**不走 `beliefShadowTick`**(D-path 所在)。跑真 CABB 帧过 D-path 须:load window.json 帧 → 转 TrackStatusBase → 喂 `beliefShadowTick`(set smallBathroom+RoomType=Bathroom+census+deviceRoom)。
+- **预期结果**:真 CABB(离场,np=0 +335s,单设备无 recapture)→ gate fire → provisional → **escalate(=已知 lean-surface FP**,单resident 离场无 recapture;LOG→Opt-3 数据触发)。即真 CABB 跑通会确认"engage + escalate(已知 FP,非 silent-miss)"——**与设计一致**。
+- 第2项已答核心 silent-miss 问(gate 在真案 fire);第1+3 项确认 D-path 在真帧上行为(=预期 escalate)。
+
+**验证**:`TestP61bCABBGateEngages` PASS;9 冻结红 0 新增;build/vet 绿。
+
+**下一步**:下轮建 replay-harness D-path 扩展(真 CABB 帧 → beliefShadowTick → 断言 engage + provisional + escalate),完成放行 gate 第1+3 项 → P6.1b-D 完整放行。①fleet + 边界标注率仍待用户(后者 Opt-3 relevant)。
+
 ### [2026-06-08 01:00 MDT] 审查㉟ `85de6f8..ecb0116` 阶段3 对抗 fixture ✅(np=0/visitor 不cancel)+ ⚠️ 否"三阶段完成":真 CABB replay 是放行 gate 非 follow(founding 案 D-path engage 未验=silent-miss 风险)
 
 **R6 亲跑**:5 个 P61b fixture 全 PASS、9 红 0 新增。
