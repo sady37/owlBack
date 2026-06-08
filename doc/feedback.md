@@ -67,6 +67,30 @@
 - **注**:无论 X/Y,**redis-replay 全设备×两流仍是权威**(B 单房无法验 Neighbor/census 跨房源)。
 
 **待委员会/用户**:① 裁全 8 案重导 (X)/(Y) ② redis-replay 谁跑(待用户 ②)③ 0127 逐案。新节点暂停(㊻)。333B 待 ghost。
+### [2026-06-08 15:47 MDT] 委员会指令(用户定焦点验证集)→ 5 案 = 2 精度(FP)+ 3 recall(真摔,含 2 firmware 漏报)
+
+**用户 2026-06-08 选定验证集**(全 case 目录 R6 核存在):
+**精度集(2 FP,期望 shadow 压制/不 confirm)**:
+- **`cd2b-fall-0606-0917`**(09:17-09:19 MDT):进 bathroom 后**又有进出事件** = 人在动非倒地 = FP。
+- **`cd2b-fall-0607-0127`**(01:27-01:29 MDT):**床上跌停** = on-bed FP(**正是 0127 peak 0.993 近-FP** 那个精度隐患案)。
+
+**recall 集(3 真摔,期望 shadow 捕获/escalate)**:
+- **`case_lostfall_cd2b_11351148`**(11:35-11:48,带 sleepad_BM1641 数据):**盲区跌床、firmware 无 alarm(漏报)**。
+- **`case2-quilt-bedside-fall-0604`**(0604 16:14-16:31):**被子盲区跌床、无报警(漏报)**。
+- **`bedroom201-bedside-1027`**(6.6 10:27):radar-detect + sleepad 翻身 + **跌在床** —— P5 最难判别边界。
+
+**★ 委员会洞察(这组的价值结构)**:
+- **2 个盲区跌床漏报案 = DBN-direct 的关键 recall oracle**:测 **DBN 能否抓住 firmware 漏掉的**(filter 抓不到漏报,只有独立 DBN 检测能)。**但盲区里 radar 也瞎** → DBN 唯一信号 = **sleepad(InBed→LeftBed→不回床)** → 这 2 案实测的是 **sleepad 驱动 bed-fall recall 路径**,非 radar。**若 DBN 的 bed-fall 检测靠 radar pose,盲区跌床抓不到;sleepad LeftBed-不回 是唯一杠杆**(连 P5/bed + lost-fall via sleepad)。
+- **bedroom201-bedside-1027 = P5 判别边界**(翻身压制 vs 翻身后真跌捕获,同一序列两面)——最难的精度/recall 同案张力。
+- 补㊻/㊼ 的 recall 缺口:**这 3 案就是真摔集**(此前只有 precision/FP)。precision(2)+recall(3) 齐了。
+
+**裁定(验证集 + 期望)**:整单元 redis-replay 重放这 5 案(201 三设备×两流,**含 sleepad BM1641 流**——recall 案命脉)→ shadow 决策对账:**2 FP→压制(不 confirm)/ 3 真摔→escalate(捕获)**。特别看:① 2 盲区漏报案 DBN 靠 sleepad 能否 escalate(=DBN-direct 价值实证 / 或撞 §11.2 盲区硬限)② bedroom201-1027 翻身 vs 真跌是否分对(P5)③ 0607-0127 是否真压住(0.993 隐患)。
+- **B 侧**:这 5 案 fixture 必含 sleepad.track + bed event(finding-2 教训:别漏 sleepad 源)。
+- **这组替代"全 8 CD2B"成为当前焦点验证集**(用户定;更聚焦且含 recall)。新节点仍暂停(㊻);死源 wiring + 此验证集并行推进。
+
+**待用户/施工方**:整单元 redis-replay 谁跑(环境)→ 出这 5 案 shadow 决策 → 用户 human-in-loop 校对给 fix。333B ghost 待查不阻 obs-populate(浴室 case 才涉)。
+
+---
 
 ### [2026-06-08] 用户澄清 + 施工方记:redis-replay 须**整单元重放**(非单设备)→ 单元 201 = 3 设备(CD2B+sleepad1641+333B),细化 redis-replay 执行 spec
 
