@@ -21,6 +21,14 @@ const beliefShadowEnabled = true
 
 const beliefShadowLostTTLMs = 60_000 // track 超此无帧 = 丢失（对齐 trackLostAnchorMs）
 
+// P6.1b-D(审查㉛ Opt-1)小卫生间 provisional/分级窗:
+//   设备富(unit 有其它设备)→ 30min cancel 窗(覆盖立项 np=0 +335s),窗到未佐证升级。
+//   设备贫(浴室独苗,无跨设备 cancel 可能)→ 短窗早决断压制(省真摔无谓延迟,resource-scaled v3)。
+const (
+	beliefProvisionalRichWindowMs = 30 * 60 * 1000 // 设备富:30min cancel 窗
+	beliefProvisionalPoorWindowMs = 120 * 1000     // 设备贫:2min 早决断(无 cancel 可能)
+)
+
 type beliefShadowTrack struct {
 	lastSeenMs       int64
 	stillBoxAgeMs    int64 // 最后一帧时的 still-box 时长（消失前是否走动的依据）
@@ -28,6 +36,9 @@ type beliefShadowTrack struct {
 	lastX, lastY     int     // 最后一帧位置 → 算丢失点离门距离 d（P2 reachable-exit）
 	approachSpeedCmS float64 // A：丢失前朝门定向逼近速度（在 track 仍活时算好 stash，丢失后 ts 可能已销毁）
 	lostAnchor       int64
+	// P6.1b-D provisional 状态机(小卫生间分支,跨 tick):
+	provisionalSince    int64 // 进 provisional 的 ms(0=未进);小卫生间 lost 即置 + log provisional-now
+	provisionalResolved bool  // cancel/escalate/suppressed 已决断 + log(防重复 log)
 }
 
 // beliefShadowTLayer DBN P1 Track 层（per-track T_t）。与 Room 层 tracks 刻意分离：
@@ -231,6 +242,21 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		}
 	}
 
+	// P6.1b-D(审查㉛ Opt-1)小卫生间 provisional 分级 的 room 级前置(每 tick 一次)。
+	// realnessEmpty=房内本 tick 无 live 真 track(realnessP>0.5)= 真空房(np=0 的 realness 佐证,堵 ghost 假 np=0)。
+	smallBath := e.IsSmallBathroom(roomID)
+	suiteID := ""
+	realnessEmpty := true
+	if smallBath {
+		suiteID = e.SuiteIDForRoom(roomID)
+		for tid2 := range curTL {
+			if tl2 := sh.tlayer[tid2]; tl2 != nil && realnessPFromLO(tl2.realLO) > 0.5 {
+				realnessEmpty = false
+				break
+			}
+		}
+	}
+
 	// 丢失扫掠：track 超 TTL 无帧 + 消失前走动（still-box<60s）+ 非门区 → lost-fall ramp。
 	for tid, st := range sh.tracks {
 		if _, alive := cur[tid]; alive || nowMs-st.lastSeenMs <= beliefShadowLostTTLMs {
@@ -242,6 +268,68 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		if st.lostAnchor == 0 {
 			st.lostAnchor = st.lastSeenMs
 		}
+
+		// P6.1b-D(审查㉛ Opt-1)小卫生间 lost → provisional/分级状态机(替标准 reachableExit 抑制)。
+		// 门距退化(处处近门)→ 不靠 door-distance;Fallen 经 NoDetect 真 ramp(dx=0),离场判别交 cancel 窗。
+		// cancel 仅 **attribution-safe** 佐证(统一不变量 审查㉚):recapture(走失者本人 anchor,per-identity)
+		// ∨ np=0∧realness-empty(本房真空;zero-residual 摔=已知 §11.2 硬件极限,非 D 新漏报)。
+		// 默认升级硬约束:歧义→escalate。设备富 30min cancel 窗;设备贫(独苗)短窗早决断→压制+LOG(v3 resource-scaled)。
+		if smallBath && (st.geom == belief.GeomInToilet || st.geom == belief.GeomInEnter) {
+			tl := sh.tlayer[tid]
+			realnessP := 1.0
+			lostDevice := ""
+			if tl != nil {
+				realnessP = realnessPFromLO(tl.realLO)
+				lostDevice = tl.device
+			}
+			if st.provisionalSince == 0 {
+				st.provisionalSince = nowMs
+				e.logger.Info("belief_shadow_lostfall_provisional", // provisional-now 低 sev(真摔即时有声,不静默 5.5min)
+					zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
+					zap.String("last_geom", st.geom.String()))
+			}
+			// cancel 佐证(attribution-safe 二选一)
+			recaptured := false
+			if e.suiteCensus != nil {
+				if rc, recap := e.suiteCensus.SoleResidentRecaptureState(suiteID); rc == 1 && recap {
+					recaptured = true
+				}
+			}
+			np0Recent := tm.lastNumberPeopleZeroMs > 0 && nowMs-tm.lastNumberPeopleZeroMs <= beliefProvisionalRichWindowMs
+			if recaptured || (np0Recent && realnessEmpty) {
+				if !st.provisionalResolved {
+					e.logger.Info("belief_shadow_lostfall_cancel", // 可佐证离场 → 软降(P3.4),不 ramp Fallen
+						zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
+						zap.Bool("p6_1b_recapture", recaptured),
+						zap.Bool("p6_1b_np0_realness_empty", np0Recent && realnessEmpty),
+						zap.Int64("p6_1b_provisional_ms", nowMs-st.provisionalSince))
+					st.provisionalResolved = true
+				}
+				continue // 离场确认 → 不喂 lost-fall 发射
+			}
+			rich := e.SuiteHasOtherDevice(suiteID, lostDevice) // 设备密度=机构资源代理(v3)
+			elapsed := nowMs - st.provisionalSince
+			if rich {
+				obs = append(obs, noDetectObs(st.geom, realnessP, 0, nowMs)) // dx=0 干净 ramp(门距退化,disambiguation 交 cancel 窗)
+				if elapsed >= beliefProvisionalRichWindowMs && !st.provisionalResolved {
+					e.logger.Info("belief_shadow_lostfall_escalate", // 窗到未佐证 → 全 sev 真摔(延迟但不漏)
+						zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
+						zap.Int64("p6_1b_provisional_ms", elapsed))
+					st.provisionalResolved = true
+				}
+			} else { // 设备贫(浴室独苗):无跨设备 cancel 可能 → 短窗早决断
+				if elapsed < beliefProvisionalPoorWindowMs {
+					obs = append(obs, noDetectObs(st.geom, realnessP, 0, nowMs)) // 短窗内仍 ramp(provisional)
+				} else if !st.provisionalResolved {
+					e.logger.Info("belief_shadow_lostfall_suppressed", // 设备贫→压制不 page,但 LOG 疑似摔(no-silent-caps,机构可回看)
+						zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
+						zap.Int64("p6_1b_provisional_ms", elapsed), zap.Bool("p6_1b_resource_poor", true))
+					st.provisionalResolved = true
+				}
+			}
+			continue // D-path 已处理,跳过标准 P6.5①/P6.1a 发射
+		}
+
 		// P6.5①(审查㉑批准,选项A)跨设备 track 守恒:bathroom track 丢失时,若 sole resident 已重现别处
 		// (SleepadAnchored 回床铁证 ∨ 跨 BathroomGate 返回 bedroom)= 人移到别处 = exit 非 fall →
 		// 不喂 lost-fall 发射(shadow 抑制,只 log 不 fire,R1;自洽 P3.4 超窗重现=自救)。

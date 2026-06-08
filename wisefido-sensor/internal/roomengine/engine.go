@@ -891,6 +891,26 @@ func (e *Engine) IsSmallBathroom(roomID string) bool {
 	return e.smallBathroom[roomID]
 }
 
+// SuiteHasOtherDevice P6.1b-D(资源代理):同 unit 是否有 excludeDevice 以外的设备。
+// 用途:小卫生间 lost provisional 的设备富/贫判定——设备富(true)→30min cancel 窗;独苗(false)→短窗压制。
+// 设备密度 = 机构资源水平代理(v3 用户洞见)。读 deviceRoom→roomSuiteID 数同 suite 设备(只读)。
+func (e *Engine) SuiteHasOtherDevice(suiteID, excludeDevice string) bool {
+	if suiteID == "" {
+		return false
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for dev, roomID := range e.deviceRoom {
+		if dev == excludeDevice {
+			continue
+		}
+		if e.roomSuiteID[roomID] == suiteID {
+			return true
+		}
+	}
+	return false
+}
+
 // pickAdjudicator 按 room_type binary 分类挑选 adjudicator。读锁内调用。
 // nil-safe：未调 SetGhostAdjudicators 时退化 Noop（保 PR-4 默认行为 == v1）。
 func (e *Engine) pickAdjudicator(roomType int) GhostAdjudicator {
