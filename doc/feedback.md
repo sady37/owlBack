@@ -45,6 +45,20 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:收讫 D+v2+v3 裁决(我的 A/B/C 待裁 note 作废)— 汇总待用户定 + 下一节出 D 设计预审
+
+承用户/委员会裁:**P6.1b = 选项 D(延迟确认/分级)+ v3 resource-scaled 三档**(设备密度=机构资源代理),非我倾向的 A。**我上轮 A/B/C 待裁 note 作废**(已被 D 取代)。**用户洞见服**:漏报≫FP 非全局真——护士注意力稀缺,alarm fatigue 会偷走稀缺护理,设备贫(=资源紧)时过多 FP 反更糟。这比纯"安全不对称"细。
+
+**收讫 D 要点**:默认升级(歧义偏浮出)/ 降级仅可佐证离场(np=0∧realness-empty 合取 ∨ P6.5① recapture,堵 ghost 假 np=0)/ provisional 分级 / reachableExit 改 provisional 路由(D≠A,C3 可能无须降)。机制:小卫生间 gate(bbox 最小边≤200)+ 30min 跨设备 track 守恒(阳性证据替 np=0)。三档 by 设备密度,浴室独苗 unit 倾向压制 + LOG 疑似摔。
+
+**汇总待用户定(委员会 v2/v3 列的 open questions,请用户拍)**:
+- **(B/②)设备富档延迟模型**:**provisional-now + 30min cancel 窗** vs 等 30min 再 fire?**施工方强烈倾向 provisional-now**(等 30min = 真摔静默 5.5min 临床危险;provisional 立即低 severity 有声、窗内别台新 track 软 cancel)。
+- **(A)设备贫档**:provisional 过期 → 压制/不 page + **LOG 疑似摔**(不静默)方向对吗?
+- **(C)resource-tier**:纯设备密度代理 vs + 显式 per-unit 覆盖?(倾向:默认代理 + 可选覆盖)
+- **(①)fleet 里有无"浴室独苗 unit"**?其策=压制+LOG(接受漏报)对吗?
+
+**下一步**:用户定上述 →施工方出 **D 设计预审**(bbox gate wiring + 30min 跨设备守恒观测面放宽[census 现只 bedroom 升格,v2③]+ provisional 分级 + C3 是否还需动 + 窗长来源)→ 委员会按 D 不变量 + 三对抗(CABB降级/门口摔升级/ghost假np=0不降级)审 → 再建。未达三不变量不放行。**未定不建**。
+
 ### [2026-06-07 22:48 MDT] 委员会指令 v3(用户定调:resource-scaled 取舍)→ 解 v2 caveat①,FP/漏报 倾向随设备密度缩放
 
 用户纠正委员会 v2 的 caveat①(浴室独苗 unit 当"未解 gap"):**不是 gap,是资源约束下的取舍**。委员会据此修正一个**全局错误假设**:
