@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`0f50acb`(下次从此 commit 起算 delta)
+- **last-audited**:`a690420`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,32 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-08 00:18 MDT] 审查㉛ `0f50acb..a690420` P6.1b-D v4 复核 — 不变量推理 ✅ 漂亮 + Opt-1 批为"现在建" + ★守恒律为框架(纠"attribution 本质不可解":边界观测可救→Opt-3 数据触发升级)
+
+**性质**:`a690420` 仅 doc(D v4)。R6 核 v4 推理 + 接用户提的「unit track 守恒律」。
+
+**✅ v4 不变量自检 = 漂亮的收敛**:按统一不变量逐条问"能否被走失者以外产生",正确判出 generic 跨设备 real-birth 不安全(birth 分不开 recapture vs 新人进入,总占用==1 治不了窗内新人)→ Opt-1(drop generic,留 identity-bound recapture + np=0∧realness-empty)。**两条留下的佐证确 attribution-safe**(recapture 绑走失者本人 anchor;np=0 是 per-room 别人产生不了)。Hole C/D/D' 作为 generic 的子症状一次拔根。**推理严谨,委员会认可。**
+
+**★ 用户提的「unit track 守恒律」= 这一切的组织框架(记为委员会设计纲)**:
+> unit 真人数 `N_unit` 只由跨 **unit 边界**(户门)进出改变;有限窗内 `P(N 不变)` 高。各设备 `n_d` 观测真 track,`Σn_d ≤ N_unit`(≤ 因盲区)。**fall 的正向判据 = 在 unit 内(无边界离场)∧ 失track ∧ 窗内未在别处重现**。
+- v4 的两条佐证 **都是守恒律的 attribution-safe 子case**:recapture=同一人重现;np=0∧realness=本房 `n_d→0` 确认真空。**守恒律解释了为何这两条安全、generic 不安全**——它们要么绑 identity、要么是本房计数,generic 只是"某处 +1"无归属。
+- **三前提**(缺一账目错):只数真人(realness)/ 边界可观测 / 覆盖拓扑已知。
+
+**❓ 纠 v4 一个过强结论(委员会 + 守恒律)**:v4 说 generic real-birth **"本质 attribution-unsafe、必 drop"**——**过强**。亲验:系统**有 unit 边界模型**——`cell.go:155 EnterTarget="outside"`(通向 unit 外,人工标+layout 锁,自学习决不写,决定20)。→ **边界可观测时,守恒账目能区分**:
+- real-birth(realness-confirmed)+ **无**同窗"outside" enter 穿越 → **unit 内relocation = 守恒的走失者本人** → **attribution-safe cancel**;
+- real-birth + **有** "outside" enter 穿越 → **新人进入**(N+1)→ 不归属走失者 → 不 cancel。
+- → 这是 **Opt-3(守恒+边界)**,v4 没看到(提交早于守恒框架)。**generic 不是本质不可解,是"birth 单看"不可解;加边界 delta 就可解**。Opt-3 strictly 优于 Opt-1 之处:resident 走到**无身份别区(客厅)**,Opt-1 无 recapture→escalate=**FP**,Opt-3 无边界穿越→正确 cancel。
+
+**裁决 — Opt-1 批为"现在建",Opt-3 作数据触发升级(非现在,守住 v4 简化)**:
+- **Opt-1 批准现建**:最简(无 ledger/无 Hole-C realness-gate)、attribution 完备、封死整类。**v4 的简化是真价值,现在不要为 Opt-3 重新加回 ledger 复杂度**。
+- **Opt-2 否决**(留 generic + 总占用==1 + 残差 LOG):违反统一不变量,委员会同施工方否。
+- **Opt-3 记为升级路径(数据触发)**:Opt-1 的 escalate 全程 LOG;若数据显示"resident 离浴室→无身份别区→escalate-FP"**频繁**(且该 unit 标了 "outside" enter=边界可观测)→ 再升 Opt-3(守恒+边界 cancel)。**先建 Opt-1、measure、按 LOG 频率决定是否升**(同多resident census 扩展的数据触发纪律)。不投机建 Opt-3。
+- 第六对抗(护工别区进入→不 cancel 仍 escalate)纳入 Opt-1 fixture。
+
+**放行**:Opt-1 设计**批准建**(分阶段:gate bbox≤200 / provisional 状态机 + 小卫绕 ObsReachableExit + dx=0 + 设备贫早决断 + cancel=recapture+np=0∧realness / 对抗 fixture 含第六)。守恒律记为框架;Opt-3 升级路径待数据。**①fleet 浴室独苗 + 边界可观测性(outside enter 标注率)= 两个部署事实待用户**(定设备贫档 + Opt-3 适用面),但都不挡 Opt-1 现建。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:P6.1b-D 设计预审 v4 — 采纳统一不变量自检 → ⚠️**更深发现:generic 跨设备 real-birth 本质 attribution-unsafe**(收敛到 identity-bound)
 
