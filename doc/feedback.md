@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`957f854`(下次从此 commit 起算 delta)
+- **last-audited**:`4e90d53`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,27 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 22:29 MDT] 审查㉖ `957f854..4e90d53` P6.1b 经验调查复核(零代码)——经验全验属实 ✅ + C≈A 成立 + np=0 不可靠故 D 也不成 → §11.2 不可分坐实,升级用户裁
+
+**R6 亲跑复核经验调查(不信声明,自查 fixture)**:
+- ✅ **无 ExitRoom**:`doc/cases/hunzi-cabb-lost-0601-2247-FP/window.json` 直接 grep = EnterRoom×1 / **ExitRoom×0**。坐实"reachableExit 为漏 ExitRoom 而生"。
+- ✅ **np=0 +335s**:replay_test.go:374 注释坐实"无 ExitRoom,仅 number_people 1→0(+335s)"。
+- ✅ **单设备无 recapture**:CABB 单雷达小卫生间,P6.5① 无第二设备可守恒。
+- ⟹ **早窗 [0,335s] reachableExit 是唯一及时离场信号** —— 委员会(b)"强离场靠可靠证据"在立项工况 **经验为假**。施工方调查诚实、结论成立。
+
+**复核 C≈A(同意,且补强为何成立)**:np=0 在 +335s,而 lost-fall 临床时效 ~2min。任何让门口真摔 ~2min 内浮出的 Left-先验衰减窗,都会在 [衰减完, 335s] 让 CABB 离场 Fallen 累积越 τ = 仍 FP;衰减窗 >335s 则真摔 fire 太晚失时效。**根因=np=0 太晚,时间轴上同样不可分**。C≈A 成立,徒增复杂。
+
+**⚠️ 拆 A/B/C 框架——补两点他漏的(不简单选 A)**:
+1. **第四选项 D(np=0 当晚到的 cancel 而非 suppress:延迟确认)也不成**——我本想提"扩门区 lost 窗 ≥335s,以 np=0-不到 当触发"escape 二义(代价=门区真摔延迟 ~5.5min 确认)。**但本轮注释自揭 np=0 是"过度信任·待重标定"(ghost/水气假报 np=0)**:若用 np=0 当 cancel,ghost 假 np=0 → cancel 掉真门口摔 = 换个门漏报。**连晚到的 np=0 都不是可靠裁判** → D 不比 A 好。**坐实:现有信号无干净技术出路 = §11.2 信息论残差具体落地**(DBN 立项第一天就识别的那条不可分对,此刻有了真数据实例)。
+2. **这个取舍与用户上轮"ExitDistMinCm 30→60"是同一前沿的相反两端**(关键,必须让用户看见):
+   - **生产 `ExitDistMinCm` 调大(30→60/100)** = 更多近门 lost 当离场压住 → **↓CABB FP / ↑近门真摔漏报**。
+   - **选项 A(降 DBN reachableExit)** = 离场抑制变弱 → **↓门口真摔漏报 / ↑CABB FP**。
+   - **两者方向相反**:用户 30→60 的直觉在治 **CABB FP**;施工方倾向的 A 在治 **门口真摔漏报**。**一个旋钮治不了两头**——选哪端 = 选 elder-care 里哪类错更贵。施工方"漏报≫FP"倾向 A,**恰与用户 30→60 方向相反**,不能闷头执行。
+
+**裁决**:经验调查 ✅ 受理,二义 ✅ 坐实为 §11.2 信息论残差(非实现缺陷,无干净技术解)。A/B/C/D 是 **漏报-vs-FP 产品级风险偏好**,且**与用户已表达的 30→60 方向冲突** → **升级用户定调,委员会不擅拍**。委员会专业意见:elder-care 漏报代价≫FP,**倾向 A(降+强制 LOG `belief_shadow_reachexit_weak_fp_risk`,no silent caps)**;但因与用户 30→60 直觉相反,**须用户显式确认**再建。**未裁不建**(R0:本就是 shadow,不急)。
+
+---
 
 ### [2026-06-07] 施工方 → 委员会:P6.1b 放行前置经验调查**已做**(真 CABB fixture)→ (b)假设经验为假,二义坐实 → 安全权衡列选项待裁
 
