@@ -61,6 +61,30 @@
 **待**:**阶段3 = 真 CABB 对抗 fixture**(审查㉝调后:单resident回床recapture→cancel / 走客厅无recapture→escalate+LOG[待Opt-3];门口真摔→escalate;设备贫→suppress;multi-resident/visitor→不误cancel)。现夹具是合成 e2e(状态机逻辑),**阶段3 须真 CABB + 五/六对抗**才算 P6.1b-D 完整放行。①fleet + 边界标注率仍待用户。
 
 ---
+### [2026-06-08] 施工方 → 委员会:交 P6.1b-D 阶段3 对抗 fixture(`ca3adee`)— **Opt-1 三阶段完成** ⭐
+
+阶段3(对抗 fixture)建毕 → **P6.1b-D Opt-1 三阶段全完成**(gate + provisional 状态机 + 对抗)。
+
+**阶段3 对抗(经真 `beliefShadowTick` D-path,非合成 likelihood——避免㉔ 那类省略路径的假阳性绿)**:
+- **(i)** 单resident 回床 recapture → `cancel`(`TestP61bRecaptureCancel`);
+- **(ii/iii)** 无 recapture(走客厅/门口真摔)→ `escalate` 不漏报(`TestP61bRichEscalate`);
+- **(iv)⭐** np=0 在场(firmware 屋内空)+ 无 recapture → **`escalate` 不 cancel**(`TestP61bNp0DoesNotCancel`,证㉝:np 是 lost-fall 共有条件非判别器,absence≠leave);
+- **(v)⭐** 护工 visitor 在场 + resident 未回床 → **`escalate` 不 cancel**(`TestP61bVisitorDoesNotCancel`,证 cancel 绑走失者本人 anchor per-identity,visitor 移动≠重现);
+- 设备贫 → `suppressed`(`TestP61bPoorSuppress`)。
+
+**验证**:全 PASS;roomengine **9 冻结红 0 新增**;belief 绿;replay PASS;build/vet 绿。R0/R1 全 shadow;C3 不动;census 不碰;不建 suiteRealBirths(Opt-1)。
+
+**P6.1b-D Opt-1 完成总结(3 commit:gate `65eb0ff` + 状态机 `87b09ef` + ㉝修正 `85de6f8`段 + 对抗 `ca3adee`)**:
+- 小卫生间 lost → provisional-now(即时低 sev)→ **cancel 仅 recapture**(扩展不变量:attribution-safe ∧ leave-discriminating)→ 设备富 30min 窗到 escalate / 设备贫短窗 suppressed+LOG。
+- **门距退化处不靠 door-distance**(绕 ObsReachableExit,D≠A,C3 未动)——治㉔ 门口真摔漏报 + 不放回 CABB 离场 FP(np 不再 cancel)。
+- 历经 Hole C/D/D' → 统一不变量 → 扩展不变量(leave-discriminating)逐层收敛,委员会 6 轮压力测试(㉘-㉝)。
+
+**已知残差/follow(诚实)**:
+- 单resident 走客厅未回床 → escalate=FP(LOG);**可靠离场-cancel 升级 = Opt-3 边界穿越**(`cell.EnterTarget=outside`),**数据触发**(measure escalate-FP 频率)。
+- 真 CABB json-replay 走 D-path 需 replay harness 扩 smallBathroom flag + 镜像 D-path,作 follow(本阶段 e2e 已覆盖 D-path 逻辑,经真 beliefShadowTick)。
+- 待用户两部署事实:① fleet 浴室独苗(定设备贫档实际暴露)② "outside" enter 标注率(定 Opt-3 适用面)。
+
+**下一步**:委员会审 P6.1b-D 完整 Opt-1。过 → P6.1b 闭(治㉔ 门口真摔漏报 + 守 CABB)。余 DBN backlog:P6.2 N_r / P6.3 P_id / P5 bed O_b / P4.5 缺席驻留 / P7 τ* / P8 health / P9 oracle(含 Opt-3 数据触发 + 全 P9.6 标定)。
 
 ### [2026-06-08] 施工方 → 委员会:应审查㉝ 修阶段2 cancel=recapture-only(已建,含 np-cancel 的 87b09ef 已改)
 
