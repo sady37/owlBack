@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`df4efcb`(下次从此 commit 起算 delta)
+- **last-audited**:`e5f1cff`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,26 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 23:58 MDT] 审查㉙ `df4efcb..e5f1cff` P6.1b-D v2 复核 — Hole C 修对 ✅ + ⚠️ Hole D(多occupant 漏报,镜像 P6.5①,须复用 single-resident gate)
+
+**性质**:`e5f1cff` 仅 doc(D 预审 v2)。R6 核 Hole C 修复 + 压 v2 新设计。
+
+**✅ Hole C 修复 sound(亲验)**:
+- `suiteRealBirths map[suiteID][]{device,bornMs}` 在 **shadow 层**(非 census,**护架构#7**);各房 producer 在 `realnessPFromLO>0.5` 确认 real 才记账,跨房只读"已确认 real 出生事件"(非 raw、非跨房 realLO)。别台 ghost(realLO<0)不入账 → cancel 窗读不到 → 不 cancel。**与 np=0 护栏同构,D 命门两条降级路径都堵。** R3 只读、census 不动——架构干净。
+- 第四对抗(别台 ghost+真摔→不 cancel 仍 escalate)正确;次要两点(小卫 dx=0 干净 ramp / 设备贫早决断)采纳到位。
+
+**⚠️ Hole D(漏报-class,放行前置)——v2 新机制漏了委员会自己在 P6.5① 定的 per-identity 纪律**:
+- `anyRealBirthSince(suiteID, lostAnchor, excludeDevice)` 计**任一** real 出生,**无 person 归属**。**多人 suite**:A 浴室门口真摔(单浴室设备)+ 室友 B 走进客厅(别台 real track 新生)→ 账有 real birth → **cancel 掉 A 的 provisional → A 漏报**。
+- **这正是审查㉑ 在 P6.5① recapture 抓的多resident 跨身份误抑制**:委员会当时定 **single-resident-gate**,施工方那里守了 per-identity(`SoleResidentRecaptureState` residentCount==1,visitor 不计,多resident→保留告警零漏报,注释 suite_census.go:625-630)。**v2 这里退回"任一 real birth"丢了同一纪律**——不一致。
+- **要求**:跨设备 cancel 复用 **residentCount==1 gate**——仅单occupant suite 才认"别台 real birth = 那个走失的人"(可 per-identity 归属);**多resident(或有 visitor 致归属不清)→ 此 cancel 路径 OFF → 不 cancel → escalate**(零跨身份漏报,与 P6.5① 同裁)。**第五对抗**:多resident,A 浴室真摔 + B 进客厅 real track → **不 cancel A 仍 escalate**。
+- 注:visitor 也会生 real birth → 单老人+访客护工时,visitor 移动不应 cancel 老人的真摔 → gate 须按"可归属到走失者"判(residentCount==1 且 birth 可归该 resident),不是"suite 有任一 real birth"。
+
+**❓ 次要(非阻塞,记实现)**:`realLO` 逐帧累积(`realnessStep` 带 γ)→ **track birth 时 realLO 未必>0.5**。施工方"track 首现 + realnessPFromLO>0.5"把首现与 realness-confirmed 混了(首现还没建起 realness)。应在 **realLO 真正越 0.5 时**记账(bornMs 仍用出生时刻供窗判),非 raw 首现。误差方向安全(欠记→少 cancel→FP 非漏报),但记一笔求准。
+
+**裁决**:Hole C **修复批准**。**放行前置 = 修 Hole D**(跨设备 cancel 复用 single-resident gate + 第五对抗,与 P6.5① 一致)。realness-confirm 时机次要点采纳。修后 → 分阶段建(阶段1 gate+suiteRealBirths producer+single-resident-gated accessor / 阶段2 provisional 状态机 / 阶段3 五对抗 fixture 真 CABB)。**Hole D 未修不放行**(D 主路最强信号的多occupant 漏报)。①fleet 事实仍待用户。
+
+---
 
 ### [2026-06-07] 施工方 → 委员会:P6.1b-D 设计预审 v2 — 修 Hole C(跨设备 cancel realness-gate)+ 第四对抗 + 采纳次要两点
 
