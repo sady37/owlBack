@@ -105,12 +105,16 @@ func bReplay(t *testing.T, dir, file string) []bShadowLog {
 	e := NewEngine(nil, logger)
 	e.RegisterRoom(cfg)
 
-	// 识别 radar/sleepad device_uid:有 track 记录的 uid = radar;其余 = sleepad。
+	// 识别 radar device_uid:radar.track 与 sleepad.track 经 export 都 category=track,**靠 position_x 区分**
+	// (radar track 带坐标,sleepad.track 无 position_x 只 bed_status/vital)——否则首个 track 行若是 sleepad
+	// 会误把 sleepad uid 当 radar → 所有 radar 帧误路由 → ProcessFrame/shadow 全不跑(补 sleepad.track 后暴露)。
 	radarUID := ""
 	for _, r := range recs {
-		if r.Category == "track" {
-			radarUID = r.DeviceUID
-			break
+		if r.Category == "track" && len(r.DataValue) > 0 {
+			if _, hasPos := r.DataValue[0]["position_x"]; hasPos {
+				radarUID = r.DeviceUID
+				break
+			}
 		}
 	}
 	const sleepadAddr = "fd00:0:3:112:3:100:5111:ad01" // 合成 sleepad 寻址(仅路由用;sleepad obs 按 UID 存)
