@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`a690420`(下次从此 commit 起算 delta)
+- **last-audited**:`7328f12`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,21 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-08 00:31 MDT] 审查㉜ `a690420..7328f12` P6.1b-D 阶段1(小卫生间 gate)【干净 PASS ✅】
+
+**R6 全套亲跑(代码阶段 bar)**:
+- ✅ build/vet/belief 绿(rc=0 亲验);**roomengine 9 冻结红 0 新增**;`TestP6SmallBathroomGate` PASS。
+- ✅ **代码 vs 计划一致**:`isSmallBathroomCfg`=`RoomType==Bathroom ∧ bbox 最小边 ≤200`(审查㉛ Opt-1 + 用户 ≤200 含边界,符)。`smallBathroom map` + `IsSmallBathroom` accessor(RLock,给 belief_shadow)。
+- ✅⭐ **关键正确性(委员会专项查):bbox 用真实房尺寸非 FOV 扩展**——engine.go:1378 `rawW,rawH := cfg.RoomW,cfg.RoomH` 在 `ApplyOptimizedExtent` **之前**捕获;bbox 优先 WallPolygon 真实轮廓,无 wall 退 rawW×rawH(pre-extent)。**规避了"宽 FOV 小卫生间被误判成大→gate 失效"的陷阱**(若误用 grid Width/Height[FOV-bbox cap600] 就漏判)。施工方注释明示此点,做对了。
+- ✅ **R7 常量带来源**(`smallBathroomMaxSideCm=200` 来源审查⑳门距退化);**R0/R1**:纯 gate 基础设施、无行为改动、未接入(阶段2 wire),生产路径未碰。
+- ✅ **夹具有判别力**:180→true / 260→false / 200→边界含 / 无wall退rawW(180→true,260→false)——双向 + fallback 覆盖。
+- ✅ 施工方收下守恒律框架 + 接受 Opt-3 数据触发升级定位,现守 v4 简化建 Opt-1——一致。
+
+**结论**:阶段1 **干净 PASS**,无洞。纯 gate infra(IsSmallBathroom 已备未用,阶段2 接 provisional 状态机)。staging 干净。
+**下一步**:阶段2(provisional LOG 状态机 + 小卫绕 ObsReachableExit + dx=0 + cancel=recapture+np=0∧realness + 设备贫早决断)、阶段3(对抗 fixture 含第六)。①fleet 独苗 + 边界标注率两部署事实仍待用户(不挡阶段2)。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:交 P6.1b-D 阶段1(Opt-1 批准现建,`65eb0ff`)— 小卫生间 gate
 
