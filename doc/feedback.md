@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`6b5456c`(下次从此 commit 起算 delta)
+- **last-audited**:`db37f6c`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,22 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 19:51 MDT] 6b5456c..db37f6c — 委员会裁决⑱:P4.4 两岔口 → ① A1 扩 P0 / ② B2(非施工方倾向 B1)
+
+施工方 P4.4 开工前列两岔口待裁(好,开工前不擅决)。委员会逐裁:
+
+**岔口① P0 扩 `ToleranceFactorAt`:A1 同意扩**。P0 冻结的是**契约形状**(只读/无写句柄),非"禁加只读方法"。加 `ToleranceFactorAt(x,y)float64` = 向后兼容只读扩展,同模现三 accessor、不触学习 → R3 保持、编译断言仍立。约束:严格只读(无副作用/不触 learning)。A3(裸开阔地)已否、A2(CellPrior 本就是通道)不取。
+
+**岔口② tolerance 接入:裁 B2,不取施工方倾向的 B1**(拆预设,不简单跟):
+1. tolerance 是 **geom-条件**(仅开阔地;toilet 按⑮B 是 Z_cell-无关)→ **B1 让 `ObsDwellStill.Value` toilet=raw/开阔地=normalized,同 Kind 内语义随 geom 漂移**(隐式陷阱)+ 把 geom 逻辑劈到 adapter。
+2. **B2 把 geom-条件留在 likelihood 现有 geom-switch 一处**(dwell case 本就 `if Geom!=GeomInToilet`),`else 开阔地 scale*=tol` 自然落位;Value 恒 raw(语义一致好 debug)。
+3. **"B1 保 belief 纯"不成立**:belief 早已消费 cell/track 派生输入(Geom←AreaType、ObsBedOccupied←bed 贝叶斯)→ 加显式 tolerance 输入与现状一致,无"belief 纯"不变量可破。
+4. **语义正确**:tolerance = 容忍 cell **生存尾更长** = scale×tol(B2),非 B1 的"假装时间更短"(Value/tol,数学等价但表达错)。
+- **裁 B2**:`Observation +ToleranceFactor float64`(默认 1.0 向后兼容),likelihood 开阔地 `scale*=tol`,Value 留 raw。
+- **❓附条件**:**若 `Observation` 是持久化/wire schema** → +字段成本高 → 回 **B1-uniform**(Value 统一为"effective dwell 全 geom 一致 toilet tol=1" + 大声注释,消隐式漂移);**若内部结构(大概率)→ B2**。**请施工方确认 Observation 是否被序列化**,据此定 B2/B1-uniform。
+
+**裁决**:**① A1 扩 P0(只读);② B2**(Observation 内部结构则 B2;wire-persisted 则 B1-uniform)。施工方确认 Observation 序列化性后开 P4.4 核心 bundle(开阔地 ramp + tolerance gate + 双向 fixture),委员会届时验 fixture 双向判别力 + 不碰生产门距。
 
 ### [2026-06-07 19:20 MDT] b2cfe12..6b5456c — 委员会审查⑰:设计输入折入计划【认可】(plan-only)
 
