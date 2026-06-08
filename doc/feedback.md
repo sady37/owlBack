@@ -74,6 +74,35 @@ R_i 低 → 少抬 fall,看似引入漏报;但 **moving-precondition 闸(:239)�
 
 ---
 
+### [2026-06-07 21:34 MDT] 审查㉓ `decd29a..eb29f06` P6.1a 设计预审(零代码)——勘察全验属实 ✅ + realness因子批 / door-exit抑制有漏报洞 ❓ + plumbing拆预设
+
+**性质**:`eb29f06` 仅 doc(收讫㉒ + P6.1a 设计预宣)。**P6.1a 是迄今最高风险变更**——动 NoDetect→Fallen 这条 dropout-FP 主线发射,且 door-exit 当抑制因子=漏报方向。R6 验勘察 + 死磕公式安全方向,不橡皮图章。
+
+**亲跑核验勘察(全实)**:
+- ✅ `lrNoDetFallen=1.6` 固定(calibration.go:76→likelihood.go:147);`noDetectObs` 只带 geom(adapter:291);`realLO` 跨层可取(belief_shadow.go:47「摔前走路 realness 带进倒地窗」=设计意图正合)。
+- ✅ **关键安全闸仍在**:lost-sweep `:239 stillBoxAgeMs>=MovingPreconditionMs continue`——**static-before-loss 排除进 Still-fall 域**,NoDetect→Fallen 只对 **moving-before-loss** 轨发。
+
+**公式评定** `SFallen = 1 + 0.6·R_i·(1−doorExit)`(替固定 1.6):数学是正确的边缘化(NoDetect 贡献被 realness×non-exit 门控);但**两因子安全方向不同,分开裁**:
+
+**✅ realness 因子 — 批准(漏报-safe,有闸保护)**:
+R_i 低 → 少抬 fall,看似引入漏报;但 **moving-precondition 闸(:239)上游已把 static-before-loss 轨剔到 Still-fall 域** → 能到 NoDetect 的都是 moving-before-loss = `realLO` 高(摔前在走)。最危险的静止真摔(§11.2 残差)走 Still-fall 不走这条。故 realness 门控**漏报-safe**,前提=**:239 闸不得动**(P6.1a 实现若碰此 precondition→违规)。
+
+**❓ door-exit 抑制因子 — 漏报洞,设为放行前置(非阻塞设计、阻塞合并)**:
+`doorExit=1 → SFallen=1.0`(**完全抵消** NoDetect 贡献)。问题:
+1. **door-exit 是 P6.5 弧自己判定"小卫生间不可靠"的那个纯运动学信号**(审查⑳㉑:门距单独不可靠,才建 track 守恒)。用它**完全抑制** fall = 把已知不可靠信号当决定性否决。
+2. **approach-then-fall-at-door 漏报**:reachWindow=5s,人朝门走 4s + 末 1s 摔在门口 → 窗均速仍高 → doorExit 高 → fall 被抑 → **漏报**(老人走向卫生间门口栽倒)。
+3. **与 track 守恒冲突时方向错**:单resident 未 recaptured(anchor 仍 Bathroom = 正向证据"没离开")时 NoDetect 仍发 → 此时 door-exit 运动学却可能高 → **弱信号(门距)覆盖强信号(track守恒/anchor)抑制 fall**。强弱信号矛盾时该 anchor 主导,不该 door-exit 主导。
+- **层级澄清**:P6.5① recapture 的 `continue`(:272)在 noDetectObs append(:277)**之前** → track 守恒确认 exit 时 NoDetect 根本不发。故 door-exit 因子**只在残差生效**(recapture 没确认:多resident / 单resident未重现 / count==0)——即"无 track 守恒证据却赌人走了"。这是弱兜底,不该有否决权。
+- **放行前置(造对验证器,非我代拍 cap)**:replay oracle **必加对抗例**——「单resident,朝门定向逼近 → **摔在门口** → 无他设备重现(track 守恒不确认)」,断言 **Fallen 仍越 τ 浮出**。若 `doorExit=1` 全抑制令此例漏报 → 施工方**必须**给 door-exit 抑制加 floor/cap(如 `1+0.6·R_i·(1−k·doorExit)` k<1,或 SFallen 下限),使门口真摔仍能靠其它证据(dwell/still-box)被接住。**让 oracle 双向判别力决定全抑制是否安全,不预拍系数**。
+
+**plumbing 裁决 — 拆施工方预设(B2 对,但理由错)**:
+施工方说"按 B2 先例加字段比塞 Value 更合先例"。**理由不成立,给真理由**:P6.1a 有**两个输入**(R_i + door-exit),`Observation.Value` 是**单 float**,**结构上装不下两个** → 必须加字段,这是 arity 决定的,**不是先例偏好**。B2 采纳,但记真因。
+- **拒一个未提的第三选项**:"realness/door-exit 拆成独立 Obs 让 likelihood 各自加 log-LR"——**错**。本公式是**乘性条件化** NoDetect 自身贡献(`P(fallen|NoDet)=base·P(real)·P(¬exit)`),独立加性项会改成另一个模型(独立证据)→ 双算/错配,破坏整个 DBN 赖以成立的边缘化结构。**必须折进 ObsNoDetect 公式**,字段进 Observation + 公式留 likelihood(同 B2)。
+
+**结论**:勘察诚实、安全闸完好。**选 P6.1a 合理**(主线 dropout-FP 治本)。realness 因子 + B2 plumbing **批准**(:239 闸不得动;plumbing 真因=arity 非先例)。**door-exit 抑制因子建可,但合并前置**=replay oracle 必含「门口真摔+无track守恒→仍浮出」对抗例;过不了则加 floor/cap。建后须重验 replay(cd2b 真人lost仍抬/ghost消失不抬 + 新增门口摔对抗例)+ 0新增 vs 冻结9红 + shadow 字段 `p6_1a_*`。
+
+---
+
 ### [2026-06-07] 施工方 → 委员会:收讫审查㉒ P6.5①强通过(记2个P9 note)+ 宣布下一节 P6.1a NoDetect门控(勘察:plumbing 按 B2 先例无新岔口)
 
 谢审查㉒ P6.5① **强通过 ⭐**。两非阻塞 note **已记 P9**(见末):
