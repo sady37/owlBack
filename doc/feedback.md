@@ -45,6 +45,28 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:⚠️ P4.1 撞 §11.2 残差 —— dwell ramp 单独必 FP 真人久站,待裁(A/B/C)
+
+承裁决⑬(B′ 通过 → A=P4)。起 P4.1 dwell 生存 ramp 时**撞硬墙,停手报委员会**(代码已写,**本地未提交未推**)。
+
+**实现**(local,未push):ObsDwellStill 生存函数 ramp `fallLR=1+(d/scale)²` 封顶 2.5,zone 由 Geom(rest/bed/enter→不报;toilet 15min;开阔 8min),belief_adapter 按 StillBoxSec 发射。John.Y(adapter,有 sleepad neighbor 压制)/genuine/MoM **均仍绿** ✓。
+
+**⚠️ 但 `TestReplayOracle` 新增 1 FP**:`Hunzi-CABB-0529FP(站立静止)` confirm=true(maxP 0.833)期望 false —— **真人开阔地站立静止被 dwell ramp 误判 fall**。
+
+**根因 = 规划期 §11.2 残差在代码层撞上**:
+- 开阔地"静止真人 vs 倒地"信息论上**只有 Z_cell 一根杠杆**(cell 学到"这点可久站/久坐"= ToleratedStill tolerance / AreaSit)。
+- 委员会自己的 P4.1 oracle note 已预言:"开阔地真人久站 FP(cabb类)靠 **Z_cell tolerance(P4.4)**压在 τ\* 下"。
+- **但 replay 无法验证此保护**:fixture 是新 grid + 人工先验,**没跑 ToleratedStill 学习**,Hunzi-CABB 站立点无 AreaSit 先验、无 learned tolerance → P4.2 zone 细分 + P4.4 tolerance 在 replay 里**都无数据可用** → dwell ramp 必 FP,且**无法在 replay 内消除**。
+- ⟹ **P4.1 不能独立落地达"0 新增 FP"**;其判别保护(Z_cell)是 cell-engine 学习产物,replay oracle 测不到。
+
+**待委员会裁(A/B/C)**:
+- **A**:**P4.1 dwell-fall 由 realness/zone 门控 + 接受 Hunzi-CABB 为"Z_cell-gated 已知残差"**(同规划期 §11.2 honest no-go-but-shadow):把 Hunzi-CABB 加入 replay 的"待 Z_cell 期望 FP"集(注明:有真 cell tolerance 时不报),不算新增红。**需委员会认可"replay 测不到 Z_cell 保护 → 此 FP 是 replay 局限非 P4.1 缺陷"**。
+- **B**:**dwell-fall ramp 暂只升 ObsStandDuration 现有 bathroom-occupancy 路径,开阔地 dwell-fall 整体推迟到 cell-tolerance 可用(P4.4 实做 + tolerance-bearing fixture)**;P4.1 现在只做 toilet/缺席域,不碰开阔地。
+- **C**:**P4.1 整体推迟到 P4.4 后**(先做 P4 其它不依赖 Z_cell 的子任务,或先 P5/P6),dwell-fall 作为 P4.4-bundle 一起落 + 标定。
+- **施工方倾向 A**(诚实标残差,与规划期 §11.2 一致;dwell ramp 结构先落,Z_cell 保护待 P4.4/真 cell 数据),但这要委员会接受"replay 对 Z_cell-gated 案例的盲区"。**B/C 更保守。**
+
+**为何停手**:推 P4.1 = 推一个新 FP(违 0-新增 bar);且根因是架构级(Z_cell 杠杆 + replay 盲区),非调参可解 → 不自决,等裁。本地 P4.1 代码留着,裁定后按 A/B/C 调整再提交。
+
 ### [2026-06-07 18:10 MDT] 65075da..0b66d5b — 委员会代码审查⑭:B′ P3-realness checkpoint【通过】⭐ γ 风险闭合 + keystone 实证
 
 **B′ 核验(R6 不信"成立",亲看断言)**:
