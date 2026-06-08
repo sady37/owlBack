@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`5be1075`(下次从此 commit 起算 delta)
+- **last-audited**:`4a10431`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,27 @@
 
 
 
+
+### [2026-06-08 12:55 MDT] 审查㊸ `5be1075..4a10431`(doc-only)B 设计预审【批准 ⭐ 保真到位】+ 裁 B-1=(a)直驱handleMessage / B-2=日志为主(数值进生产日志非test钩子)
+
+**性质**:`4a10431` doc(B 设计预审)。无代码。
+
+**✅ B 设计强、保真到位**:取 **直驱 `handleMessage`**(比㊷我说的 beliefShadowTick **更上游**=更真:fixture record→真 StreamMessage→FromStreamMap→ParseRadarTracks→ProcessFrame→SnapshotTrackStatuses→真 beliefShadowTick,**零手搓 bases、零 fork shadow**)。首 oracle=复现 C(8 CD2B 逐案分类+中间事实对账,分歧=pipeline bug)。**直命㊷ 保真命门。**
+
+**裁 B-1(tap 层)= (a) 直驱 handleMessage**:
+- (b) 驱 publishTrackStatuses 跳 envelope、**手工复刻 envelope→DataValue→ParseRadarTracks 接线 = 一个小 fork**(与生产 FromStreamMap 抽取/路由可能漂移)。
+- (a) 用**真 FromStreamMap = 零 fork**,生产路径最大化——**正中㊷ 命门**(越多真路径越少 divergence 空间)。envelope 包壳 + device_uid→addr 翻译是一次性有界成本。**取 (a)**(施工方 lean 对)。
+
+**裁 B-2(oracle 断言)= (a) zap-observer 日志为主;数值需求走"加进生产日志"非 test 钩子**:
+- (a) observer 捕 `belief_shadow_*` 日志 = **断言在生产真 emit 上**,最保真;且 shadow-first 设计本就"log 一切决策",日志应含决策 outcome(suppress/fire/escalate)=oracle pass/fail 判据。
+- **驳 (b) test-only 白盒钩子**(读 belief.Vector()/Decider):非生产代码入 shadow 路径 = R0 smell,且白盒读内部态 ≠ 生产 emit 决策(欠保真)。
+- **若 P5放行前置"P(Fallen)<τ"需数值** → **把 P(Fallen) 加进既有 shadow 决策日志**(如 `belief_shadow_bed_leak_suppress` 带 `p_fallen` 字段)——**生产 observability 增强(生产也有用)**,observer 断言之。**不引 test-only 钩子**。→ 保真(断生产 emit)+ 无 R0 smell + 数值可断,三得。
+
+**✅ 强化保真自检(机制化㊷ 命门,定为 B 标准不变量)**:施工方已列"grep:B 不含 `TrackStatusBase{` 手搓字面量、不调非生产 tick 函数"。**委员会强化为 B 放行硬条件**:B 测试体内**只允许**喂 raw record 进 `handleMessage` + setup(NewEngine/RegisterRoom/wire deviceRoom/mount/census)+ observer 读日志;**任何手搓 bases / 调非生产 tick / fork shadow 逻辑 = 放行失败**。这把"合成绿"机械堵死。
+
+**裁决**:**B 设计批准 ⭐**(直驱 handleMessage 保真到位)。裁定 **B-1=(a) / B-2=(a)日志为主 + 数值进生产日志非test钩子 / 保真自检为硬条件**。施工方据此建 B:首 oracle 复现 C 全绿(分类+中间事实)+ 保真自检 grep 过 + 0 生产改动(除可选 shadow 日志加 `p_fallen` 字段=生产 observability 非 test 专属)。**建后我亲跑 B + 核保真自检 + 复现 C 对账**。8 CD2B 干净先接;333B/D-path 待用户 ghost。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:B(fixture replay harness)设计预审 — 保真路径取直驱 handleMessage(承㊷ (i))+ 首 oracle 复现 C + 两实施岔口待裁
 
