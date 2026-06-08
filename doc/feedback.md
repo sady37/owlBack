@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`26f8843`(下次从此 commit 起算 delta)
+- **last-audited**:`65ba1c6`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,28 @@
 
 
 
+
+### [2026-06-08 17:33 MDT] 审查53 `26f8843..65ba1c6`(doc-only)收措辞认领 + 裁 R5-calibration-lock = B 但纠"全中性"→按 R5 角色分类锁
+
+**性质**:`65ba1c6` doc(认领措辞错 + R5-lock A/B/C)。无代码。施工方诚实认领"无 SFallen 行"不实 + 自承"后续 wiring 先 grep 似然表 SFallen 列再下结论"——R6 纪律内化,好。
+
+**采纳"加测试锁"的动机**:`lrNp0Fallen=1.0` 今守 R5 但**无测试锁**,将来误调成 ≠1 即 silently 破 R5 无 gate——值得堵(委员会 #1.6"grep 是机械化诚实"同源:R5 也该机械化锁)。
+
+**裁 B(系统性 R5 锁),但纠正其"全压制源中性锁"表述(拆预设)**:
+- ❌ **"把所有 lr*Fallen 锁中性" 错**:会**误红合法压制源**——BedOccupied(1−dampBed)/ReachableExit(1−dampReach)/TrackPresent-Ghost(1−dampGhost)/Neighbor(1−dampNbr)/EnterExit **按 DBN filter 设计本就该压 fall**(可靠非-pose/z 证据)。锁成中性=破 DBN。
+- ✅ **正确不变量 = 按各源 R5 角色分类锁**(亲枚举 likelihood SFallen 列):
+  | 类 | 源 | 锁 |
+  |---|---|---|
+  | **pose/z(R5 铁律核心)** | ObsPose*(Fallen/Lying/Suspected)/ZBand | **SFallen-lr ≥ 1(正向-only,永不 <1)** |
+  | **中性** | ObsNumberPeople | **=1.0** |
+  | **抬升** | ObsDwellStill/ObsStandDuration/ObsNoDetect | **≥ 1** |
+  | **可靠压制源(豁免,设计许可 <1)** | BedOccupied/Ghost/Neighbor/ReachableExit/EnterExit | 不约束,测试**文档化为"许可压制清单"+ 各源 source 依据** |
+- **核心锁 = pose/z 永不 <1**(R5 字面"用 pose/z 抑制 fall = 违规");np=1 中性;抬升源 ≥1。测试红 = pose/z 源被误调成 <1 ∨ np≠1 ∨ 抬升源 <1。**顺带文档化整个 SFallen-似然符号设计**(哪些源 抬/中性/压 + 为何)= 价值。
+- **驳 A**(只锁 np0,同风险面在所有 pose/z 源没盖);**驳 C**(留口,委员会已两次手验 SFallen 常量,该机械化)。
+
+**裁决**:R5-lock 取 **B-纠正版(按 R5 角色分类,核心锁 pose/z≥1 + np=1 + 抬升≥1,可靠压制源豁免+文档化)**。**低风险测试,可并行**(非死源 critical-path 前置,但趁 SFallen 似然新鲜、cheap,值得做)。施工方建:`belief` 包测试遍历各 Obs* 喂入后查 SFallen 似然比符合其 R5 角色;9 红 0 新增。**余死源**(#3 Neighbor/#4 SleepStage/#5 StandDuration locus 未裁不建)+ recall 案 + redis-replay 整单元待用户。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:收审查52 PASS✅ + 认领 ❓措辞错(我"无 SFallen 行"不实)→ 亲查属实 + 提 R5-calibration-lock 选项(岔口,不擅建)
 
