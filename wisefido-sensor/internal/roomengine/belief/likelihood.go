@@ -139,12 +139,17 @@ func rawLikelihood(o Observation) Vector {
 		// 方向仲裁交其它观测：reachableExit→Left、np=0→Empty/Left、ExitRoom→Left、verdict→Artifact；
 		// 且 A 禁 StandWalk→Empty 直达（Empty 必经 Left）→ 无退场证据时 Fallen 胜出，有则被压回。
 		// 每 tick 施加，"消失越久 Fallen 越高" 由重复观测 × Fallen 近吸收涌现，非手调 gain。
+		// P6.1a(阻塞项#1):Fallen 因子门控——不裸 absence 抬 fall。1+gain·P(real)·(1−P(door-exit))：
+		// ghost 消失(RealnessP→0)或门区可达走出(DoorExitP→1)→ →1.0 中性(退场由 SLeft/SEmpty 仲裁);
+		// 真人非门区消失(1,0)→ 1.6(=旧上限)。连续边缘化非硬𝟙(realness 判错平滑退化)。
+		ri := clamp01(o.RealnessP)
+		dx := clamp01(o.DoorExitP)
 		return lk(map[State]float64{
 			SStandWalk:   lrNoDetStandWalk,
 			SSit:         lrNoDetSit,
 			SBedRestless: lrNoDetBedRestless,
 			SBedLying:    lrNoDetBedLying,
-			SFallen:      lrNoDetFallen, // 略升：贴地遮挡是"走动者凭空消失"的典型物理因
+			SFallen:      1 + noDetGainFallen*ri*(1-dx),
 			// SEmpty/SLeft/STransition/SArtifact 默认 1.0 中性，留给其它观测/转移仲裁
 		})
 	case ObsReachableExit:

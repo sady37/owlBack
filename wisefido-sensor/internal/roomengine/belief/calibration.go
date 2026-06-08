@@ -73,7 +73,10 @@ const (
 	lrNoDetSit         = 0.4
 	lrNoDetBedRestless = 0.6
 	lrNoDetBedLying    = 0.8
-	lrNoDetFallen      = 1.6 // 略升:贴地遮挡是走动者消失的典型物理因
+	// P6.1a(阻塞项#1):no-detect 抬 Fallen 不再固定,改门控 1+noDetGainFallen·P(real)·(1−P(door-exit))。
+	// 真人非门区消失(P(real)=1,door-exit=0)→ 1+0.6=1.6(=旧上限);ghost 消失/门区可达走出 → →1 中性
+	// (不裸 absence 抬 fall,治 dropout-FP)。连续边缘化非硬𝟙(realness 判错平滑退化,§4.3 ghost 融合同构)。
+	noDetGainFallen = 0.6
 
 	// ── ObsReachableExit(e=f_dist·f_reach;近门可达→Left 压 Fallen;替 30cm 硬门悬崖)──
 	gainReachLeft   = 6.0 // 1+6e

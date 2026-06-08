@@ -273,11 +273,35 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				// fall through → 正常 lost-fall 发射(保留告警)
 			}
 		}
-		// P2：门区不再硬 continue；改软门——no-detect(状态条件抬 Fallen) 与 reachable-exit(近门+定向逼近→压 Fallen) 同 tick 对冲。
-		obs = append(obs, noDetectObs(st.geom, nowMs))
+		// P6.1a(阻塞项#1):no-detect 抬 Fallen 须门控(R_i + door-exit),不裸 absence 抬 fall(治 dropout-FP)。
+		// R_i=P(real)=σ(realLO)(丢失时用消失前最后已算 realness:消失时是不是真人);缺 track 层 → 默认 1.0
+		// (保守不漏报)。door-exit=reachableExitScore(近门+定向可达走出 → 压抬;门区丢轨不抬,治 D5F7/D523)。
+		realnessP := 1.0
+		if tl := sh.tlayer[tid]; tl != nil {
+			realnessP = realnessPFromLO(tl.realLO) // σ(LO)=P(real)
+		}
+		doorExitP := 0.0
+		exitDist := -1
+		if grid != nil {
+			exitDist = grid.NearestEntryDist(st.lastX, st.lastY)
+			doorExitP = reachableExitScore(exitDist, st.approachSpeedCmS)
+		}
+		// P2：门区不再硬 continue；改软门——no-detect(R_i+door-exit 门控抬 Fallen) 与 reachable-exit(压 Fallen) 同 tick 对冲。
+		obs = append(obs, noDetectObs(st.geom, realnessP, doorExitP, nowMs))
+		if realnessP < 0.5 || doorExitP > 0.5 { // P6.1a 门控生效(ghost消失/门区可达走出)→ 弱抬/不抬 Fallen
+			e.logger.Info("belief_shadow_nodetect_gated", // observability:量 no-detect 被 R_i/door-exit 压的频率
+				zap.String("room_id", roomID),
+				zap.Int("track_id", tid),
+				zap.Int64("ts_ms", nowMs),
+				zap.Float64("p6_1a_Ri", realnessP),       // P(real);低=ghost 消失,不抬
+				zap.Float64("p6_1a_door_exit", doorExitP), // P(door-exit);高=门区可达走出,不抬
+				zap.Bool("p6_1a_nodetect_gated", true),
+				zap.String("last_geom", st.geom.String()),
+			)
+		}
 		sh.lastLostGeom = st.geom // #3：记最近丢失点 geom，供 fall log 辨别床/桶区
 		if grid != nil {
-			obs = append(obs, reachableExitObs(grid.NearestEntryDist(st.lastX, st.lastY), st.approachSpeedCmS, st.geom, nowMs))
+			obs = append(obs, reachableExitObs(exitDist, st.approachSpeedCmS, st.geom, nowMs))
 		}
 	}
 

@@ -62,6 +62,12 @@ type Observation struct {
 	// 仅 ObsDwellStill 开阔地消费：dwell 生存尾 scale*=tol（被容忍久站的 cell 尾更长→久站真人不报）。
 	// 0 或未设=1.0（向后兼容，非 dwell 观测留零值即可）。语义=容忍越高尾越长，Value 恒 raw（不缩放）。
 	ToleranceFactor float64
+	// RealnessP/DoorExitP P6.1a 门控输入（仅 ObsNoDetect 消费；plumbing 同 B2 显式字段，公式留 likelihood）。
+	// RealnessP=P(R_i=real)∈[0,1]（adapter 由 shadow realness σ(LO) 填）；DoorExitP=P(door-exit)∈[0,1]
+	// （reachableExitScore 填）。ObsNoDetect 抬 Fallen 因子 = 1+gain·RealnessP·(1−DoorExitP):
+	// ghost 消失(RealnessP→0)或门区可达走出(DoorExitP→1)→ 因子→1 中性(不裸 absence 抬 fall)。0=未设。
+	RealnessP  float64
+	DoorExitP  float64
 }
 
 // effConf 有效置信度：stale 观测当缺失。

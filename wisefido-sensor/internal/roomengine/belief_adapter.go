@@ -278,6 +278,9 @@ func realnessStep(prevLO, dtSec float64, moving, jumpGhost, frozenGhost bool) (f
 	return lo, 1.0 / (1.0 + math.Exp(lo)) // P(ghost)=1−σ(LO)
 }
 
+// realnessPFromLO P6.1a:shadow realness log-odds → P(R_i=real)=σ(LO)。与 realnessStep 的 ghostness=1−σ(LO) 对偶。
+func realnessPFromLO(lo float64) float64 { return 1.0 / (1.0 + math.Exp(-lo)) }
+
 // isSelfRescueRecapture — P3.4:曾丢失(lostAnchor>0 = lost-fall ramping)的 track 返回、且丢失 ≥ 阈
 // → self-rescue candidate(跌后自救可能)。production cancelPendingLostFallByBirth **硬 cancel** pending
 // lost-fall(人回来=全清,R0 不动);shadow **不硬 cancel**,标 self-rescue 留低 severity(只 log 不 fire,R1)——
@@ -288,8 +291,10 @@ func isSelfRescueRecapture(lostAnchor, lastSeenMs, nowMs int64) bool {
 
 // noDetectObs track 丢失（走动前置已满足）→ P(no-detect|s) 发射。每 tick 固定强度（无时长项，时长→P3）；
 // exit/返回/reachableExit/np=0 经各自似然仲裁方向。geom 留作未来 geom 条件 no-detect（床/桶遮挡）扩展位。
-func noDetectObs(g belief.Geom, nowMs int64) belief.Observation {
-	return belief.Observation{Kind: belief.ObsNoDetect, Conf: 0.8, Ts: nowMs, Fresh: true, Geom: g}
+// noDetectObs P6.1a:no-detect 抬 Fallen 须门控。realnessP=P(R_i=real)(shadow realness σ(LO))、
+// doorExitP=P(door-exit)(reachableExitScore)——经 Observation 显式字段入 likelihood(1+gain·Ri·(1−doorExit))。
+func noDetectObs(g belief.Geom, realnessP, doorExitP float64, nowMs int64) belief.Observation {
+	return belief.Observation{Kind: belief.ObsNoDetect, Conf: 0.8, Ts: nowMs, Fresh: true, Geom: g, RealnessP: realnessP, DoorExitP: doorExitP}
 }
 
 // deviceSpeedStat per-device 走速学习（P2.1）。雷达自测本住户走动段速度的 EWMA → 个性化封顶。

@@ -286,3 +286,32 @@ func TestZBandPostureNotFall(t *testing.T) {
 		t.Fatalf("z<30 假低不该触发 fall: b=%v", be.Vector())
 	}
 }
+
+// TestP6NoDetectFallenGate — P6.1a(阻塞项#1):no-detect 抬 Fallen 受 R_i + door-exit 门控。
+// 同样"走动者消失"序列,仅门控参数不同:真人非门区(Ri=1,door=0)抬 Fallen 最高;
+// ghost 消失(Ri→0)或门区可达走出(door→1)→ 因子→1.0 中性 → 不裸 absence 抬 fall(治 dropout-FP)。
+func TestP6NoDetectFallenGate(t *testing.T) {
+	run := func(ri, dx float64) float64 {
+		be := New(DefaultModel())
+		now := int64(1_000)
+		for i := 0; i < 4; i++ { // 先建立"走动者在场"(否则全在 Empty,no-detect 无对象)
+			now += 1000
+			be.Step(now, []Observation{ob(now, ObsPose, float64(observation.PoseWalking), 0.8, GeomOpenFloor)})
+		}
+		for i := 0; i < 8; i++ { // 走动者消失:repeated no-detect,门控 (ri,dx)
+			now += 1000
+			be.Step(now, []Observation{{Kind: ObsNoDetect, Conf: 0.8, Ts: now, Fresh: true, Geom: GeomOpenFloor, RealnessP: ri, DoorExitP: dx}})
+		}
+		return be.Vector().P(SFallen)
+	}
+	pReal := run(1.0, 0.0)  // 真人非门区消失 → 抬 Fallen
+	pGhost := run(0.0, 0.0) // ghost 消失 → 因子 1.0 不抬
+	pDoor := run(1.0, 1.0)  // 门区可达走出 → 因子 1.0 不抬
+	t.Logf("P6.1a no-detect gate: real-non-door=%.3f ghost=%.3f door=%.3f", pReal, pGhost, pDoor)
+	if pReal <= pGhost {
+		t.Fatalf("真人非门区消失应比 ghost 消失更抬 Fallen(ghost 不裸抬):real=%.3f ghost=%.3f", pReal, pGhost)
+	}
+	if pReal <= pDoor {
+		t.Fatalf("真人非门区消失应比门区可达走出更抬 Fallen(门区不裸抬):real=%.3f door=%.3f", pReal, pDoor)
+	}
+}

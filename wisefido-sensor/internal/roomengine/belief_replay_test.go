@@ -284,7 +284,13 @@ func replay(t *testing.T, recs []fxRecord, grid *RoomGrid, mount radarutils.Rada
 			if k.lostAnchor == 0 {
 				k.lostAnchor = k.lastFrameTs
 			}
-			obs = append(obs, noDetectObs(k.lastGeom, now))
+			// P6.1a:到此的都是非 ghost(上方 VerdictGhost 已 continue)→ realnessP=1.0(生产 verdict 视为真人);
+			// door-exit=reachableExitScore(门区可达走出 → 压抬 Fallen,治门区丢轨 dropout-FP)。
+			doorExitP := 0.0
+			if grid != nil {
+				doorExitP = reachableExitScore(grid.NearestEntryDist(k.lastX, k.lastY), k.approachSpeedCmS)
+			}
+			obs = append(obs, noDetectObs(k.lastGeom, 1.0, doorExitP, now))
 			// P2：reachable-exit 同 tick 对冲（近门 + 定向逼近 → 压 Fallen 偏 Left）。grid 在 scope。
 			if grid != nil {
 				obs = append(obs, reachableExitObs(grid.NearestEntryDist(k.lastX, k.lastY), k.approachSpeedCmS, k.lastGeom, now))
