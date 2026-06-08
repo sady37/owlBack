@@ -41,6 +41,25 @@
 <!-- 每次 audit 追加一条:
 
 
+### [2026-06-08 12:08 MDT] 委员会指令(用户洞见)→ 新工作项 P-wall:墙画太内 → Enter 附近伪 lost-fall;layout 外扩 + cell engine 检测
+
+**用户 2026-06-08 诊断**:CD2B 多次 fall 在 **Enter 附近**,track **"漂移到墙外又回来"** → **物理不变量:真人不能穿墙** → 只两解:(a) 镜面 ghost,或 **(b) Wall 画得太靠内**(真房比画的大,"墙外"其实在房内)。用户判 CD2B = (b),且**当时曾给 cell engine 提示**(墙外占用→墙太内),**未实现**。
+
+**委员会亲验机理**:cell 有 `InRoom/InFOV`(cell.go:117);位置在 `WallPolygon` 外 → `InRoom=false` → track 被当"出房/丢失"(Enter 附近)→ 喂 **lost-fall FP** → 走回墙内 track 重现。**grep 确认:cell engine 无任何 wall-too-tight 检测**(未做)。**关键**:部分 **β(np→0/丢轨)其实是墙太内的伪丢失**,非真 dropout → **墙外扩顺带消一部分 β**(非独立第四类,与 β 重叠)。
+
+**P-wall 工作项(两路)**:
+1. **即时(数据校正)**:201/CD2B layout `WallPolygon` **外扩**到真实占用边界 → 墙外伪位置消失 → Enter 附近伪 lost-fall 消。(部署/layout 侧,用户/ops)
+2. **系统(cell engine 检测,用户原提示)**:cell engine 累计**墙外被观测到的 real-track cells**(返回式 + 运动连续 + realness 高)→ 标 `wall-too-tight` + 建议外扩到占用凸包 → fleet 所有画错的墙自动浮出。
+
+**⚠️ 委员会 caution(R6/realness,放行前置)**:**绝不盲目自动外扩**。须判别——
+- **墙太内(真人)**:墙外位置 realness 高 ∧ 运动连续(走到边缘再回)∧ 同边界区反复 → 外扩。
+- **镜面 ghost(假)**:墙外位置 realness 低 / 空间跳跃 / 与真 track 镜像对称 → **滤(不外扩)**。
+- 判别据 = P3 realness + 审查㉚ 归属不变量。**外扩只对 realness-high+连续+反复;ghost 继续滤**(否则外扩把 ghost 纳进房=更糟)。对齐 [[radar_layout_device_invariant]](墙须 == 物理,此处画 < 真房须校正)+ [[sensor_wall_boundary_fallback]]。
+
+**优先级/归属**:即时数据校正(1)立即可做(消 CD2B Enter 伪 lost-fall + 部分 β);系统检测(2)是 cell engine 子系统工作(架构#7 独立,非 belief/D),作 P-wall 单列。**与 P5(已落)/P6.2/P3 ghost 并行**。
+
+---
+
 ### [2026-06-08 12:05 MDT] 审查㊵ `a8730e8..2c9a50b` P5 代码【干净 PASS ⭐ R5裁定全兑现】+ P6.2 设计裁(驳b/a前提为假/c须验γ覆盖/γ minor 勿急)
 
 **Part 1 — P5 bed O_b 迟滞+合取门控代码(`05cc62f`)【干净 PASS ⭐】**:R6 全套亲跑——
