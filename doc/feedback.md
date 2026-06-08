@@ -45,6 +45,30 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:交 P4.4 核心 bundle(裁决⑱ A1+B2,`67662bb`)+ 2 个施工发现
+
+**先确认裁决⑱附条件**:`Observation` **无任何序列化**(grep:无 json/msgpack/gob/proto tag、无 Marshal/Redis/stream;唯一"序列化"命中是 sensor_fusion.go 把 sleepad 流**解析成** Observation 的输入侧)→ **内部结构** → 取 **B2**(非 B1-uniform)。亲跑实证后实现。
+
+**变更(`67662bb`,仅 belief shadow,生产闸 0 改)**:
+- **① A1**:P0 契约 `+CellPrior.ToleranceFactorAt(x,y)float64`(读 cell 既有 `toleranceFactor()`,**严格只读不触学习**,R3;同模现三 accessor,编译断言仍立)。
+- **② B2**:`Observation +ToleranceFactor float64`(默认 1.0;仅 ObsDwellStill 开阔地消费;**Value 恒 raw**——裁决⑱"语义一致"落实)。
+- **likelihood**:ObsDwellStill geom-switch **一处**选 scale —— toilet=900 / **开阔地=480×tol**(前置 Z_cell gate)/ rest/bed/enter/unknown 不报。`scale*=tol`(裁决⑱"容忍=尾更长"语义正确,非 B1 的 Value/tol)。
+- **adapter**:开阔地经 `ToleranceFactorAt` 填 `ToleranceFactor` 发射(R3 只读;非开阔地不读)。
+- **calibration**:`+dwellScaleOpenSec=480`(P9.6 待 oracle)。
+
+**⭐ tolerance-bearing 双向 fixture(委员会重点验项,造对验证器治 §11.2)**:
+- `TestP4OpenFloorDwellToleranceGate`:**同**开阔地久站 560s,**仅 tolerance 异** → **无tol P(Fallen)=0.837 fired** / **高tol(ToleratedStillCount=8→factor2.0)P=0.037 not fired**。两侧远离 θ_fire 0.55,**判别力坐实**(高/低 tolerance 两 case 都在,非"接受测不到")。
+
+**🔎 施工 2 发现(亲跑暴露,据实报)**:
+1. **测试 now-base 陷阱(已自修)**:首版 fixture `now` 从 1000 起,`StillBoxRunStart=now−560s` 变**负**→`StillBoxRunStart>0` false→stillBox 失效→pose 不 stale→fresh pose=standing 竞争把 Fallen 压到 0.001(假阴)。修=now 起点抬到 1e7。**教训**:dwell fixture 须保 StillBoxRunStart>0,否则测的不是 dwell 路径。
+2. **P4.1 toilet 正向洞已闭合**:adapter probe 发现 **P4.1 toilet ramp 的"正向能发"从未被验证**(裁决⑮ 只测过 Hunzi-CABB 等**不发**的 case,正向 firing 路径空白)。补 `TestP4ToiletDwellFires`(厕浴久站 1100s→fired)闭合。**纯 dwell 能驱动 Fallen 经实证**(probe:20帧→0.971),根因仅 now-base 陷阱非模型。
+
+**验证**:build/vet 绿;belief 绿;roomengine **9 冻结红 0 新增**;`TestReplayOracle` PASS(Hunzi-CABB 仍 0.107——replay 未喂 dwell,maxStill=0s,不受影响)。
+
+**P4.4 余项(裁决⑮/⑯ 分流,本 commit 未含)**:②③ exit 闸(可达性/趋势)、P6.5 ① 跨设备 track 守恒,拆后续 task。
+
+**下一步**:待签 P4.4 核心 → 续 **P4.5 缺席驻留**(Z_cell-无关、轻)或 **P6.5 ① track 守恒**(小卫生间 exit 最强证),或 ②③ exit 闸。听裁。
+
 ### [2026-06-07 19:51 MDT] 6b5456c..db37f6c — 委员会裁决⑱:P4.4 两岔口 → ① A1 扩 P0 / ② B2(非施工方倾向 B1)
 
 施工方 P4.4 开工前列两岔口待裁(好,开工前不擅决)。委员会逐裁:
