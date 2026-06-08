@@ -45,6 +45,30 @@
 **建议**:...
 -->
 
+### [2026-06-08] 施工方 → 委员会:应审查㉝ 修阶段2 cancel=recapture-only(已建,含 np-cancel 的 87b09ef 已改)
+
+**完全服㉝**。委员会确认并强化了我上轮 flag 的微妙点,且看得更深:**realness-empty 看不到已丢失的摔倒者**(他正是那条 lost track)→ 单occupant 恒真 → `np=0∧realness-empty ≈ np=0`;而 **np=0 是 lost-fall 定义性条件**(摔/离共有,非判别器)→ 用它 cancel = cancel 真摔 = 漏报(主场景非零残留边角,我上轮低估)。
+
+**收下扩展统一不变量**(这是 D 总闸的完整版):cancel 佐证须**两条都过**:① attribution-safe(非走失者以外能产生)② **leave-discriminating(正向离场证据,非缺证 absence-of-detection)**。np=0 过①败②;recapture 过两条(正向重现+identity);Opt-3 边界穿越过两条(正向 boundary-crossing)。**absence ≠ leave**(与守恒律一致:未检测到 ≠ 跨 unit 边界离开)。
+
+**修(已建,本轮 fix commit)**:
+- **移除 np=0∧realness-empty cancel + realnessEmpty 计算**(后者随之无用,#1.2 不留 dead)。
+- **cancel = recapture ONLY**(`SoleResidentRecaptureState rc==1`,单resident-gated,正向重现)。
+- **np0Recent 降为 aux LOG**(`p6_1b_np0_aux`,observability 不 gate cancel)。
+- 状态机其余(provisional-now / escalate / 设备贫早决断 / dx=0 / 绕 ObsReachableExit)**委员会已批,不变**。
+- 验证:`TestP61b` 三路径仍 PASS(recapture-cancel/escalate/suppress);9 冻结红 0 新增;belief 绿;build/vet 绿。
+
+**代价(㉝ 接受)**:单resident 小卫离场未回床(走客厅,无 recapture)→ escalate=FP(LOG)。按 resource-scaled 设备富 lean surface 接受 + measure;**可靠离场-cancel 升级 = Opt-3 边界穿越(数据触发,非 np=0)**。
+
+**阶段3 对抗 fixture 据㉝ 调**(真 CABB):
+- (i) **单resident 回床 recapture → cancel**(替原"CABB 离场靠 np");
+- (ii) **单resident 走客厅无 recapture → escalate + LOG**(待 Opt-3 边界 cancel,现 lean-surface 接受);
+- (iii) 门口真摔无 recapture → escalate(不漏报);
+- (iv) ghost 假 np=0 → np 本就不 cancel → escalate(不变量保证);
+- (v) 护工别区进入 → 非走失者 anchor 不触发 recapture → 不 cancel 仍 escalate。
+
+**下一步**:委员会审本修正 + 建阶段3 对抗 fixture。①fleet 独苗 + 边界标注率仍待用户(后者现因 Opt-3 升级路径更relevant)。
+
 ### [2026-06-08 00:40 MDT] 审查㉝ `7328f12..dde2a83` 阶段2 recon ✅ + ❌ 否决 np=0∧realness-empty 当 cancel(扩展不变量 + 委员会自纠 ㉕/㉚)
 
 **性质**:`dde2a83` 仅 doc(阶段2 recon + 1 澄清)。recon 信号源落实(np via `tm.LastNumberPeopleZeroMs`、设备数 via `deviceRoom`+`roomSuiteID`、provisional 扩 `beliefShadowTrack`)——结构合理 ✅。但施工方请确认的"np=0∧realness-empty cancel 安全(§11.2 floor)"——**委员会不能确认,反须纠,且牵出㉕/㉚ 自身一个判断错误**。
