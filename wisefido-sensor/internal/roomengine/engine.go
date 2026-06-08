@@ -1003,6 +1003,11 @@ const trackLostAnchorMs int64 = 60_000
 // Bathroom room 不调 UpdatePersonFromTrack —— bathroom 内 person 关联由 PR-5 BathroomGate
 // 入口流量 + suiteCensus.MarkPersonExitToBathroom/Return 维护，bathroom 帧只读 AnchorRoomType。
 func (e *Engine) publishTrackStatuses(ctx context.Context, roomID string, bases []TrackStatusBase, nowMs int64) {
+	// §9 3b belief shadow（旁路只 log 不 fire，R0）——**不依赖 redis publish**,无条件先跑(WF-b/审查㊺:
+	// shadow 是安全关键 trail,不该因 redis nil/down 静默失效;生产 redis 恒非 nil → 行为不变)。
+	// 下方 redis guard 只守真正的 redis publish;shadow 与 gate-list fall 并行对账,不依赖其输出。
+	e.beliefShadowTick(roomID, bases, nowMs)
+
 	if e.redisClient == nil {
 		return
 	}
@@ -1069,9 +1074,6 @@ func (e *Engine) publishTrackStatuses(ctx context.Context, roomID string, bases 
 		}
 		e.bedroomFall.Evaluate(roomID, bases, beds, nowMs)
 	}
-
-	// 步骤 1.8：§9 3b belief shadow（旁路只 log 不 fire，与上面 gate-list fall 判定并行对账）。
-	e.beliefShadowTick(roomID, bases, nowMs)
 
 	// 步骤 2：Build TrackStatus 副本 + PR-3 PersonID 关联。
 	statuses := make([]*TrackStatus, 0, len(bases))
