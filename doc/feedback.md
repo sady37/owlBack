@@ -45,6 +45,25 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:交 P6.5① 跨设备 track 守恒 per-identity recapture(审查㉑批准,`384a4b7`)
+
+承审查㉑ 设计批准 + 选项A(多resident gate OFF 漏报-safe / 拒捆 census 扩展[架构#7] / skip 须 LOG)+ 放行条件(夹具补 ④+③-log)。已建,**仅 belief shadow,生产 0 改**。
+
+**变更(`384a4b7`)**:
+- **suite_census `+SoleResidentRecaptureState(suiteID)(residentCount int, recaptured bool)`**:**纯只读 accessor**(持 m.mu 读 Persons 一次**返值非指针**——解 belief-shadow 直读 `*SuiteBedroomCensus.Persons` 与 `UpdatePersonFromTrack` 的 **data race**)。**不改 census、不触升格/anchor-flip**(同 P0 ToleranceFactorAt 已批只读模式,**非**委员会拒的多resident写特性)。`residentCount` 只数 `Role==Resident`(visitor 不计);`recaptured = residentCount==1 && (sole.SleepadAnchored ∨ sole.AnchorRoomType==Default)`。
+- **belief_shadow lost-sweep(:234)**:bathroom track 丢失(`geom==GeomInToilet`)→ 查 census。**单resident recaptured** → `log belief_shadow_exit_recapture` + `continue`(不喂 lost-fall 发射 = shadow 抑制,**只 log 不 fire R1**,自洽 P3.4 超窗=自救)。**多resident** → `log belief_shadow_recapture_skip_multiresident` + 保留告警(gate OFF,零跨身份漏报,**数据闸量多resident浴室-lost FP 频率**)。
+- per-identity 绑 sole resident(**复用生产 bathroom_fall 同一 `AnchorRoomType==Bathroom` 不变量**,census 决定19 单resident才翻 anchor)。
+
+**夹具(放行条件 ①②③④+③-log 全覆盖)**:
+- `TestP6SoleResidentRecaptureState`(判别核心):**①** 回床(SleepadAnchored)→recapture / **②** 仍在浴室未回→不recapture / **③** 多resident(A浴室+B卧室)→gate OFF count=2 不recapture(**A 不被 B 抑制**)/ **④** 单resident+visitor→**visitor 不计** count==1 gate active / **④b 反证** 回床+visitor→recapture 仍工作(锁 residentCount≠personCount,防未来重构误切)。
+- `TestP6ExitRecaptureLostSweep`(e2e + zap observer):**①** 单resident回床→`exit_recapture` log(无 panic)/ **②** 仍浴室→不recapture(真摔浮出)/ **③** 多occupant→A 不被抑制 + `recapture_skip_multiresident` **被 LOG**(委员会③-log observability 数据闸)。
+
+**验证**:build/vet 绿;belief 绿;roomengine **9 冻结红 0 新增**;`TestReplayOracle` PASS;R0/R1 shadow;R3 census 只读 accessor;架构#7 未碰 census 多resident写特性(决定19 留 PR-X,数据触发再议)。
+
+**里程碑**:小卫生间 exit-vs-fall 的**最强证据 ①(unit 级 track 守恒)在 shadow 落地** —— sleepad 回床/跨gate返回 per-identity 确认 exit,多resident 漏报-safe 保留 + 数据闸。CABB 类小卫生间 lost-fall FP 的治本路径(规划期"靠 track 守恒不靠纯 door-distance")成型。
+
+**下一步**:待审 P6.5①。余可选:P4.5 缺席驻留(Z_cell-无关轻)/ P5 bed O_b / P6 余项(P6.1a NoDetect 门控、P6.2 N_r、P6.3 P_id)/ 或按委员会 DAG。听裁。
+
 ### [2026-06-07 20:48 MDT] 审查㉑ `a10b6aa..e51d6e4` 自我纠正全验属实 ✅ + 设计准建,但选项不简单选 A(误差方向裁决)
 
 **性质**:`e51d6e4` 仅 doc(答审查⑳两前置),零代码。R6 照执——**自我纠正也要验**,不因"他自己认错"就信。
