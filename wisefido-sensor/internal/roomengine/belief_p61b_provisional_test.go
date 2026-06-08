@@ -196,3 +196,45 @@ func TestP61bCABBRealLayoutEngagesDPath(t *testing.T) {
 		t.Fatalf("真 CABB 无 recapture → 窗到应 escalate(预期 lean-surface,founding 案 engage 证实)")
 	}
 }
+
+// TestP61bCABBPoorSuppresses — 审查㊱:engage≠治愈。CABB 是 FP 案(真离场,np=0+335s,无recapture)。
+// **设备贫**(浴室独苗)→ suppress = CABB FP **治愈**(不 page,LOG)。对照 rich→escalate(FP 仍在需 Opt-3)。
+// CABB 实际设备 tier = ①fleet 事实(待用户);此测证"若 CABB 是设备贫则 P6.1b-D 治愈其 FP"。
+func TestP61bCABBPoorSuppresses(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("../../../doc/cases", "hunzi-cabb-lost-0601-2247-FP/room_layout.json"))
+	if err != nil {
+		t.Skipf("CABB fixture 缺失: %v", err)
+	}
+	cfg, err := ParseLayoutConfig("fd00:0:3:411::/128", b)
+	if err != nil {
+		t.Fatalf("ParseLayoutConfig: %v", err)
+	}
+	cfg.RoomType = card.RoomTypeBathroom
+	grid, _ := buildGridFromLayout(t, "hunzi-cabb-lost-0601-2247-FP/room_layout.json")
+	const room, suite, dev = "fd00:0:3:411::/88", "fd00:0:3:411::/80", "fd00:0:3:411:1:200:10d5:cabb"
+	nowMs := int64(10_000_000)
+	core, logs := observer.New(zapcore.InfoLevel)
+	e := &Engine{
+		logger:        zap.New(core),
+		rooms:         map[string]*TrackManager{room: {roomID: room, tracks: map[int]*TrackState{}, bedCount: 1}},
+		grids:         map[string]*RoomGrid{room: grid},
+		roomSuiteID:   map[string]string{room: suite},
+		roomType:      map[string]int{room: card.RoomTypeBathroom},
+		smallBathroom: map[string]bool{room: isSmallBathroomCfg(cfg, cfg.RoomW, cfg.RoomH)},
+		deviceRoom:    map[string]string{dev: room}, // 浴室独苗=设备贫(无别台)
+		beliefShadows: map[string]*beliefShadow{},
+		suiteCensus:   NewSuiteCensusManager(nil, DefaultSuiteCensusConfig(), nil),
+	}
+	sh := e.beliefShadowFor(room)
+	g := geomFromGrid(grid, -50, 250)
+	sh.tracks[7] = &beliefShadowTrack{lastSeenMs: nowMs - 70_000, stillBoxAgeMs: 0, geom: g, lastX: -50, lastY: 250, lostAnchor: nowMs - 70_000}
+	sh.tlayer[7] = &beliefShadowTLayer{tb: belief.NewTrackBelief(), device: dev, realLO: 2.0}
+	e.beliefShadowTick(room, nil, nowMs)
+	e.beliefShadowTick(room, nil, nowMs+beliefProvisionalPoorWindowMs+2000)
+	if !hasMsg(logs, "belief_shadow_lostfall_suppressed") {
+		t.Fatalf("设备贫 CABB 应 suppress(FP 治愈,不 page+LOG)")
+	}
+	if hasMsg(logs, "belief_shadow_lostfall_escalate") {
+		t.Fatalf("设备贫不该 escalate(走压制治愈,非 FP)")
+	}
+}
