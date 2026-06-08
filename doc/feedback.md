@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`1eb2413`(下次从此 commit 起算 delta)
+- **last-audited**:`9ffcca3`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -51,6 +51,26 @@
 
 
 
+
+### [2026-06-08 16:38 MDT] 审查㊾ `1eb2413..9ffcca3` 0127 P5=NEGATIVE 亲验属实 ⭐ + 委员会自纠㊴ + 裁:retire bedLeakState、用既有 bed Markov(=wire 死源#1)+ 整合用户 LeftBed-OR
+
+**R6 亲跑坐实 NEGATIVE**:0127 wire bed 后 **peak P=0.803、argmax=Floor-Fallen、`bed_authority_released:165`(非 suppress)→ P5 没 engage**(radar 把 on-bed 误读 Floor → P5c 合取门控 radar-on-bed leg 失败 → released);0917 base 本就压(0.006)。**㊽ 判定质疑答案 = P5 对真正危险的 α 不 engage**(治了 base 本能压的,漏了 base 压不住的)。radarUID 修(position_x 辨 radar,否则 sleepad.track 误路由)+ 9 红 0 新增,验过。
+
+**★ 委员会自纠㊴ + 采用户 steer(双重纠正)**:
+- 我㊴ 的 **P5c 合取 `radar-on-bed ∧ sleepad-InBed`** 的 radar-on-bed leg = 祸首:危险 α 恰是 radar 误读位置时,leg 失败 → P5 瘫。亲验:滚下床对抗用**持续 LeftBed**(leak 衰减)→ 去 leg、靠占用压 是漏报-safe;leak+freshness 已管 staleness,leg 冗余。
+- **更重(用户 steer):我的 `bedLeakState` 是重造**——既有 **bed 贝叶斯 Markov(`bedAdapter`→ObsBedOccupied,Conf=BedConfidence;`bedInBedConfidence` L*=0.55/min leak + LeftBed-veto)实现很好(用户),而它正是死源#1(未 wire)**。我重造了简化版还加了有害的 radar-on-bed leg。
+
+**裁定 = retire bedLeakState,wire 既有 bed Markov 进 shadow,P5 压在其占用概率上(无 radar-on-bed 要求)**:
+- **一举两得**:wire `bedAdapter` ObsBedOccupied = ① 修 P5(用可靠占用概率压 radar-Floor-误读,治 0127)② wire 死源#1(BedOccupied)。retire 我重造的 `bedLeakState`/`bedAuthorityObs`(#1.2 删即删,不留双实现)。
+- **R5-clean**:压走 bed Markov **占用概率**(sleepad 接触式,非 pose/z)。**漏报-safe**:Markov LeftBed-veto → 占用掉 → 释放。
+- **★ 整合用户 LeftBed 规则**:**LeftBed = 任一源(sleepad∨radar∨event)说有就认(lean-accept,因 LeftBed=fall-risk)**。bed Markov 的 LeftBed-veto **须 OR 所有源**(任一 LeftBed→占用即降→释放压制→Fall 浮出)。这解施工方"sleepad 滞后漏真摔"虑:radar/event 先报 LeftBed 就立即释放,不等 sleepad。**验既有 Markov 是否已 OR 所有源;若只认 sleepad LeftBed,补齐为 any-source-OR**。
+- **驳 P5-i**(接受 P5 不治危险 α = 放任 0127 近-FP,P5-治α 前提破)。**P5-iii(cell-geom 修正)= 平行 cell-engine 改进**(consistentBedInBed 已部分,0.993→0.803 即其效;但属 cell 域 #7,非 P5 修;且 radar 位置真漂出 footprint 时 cell 修也无力,bed Markov 占用概率更鲁棒)。
+
+**放行前置**:wire bed Markov → **re-test 0127(Markov InBed 占用 → 压 radar-Floor,0.803 应降到压制)** + 滚下床对抗(任一 LeftBed → 释放 → escalate) + 0917 仍压 + R5 专项断言(压制无 pose/z 因子) + **验 LeftBed any-source-OR** + 9 红 0 新增 + 保真自检。
+
+**余案数据问题(待用户/施工方)**:case2-quilt-0604(recall,DB 内,需 recall oracle=真摔→escalate 非 soft-invariant)/ case_lostfall_11351148(**04-27 早于 DB sleepad.track 范围 05-28**,有独立 sleepad 文件,不能 DB re-export,另议)/ bedroom201-1027(仅 test_record.txt 非正式 fixture,需正式化)。整单元 redis-replay 谁跑仍待用户。新节点暂停(㊻)。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:执行㊽ 裁X(焦点 re-export)→ ★0127 P5 判定质疑答案=**NEGATIVE(P5 对危险 α 不 engage)** + radarUID 修 + 重开 P5 角色 + 余案数据问题
 
