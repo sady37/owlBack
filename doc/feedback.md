@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`bc1fdba`(下次从此 commit 起算 delta)
+- **last-audited**:`b2cfe12`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,30 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 18:59 MDT] bc1fdba..b2cfe12 — 委员会代码审查⑯:P4.1(B)dwell ramp toilet/shower【通过】+ 设计输入:小卫生间 exit 间接推断(P4.4/P6)
+
+**P4.1(B) 代码核验(R6 亲跑,对裁决⑮B)**:
+- ✅ **仅 toilet/shower**:`ObsDwellStill` case `if o.Geom != GeomInToilet || o.Value<=0 → lk(nil)`;开阔地/deny 留 P4.4、bed/enter 是 rest 不报。**Z_cell-无关域**,Hunzi-CABB(开阔地)**FP 消除**(roomengine 9 红 0 新增)。
+- ✅ **平滑 ramp 非悬崖**:`fallLR=1+(d/scale)²` 封顶 2.5,scale=`dwellScaleToiletSec=900`(镜像生产 ToiletShowerSec 作 **shadow 占位,R0 不碰生产**),P9.6 待 oracle;温和(真 dwell-fall 靠 Decider 窗累积)。
+- ✅ `go build/vet` 绿;belief 绿;roomengine 9 红 0 新增;R7 常量带来源;R5(时长非 pose/z);R0/R1 shadow。
+- **P4.1(B) 通过。** 开阔地 dwell-fall + Z_cell gate + tolerance-bearing fixture 按裁决⑮ bundle P4.4。
+
+---
+**📐 委员会设计输入(供 P4.4 开阔地 + P4/P6 小卫生间 exit-vs-fall;来自 CABB/小卫生间分析)**
+
+小卫生间无相邻雷达直证 → exit/fall 用**间接推断**,三方法分层(全 XY/接触,R5 安全):
+- **① 跨设备 track 守恒重捕(最强,决定性)**:**unit 级 track 守恒** —— `bathroom radar track_lost →[t-window]→ 同 unit 任意其它设备/空间 +1 track`(人移到别处出现)= **exit 非 fall**。绕开亚帧(不靠在门口采到人,靠人在别处重现)。
+  - **特例(最强子证)**:其它设备=sleepad 且 InBed → 人回床(接触铁证);链 `sleepad LeftBed →≤60s→ bathroom 见人 → lost →≤60s→ sleepad InBed`。
+  - **一般式**:其它设备=相邻 radar +1 track(人去客厅/卧室)→ 同样确认 exit —— 覆盖"非床区 exit"(只要该区有设备),**比 sleepad-only 残留更小**。
+  - t-window 双侧(进卫生间 / 出卫生间 走动段各 ≤60s 老人步速)。自洽 P3.4:超窗才重现 = 自救,fall 照报留低 severity。**= SuiteCensus/P_id 跨区账(P6),复用别另起。**
+- **② 末 3 帧门距趋势**:朝门→exit-leaning。**弱佐证**(小房 1–2 帧采不全 + 摔在门口也朝门),权重低。
+- **③ 门距 vs 老人速度可达性闸**:末门距 ≤ 速度(~60cm/s)×**实际帧隔**(非固定 60cm)→ 可一帧走出 → 中性;> 可达 → 一帧走不出 → **室内 lost(非 exit)→ fall 偏高**。比固定 `ExitDistMinCm=30` 更有据。注:"室内 lost" 含 fall + 信号丢失,二者再靠 ①/recapture 分。
+- **组合判别树**:① InBed≤60s → exit/安全;否则 ③ 可达 + ② 朝门 → 中性偏 benign(留 recapture 窗);③ 不可达 → fall-suspect;recapture 过 deadline 未回 → fire。
+- **残留(诚实,经①推广已大幅收窄)**:仅 卫生间→**unit 内全无任何设备覆盖的区** + 末门距可达 → 模糊。凡相邻区有**任一设备**(sleepad/radar)→ ① 的 +1 track 即确认 exit。残留只剩"出到纯盲区"少见路径 → deadline/代价偏置 或 硬件(L3)。
+- **落点**:**小卫生间 exit 确认走 ①(unit 级 track 守恒/跨设备 +1 track 重捕,sleepad InBed 是最强特例)为主 + ③(可达性闸)+ ②(趋势佐证),不靠纯 door-distance**(小房处处近门+亚帧 → door-distance 退化)。喂 P4.4(开阔地/dwell-lost)+ **P6(SuiteCensus/P_id 跨区 track 账)= ① 的实现载体**。
+
+**裁决**:**P4.1(B) 通过**;设计输入记入,P4.4 落开阔地 dwell-fall + Z_cell gate + tolerance fixture 时一并采纳小卫生间 exit 三方法(①为主)。
 
 ### [2026-06-07] 施工方 → 委员会:交 P4.1(B 精化)dwell ramp 仅 toilet/shower(`a6bcec4`)
 
