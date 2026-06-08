@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`ad84476`(下次从此 commit 起算 delta)
+- **last-audited**:`d451b6d`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -46,6 +46,31 @@
 
 
 
+
+### [2026-06-08 13:56 MDT] 审查㊺ `ad84476..d451b6d` WF-b 实现【删死管✅】+ B 再逮 2 源-保真 gap ⭐⭐ → 命名 pattern + 裁 redis-gate(ii)
+
+**R6 全套亲跑**:
+- ✅ **WF-b 1+2 实现干净**:`ObsFirmwareFall`/`lrFirmwareFallen` 死管删净(grep=0 非测);P5/belief 合成测换 `PoseFallen@InBed/@OpenFloor` 真抬升源(damp 逻辑不变);build/vet/belief 绿、**9 红 0 新增**。`belief_shadow_trace`(Debug,P 值 observability,复用 decider Vector 零开销)。删即删,符 #1.2。
+- ✅⭐⭐ **B 再逮 2 个"源≠生产"gap,均亲验属实 + 施工方诚实标(P=0 没冒充绿)**:
+  - **发现1(阻塞)**:`beliefShadowTick`(engine:1074)在 `publishTrackStatuses` 的 `redisClient==nil return`(:1006)**之后** → 无 redis 则 shadow **永不跑**。**连带揭审查㊹"B smoke 跑通真路径"实际没跑到 beliefShadowTick**(早返)——B 的逐案 P 全 0 是因 shadow 没执行,非"shadow 判无 fall"。施工方据实标。
+  - **发现2**:P5 `bedAuthorityObs`←`bedLeak`←`sleepadStates`(track_manager:85,**monitor 帧**填),但 8 fixture 床态走 **InBed/LeftBed event**(sleepad 只发 event 无 monitor 帧)→ event 不填 sleepadStates → **P5 bed-authority 这些案永不 engage**(即便 redis-gate 解了也无信号)。
+
+**★ 命名 pattern(3 连发同根)——"DBN obs 源 ≠ 生产实际源 / shadow 没真跑"**:
+- ㊹ firmware Fall 没 wire 进 shadow(event 路径)/ 发现1 shadowTick 被 redis-gate 没跑(monitor 路径)/ 发现2 bed-authority 读 monitor 源而生产是 event 源。**三者同根:DBN 的 obs/执行被合成测假设的源喂着,生产实际源/执行从没对齐。** B 系统性把它们逐个挖出——**这正是 B 最大价值**(㉟/㊷/㊹ 坚持真路径的复利回报)。
+- **裁定:做系统性 SOURCE-FIDELITY 审计**——redis-gate 修通(shadow 真跑)后,用 B 跑 8 案**逐 obs 对账**:每个 belief obs(pose/bed/nodetect/reachableExit/realness/...)在真路径上**实际 populate 了没有 / 源是否生产实际源**。一次把所有死/错源 obs 挖净,别再 piecemeal。**这是当前最高价值动作。**
+
+**裁 发现1 redis-gate 岔口 = (ii) 解耦 shadow 与 redis-publish guard**:
+- shadow 是 **log-only(R0)**,**不该依赖 redis-publish 可用性**。当前耦合 = 潜伏 bug(redis 偶 nil/down → shadow 静默失效,丢安全关键 shadow trail)。
+- **(ii) 正确**:`beliefShadowTick` 提到 redis guard **之前**(无条件跑,log-only);redis guard **只守真正的 redis publish**。**R0/R1-safe**(生产 redis 恒非 nil → 行为不变;只补"redis nil 时 shadow 仍跑"的鲁棒性)+ 让 B 无 infra 跑真 shadow。**非纯为测=正确性改进。**
+- **驳 (i)**(B 接真 redis:污染真流 + CI 脆)。施工方 lean (ii) 对。**委员会要求**:重构仅"shadow 移到 guard 前 + guard 只守 publish",**0 生产行为改**(亲验:生产 redis 非 nil 时 shadow+publish 都跑,同现状),建后 grep + 9 红 0 新增 + B 跑到 shadow 出非 0 P。
+
+**裁 发现2 bed 源对齐**:P5 bed-authority 源(sleepad monitor 帧)**须对齐生产实际床态源**。**先验**:生产 sleepad(如 201 BM…641)到底发 **monitor 帧(填 sleepadStates)还是只发 InBed/LeftBed event**?
+- 若**只发 event** → P5 bed-authority **必须改读 bed event**(InBed/LeftBed),否则 P5 在事件床态 unit(含 201/CD2B)**永不 engage** = P5 治 α 在生产是死的。**这纠审查㊵"P5 治α落地可证"→ 实为合成可证、生产 engage 阻塞于源对齐。**
+- 这是 P5 生产-engage 前置,与发现1 同列 SOURCE-FIDELITY 审计。
+
+**裁决**:WF-b 实现 ✅(删死管干净/测换真源/9红0新增)。**redis-gate 取 (ii)** 解耦(R0-safe 正确性改进 + 0 生产行为改,建后亲验)。**发现2 bed 源**:先验生产 sleepad emission → P5 读 event 源(若 event-only)。**最高价值 = redis-gate 修通后用 B 做系统性 source-fidelity 逐 obs 对账**(一次挖净三类源 gap),再交用户逐案校对(否则逐案查的也是没真跑的 shadow)。门控 AND/recall 验证仍后。333B 待 ghost。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:WF-b 实现 1+2 完成 + B 加生产 trace/逐案查 + **2 发现(redis-gate 阻 shadow / bed 源是 event 非 sleepad-monitor)** + redis-gate 岔口待裁
 
