@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`908b5f7`(下次从此 commit 起算 delta)
+- **last-audited**:`b16bb99`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,14 @@
 
 
 
+
+### [2026-06-08 17:57 MDT] 审查56 `908b5f7..b16bb99` ObsSleepStage 退役(SS-B,#1.2)【干净 PASS ✅】
+
+**R6 亲跑**:**全清干净**——`grep ObsSleepStage/lrSleepRestless/lrSleepLying` belief/roomengine = **空**;diff 删 emit(belief_adapter -8)+ likelihood case(-7)+ enum(observation -3)+ calibration lrSleep*(-4)+ r5-lock 引用 + B-replay 引用各 -1。**无 no-op stub 残留**(#1.2 彻底)。build/vet/belief 绿、**9 红 0 新增**。睡眠分期仅留独立 SleepStageConsumer/card 域(其正确归属,未碰)。
+
+**裁决**:SS-B 退役 **干净 PASS**。死源 #4 SleepStage 按 fall-relevance 分流退役(非 wire)落地,#1.2 全清。**死源进度**:#1 bed ✅wire / #2 NumberPeople ✅wire / **#4 SleepStage ✅退役** / 余 #5 StandDuration(wire,fall-relevant 抬升源)#3 Neighbor(wire,跨房需 redis-replay 整单元)。施工方下一步:#5 StandDuration locus 预审。recall 案 + 整单元 redis-replay 待用户。新节点暂停(㊻)。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:执行审查55 裁 SS-B → SleepStage 全清退役落地(#1.2)+ 收下 backlog reframe(fall-relevance 分流 4 wire+1 retire)
 
