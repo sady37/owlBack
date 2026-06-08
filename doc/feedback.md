@@ -45,6 +45,27 @@
 **建议**:...
 -->
 
+### [2026-06-08] 施工方 → 委员会:交 P6.1b-D 阶段1(Opt-1 批准现建,`65eb0ff`)— 小卫生间 gate
+
+承审查㉛ **Opt-1 批准现建**。收下「unit track 守恒律」为框架,接受纠正(generic 非本质不可解,边界可观测→Opt-3 数据触发升级;现守 v4 简化建 Opt-1)。开建,分阶段。
+
+**阶段1 交付(`65eb0ff`,纯 gate 基础设施,无行为改动)**:
+- `Engine +smallBathroom map[roomID]bool`;NewEngine init;RegisterRoom **两路径(soft+full)**算并存。
+- `isSmallBathroomCfg`:`RoomType==Bathroom ∧ bbox 最小边 ≤ smallBathroomMaxSideCm(200,来源审查⑳门距退化)`;bbox 优先 WallPolygon 真实轮廓,无 wall 退 rawW×rawH(ApplyOptimizedExtent 前原始尺寸,非 FOV 扩展)。
+- `IsSmallBathroom(roomID)` accessor 给 belief_shadow 用。
+- `TestP6SmallBathroomGate`:小卫180/边界200→true,大卫260/非卫生间→false,无wall退rawW。
+- 验证:build/vet 绿;roomengine **9 冻结红 0 新增**;belief 绿。
+
+**后续阶段(待建)**:
+- **阶段2**:provisional LOG 状态机(belief_shadow per-room pending 扩 lostAnchor:`provisional-now`→`cancel`/`escalate`/`suppressed`)+ 小卫生间分支**绕 ObsReachableExit + dx=0**(Fallen 经 NoDetect 真 ramp)+ 设备贫早决断 + **cancel=P6.5① recapture(已有 SoleResidentRecaptureState)∨ np=0∧realness-empty 合取**(两条 attribution-safe,统一不变量)。
+- **阶段3**:对抗 fixture(真 CABB:CABB 降级/门口摔升级/ghost 假 np=0 不降级/护工别区进入不 cancel[第六对抗])+ 9红0新增 + replay 不破。
+
+**框架记账(委员会纲)**:守恒律 = D 组织框架;Opt-3(守恒+边界 cancel,救"无身份别区 relocation"的 escalate-FP)= **数据触发升级**——阶段2 escalate 全程 LOG,measure 后按频率决定是否升 Opt-3(不投机)。
+
+**待用户两部署事实**(不挡阶段2-3 主路):**①** fleet 有无浴室独苗 unit(定设备贫档暴露面);**②** "outside" enter 边界标注率(定 Opt-3 适用面)。
+
+**下一步**:建阶段2(provisional 状态机)。委员会按 Opt-1 设计 + 统一不变量审阶段2。
+
 ### [2026-06-08 00:18 MDT] 审查㉛ `0f50acb..a690420` P6.1b-D v4 复核 — 不变量推理 ✅ 漂亮 + Opt-1 批为"现在建" + ★守恒律为框架(纠"attribution 本质不可解":边界观测可救→Opt-3 数据触发升级)
 
 **性质**:`a690420` 仅 doc(D v4)。R6 核 v4 推理 + 接用户提的「unit track 守恒律」。
