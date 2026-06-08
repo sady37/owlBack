@@ -45,6 +45,24 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:P4.4 余项勘察 → 2 发现(②③ exit 闸已大部实现 / P6.5 ① 全 de-risk)+ 定下一节
+
+承审查⑲ P4.4 强通过、委员会列"余 ②③ exit 闸 + P6.5 ① 可续"。据 DAG 勘两者,**亲跑勘察发现**:
+
+**发现 A — ②③ exit 闸 已大部实现(不重做,防 drift / CLAUDE.md #1.2)**:
+- **③ 可达性闸**已在 `reachableExitScore`(belief_adapter):`fReach = clampUnit(v · beliefReportIntervalMs/1000 / d)` 正是"末门距 vs 速度×帧隔"——v=`approachSpeedTowardExit`(P2.1 个性化封顶老人速度)、`beliefReportIntervalMs=1000`=雷达 1Hz 帧隔、d=门距;v·Δt≥d → fReach=1 可达。**已替 30cm 硬门悬崖**(CABB 73cm 案),且是 **C3 共享算子**(Room `ObsReachableExit` + Track `TObsReachableExit` 同源,防两层漂移)。
+- **② 定向逼近趋势**已由 `approachSpeedTowardExit`(窗内朝最近门定向测速,v≤0 不干预)覆盖。
+- **委员会 ③ "实际帧隔"精化**:现用常量 1000ms = 标称 1Hz;仅**丢帧致间隔变长**时有边际差(变长→多给可达额度)。**但动 C3 共享算子有两层漂移风险**,且收益边际 → **建议记 P9.6 标定**(用真数据看丢帧分布定值),不单开 task 改共享算子。
+- **结论**:②③ 实质已落,无需新 commit;仅 P9.6 标定一项。请委员会确认此判(若要"实际帧隔"立即落,我做但需 R0-审 C3 共享算子改动面)。
+
+**发现 B — P6.5 ① 跨设备 track 守恒 已全 de-risk,wiring 就绪 + 设计已批(审查⑯ B1+B2)→ 下一节直接建**:
+- **wiring 就绪**:`Engine.suiteCensus *SuiteCensusManager`(SetSuiteCensus 注入,运行时只读)+ `e.roomSuiteID[roomID]→suiteID` + `e.roomType` 全在;belief_shadow 是 `*Engine` 方法,**可直接读** `e.suiteCensus.Get(suiteID).Persons`。**无 wiring 岔口**。
+- **集成点**:`belief_shadow.go:234` lost-sweep —— bathroom track 丢失(st.geom==GeomInToilet)时查 census。
+- **recapture 信号(审查⑯已批,非新岔口)**:**B1** `SuitePerson.SleepadAnchored`(回床铁证特例)∨ **B2** `AnchorRoomType != Bathroom && nowMs−AnchorSinceMs ≤ window`(人 anchor 移到别处=别台雷达重现=exit)。命中 → log `belief_shadow_exit_recapture`(track 守恒确认 exit,**只 log 不 fire,R1**);自洽 P3.4(超窗才重现=自救留低 severity)。
+- **fixture**:造 CABB 小卫生间——丢轨后窗内 sleepad InBed(B1)/邻室 anchor(B2)→ exit 确认(不报);纯盲区+不可达→ in-room-lost 浮出。
+
+**下一节 = P6.5 ①**(最强、决定性、直击 CABB;wiring+设计齐备)。本turn已大交付 P4.4,P6.5 ① 留下一轮专注建(per-task 干净交付,不在长turn尾rush 跨切feature)。如委员会对 ②③ 判或 P6.5 recapture 字段有异议,请示下。
+
 ### [2026-06-07 20:16 MDT] db37f6c..09a6535 — 委员会代码审查⑲:P4.4 开阔地 dwell + Z_cell gate【强通过】⭐ §11.2 残差落地可证
 
 **P4.4 核验(R6 亲跑,对裁决⑱)**:
