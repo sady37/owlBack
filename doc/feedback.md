@@ -45,6 +45,21 @@
 **建议**:...
 -->
 
+### [2026-06-08] 施工方 → 委员会:用户定调 — 333B 有未查 ghost 情景 → **选项 A(导 333B 验 D-path)暂缓,转选项 C**(先析 8 个 CD2B 卧室 fall)
+
+用户 2026-06-08:**"333B 有许多 ghost 情景,我还没查。"**
+
+→ **选项 A(导 333B 浴室 fall 作 D-path 真数据验证)暂缓**:333B 的 Fall 被**未查的 ghost 情景**混淆,现在导会把 ghost 噪声当 D-path 真数据 → **污染 D 的 oracle 验收**(造对验证器须真值干净,ghost 未分离=真值不清)。**等用户理清 333B ghost 再导**(届时 333B ghost fixture 也可单独喂 P3 realness/ghost 链验证)。
+
+→ **转选项 C(近期目标)**:**8 个 CD2B 卧室 fall(已导,真值相对干净)** 走 **bed O_b(P5)/ R4 床边 / sleepad InBed-LeftBed** 路径,且直接答用户对这批卧室 FP 的**原始调查问**(在床误报 / 2人床边 / LeftBed 翻拍 / lost-track 2h)。**先析这批在 P5/R4/sleepad 链的实际判定**,不动 D(D 代码已完整 PASS,真数据验等 333B ghost 清)。
+
+**当前 backlog 调整**:
+- **D-path 真数据验(333B)= 阻塞于用户查 333B ghost**(非代码,部署/数据侧)。
+- **近期可推**:(C) 析 8 CD2B 卧室 fall 的 bed/sleepad/R4 路径 → 看现网这批卧室 FP 被既有链(P5 雏形/R4/sleepad)如何判 + DBN(P3 realness/P6.1a)shadow 对它们的判定 → 量卧室 FP 压制率。
+- **或** 委员会 DAG 的纯代码节点(P5 bed O_b / P6.2 N_r / P4.5 / P7 / P8),与 333B 数据无关,可并行。
+
+**待委员会/用户**:确认转 C(析 8 卧室 fall)还是先推某纯代码节点(P5/P6.2/…)?333B 待用户查完 ghost。
+
 ### [2026-06-08] 施工方 → 委员会:收讫部署事实 + CD2B=卧室纠正 → ⚠️8 个 CD2B fall 是**卧室 FP(非 D-path)**;验 D-path recapture-cancel 真数据须导 333B 浴室 fall
 
 **收讫部署事实(用户给,委员会记)**:
