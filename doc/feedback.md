@@ -45,6 +45,32 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:P6.1b-D 设计预审 v2 — 修 Hole C(跨设备 cancel realness-gate)+ 第四对抗 + 采纳次要两点
+
+承㉘:架构批准(log-only/D≠A/C3 无须降)。**Hole C 服**——我给 np=0 上了 realness 合取护栏却没给跨设备信号上,不一致;且 ghost 在别台**独立发生**(非瞬移),raw-birth 会假 cancel 真摔=漏报。修订:
+
+**修 Hole C —— 跨设备 cancel 只认 realness-confirmed-real 别台新 track(producer 记,非 raw birth)**:
+- **难点(㉘ 亲验)**:realness(`tlayer.realLO`)是 **per-room shadow 隔离**,别台房的 shadow 看不见 → raw-birth accessor 取不到 realness。
+- **方案(shadow 层共享账,census 不碰=护架构#7)**:Engine 加 shadow 层字段 `suiteRealBirths map[suiteID][]{device,bornMs}`(mu 护)。**各 room 的 `beliefShadowTick` 在确认一条新 track 为 real 时**(track 首现 + `realnessPFromLO(realLO) > 0.5` realness-confirmed)→ append `{device, nowMs}` 到 `suiteRealBirths[suiteID]`(TTL 剪 >30min)。**这是 producer 维护**(谁看见 real track 谁记),realness 在它自己房内可见,跨房只传"已确认 real 的出生事件"(非 raw)。
+- **bathroom cancel 窗读** `anyRealBirthSince(suiteID, lostAnchor, excludeDevice=丢失那台) bool` —— 只计**别台 realness-confirmed real** 出生。ghost 在别台 `realLO<0` → **不记账** → cancel 窗读不到 → 不 cancel。
+- **与 np=0 一致**:跨设备信号现也有 realness 护栏(real-confirmed),与不变量2(np=0∧realness-empty)同构。**D 命门"误信不可靠降级信号"两条降级路径都堵**。
+- **R3/架构#7**:`suiteRealBirths` 在 belief shadow 层(非 census/cell 子系统);只 shadow 内写读;census 完全不动。
+
+**第四对抗(加入放行 fixture)**:**别台 ghost(realLO<0)+ 浴室门口真摔(无 ExitRoom/np=0/recapture)** → ghost 不入 realness-confirmed 账 → cancel 窗无 real birth → **不 cancel 仍 escalate(不漏报)**。证跨设备信号的 realness-gate 真生效(对称堵 ghost,如同第三对抗堵 np=0 ghost)。
+
+**采纳次要两点(㉘ 建议)**:
+- **小卫生间 NoDetect 置 `doorExitP=0`**:门距在小卫生间退化(处处近门),带 dx≈1 让 floor-factor 恒≈0.4 无意义 → 置 0 让 NoDetect 满 1.6 干净 ramp,disambiguation **全交 cancel 窗**(职责单一)。
+- **设备贫档早决断**:浴室独苗 unit **无跨设备 cancel 可能** → 不等满 30min → provisional 后**短窗**(如 ~fall-confirm 横档)即 suppress+LOG(省 30min 真摔延迟无谓等待);**设备富档保 30min cancel 窗**(给跨设备守恒到达时间,覆盖立项 np=0 +335s)。
+
+**修订后放行四对抗(真 CABB fixture + shadow 共享账)**:
+- (i) CABB 离场 → 窗内 np=0∧realness-empty ∨ 别台 real birth → `cancel` 不 FP;
+- (ii) 门口真摔 + 无佐证 → 窗到 `escalate` 浮出不漏报;
+- (iii) ghost 假 np=0(本房 frozen-artifact)→ realness 非空房 → 不 cancel 仍 escalate;
+- (iv) **别台 ghost real-birth(新)→ 不入 realness 账 → 不 cancel 仍 escalate**。
+- + replay 不破 + roomengine 9 红 0 新增 + R0/R1 全 shadow + 全程 LOG。
+
+**下一步**:委员会复审本 v2(尤其 Hole C 的 shadow 共享账 realness-gate + 第四对抗)。过 → 分阶段建:**阶段1** gate(bbox≤200)+ `suiteRealBirths` producer 记 + `anyRealBirthSince` accessor;**阶段2** provisional LOG 状态机(per-room pending 扩 lostAnchor)+ 小卫生间绕 ObsReachableExit + dx=0 + 设备贫早决断;**阶段3** 四对抗 fixture(真 CABB)+ 全验。**未复审过不建**。①fleet 事实仍待用户(定设备贫档建不建)。
+
 ### [2026-06-07 23:49 MDT] 审查㉘ `dcf8586..df4efcb` P6.1b-D 设计预审复核 ✅ 架构漂亮 + ⚠️ Hole C(跨设备 cancel 须 realness-gate,否则别台 ghost 假 cancel 真摔=漏报)
 
 **性质**:`df4efcb` 仅 doc(D 设计预审)。委员会按 D 不变量 + 三对抗审,亲跑核验架构声明。
