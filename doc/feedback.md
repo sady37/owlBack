@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`a10b6aa`(下次从此 commit 起算 delta)
+- **last-audited**:`e51d6e4`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,32 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 20:48 MDT] 审查㉑ `a10b6aa..e51d6e4` 自我纠正全验属实 ✅ + 设计准建,但选项不简单选 A(误差方向裁决)
+
+**性质**:`e51d6e4` 仅 doc(答审查⑳两前置),零代码。R6 照执——**自我纠正也要验**,不因"他自己认错"就信。
+
+**亲跑核验自我纠正(suite_census.go)**:
+- ✅ `TryFlipSoleResidentRoomType`(:476-501)逐行确认:`Role!=Resident continue` + `residentCount>1 return false` + `!=1 return false`,**仅单resident翻 anchor**。
+- ✅ 默认 `AnchorRoomType=RoomTypeDefault`(:221/231/270);进/返浴室经 `MarkPersonExitToBathroom`(:381→392置Bathroom)/`MarkPersonReturnToBedroom`(:400→411置Default)。
+- ✅ **推导成立**:多resident anchor 永不翻 Bathroom → 原 B2`AnchorRoomType!=Bathroom`恒真 → 抑制每次浴室fall = **大规模漏报**。**B2 退回正确,自我纠正诚实**。这正是审查⑳两前置逼出的真 bug——委员会价值兑现。
+- ✅ **额外验(委员会自查,不劳施工方)**:`residentCount` 只数 resident(:486 `Role!=Resident continue`),**visitor 不计**。故"单老人 + 访客护工"仍 `count==1`,gate 不被访客关闭——正合养老主场景。施工方未提及此点,但设计天然正确。
+
+**Q1/Q2 答复评定**:per-identity 绑定(那个 AnchorRoomType==Bathroom 的 sole resident)✅;多occupant 对抗夹具 ✅ 已纳入。单resident 分支无漏报(摔倒→未回床 SleepadAnchored=false ∧ 未过gate anchor仍Bathroom → recapture 不 fire → 告警浮出;唯有真返回才抑制,自洽 P3.4 自救低severity)。
+
+**裁决 —— 施工方选项("单resident-gate 保留多resident" vs "扩 census bathroom-person 绑定纳多resident")不简单选 A(拆预设)**:
+选项藏一个预设:"多resident 必须在 P6.5① 解"。**用审查⑳同一误差方向镜头拆**:
+1. **多resident gate OFF = 漏报-safe**。无 recapture 抑制 → 只可能 FP(人真离场却告警),**永不漏报**;且这**等同今天生产**(今天根本无 recapture)。故选 A = **严格 Pareto 改进**:给单resident 加 FP 削减,对多resident **零回归**。**采纳 A,但理由是"多resident OFF 漏报-safe、≥今天",不是"A 更简单"**。
+2. **拒绝把 B 捆进 P6.5①**(架构原则 #7):扩 census 多resident bathroom-person 绑定 = 动 **census/cell 独立子系统**(census 决定19 故意延后多resident anchor-flip)。把子系统改动塞进 belief-shadow task = 越耦合边界 + 一个 task 两处风险。若将来要做,是**独立 census-engine task 带自己的 R0 审**,不是 belief-shadow 搭车。
+3. **拒绝投机解多resident**:"是否值得为多resident 扩 census" 的裁决闸 = **现场数据**,不是现在拍。**要求多resident skip 分支 LOG**(不可静默,"no silent caps" 纪律)——记一条 `belief_shadow_recapture_skip_multiresident`,让我们量到多resident 浴室-lost FP 实际频率,再决定是否值得付 census 扩展成本。**数据触发,不投机建**。
+
+**放行条件(夹具补强后即建,设计本身已批)**:施工方 ①②③ 夹具好,补两条:
+- **④ 单resident + visitor 在场 → gate 仍 active、recapture 仍工作**(锁死 residentCount-非-personCount 语义,防未来重构误切 person-count → 访客关掉单老人 FP 削减)。
+- **③ 多occupant 对抗例追加断言:skip 被 LOG**(observability,喂裁决3的数据闸)。
+
+**结论**:自我纠正 STRONG(揪出真漏报、据实退回)。per-identity 单resident-gate 设计 **批准**。采纳选项 A(误差方向理由)+ 拒绝捆 B + 多resident skip 须 LOG。**夹具补 ④ + ③-log 断言后即建**,无须再回审设计。
+
+---
 
 ### [2026-06-07] 施工方 → 委员会:答审查⑳ 两前置 + ⚠️纠正自己的 B2(亲跑推翻)→ P6.5① per-identity 设计(请确认再建)
 
