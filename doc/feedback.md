@@ -45,6 +45,25 @@
 **建议**:...
 -->
 
+### [2026-06-08] 施工方 → 委员会:收讫部署事实 + CD2B=卧室纠正 → ⚠️8 个 CD2B fall 是**卧室 FP(非 D-path)**;验 D-path recapture-cancel 真数据须导 333B 浴室 fall
+
+**收讫部署事实(用户给,委员会记)**:
+- **unit 201 = 设备富 + 有 sleepad**(bedroom CD2B radar + sleepad 1641;bathroom 333B radar)→ **①tier 依赖对 201 解**:走**设备富档** + **recapture-cancel 可用**(sleepad→SleepadAnchored 回床重现→cancel)= **D 最理想档**(真离浴室回床→cancel 不 FP / 真摔→escalate 不漏报,非设备贫 suppress 妥协)。
+- **服 CD2B=卧室雷达纠正**:我导的 **8 个 CD2B fall 全是 bedroom fall** → 其 false alarm 属 **bed O_b(P5)/ R4 床边 / sleepad InBed-LeftBed** 路径,**非小卫生间 D-path**。我之前隐含把它们当 D-path 候选**不对**;**"fire 伴 LeftBed×2-3 同秒"共性恰印证**=卧室 FP 走 sleepad/床路径(与委员会拆分一致)。**333B 浴室** fall 才是 D-path 验证目标(若 333B bbox≤200)。
+
+**⚠️ 实质推论(诚实)**:委员会要"201 真数据 replay 验 recapture-cancel"——但 **recapture-cancel 在 D-path(浴室)**,CD2B 卧室 fall **不走 D-path**。所以:
+- **8 个 CD2B 卧室 fall** → 验 **P5 bed O_b / R4 / sleepad 床路径**(P5/R4 域,非 P6.1b-D);
+- **验 D-path recapture-cancel 真数据** → **须导 333B 浴室 fall**(尚未导;且 201 设备富+sleepad → 浴室真离场回床会触发 sleepad recapture → 正好验 D 的 recapture-cancel 路径,此前只合成测 + CABB 单设备无 recapture)。
+
+**两面 replay 拆分(承委员会)**:(a) CD2B 卧室 FP → P5/R4/sleepad recapture;(b) 333B 浴室 FP → 小卫生间 D-path(gate→provisional→sleepad-recapture cancel/escalate)。
+
+**列选项请委员会/用户裁下一步**:
+- **A(导 333B 浴室 fall)**:用 `export_case.sh` 导 333B(浴室雷达)近 7 天 Fall(标准窗)→ 得 D-path 真数据验证集(201 设备富+sleepad → 验 recapture-cancel 真触发)。**推荐**——直接补 D-path 真数据缺口。
+- **B(P9 oracle harness 先建)**:扩 replay harness 走 beliefShadowTick(按 201 拓扑:CD2B 卧室接 bed/sleepad、333B 浴室接 D-path)→ 8 CD2B fall + 333B fall 一并接 oracle。较重。
+- **C(先析 8 CD2B 卧室 fall 的 bed/sleepad 路径)**:不动 D,先看这批卧室 FP 在 P5/R4/sleepad 链的实际判定(用户原始关切:在床误报/2人床边/LeftBed 翻拍)。
+
+**施工方倾向 A + C**(A 补 D 真数据;C 直答用户对 8 卧室 fall 的原始调查问)。**待裁**。脏文件/R0 守。
+
 ### [2026-06-08 01:32 MDT] 委员会 → 施工方:部署事实(用户给)→ 验证 unit = **201,设备富 + 有 sleepad**,解 ①tier 依赖
 
 用户 2026-06-08 在导出 **unit 201 最近 7 天全部 Fall**(真数据 oracle)。拓扑:
