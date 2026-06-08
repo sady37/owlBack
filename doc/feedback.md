@@ -44,6 +44,36 @@
 
 
 
+
+### [2026-06-08] 施工方 → 委员会:B(fixture replay harness)设计预审 — 保真路径取直驱 handleMessage(承㊷ (i))+ 首 oracle 复现 C + 两实施岔口待裁
+
+承㊷(确认 B + 预裁取 (i) 真 beliefShadowTick 真 adapter / 驳 (ii) 分叉核 + 钉保真度 + 首 oracle 复现 C)。出 B 设计预审,doc-only,**审后再建**。
+
+**勘察生产路径(已亲验,engine.go)**:
+`handleMessage(StreamMessage)` → `FromStreamMap` 解 envelope → 路由 deviceRoom[addr]/deviceMounts[addr] → radar 分支:`ParseRadarTracks(DataValue,addr,mount,ts)` → `tm.ProcessFrame(frames)`(真 Verdict/Kalman/stillbox/cell 赋值)→ `tm.SnapshotTrackStatuses(ts)`=**真 bases** → `publishTrackStatuses` → [BathroomGate→Fall→BedroomFall→**beliefShadowTick**(engine.go:1074)] → shadow logs。sleepad 分支:`ParseSleepadObservations` → `tm.ProcessSleepadObservation`。
+
+**现状(belief_replay_test.go §9-3a)**:`loadFixture`/`buildGridFromLayout` 已有,但只驱 **adapter→belief.Step 偏路**(无 lost-sweep/P5 bed authority/P6/Track 层)——**非全 beliefShadowTick**。B 必须补全路径。
+
+**B 保真设计(承㊷ (i),取最忠实形)**:
+- **直驱 `handleMessage`**:fixture 每条 record(device_uid/timestamp/category/data_value)**包成 `rediscommon.StreamMessage`**(device_uid→device_addr 由 layout radar 映射翻译:`9D8A32A1CD2B`→`fd00:0:3:112:3:100:32a1:cd2b`)→ 喂真 `handleMessage`。**ProcessFrame/SnapshotTrackStatuses/beliefShadowTick 全是生产同一函数**,**零手搓 bases、零 fork shadow 逻辑**(直命㊷ 保真命门:不造第二路径)。
+- **Setup**:`NewEngine` + `RegisterRoom(cfg)`(cfg=`ParseLayoutConfig(fixture layout)`)+ wire `deviceRoom[addr]=roomID`/`deviceMounts[addr]=mount`(从 layout radar 映射)+ suiteCensus(β/γ/D-path 用;α 卧室可空)。复用既有 `buildGridFromLayout` 解壳逻辑(cd2b canvas / layout_config 双壳)。
+- **时间**:replay 用 fixture timestamp 作 nowMs(非 wall clock;beliefShadowTick 全 ts 驱动)。
+- **采集**:挂 **zap observer** 捕 `belief_shadow_*` 日志(`belief_shadow_fall`/`bed_leak_suppress`/`bed_authority_released`/`nodetect_gated`/`lostfall_provisional|cancel|escalate|suppressed`/`track_lost`)——**= 生产真实 emit 的 shadow 决策**(非白盒偷看,保真)。
+
+**首 oracle = 复现 C 诊断(承㊷ 第一验收点)**:8 CD2B 过 B,逐案断言分类与 C 手工表一致:
+- α(0712/0917/0929/0127/1021)→ P5 床权威**压制**(`bed_leak_suppress` 出现 ∧ 无 `belief_shadow_fall` 确认);
+- β(0604/0717)→ np→0/丢轨,P6.1a 门控(`nodetect_gated` 或 lostfall provisional 按 geom);
+- γ(0142)→ **escalate**(残差,不压);
+- 且 per-case 中间事实(fall 时 bed status / np / track count)与 C 表吻合。**B 结果 ≠ C 手工 → pipeline bug(B 即 C 的交叉校验)**。
+
+**⚠️ 两实施岔口(不擅决,请委员会裁)**:
+- **岔口 B-1(tap 层级)**:**(a) 直驱 handleMessage**(最忠实,含 FromStreamMap+ParseRadarTracks 全路径;代价=须包 StreamMessage envelope + device_uid→addr 翻译,雷达 mount wiring)vs **(b) 驱 publishTrackStatuses**(自调 ParseRadarTracks+ProcessFrame+SnapshotTrackStatuses 得真 bases 再喂,跳 envelope 解析层;略短但仍真 bases 真 tick)。**施工方倾向 (a)**(㊷ 命门=生产同一路径最大化;envelope 翻译一次性成本可控)。**请裁 a/b**。
+- **岔口 B-2(oracle 断言机制)**:**(a) zap observer 捕 shadow 日志**(= 生产 emit,最保真,但断言靠 log 字段)vs **(b) 加 test-only 钩子读 belief.Vector()/Decider 状态**(白盒精确 P(Fallen),但引 test 钩子入 shadow)vs **(a)+(b) 混合**(log 为主 + 关键案 P(Fallen) 佐证)。**施工方倾向 (a) 或混合**(log 保真为主;P5 放行前置"P(Fallen)<τ"需数值则补 (b) 最小钩子)。**请裁**。
+
+**放行前置(B 自身建后验)**:8 CD2B 复现 C 全绿(分类 + 中间事实)；harness **保真自检**(grep:B 不含 `TrackStatusBase{` 手搓字面量、不调任何非生产 tick 函数——只喂 raw record 进 handleMessage);0 生产改动(纯 test 文件 + 至多 B-2(b) 的最小 test-only 钩子,若裁用)。333B/D-path replay 待用户 ghost(B 先接干净 8 CD2B)。
+
+**下一步**:委员会裁 **B-1(tap a/b)+ B-2(oracle 机制)** → 再建 B。**未裁不建**。P6.3/Opt-a/P7/P8 缓。
+
 ### [2026-06-08 12:34 MDT] 审查㊷ `ecf97ad..5be1075`(doc-only)确认下一节=P9 oracle 载体 B + 钉保真约束(防合成绿) + 预裁实施岔口取(i)
 
 **性质**:`5be1075` doc(收㊶ + 建议 B)。无代码。
