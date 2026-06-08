@@ -46,6 +46,25 @@
 
 
 
+### [2026-06-08 13:27 MDT] 委员会指令(用户定调)→ WF-b 确认(shadow 独立 + 门控)+ 成熟度曲线:filter→验recall→direct
+
+**用户裁(架构主)**:DBN 根本角色 = **WF-b(shadow 独立判 + 门控)**。shadow 保持纯独立白盒(不见 firmware Fall,R5 纯);生产 gate = **firmware 触发 ∧ shadow 不正向否决 才 fire,默认保留 firmware**(漏报-safe)。DBN = firmware fall FP 的**正向否决引擎**,合 founding"误报高→白盒"初衷。
+
+**用户追问"独立门控也是报,要不要直接用 DBN?"→ 委员会答:DBN-direct 是终极,但 gate 于 recall 验证**:
+- 至今只验 **precision/FP 压制**(CABB/8 CD2B/α-β-γ shadow 不误 confirm);**从没验 recall**(DBN 独立判能否抓真摔)。8 CD2B 全 FP,无真摔。
+- **DBN-direct(主探测器)风险**:若 DBN 独立判有盲区(§11.2 静止摔 / firmware-pose-唯一信号案)→ 拿未验 recall 当主 = 漏报。
+- **成熟度曲线**:① 现 **WF-b-gate(filter,默认保留=recall 不降,precision↑)** 安全第一步;② **验 DBN recall**(需真摔验证集,非 FP);③ recall 证 ≥ firmware → 升 **DBN-direct / union(firmware-未否决 ∨ DBN-高置信)**。**要直接用 DBN,先拿真摔数据证不漏。**
+
+**WF-b 实施 spec(给施工方)**:
+1. **shadow 独立,不 wire firmware Fall 进 belief**;`ObsFirmwareFall` belief 观测 = 死代码 → **删**(#1.2 删即删;firmware Fall 事件本身留生产 gate/RecordRadarAlarm 路径,只删 belief 死管 + radarEventToObs Fall case + 其 calibration LR / P2.4)。
+2. **shadow SFallen 由 pose/dwell/nodetect 独立抬**(真生产抬升源);**P5/P6.1a/D 的 damp 逻辑不变**(damp 的就是这个独立 SFallen)。**仅合成测输入对齐**:`TestP5Alpha` 等把注入的 `ObsFirmwareFall` 换成真抬升源(`PoseFallen@InBed` 等),使测试反映生产输入。
+3. **reproduce-C 重框为"验正向否决"**:8 CD2B 每案,验 shadow emit 对应正向否决信号(α→bed-authority 翻身否决 / β→nodetect-gate or 真盲区 / γ→escalate 残差),**非验"分类 fall"**。
+4. **门控集成 = 未来步(shadow 现 R0-log)**:现 shadow 只 log 否决;gate-AND(firmware ∧ ¬shadow否决)是 shadow→生产的后续 task,默认保留(漏报-safe)。
+
+**裁决**:WF-b 确认(用户定)。施工方按 spec:删 ObsFirmwareFall 死管(#1.2)+ P5/P6.1a 合成测输入对齐真抬升源 + reproduce-C 重框验正向否决。**DBN-direct 列愿景,gate 于真摔 recall 验证**(需真摔集,记 backlog)。B oracle 解阻塞(WF-b 定)→ 施工方出 reproduce-C(验否决)。333B 待 ghost。
+
+---
+
 ### [2026-06-08 13:15 MDT] 审查㊹ `4a10431..ad84476` B harness【保真过 ✅ + 首发现 dead-plumbing 亲验属实 ⭐⭐】→ WF 根本设计岔口升级用户
 
 **R6 亲跑核验**:
