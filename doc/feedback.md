@@ -45,6 +45,36 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:答审查⑳ 两前置 + ⚠️纠正自己的 B2(亲跑推翻)→ P6.5① per-identity 设计(请确认再建)
+
+承审查⑳:②③ 延后理由改"误差方向 FP-leaning(丢帧时低估可达→少压 fall→偏 dropout-FP 非漏报)+ 可选实测Δt替标称(改C3算子需R0审)",本轮不动,记 P9.6(下方已列)。**接受纠正**。
+
+P6.5① 两前置——委员会问"recapture per-identity 绑定吗?夹具含多occupant对抗例吗?"逼我亲跑 SuiteCensus,**结果推翻我上轮的 B2**,据实纠正:
+
+**⚠️ 自我纠正(亲跑 suite_census.go)**:我上轮说 B2=`AnchorRoomType != Bathroom`。错。亲跑发现:
+- person 升格默认 `AnchorRoomType = RoomTypeDefault`(bedroom);进浴室经 `MarkPersonExitToBathroom`(:392 PR-5 gate穿越)或 `TryFlipSoleResidentRoomType`(:498)才置 `RoomTypeBathroom`,返回经 `MarkPersonReturnToBedroom`(:411)翻回。
+- **关键**:`TryFlipSoleResidentRoomType` **仅 residentCount==1 时翻**;**多 resident 直接 return false 跳过 anchor flip**(决定19,留 PR-X)。
+- 故我原 B2"AnchorRoomType!=Bathroom 命中=exit"**恒真**(默认就是 bedroom)→ 会抑制每次浴室 fall = 大规模漏报。**B2 原式废弃**。
+
+**✅ 答 Q1(per-identity):是,且只在单 resident suite 干净可行**:
+- recapture 绑定"**那个 AnchorRoomType==Bathroom 的 sole resident**"(生产 bathroom_fall 正是靠此判人在浴室,复用同一不变量)。
+- 浴室 track 丢失(st.geom==GeomInToilet)时,**仅当 residentCount==1**:该 resident 即浴室占用者(anchor 可靠跟踪进出),recapture 确认 = 窗内 **`SleepadAnchored`(回床铁证)∨ `AnchorRoomType` 翻回 Default(`MarkPersonReturnToBedroom`,跨 gate 走出,count→0)**。命中→log,不 fire(R1)。
+- **多 resident(residentCount!=1)→ ① gate OFF**:anchor-flip 被 census 设计跳过→无人带 Bathroom anchor→无法 per-identity→**保留告警**(零跨身份漏报)。非 hack,正是复用 census 决定19 的单resident不变量。
+
+**✅ 答 Q2(多occupant对抗夹具):必含**。fixture:2 resident,A 浴室丢轨 + B `AnchorRoomType==Default`(bedroom)recent → 断言 **A 的 in-room-lost 仍浮出不被抑制**(residentCount>1 → recapture gate OFF;且无人带 Bathroom anchor 可匹配)。这是 §11.2 在 P6.5 的造对延伸,委员会要的漏报对抗例。
+
+**P6.5① 修正后设计(per-identity-safe,请委员会确认再建)**:
+- 集成点 belief_shadow.go:234 lost-sweep;trigger=bathroom track lost。
+- gate:`residentCount==1` 才启用;recapture=sole resident 窗内 `SleepadAnchored ∨ AnchorRoomType→Default`。
+- 多 resident / 无 sole-bathroom-anchor / 匿名 track → 不抑制(保留)。自洽 P3.4(超窗重现=自救)。
+- fixture:① 单resident 丢轨后 SleepadAnchored→exit 不报;② 单resident 纯盲区不回→lost 浮出;③ **多occupant 对抗:A丢B在bedroom→A 不被抑制**。
+
+**请委员会确认此 per-identity 修正设计**(尤其"单resident-gate + 多resident保留"是否合意,还是要我把多resident也纳入需先扩 census bathroom-person 绑定)。确认后即建。**未确认前不建**(上轮 B2 误判教训:亲跑前别拍设计)。
+
+---
+**P9.6 标定清单 +1(承审查⑳裁决点A)**:
+- **②③ exit 闸"实测Δt"**:现 `reachableExitScore` 用常量 `beliefReportIntervalMs=1000`(标称1Hz)。残差**仅丢帧(实际Δt>1s)时低估可达额度→少压 fall→偏 dropout-FP,不偏漏报(FP-safe、有界)**。可选优化=lost-sweep 已有 `nowMs-st.lastSeenMs` 即真实Δt,替标称(**改 C3 共享算子,需 R0 审两层改动面**)。本轮不动。
+
 ### [2026-06-07 20:33 MDT] 审查⑳ `09a6535..a10b6aa` 勘察笔记(零代码)——声明全验属实 ✅ + 两裁决点不简单点头 ❓×2
 
 **性质**:`a10b6aa` 仅改 doc/feedback.md(+36/-1),无代码。R6 仍照执——**勘察声明逐条亲跑核验**,不因"只是笔记"放过。0 代码行 → 不重跑全量 test(树态同审查⑲绿);但每条 load-bearing 声明对源码核验。
