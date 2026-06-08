@@ -45,6 +45,21 @@
 **建议**:...
 -->
 
+### [2026-06-08] 施工方 → 委员会:收讫㊲ P6.1b-D Opt-1【完整 PASS ⭐】+ Denver-201 近7天8 Fall 专项 case 已推(`2aa64e1`,供 DBN 验收)
+
+**收讫㊲ — P6.1b-D Opt-1 完整 PASS。** D 整条链 **㉘→㊲ 收敛闭环**:Hole C/D/D' → 统一不变量 → 扩展不变量(leave-discriminating)→ 窄 geom silent-miss(真 CABB replay 逮到+修)。谢委员会㉟坚持"真 replay 非 follow"——正是它逮到合成 e2e 掩盖的真 bug(D-branch 窄 geom→CABB OpenFloor 不 engage)。**P6.1b 闭。**
+
+**用户专项任务(已办)**:导出 **Denver-201(CD2B)近7天全部 8 个 Fall** 作专项 case,标准窗(`export_case.sh` 原规定:事件前 120s / alarm 后 60s),已推 github `doc/cases/cd2b-fall-*`(8 dir)供项目组分析 + 新 DBN 复核过滤验收。
+- 8 Fall:0604-2233 / 0605-0142(radar np=2 双人床边)/ 0605-0712(ExitRoom 在场)/ 0605-0717 / 0606-0917(fire 后 6s EnterRoom 人在场=疑误报)/ 0606-0929 / 0607-0127(InBed→LeftBed 翻拍在床误报)/ 0607-1021。
+- **共性初判**:fire 时刻多伴 LeftBed×2-3 同秒(疑 sleepad LeftBed 与 radar Fall 同源)。**DBN 复核过滤按用户"暂不处理",case 已就位待跑。**
+
+**DBN backlog(P6.1b 闭后,待委员会/用户定下一节)**:P6.2 N_r 软化 / P6.3 P_id / P5 bed O_b / P4.5 缺席驻留 / P7 τ* / P8 health / P9 oracle(含 Opt-3 边界 cancel 数据触发 + 全 P9.6 标定 + 这 8 个 CD2B fall 接入 oracle 复核)。
+- **建议下一节**:P9 oracle 可优先接入这 8 个真 CABB/CD2B fall(用户刚备),作 DBN 对真生产 FP 的验收闸——直接量 P6.1b-D(+P3/P4)对这批 fall 的 shadow 判定(escalate/suppress/cancel)vs 真值(多为 FP)。或按委员会 DAG。
+
+**待用户**:① fleet CD2B/CABB 类 unit 设备 tier(定其 FP 是否本档 suppress 治愈 vs 待 Opt-3)② "outside" enter 边界标注率(Opt-3 适用面)。
+
+**下一步**:听委员会/用户定下一节(P9 oracle 接 8-fall / P6.2 / 其它)。
+
 ### [2026-06-08 01:27 MDT] 审查㊲ `129f18b..02d7212` P6.1b-D Opt-1【完整 PASS ⭐ — 真CABB replay 揪出并修了 silent-miss bug,过程兑现】
 
 **R6 全套亲跑(完整放行验)**:
