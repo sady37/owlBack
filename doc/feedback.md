@@ -49,6 +49,30 @@
 
 
 
+
+### [2026-06-08] 用户澄清 + 施工方记:redis-replay 须**整单元重放**(非单设备)→ 单元 201 = 3 设备(CD2B+sleepad1641+333B),细化 redis-replay 执行 spec
+
+**用户 2026-06-08**:"重放时,是整个单元重放。"
+
+**为何关键(施工方记)**:shadow 是**房/单元级跨设备融合**——只重放单设备则跨设备/跨房依赖缺失,shadow 不保真:
+- **P5 bed-authority** 需 **CD2B radar(on-bed 位置)+ sleepad 1641(InBed 占用)同在**;只放 CD2B 则无 sleepadStates(bed 死),只放 sleepad 则无 radar geom(门控不成立)。
+- **Neighbor(§5.5.2)/ NumberPeople / SuiteCensus / bathroom-gate / D-path recapture** 全需**跨房**(卧室 CD2B + 浴室 333B + sleepad)同时在流 → 只整单元重放才 populate 这些(否则 source-fidelity 审计里它们"死"是因没整单元放,非真死)。
+
+**★ 单元 201 设备清单(DB 实查,fd00:0:3:112:3:* 前缀)**:
+| device_addr | type | uid | 8案窗 stream |
+|---|---|---|---|
+| fd00:0:3:112:3:100:32a1:cd2b | Radar(卧室) | 9D8A32A1CD2B | radar.track 146155 + heart 5789 |
+| fd00:0:3:112:3:101:2460:1641 | Sleepad | BM87224601641 | sleepad.track 27523 |
+| fd00:0:3:112:3:200:59b8:333b | Radar(浴室333B) | (待解uid) | radar.track 24685 + heart 5791 |
+(注:fd00:0:3:112:**1**:* 的 sleepad 865/1897 是**别的单元**,不在 201。)
+
+**→ redis-replay 执行 spec 细化(承委员会 52736fa + 用户)**:`--device-uids 9D8A32A1CD2B,BM87224601641,<333B-uid>`(整单元 3 设备)`--t1/t2` 覆盖 8 案窗(2026-06-04~06-07)`--streams monitor,event` `--tz` MDT。这样:① sleepad.track 经真路径填 sleepadStates → **P5 bed engage**(验 finding-2 修)② 333B 浴室在流 → census/neighbor/NumberPeople 跨房 obs 才可能 populate(更全的 source-fidelity)。
+- **注**:333B 有未查 ghost(用户先前)——整单元重放会带入其 ghost,但**source-fidelity 审计目标是"obs 是否 populate",非 fall 判真伪**,故 ghost 不阻塞 obs-populate 审计(fall verdict 验留 ghost 清后)。
+
+**对 B 的影响(互补再确认)**:B 是**单房 fixture**(只 CD2B 一房记录),**结构上无法**验跨房源(Neighbor/census/NumberPeople);这些**只能整单元 redis-replay 验**。B 留 infra-free 单房 CI(Pose/Bed[补fixture后]/NoDetect 等单房源回归),跨房源归 redis-replay 整单元。
+
+**待委员会/用户**:确认整单元 redis-replay 执行(谁跑:需测试 redis + sensor consumer 起整单元 3 设备路由)。我可解 333B 的 uid + 备好重放命令;**裁前不抢跑服务**。333B ghost 待查不阻 obs-populate 审计。
+
 ### [2026-06-08] 施工方 → 委员会:★★ finding-2 DB 坐实 → 生产 sleepad **发 monitor 帧**(发现2 是 fixture-export 假象,非生产现实)→ P5 bed wiring **不必改源**,我上条 bed-event 改源预审**自我推翻**
 
 承委员会 redis-replay 指令(用户指,直接答 finding-2:DB 有无 sleepad monitor 帧)。**底层事实在 DB monitor_stream**,直接查 owl_v2(快于跑全 replay,即 redis-replay 的数据源):
