@@ -45,6 +45,34 @@
 **建议**:...
 -->
 
+### [2026-06-08] 施工方 → 委员会:P5 设计预审(治 α LeftBed-co-fire)— 含一个 R5 关键岔口待裁(滚下床真摔)
+
+承㊳ 序列(C→P5 数据驱动)。C 已交,据其 α 主导,出 **P5 设计预审**(doc,委员会审后再建 code)。
+
+**勘察现状(belief bed 链)**:
+- `sleepadAdapter`(:435)/`bedAdapter`(:447):**bedVal 二值瞬时**(InBed→1 / LeftBed→0)→ `ObsBedOccupied`。
+- `ObsBedOccupied`(likelihood.go:65):p 高 → boost SBedLying/SBedRestless + **damp SFallen**(dampBedFallen)。`ObsFirmwareFall` 已降权(SFallen:2,不强压床态)。
+- **α 机理**:LeftBed-co-fire 瞬间 **bedVal→0** → ObsBedOccupied 不再 damp SFallen → 同刻 firmware Fall(SFallen:2)**透过** = 卧室 FP。
+
+**P5 核心修(治 α)**:bed O_b **加迟滞/leak**(替二值瞬时)——**recent InBed → bedVal 缓降**,brief LeftBed 翻拍(InBed→LeftBed→InBed)不瞬掉 bed-authority → 同刻 Fall 仍被 damp(=床上运动伪迹)。对齐记忆 [[bed_stale_leftbed_vetoes_radar_inbed]](L*=0.55/min leak)+ [[bed_fusion_authority_model]](sleepad 接触式权威)。
+
+**⚠️ R5 关键岔口(不擅决,列给委员会)——LeftBed-co-fire 二义:伪迹 vs 滚下床真摔**:
+- LeftBed-co-fire 可能是 **翻身/坐起(伪迹,该压)** 也可能是 **滚下床(真摔,绝不可压)**——**两者都给 LeftBed + radar 动 + 离床压**。盲目 leak 压制会**漏滚下床真摔**(R5/铁律红线)。
+- **判别据(供裁)**:
+  - **伪迹(翻身/坐起)**:LeftBed 翻拍 → **InBed 很快返回**(床压复得)+ radar **留床面**(z 高、bed-surface geom、未位移)。
+  - **真摔(滚下床)**:LeftBed **持续不返回** + radar **位移到床边/地面**(z 低、躺地、离 bed-surface)。
+- **判别落点选项**:
+  - **Opt-P5a(geom/z 即时判,推荐)**:Fall 时若 track 仍在 **bed-surface(geom InBed + z 高)** → 伪迹压制;若 **displaced(离 bed geom + z 低/躺)** → 真摔不压。**即时、不引延迟**;依赖 fall 时 track 位置可靠。
+  - **Opt-P5b(InBed-翻拍-返回判)**:等窗内 InBed 是否返回——返回=伪迹压(事后软撤),不返回=真摔。**更稳但引延迟**(真摔确认延迟 = 临床敏感),且 firmware Fall 已发(shadow 只对账)。
+  - **Opt-P5c(合取)**:bedVal-leak 压制**仅当** geom-on-bed ∧(InBed 近期活跃)——两条都满足才认伪迹,任一不足 → 不压(偏安全不漏报)。**最保守**。
+- **施工方倾向 Opt-P5a 或 P5c**(即时 + 安全不对称偏不漏真摔);**但这是 R5 红线区(漏滚下床真摔代价极高),请委员会裁判别据 + 落点**。
+
+**R5/R0 守**:压制走 **bed-authority(sleepad 接触可靠证据)+ geom/z 位置**,非 pose/z 反向压 fall;全 belief shadow(只 log 不 fire);不碰生产;0 新增 vs 冻结 9 红。
+
+**放行前置(建后验)**:用 **8 个 CD2B 卧室 fall(C 已诊断)** 作 oracle——α 案(LeftBed-co-fire + 留床面)→ shadow 压制(P(Fallen)<τ);**外加一个滚下床真摔对抗例**(LeftBed + 位移躺地)→ **不压仍浮出**(R5 验不漏报)。β/γ 案不归 P5(P3/P6.2)。
+
+**下一步**:委员会裁 **R5 岔口(判别据 Opt-P5a/b/c)** + 确认 P5 方向 → 再建 P5 code。**未裁 R5 岔口不建**(漏滚下床真摔是红线)。P6.2 仍可并行;333B 待用户查 ghost。
+
 ### [2026-06-08] 施工方 → 委员会:C 完成 — 8 个 CD2B 卧室 fall 诊断 → P5 失败模式清单 + scope/优先级
 
 承㊳ 裁(C=P5-scoping,先 C de-risk P5)。**只读分析**(python 读 8 个 `doc/cases/cd2b-fall-*/window.json`,不改代码)。逐 case bed/sleepad + track/np vs Fall fire:
