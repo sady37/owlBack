@@ -247,6 +247,9 @@ type Engine struct {
 	roomSuiteID    map[string]string
 	roomResidentID map[string]string
 	roomType       map[string]int
+	// smallBathroom P6.1b-D(审查㉛ Opt-1):roomID→是否小卫生间(bbox 最小边≤200 ∧ RoomType==Bathroom)。
+	// 小卫生间门距退化(处处近门,审查⑳)→ 走 D 延迟确认/分级,不走常规 reachableExit 抑制。RegisterRoom 算。
+	smallBathroom  map[string]bool
 
 	// trackLastSeen 是 publishTrackStatuses 的失锁判定状态：roomID → trackID → 上次出现的 nowMs。
 	// 用途：firmware track_id 复用场景下，SuiteCensus.AnchorTrackID 必须在 track 真正失锁后清空，
@@ -353,6 +356,7 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		roomSuiteID:         make(map[string]string),
 		roomResidentID:      make(map[string]string),
 		roomType:            make(map[string]int),
+		smallBathroom:       make(map[string]bool),
 		trackLastSeen:       make(map[string]map[int]int64),
 		bathroomGates:       make(map[string]*BathroomGate),
 		beliefShadows:       make(map[string]*beliefShadow),
@@ -840,6 +844,51 @@ func (e *Engine) SuiteIDForRoom(roomID string) string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.roomSuiteID[roomID]
+}
+
+// smallBathroomMaxSideCm P6.1b-D(审查㉛ Opt-1):bbox 最小边 ≤ 此 = 小卫生间。
+// 来源:审查⑳ 立项"小卫生间人活动范围≈全程贴门 → 门距信号退化"——门距没用才走 D 跨设备/分级。
+const smallBathroomMaxSideCm = 200
+
+// isSmallBathroomCfg P6.1b-D gate:RoomType==Bathroom ∧ bbox 最小边 ≤200cm。
+// bbox 优先取 WallPolygon(真实轮廓);无 wall 则退 rawW×rawH(ApplyOptimizedExtent 前的原始房尺寸,
+// 非 FOV 扩展后)。RegisterRoom 内调(持写锁)。
+func isSmallBathroomCfg(cfg RoomConfig, rawW, rawH int) bool {
+	if cfg.RoomType != card.RoomTypeBathroom {
+		return false
+	}
+	w, h := rawW, rawH
+	if len(cfg.WallPolygon) >= 3 {
+		minX, minY := cfg.WallPolygon[0].X, cfg.WallPolygon[0].Y
+		maxX, maxY := minX, minY
+		for _, p := range cfg.WallPolygon[1:] {
+			if p.X < minX {
+				minX = p.X
+			}
+			if p.X > maxX {
+				maxX = p.X
+			}
+			if p.Y < minY {
+				minY = p.Y
+			}
+			if p.Y > maxY {
+				maxY = p.Y
+			}
+		}
+		w, h = maxX-minX, maxY-minY
+	}
+	minSide := w
+	if h < minSide {
+		minSide = h
+	}
+	return minSide > 0 && minSide <= smallBathroomMaxSideCm
+}
+
+// IsSmallBathroom 暴露 roomID → 是否小卫生间(P6.1b-D gate)给 belief_shadow 用。
+func (e *Engine) IsSmallBathroom(roomID string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.smallBathroom[roomID]
 }
 
 // pickAdjudicator 按 room_type binary 分类挑选 adjudicator。读锁内调用。
@@ -1348,6 +1397,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		e.roomSuiteID[cfg.RoomID] = cfg.SuiteID
 		e.roomResidentID[cfg.RoomID] = cfg.ResidentID
 		e.roomType[cfg.RoomID] = cfg.RoomType
+		e.smallBathroom[cfg.RoomID] = isSmallBathroomCfg(cfg, rawW, rawH)
 		if cfg.RoomType == card.RoomTypeBathroom && cfg.IsPublicBathroom && e.suiteCensus != nil && cfg.SuiteID != "" {
 			e.suiteCensus.MarkPublicBathroom(cfg.SuiteID) // 幂等
 		}
@@ -1454,6 +1504,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	e.roomSuiteID[cfg.RoomID] = cfg.SuiteID
 	e.roomResidentID[cfg.RoomID] = cfg.ResidentID
 	e.roomType[cfg.RoomID] = cfg.RoomType
+	e.smallBathroom[cfg.RoomID] = isSmallBathroomCfg(cfg, rawW, rawH) // P6.1b-D gate
 
 	// sensor_v2 PR-7：public bathroom 显式标记 census bucket。
 	// 仅当 RoomType==Bathroom 且 IsPublicBathroom=true 才触发，其它 room 即使 IsPublicBathroom=true 也忽略。
