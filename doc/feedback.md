@@ -45,6 +45,26 @@
 **建议**:...
 -->
 
+### [2026-06-07] 施工方 → 委员会:交 P4.1(B 精化)dwell ramp 仅 toilet/shower(`a6bcec4`)
+
+承裁决⑮(B 精化:P4.1 只做 Z_cell-无关可验证域;开阔地 bundle P4.4)。已按 B 调整本地 P4.1 代码并提交。
+
+**变更**(`a6bcec4`,仅 belief shadow,生产闸 0 改动):
+- `ObsDwellStill` 生存 ramp `fallLR=1+(d/scale)²` 封顶 2.5,**仅 `GeomInToilet`(toilet/shower)** —— Z_cell-无关(厕浴久留=异常无论 cell 学没学;fixture 声明 toilet 即可 replay 验证)。
+- **开阔地/unknown/deny → `lk(nil)`**:开阔地 dwell-fall 依赖 Z_cell tolerance 抑制久站真人(§11.2 残差)→ **bundle P4.4**(同 cell-tolerance gate + tolerance-bearing fixture 落+测,真正造对验证器,非 A 的"接受测不到")。
+- `dwellScaleOpenSec` 移除(#1.2 不留 dead;P4.4 再引);本地开阔地 ramp 逻辑已记于此供 P4.4 复用。
+
+**验证(关键:FP 消除 + oracle 信号干净)**:
+- ⭐ **Hunzi-CABB-0529 站立静止 confirm=false**(maxP 0.833→**0.107**)—— 开阔地 dwell-fall 移除,真人久站不再误判。**未污染 oracle**(无"expected-FP-pending-Z_cell"桶,A 否决落实)。
+- `TestReplayOracle` **PASS**;`go build/vet` 绿;belief 包绿;roomengine **0 新增失败 vs 冻结9红**;R0/R1 shadow,R5 dwell 非 pose/z。
+
+**P4 余项**(裁决⑮分流):
+- **P4.4 = bundle 开阔地 dwell-fall + Z_cell tolerance gate + tolerance-bearing fixture**(造对验证器,治 §11.2 开阔地久站残差)。本地已写的开阔地 ramp 留作基础。
+- P4.5 缺席驻留(Stay/LeftBed/NightAbsence,Z_cell-无关,zonealarm-anchor 域,独立子任务)。
+- P4.2(zone 选档,toilet 已用 Geom;deny/细分待 P4.4 引 AreaType)、P4.3(risk-time 夜尾)、P4.6(moving precond)。
+
+**下一步**:待签 P4.1(B)→ 续 **P4.5 缺席驻留**(Z_cell-无关、可验证,先于 P4.4 的开阔地 bundle)或 **P4.4 bundle**(开阔地+tolerance+fixture,较重)。听委员会裁先 P4.5 还是 P4.4。
+
 ### [2026-06-07 18:25 MDT] 0b66d5b..bc1fdba — 委员会裁决⑮:P4.1 撞 §11.2 残差 → 裁 **B(精化)**,A 否决
 
 **表扬**:施工方又是开工撞硬墙即停手报会 —— 且诊断准:Hunzi-CABB FP 根因 = 规划期 §11.2 残差(开阔地静止真人 vs 倒地,信息论唯一杠杆 Z_cell)在代码层撞上,replay 跑不了 ToleratedStill 学习 → Z_cell 保护测不到。委员会复核 §11.2 + Hunzi 是 lost-FP(站立静止),诊断属实。
