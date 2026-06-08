@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`4a10431`(下次从此 commit 起算 delta)
+- **last-audited**:`ad84476`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -45,6 +45,26 @@
 
 
 
+
+### [2026-06-08 13:15 MDT] 审查㊹ `4a10431..ad84476` B harness【保真过 ✅ + 首发现 dead-plumbing 亲验属实 ⭐⭐】→ WF 根本设计岔口升级用户
+
+**R6 亲跑核验**:
+- ✅ **B 保真过㊸ 硬条件**:`belief_b_replay_test.go` 只喂 raw record 进真 `handleMessage`/`handleEventMessage`(无手搓 `TrackStatusBase{`、无直调 beliefShadowTick/adapter/.Step);`TestBReplaySmoke` 8 案真路径跑通无 panic;build/vet/belief 绿、**9 红 0 新增**。保真自检兑现。
+- ✅⭐⭐ **首发现 dead-plumbing 亲验属实**(我独立 grep,非信声明):engine.go:**1762** Fall/SittingOnGround 分支→**1765 RecordRadarAlarm,不调 beliefShadowEvent**;**只有** :1784-1790 ParseRadarTrackEvents(Enter/Exit/InBed/LeftBed)调 beliefShadowEvent;belief_adapter:429 `Fall→ObsFirmwareFall` 该函数不被 Fall 分支调 → **`ObsFirmwareFall` 死代码,shadow 永不见 firmware Fall**。**确证:shadow 一直独立判 fall;8 已知 FP 案 shadow 0 confirm=独立判没被骗。**
+- **⭐ 委员会价值兑现**:这正是㉟/㊷ 死咬的"合成绿≠生产路径"——B 第一次跑真路径就逮出 P2.4 ObsFirmwareFall 死管 + P5/P6.1a 合成测喂了**生产不存在的输入**。坚持真 replay 非 follow 的回报。
+
+**WF 岔口严格化(施工方 a/b 漏了 WF-b 的漏报-safe 要求,委员会补全再升级)**:
+DBN 根本设计问 = **shadow 与 firmware Fall 的关系**。两路:
+- **WF-a(firmware Fall 进 belief 当候选 raiser)**:wire Fall→shadow,ObsFirmwareFall(LR降权2.0)抬 SFallen,reliable 证据 damp,posterior 定。**R5 其实不冲突**(firmware Fall 当**正向候选**=R5 允许;压制走 reliable 非 pose/z)。Con:把不可信 pose-Fall 混进 belief,FP 得 2.0 head-start。
+- **WF-b(shadow 独立判,gate 层 AND)**:shadow 纯独立(不见 firmware Fall);生产 gate=**firmware 触发 ∧ shadow 不正向否决才 fire**。**但施工方说的"shadow 不 confirm 就压"会漏报**——缺证≠否证(审查㉝):真静止摔(§11.2 残差)shadow 也无独立证据→若"不 confirm 即压"=漏报。**必须:gate 只在 shadow POSITIVE 否决(bed-authority 翻身/exit/ghost)才压,默认保留 firmware**(漏报-safe)。这样 WF-b = R5-纯(firmware pose 不入 belief)+ FP 靠正向否决滤 + 默认保真摔。
+
+**委员会专业意见(倾向 WF-b)**:WF-b + "仅正向否决才压、默认保留" 最干净:① R5-纯(不可信 firmware pose 不污染 belief)② 合founding 初衷(误报高→独立白盒)③ 漏报-safe(默认保留含 §11.2 残差真摔)④ 与审查㉝/㉚"压制须正向证据非缺证"统一。WF-a 把 firmware FP 灌进 belief 给 head-start,less clean。**但这是 DBN 根本角色(融合判 vs 独立判+门控),且是你(架构主)"误报高→建白盒"初衷的归属,升级你拍。**
+
+**对下游影响(无论 a/b)**:① reproduce-C 重框(C 的 α/β/γ 是 firmware-FP 标签;WF-b 下 reproduce-C=验 shadow 对每案正向否决[α→bed-authority/β→.../γ→]而非分类)② P5/P6.1a 合成测输入需对齐(WF-b 下它们=产出正向否决信号,非 in-belief damp firmware Fall)③ P2.4 ObsFirmwareFall 是否 live。
+
+**裁决**:B harness 保真 ✅ 批准;dead-plumbing 属实=B 的首个真价值。**WF 岔口升级用户定**(根本设计 + R5/漏报 + founding 初衷)。委员会倾向 WF-b(独立+正向否决门控,默认保真摔)。**B oracle 阻塞于 WF 裁定**(裁定决定断言语义)。333B 待 ghost。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:B(replay harness)已建 + 跑通真生产路径 + **首发现(交叉校验兑现):firmware Fall 未 wire 进 shadow** → reproduce-C 语义岔口待裁
 
