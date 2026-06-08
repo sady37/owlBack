@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`db37f6c`(下次从此 commit 起算 delta)
+- **last-audited**:`09a6535`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -44,6 +44,23 @@
 **对照审查**:✅/⚠️/❓ 逐条
 **建议**:...
 -->
+
+### [2026-06-07 20:16 MDT] db37f6c..09a6535 — 委员会代码审查⑲:P4.4 开阔地 dwell + Z_cell gate【强通过】⭐ §11.2 残差落地可证
+
+**P4.4 核验(R6 亲跑,对裁决⑱)**:
+- ✅ **裁决⑱条件已验**:施工方 grep 确认 `Observation` 无序列化(无 json/proto tag/Marshal/stream)→ 内部结构 → 正确取 **B2**(非 B1-uniform)。
+- ✅ **A1**:`ToleranceFactorAt(x,y)float64` 加入 CellPrior,严格只读(nil→1.0,读 cell.toleranceFactor 不触学习,R3);编译断言仍立。
+- ✅ **B2**:`Observation +ToleranceFactor`(默认 1.0,仅开阔地消费);**Value 恒 raw**;likelihood geom-switch 一处 `开阔地 scale=480×tol`(`scale*=tol` 容忍=尾更长,裁决⑱语义);toilet=900 raw;rest/bed/enter 不报。adapter 经 ToleranceFactorAt 填(只读)。
+- ✅⭐ **双向 fixture 真有判别力(委员会重点验项,§11.2 造对验证器)**:`TestP4OpenFloorDwellToleranceGate` —— **同一开阔地久站,唯一变量=cell tolerance**:ToleratedStillCount=0(factor1.0/scale480)→ confirm(倒地/未容忍);=8(factor2.0/scale960)→ **不 confirm**(久站真人/已容忍)。**受控对照、两向都在、过** = §11.2"开阔地久站真人 vs 倒地"用 Z_cell 分开,实证。
+- ✅ **R0**:fall_rules_param/fall_verify 未碰(开阔地 scale 480 shadow 占位 calibration.go,P9.6 待 oracle);R5(gate 走 cell tolerance 非 z 反向);build/vet 绿;roomengine 9 红 0 新增;belief 绿。
+- ✅ **2 施工发现(诚实自审,赞)**:① now-base 陷阱(StillBoxRunStart 负→stillBox 失效假阴)自修;② **P4.1 toilet 正向洞**——自查发现 toilet ramp firing 路径从没测过(⑮ 只测不发的 case),补 `TestP4ToiletDwellFires`(1100s→fired)闭合,实证纯 dwell 能驱 Fallen。
+- **P4.4 核心 bundle 强通过。**
+
+**⭐ 里程碑**:§11.2 残差(firmware 漏判静止真摔 vs 冻结/久站 FP,信息论唯一杠杆 Z_cell)的**开阔地 dwell 侧 Z_cell gate 在 shadow 落地且有造对验证器实证**。规划期的"最硬残差"现有结构解 + 可测。
+
+**note(非阻塞,记 P9)**:双向 fixture 用**声明**的 tolerance(Count 0 vs 8)验**gate 逻辑**;real 久站点是否真累积到 factor 2.0 是 **cell-engine 学习充分性**问题(P9/真数据验),与本 gate 正交。gate 已证,学习充分性下游。
+
+**裁决**:**P4.4 强通过**(A1 只读/B2 语义正确/双向 fixture 受控实证/自闭 toilet 洞/R0 不碰生产)。余 **②③ exit 闸 + P6.5 ① track 守恒** 拆后续 task(本 commit 核心 bundle 先)。可续。
 
 ### [2026-06-07] 施工方 → 委员会:交 P4.4 核心 bundle(裁决⑱ A1+B2,`67662bb`)+ 2 个施工发现
 
