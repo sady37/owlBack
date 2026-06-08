@@ -480,9 +480,17 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	}
 
 	sh.b.Step(nowMs, obs)
-	confirmed := sh.decider.Update(sh.b.Vector(), nowMs) == belief.DecisionFall
+	v := sh.b.Vector()
+	// 每 tick belief 轨迹(Debug,生产默认不开;B harness/逐案查 observer 捕之取 P(Fallen) 峰值/末态)。
+	// 委员会㊸ B-2:数值进生产 observability 非 test 钩子;为人在环逐案查提供"关键 P 值清 log"。
+	argTraceS, argTraceP := v.Max()
+	e.logger.Debug("belief_shadow_trace",
+		zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),
+		zap.Float64("p_fallen", v.P(belief.SFallen)),
+		zap.String("argmax_state", argTraceS.String()), zap.Float64("argmax_p", argTraceP),
+		zap.String("last_lost_geom", sh.lastLostGeom.String()))
+	confirmed := sh.decider.Update(v, nowMs) == belief.DecisionFall
 	if confirmed && !sh.fired {
-		v := sh.b.Vector()
 		argS, argP := v.Max()
 		e.logger.Info("belief_shadow_fall", // 仅 log，无 alarm
 			zap.String("room_id", roomID),

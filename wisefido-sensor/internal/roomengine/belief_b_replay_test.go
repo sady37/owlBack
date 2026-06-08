@@ -100,7 +100,7 @@ func bReplay(t *testing.T, dir, file string) []bShadowLog {
 	recs := bLoadRecords(t, dir, file)
 	cfg, radarAddr, roomID := bLayout(t, dir)
 
-	core, logs := observer.New(zap.InfoLevel)
+	core, logs := observer.New(zap.DebugLevel) // 捕 belief_shadow_trace(Debug)供逐案查 P(Fallen) 轨迹
 	logger := zap.New(core)
 	e := NewEngine(nil, logger)
 	e.RegisterRoom(cfg)
@@ -203,19 +203,60 @@ func bFindWindowFile(t *testing.T, dir string) string {
 	return ""
 }
 
-// TestBReplaySmoke — B harness 冒烟:每案能跑通真生产路径且 observer 捕到 belief_shadow_* 日志(无 panic)。
-// 这是 B 的第一步保真验证(全生产路径走通);分类对账在 TestBReproduceCDiagnosis。
+// TestBReplaySmoke — B harness 冒烟:每案跑通真生产路径无 panic(保真 + 全路径走通)。
 func TestBReplaySmoke(t *testing.T) {
 	for _, c := range bCases {
 		c := c
 		t.Run(c.dir, func(t *testing.T) {
 			file := bFindWindowFile(t, c.dir)
+			_ = bReplay(t, c.dir, file) // 不 panic 即过(保真路径走通);逐案可观测见 TestBReproduceCInspect
+		})
+	}
+}
+
+// TestBReproduceCInspect — reproduce-C(委员会工作流 note:**可逐案查不过度打磨自动断言**)。
+// 每案打印 shadow 决策摘要(峰值 P(Fallen)/末态 argmax/否决·确认信号),供用户 human-in-loop 逐案
+// 校对 shadow 决策 vs 真值(8 CD2B 全 FP→shadow 不应 confirm,即峰值 P(Fallen)<θ_fire 0.55)。
+// **不做刚性 pass/fail 断言**(用户判定真值);仅 observability + 一条软不变量(8 FP 无 shadow confirm)。
+func TestBReproduceCInspect(t *testing.T) {
+	for _, c := range bCases {
+		c := c
+		t.Run(c.dir, func(t *testing.T) {
+			file := bFindWindowFile(t, c.dir)
 			logs := bReplay(t, c.dir, file)
-			counts := map[string]int{}
+			peakP, finalArg := 0.0, "-"
+			decisions := map[string]int{}
 			for _, l := range logs {
-				counts[l.Msg]++
+				if l.Msg == "belief_shadow_trace" {
+					if p, ok := l.Fields["p_fallen"].(float64); ok && p > peakP {
+						peakP = p
+					}
+					if s, ok := l.Fields["argmax_state"].(string); ok {
+						finalArg = s
+					}
+					continue
+				}
+				decisions[l.Msg]++ // belief_shadow_fall / bed_leak_suppress / nodetect_gated / lostfall_* / track_lost
 			}
-			t.Logf("case=%s class=%s shadow_logs=%v", c.dir, c.class, counts)
+			confirmed := decisions["belief_shadow_fall"] > 0
+			traceN := 0
+			for _, l := range logs {
+				if l.Msg == "belief_shadow_trace" {
+					traceN++
+				}
+			}
+			if traceN == 0 {
+				// 诚实标注:beliefShadowTick 未执行(publishTrackStatuses 被 nil-redis guard 短路,engine:1006)。
+				// 生产 redis 恒非 nil 故 shadow 总跑;无 redis 测试环境下 B 暂未 exercise 真 shadow 路径 → 待 redis-gate 岔口裁定。
+				t.Logf("逐案查 case=%s C类=%s | ⚠️shadow未执行(0 trace;redis-gated publishTrackStatuses,待岔口)——逐案 P 值待 shadow 跑通", c.dir, c.class)
+				return
+			}
+			t.Logf("逐案查 case=%s C类=%s | peak_P(Fallen)=%.3f final_argmax=%s shadow_confirm=%v | 决策信号=%v",
+				c.dir, c.class, peakP, finalArg, confirmed, decisions)
+			// 软不变量(非真值断言):8 CD2B 全 FP(无真摔)→ shadow 不应 confirm fall。
+			if confirmed {
+				t.Errorf("FP 案 %s shadow 误 confirm fall(peak P=%.3f)——需用户逐案核 + fix 方案", c.dir, peakP)
+			}
 		})
 	}
 }
