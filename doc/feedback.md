@@ -77,6 +77,25 @@
 
 ---
 
+### [2026-06-08] 施工方 → 委员会:**全-pipeline 证明 Neighbor 能 fire**(合成整单元,补 harness gap 的部分前置)→ raw record→生产 handleMessage/ProcessFrame→真 beliefShadowTick→lost-sweep→ObsNeighbor fire;sole→fire / multi→gate-OFF 两 case 端到端绿
+
+**性质**:接「先证明全 pipeline 能 fire Neighbor」(且**正中审查65 sequencing 建议**=「bReplayUnit 可现在就建 + 合成 multi-room fixture 验,别 block on data」——本测即其合成先行版,并行独立完成)。建 `bReplayUnit`-式整单元(multi-room 同 suite)全-pipeline 测(belief_neighbor_pipeline_test.go),**借真 cabb layout 几何 + 合成 in-FOV 帧(时序可控)**,走**生产入口**证 ObsNeighbor 端到端可达(非直驱 beliefShadowTick 的单测)。
+
+**保真链路(零 fork)**:`handleMessage`/`handleEventMessage`(生产入口)→ `ParseRadarTracks`/`ProcessFrame` → `SnapshotTrackStatuses` → 真 `beliefShadowTick` → lost-sweep → `neighborHandoff` → `belief_shadow_neighbor_handoff`。
+- 本房 A:5 帧移动 radar track#1(过 birth grace,lastSeen=t0+4s)→ t0+66s decoy track(id=2)→ track#1 absent 超 60s TTL → 真 lost-sweep。
+- 兄弟房 B:`EnterRoom` 事件经真 `handleEventMessage`→`RecordRadarEvent`→`lastEnterMs`(实测 occupied=true,在窗内)。
+- **两 case 端到端绿**:`TestNeighborFullPipelineFires`(sole-resident→fire)/ `TestNeighborFullPipelineMultiResidentGateOff`(multi-resident→N-3 gate-OFF 不 fire,漏报-safe)。
+
+**踩坑(记录,供 unit201 真 replay 复用)**:① device_addr 须**canonical INET**(`fd00:..:a::1` 非 `a:0:0:1`,否则 FromStreamMap 规范化后 deviceRoom 查不到→dropped_unrouted);② radar `track_id` 须 **0–8**(track_parse.go:50,decoy 用 99 被滤→len(frames)=0→NoTargetTick→**不**进 beliefShadowTick);③ lost-sweep 触发须有效帧(filtered 帧只 NoTargetTick 不 tick shadow)。
+
+**性质澄清(非过度声明)**:此为**合成整单元**全-pipeline 证明(证「wire 端到端可 fire + gate-OFF」),**非** unit201 真 redis-replay(那仍待用户数据 + bReplayUnit 载真多房 fixture)。生产-gate 3 前置(#5 真 replay/N-6 终验过压/DBN recall)**不受影响仍待数据**。本测=验证 spec [doc/neighbor_verification_spec.md](neighbor_verification_spec.md) §0 harness 的合成先行版,降 unit201 接入风险(踩坑已记)。
+
+**放行 bar 绿**:build/vet 净 + belief 包绿 + roomengine **9 红 0 新增**(新 2 pipeline 测 + 原 6-case 单测全绿,不在 FAIL 列)。
+
+**待委员会**:验收全-pipeline 合成证明(端到端 fire + gate-OFF);**待用户**:unit201 真数据(接 bReplayUnit 真多房 fixture 跑 V1–V5 + recall)。
+
+---
+
 ### [2026-06-08] 施工方 → 委员会:收审查63 验收 + 审查64 撤回 N-7 → wire-loop 核心**记录收口**;生产-gate 验证 **blocked on test data**(无 unit201 数据)→ 向下推进=doc-first 出验证 spec + ★逮 harness gap(bReplay 单房→Neighbor 无法真验,须扩整单元)
 
 **性质**:doc-only,无代码(裁前不建 harness 扩展)。收两条委员会裁(审查63 验收 wire / 审查64 撤回 N-7),按用户「先记录,向下推进」:① 记录暂停点 ② 出可 turnkey 的验证 spec ③ 逮 harness 前置 gap。
