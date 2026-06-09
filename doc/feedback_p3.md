@@ -7,6 +7,50 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] 施工方 → 委员会：**P9 oracle 验证基建提案**（doc-only，裁前不建）—— 两层验证 + 独立「基础测试模块」（真碎片乐高库，兼做未来 AI 模拟生成器素材）破数据墙；recall/Neighbor/N-6 大半验证**不必等 unit201 整单元导出**
+
+**缘起**：死源 5/5 + P2 收尾 3 闸 + P3 软时长 + P7 决策层 = shadow buildout 主体完；余 **P9 oracle 验收**（go/no-go：真摔 recall + FP precision）长期标「blocked on unit201 真数据」。**用户洞见：不必等整单元 redis 导出——用已验证的真数据碎片拼**。本贴提案，请委员会过。
+
+**一、两层验证（诚实分层）**
+- **Tier-1（真碎片拼，现在 unblocked）**：`bReplayUnit`（已建）喂真 raw record 走生产 pipeline 多房 → 验**逻辑/接线/recall 在真数据上对不对**。
+- **Tier-2（真整单元录制，仍 blocked）**：拼接是把无关真段剪一起 → 「A/B 同一人走过去」的**因果是合成的**。验**机制**够；但**真实部署 hand-off 时间分布 + 统计 recall 率**（多真摔漏几个）需 unit201 真录。
+- ⟹ **Tier-1 把 P9 逻辑验证大半抢出来；Tier-2 只剩统计率这一层非要不可**。
+
+**二、★真碎片「乐高库」= 独立「基础测试模块」（用户设计 + 硬约束 + 升级）**
+- **★定位升级（用户）**：不是 ad-hoc 拼几个测试，是**独立的基础测试模块**（建议落 `wisefido-sensor/internal/roomengine/testkit/legos/` 或 `doc/cases/legos/`），把**每个真实片段单独列出、分类、归一**，**双用途**：① 立即给 Tier-1 手工复合测当积木；② **为以后 AI 模拟生成器准备素材**（AI 组合/扰动这些真片段 → 批量生成多样、贴真实的场景，远超手搓覆盖）。⟹ 设计须**机器可消费**：每块带 manifest（id/类/标签/源 fixture/设备类型/时长/raw 格式），统一「乐高格式」，provenance + ground-truth 自描述。
+- **只拿两类可信标签的真数据**（用户硬约束，保证每块 ground-truth；**排除**不知 ground-truth 的生产数据）：
+  1. **已验证 test case**（人工标注/受控实验：真摔 / 假fall）—— event 类积木。
+  2. **无报警的真实正常数据**（enter/left room、enter/left bed、HR/RR）——**「没报警」=确认正常**，benign 背景积木。
+- **积木分类（taxonomy，源=用户指）**：
+
+  | 类 | 源 | 标签来源 | 用途 |
+  |---|---|---|---|
+  | 真摔 | 101 bathroom fall / cabb-fall / bedtest-fall | test-case 验证 | recall oracle |
+  | 假fall | hunzi bathroom FP | test-case 验证 | precision oracle |
+  | 正常 enter/left room | 101 bedroom（无报警窗） | 无报警=正常 | room-ledger benign |
+  | 正常 enter/left bed | 101 bedroom（无报警窗） | 无报警=正常 | bed-state benign |
+  | sleepad 上床 / HR-RR | hunzi sleepad（无报警窗） | 无报警=正常 | vital/bed-occupancy benign |
+  | frozen / lost 段 | cabb-frozen / d523-lost / d5f7-lost | test-case FP | 消歧积木 |
+
+- **每块 = 标注的真 raw-record 片段 + 统一「乐高格式」**（bReplayUnit 可 snap）+ ground-truth。
+- **拼法**：挑积木 → 派给房/设备 → 时间对齐 → 喂 bReplayUnit。**例（用户原配方）**：本房 A〔frozen 10s + lost〕+ 邻房 B〔正常 enter/track 10+s〕→ 断言 ObsNeighbor 压 phantom。
+
+**三、能验什么（现在，真数据）**
+- **recall**：喂真摔积木 → DBN P(Fallen) fire（没被压成 Vacant）；尤其 `bedtest-1`〔真摔+firmware 漏〕→ DBN 抓 firmware 漏的那摔。
+- **Neighbor recall**：真摔积木〔本房〕+ 正常 track〔邻房〕→ 压 phantom 不杀真摔。
+- **N-6**：正常 enter-bed + 正常 enter-room 积木同房 → 单合并不过压。
+- **dwell recall**：真久态 fall 积木 → ObsDwellStill ramp fire。
+
+**四、开口 / 待委员会**
+1. **认不认可两层 + 独立基础测试模块（乐高库）方向**（用户设计）→ 认可则施工方建模块（下步）。
+1b. **模块设计裁**：① 落点（`testkit/legos/` vs `doc/cases/legos/`）；② manifest schema（每块 id/类/标签/源/设备/时长/格式，机器可消费供未来 AI 生成器）；③ 「乐高格式」= 直接复用 bReplayUnit 的 bRecord（device_uid/ts/topic/category/data_value）数组 + 一层 meta 即可，不另造。
+2. **格式归一**：现盘 26 fixture 是 JSON window（bReplayUnit 直喂）；7 个 `test_record.txt`（bedtest）需小转换器 → 统一「乐高格式」。
+3. **分类映射 + 提取源**：逐 fixture 标进上表；**无报警正常片段从哪些 test case 窗口抽**（enter/left/HR-RR）待与用户确认具体 fixture（用户已点：101 bedroom enter/left bed+room、hunzi sleepad 上床、unit201 已验证案例）。
+4. **Tier-2 边界（no-silent-caps）**：统计 recall 率 + 真 hand-off 时间分布仍待 unit201，乐高拼不出，诚实标注不冒充。
+5. **裁前不建**：本贴 doc-only；裁后施工方建乐高库 + Tier-1 复合测。
+
+---
+
 ### [2026-06-09 00:40 MDT] 委员会执行 P3 首增量（收敛施工方预审 `3e3fc5c`）— 裁 A/B/C + P4.1 formalize(`belief/survival.go` 单源)+ P4.3 夜间短尾落地 `272a48e`
 
 **第四次收敛**：委员会建 P3 时施工方独立推 `3e3fc5c`，**同建 `doc/feedback_p3.md`** + 同观察「P4.1 ObsDwellStill 软时长已建，gate_vs_dbn『P3 未开工』陈旧」+ 列 A/B/C 三岔口。委员会已建 = 执行该 scope。
