@@ -52,6 +52,7 @@ type beliefShadowTLayer struct {
 	lastSeen     int64
 	geom         belief.Geom
 	device       string // 源雷达 device_addr（同房对等雷达占用对账排除自身用）
+	logicID      string // 出生锚定的稳定逻辑身份（G-1 id-swap 守恒：失锁后查 logic_id 是否仍活在别 track）
 	loggedLo     bool   // 已 log 过本次 Lost 峰（防重复）
 	lastX, lastY int    // P3.1:上帧位置,算本帧空间跳跃 Δ/dt(独立 shadow realness 探测器①)
 	lastPosTs    int64  // 上帧位置时刻
@@ -196,6 +197,9 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		tl.lastSeen = nowMs
 		tl.geom = tlGeom
 		tl.device = b.DeviceAddr
+		if ts := tm.tracks[b.TrackID]; ts != nil {
+			tl.logicID = ts.LogicID // G-1：趁活时 stash logic_id，失锁 sweep 查身份守恒
+		}
 		tl.loggedLo = false // 重新检出 → 允许后续再次 Lost 时重新 log
 
 		if b.Verdict == VerdictGhost {
@@ -458,6 +462,11 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		// 别台真人的重影/重复 → 喂 TObsPeerLive 压 TLost（与生产 gate-list 守卫同构；单床闸在此把关）。
 		if tm.bedCount == 1 && tm.otherDeviceRealTrackRecent(tl.device, nowMs) {
 			tobs = append(tobs, belief.TObservation{Kind: belief.TObsPeerLive, Conf: 0.9, Ts: nowMs, Fresh: true})
+		}
+		// G-1 id-swap 守恒（gate→DBN 内化 lost_fall_skipped_id_swap）：本 track 失锁但同 logic_id 仍活在
+		// 另一条 live track = firmware 换 ID，无人真消失 → 喂 TObsLogicAlive 压 TLost（与生产 gate 硬 skip 同向）。
+		if tm.HasOtherLiveTrackWithLogicID(tl.logicID, tid) {
+			tobs = append(tobs, belief.TObservation{Kind: belief.TObsLogicAlive, Conf: 0.9, Ts: nowMs, Fresh: true})
 		}
 		// C3 共享算子：reachable-exit 同源喂 Track 层（近门 + 定向逼近 → 偏 JustLeft 压 Lost）。
 		// ghost track 在 Room 层被 delete（sh.tracks 无），A_T 自走 Ghost→None，无需此观测。

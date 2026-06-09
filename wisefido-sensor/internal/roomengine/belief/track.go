@@ -73,6 +73,7 @@ const (
 	TObsExit                          // firmware ExitRoom 事件（强推 →JustLeft）
 	TObsPeerLive                      // 同房（单床）对等雷达此刻见真人 → 本 track 更可能是重影/重复（压 Lost）
 	TObsReachableExit                 // 可达退场分 e（C3 与 Room 层 ObsReachableExit 同源）→ 偏 JustLeft 压 Lost
+	TObsLogicAlive                    // 本 track 失锁但同 logic_id 仍活在另一条 live track（firmware 换 ID，数量守恒）→ 非独自倒地，压 Lost
 )
 
 // TObservation track 层观测。Ghostness/Geom 仅对 TObsPresent；Geom（last）对 TObsAbsent；Value=e 仅对 TObsReachableExit。
@@ -196,6 +197,15 @@ func rawTLikelihood(o TObservation) TVector {
 		// 同房（单床）对等雷达此刻见真人 → 房里那个真人是别台的 track，本 track 更可能是它的
 		// 重影/重复，绝非独自倒地 → 压 TLost，偏 Ghost/None。单床闸在 adapter 已把关（仅单床房发此观测）；
 		// 双床房不发，避免把另一位老人当"对等"误压（漏报）。WF-b:firmware 跌倒确认走生产 gate(不进 shadow)，不受此影响。
+		return tlk(map[TState]float64{
+			TLost: 0.15, TGhost: 2, TNone: 2, TReal: 0.5,
+		})
+
+	case TObsLogicAlive:
+		// id-swap 守恒（G-1，gate→DBN 内化 lost_fall_skipped_id_swap）：本 track 失锁但同 logic_id 仍活在
+		// 另一条 live track = firmware 换了 ID，同一逻辑目标没真消失 → 本 track 绝非独自倒地 → 压 TLost，
+		// 偏 Ghost/None。与 TObsPeerLive 同理（身份/数量守恒证"这条不是真消失的倒地者"）；纯身份连续性，
+		// 不读 ghost verdict（铁律：ghost 不进 Fall 决策路径）。
 		return tlk(map[TState]float64{
 			TLost: 0.15, TGhost: 2, TNone: 2, TReal: 0.5,
 		})

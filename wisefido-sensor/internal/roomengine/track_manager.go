@@ -495,6 +495,13 @@ func (tm *TrackManager) hasOtherLiveTrackWithLogicID(logicID string, exceptTrack
 	return false
 }
 
+// HasOtherLiveTrackWithLogicID 自锁版（beliefShadowTick 不持 tm.mu，跨 track range 须锁防并发 map 读写）。
+func (tm *TrackManager) HasOtherLiveTrackWithLogicID(logicID string, exceptTrackID int) bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return tm.hasOtherLiveTrackWithLogicID(logicID, exceptTrackID)
+}
+
 // roomLedgerEmpty 占用账是否为空：最近 ExitRoom 晚于最近 EnterRoom。
 // **只信 ExitRoom（过门的空间证据=确实离开），不信 np=0**——铁律：count=0≠离开
 // （人摔倒后雷达丢锁也会 np=0，用 np=0 抑制会漏真摔）。默认（无事件）=非空，保守不抑制。

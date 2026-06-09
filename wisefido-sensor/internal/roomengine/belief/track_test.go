@@ -71,6 +71,28 @@ func TestTrackPeerLiveSuppressesLost(t *testing.T) {
 	}
 }
 
+func TestTrackLogicAliveSuppressesLost(t *testing.T) {
+	// G-1 id-swap 守恒：真人开阔地板 present 后本 track 失锁，但同 logic_id 仍活在另一条 track
+	// （firmware 换 ID）→ TObsLogicAlive 压住 TLost（对照 TestTrackRealLostOpenFloor 无此观测时 TLost 主导）。
+	tb := NewTrackBelief()
+	ts := int64(1000)
+	for i := 0; i < 10; i++ {
+		tb.Step(ts, []TObservation{present(0.0, GeomOpenFloor, ts)})
+		ts += 1000
+	}
+	for i := 0; i < 8; i++ {
+		tb.Step(ts, []TObservation{
+			absent(GeomOpenFloor, ts),
+			{Kind: TObsLogicAlive, Conf: 0.9, Ts: ts, Fresh: true},
+		})
+		ts += 1000
+	}
+	v := tb.Vector()
+	if v.P(TLost) > 0.15 {
+		t.Errorf("logic_id 仍活在别 track（换 ID）→ 本 track 应被压住不 Lost，得 P(Lost)=%.3f (%v)", v.P(TLost), v)
+	}
+}
+
 func TestTrackGhostVanishNotLost(t *testing.T) {
 	// 结构核心：ghost present 后消失 → None，绝不 Lost（method-2 在 A_T 内）。
 	v := runTrack(t, 10, 1.0, GeomOpenFloor, GeomOpenFloor, 8)

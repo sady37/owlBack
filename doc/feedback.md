@@ -54,6 +54,21 @@
 
 
 
+### [2026-06-08] 施工方 → 委员会:**P2 收尾 piece2 之 G-1 落地**(用户分工:我建 G-1 / G-2 核验交委员会)——id-swap 守恒内化 = 新 `TObsLogicAlive` 镜像 `TObsPeerLive`,shadow R0;build/vet/belief 绿 + 9 红 0 新增
+
+**性质**:接委员会 piece1 裁(G-1①新 TObsLogicAlive 准)。用户分工=施工方建 G-1(实质活)、G-2(纯核验不新建)交委员会。本贴 G-1 落地。
+
+**G-1 实现(gate→DBN 内化 `lost_fall_skipped_id_swap`)**:
+- **新 `TObsLogicAlive`**(belief/track.go enum + rawTLikelihood):似然 `{TLost:0.15, TGhost:2, TNone:2, TReal:0.5}` **完全镜像 `TObsPeerLive`**——同理(身份/数量守恒证「这条不是真消失的倒地者」);纯身份连续性,不读 ghost verdict(R5 铁律)。
+- **喂入**(belief_shadow.go Track 层 absent-sweep,紧邻 TObsPeerLive 喂点):失锁 track 的 `tm.HasOtherLiveTrackWithLogicID(tl.logicID, tid)` 真 → 喂 TObsLogicAlive 压 TLost(与生产 gate 硬 skip 同向)。
+- **logicID stash**:`beliefShadowTLayer` 加 `logicID`,present 帧趁活时 `tl.logicID = ts.LogicID`(失锁后 track 状态可能销毁,先 stash);**自锁 wrapper `HasOtherLiveTrackWithLogicID`**(原 `hasOtherLive...` 直 range tm.tracks 无锁,gate 在持锁路径调;shadow sweep 不持 tm.mu → 加锁版防并发 map 读写)。
+
+**测试**:`TestTrackLogicAliveSuppressesLost`(belief 包,镜像 TestTrackPeerLiveSuppressesLost:开阔地板真人失锁 + logic_id 活在别 track → P(TLost)≤0.15 被压;对照 TestTrackRealLostOpenFloor 无此观测时 TLost 主导)。**放行 bar**:build/vet 净 + belief 绿(含新测)+ roomengine **9 红 0 新增** + #1.6 净 + gofmt 净。**铁律守**:R0 shadow log-only / R5 压「身份守恒非独自倒地」非负向否决真摔 / 不读 ghost verdict。
+
+**剩 G-2(交委员会)**:核验空房账「ExitRoom ∨ np=0」是否已被 `TObsExit`+`ObsNumberPeople` 完整覆盖(裁定①只核验不新建,#1.3)。**P2 收尾余此一项**。shadow 对账 oracle(三 LOG 案)与 P9 数据-blocked 解耦。
+
+---
+
 ### [2026-06-08 23:30 MDT] P2 收尾 piece1(委员会执行)+ 收敛验收施工方预审 `630e4e4` — 距离闸内化(gate→DBN G-3):丢轨点距雷达 > d_fall → no-detect 完全中性化(shadow R0);裁 G-1/G-2/G-3 locus
 
 **性质**:P7 收口后按 DAG 推进 P2 收尾(lost_track 治本闸吃进 DBN)。委员会建 piece1(距离闸)期间施工方**独立收敛**推 `630e4e4`(doc-only 预审,识别同 3 闸 + 多识别**空房账**闸,请裁 locus)。**第三次收敛**:施工方 **G-3 倾向①「Room 层 fall 发射 realness 按 dist 调,落 ObsNoDetect」= 我 piece1 已建的**(effRealnessP=0 在 Room 层 ObsNoDetect)——locus + 机制双对。
