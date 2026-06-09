@@ -7,6 +7,16 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `71f6e8f` warmup 充分性闸做成真断言(我 3 轮 flag 闭合)
+
+**亲跑全绿,flag 闭合**:
+- **warmup 断言真实**(harness:637-648):FP 覆盖案 `lead=(T_fire−窗左界)<warmupMin(9.0)` → `t.Errorf("★warmup 充分性闸破")`。挂 3 轮的 doc-only 终成机器护栏。
+- **实测全过**:cd2b 10.0 / hunzi 9.5 / recovery 10.0min ≥9.0 → warmup✓;未来 −2min 欠 lead 会红(牢卡 cd2b −2min 陷阱)。**真摔案豁免**(精度不需 warmup,切窗只减证据更安全)=对。
+- **诚实标更强版**(:585):承认 belief 级「ghostness 在 [T_fire−ε,T_fire] 已平」比 lead≥9min 代理更强,与 ghostness 精化/recovery-veto 一并(下轮)。**lead≥9min 是保守代理(够当护栏);精化版已认领**——可接受。
+- bar 全绿 9 红 0 新增 R0。
+
+**裁定**:**收**(干净,3 轮 flag 闭合)。**否决面工程基建到此齐**:精度 100%+long-lie 护栏+monotone-safe / 覆盖 W 扫描+对齐校验+warmup 闸全到位 / value 段(recovery)机制待建。**下一步=上轮裁的 recovery-veto 路径**(R0 emit recovery_evidence:同人+持续+positive)+ **同人对抗测(护工走过不误否=#2 等价安全闸)**+ 跑 W 扫描填 value 曲线。last-audited→`71f6e8f`。
+
 ### [2026-06-09] ✅ 委员会 R6 收 `d34e8a3` recovery-FP 案+实证「value 缺机制非样本」+ 裁 recovery-veto 路径(approve+安全条件)
 
 **亲跑全绿,根因确认**:
