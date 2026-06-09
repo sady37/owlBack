@@ -15,8 +15,11 @@
 | | bathroom | Radar **d5f7** | #14（d5f7 多径干扰误报） |
 | **201**（`fd00:0:3:111:…`⚠）| bedroom | Radar **CD2B**、sleepad **1641** | #7/#8/#10/#11/#12 |
 | | bathroom | Radar **333B** | #9 |
-| **hunzi** | bathroom | Radar **CABB** | #5；其余 device ⚠ |
+| **hunzi**（**深圳**，与 101/201 **完全独立**，**不可跨 unit 拼**）| bathroom | Radar **CABB** | #5 |
+| | bedroom | sleepad **0672** | — |
 | ~~Ton~~ | — | ~~FFDB~~ | **#3 drop（用户）** |
+
+> ★地理隔离（用户）：**101/John.Y + 201 在 Denver；hunzi 在 Shenzhen**。Neighbor/全-unit 拼接**只能同 unit 内**，三方互不为邻。
 
 ## 二、案例目录（Trigger/alarm | real/false | unit | 摘要 | unit 全 device | fixture）
 
@@ -56,6 +59,19 @@
 - **假fall（precision oracle）**：#13(ghost·NOTES)、#14(多径·NOTES)、#5(lost·用户确认) ＝ 3
 - **★跨房真 hand-off（Neighbor 黄金）**：#9（201 bathroom→bedroom）= **真因果非拼接**，待导出 333B+CD2B 窗口
 - **★replay 关键三要素（用户）= 时间 + unit + neighbor device** → 上表每行已带「同 unit 其余 device」，使可喂**全 unit 实时流+事件**演示，非只单设备
+
+## 三.5、benign（无报警正常）多设备积木 —— event_log 挖掘配方（用户给）
+
+委员会实质2 问「无报警片段哪些是正向确认正常」→ 用户给可执行配方（**从 event_log 挖，不靠『碰巧没报』**）：
+
+- **判据**：一段窗口里**同一 Room 的所有 device 都有 event** 且**全程无 fall** → 这段是干净的多设备同步正常生活片。
+  - 例：15min 内 **101 bedroom 的 d523 + 09e7 + sleepad 0978 都有 event** → 优质 benign 积木（各 event 间含真实时间顺序）。
+- **锚点**：以 **sleepad 上床/下床（InBed/LeftBed）为锚** → 取锚点 **±15min** 的同 Room radar 数据。
+  - 理由：上/下床是强生活事件，前后必有真实的 enter/walk/sit 序列；同 room 多 radar 在这窗内的 track/event 是天然对齐的真实流。
+- **ground-truth**：这类窗口的「正常」由**结构正向确认**（有完整生活事件链 + 全程无 fall），非「沉默」→ 满足委员会实质2（可作 benign 背景；是否可当 fall negative control 仍以「该窗确无摔」为准）。
+- **产物**：每个 benign 积木 = 一个 `causality: real-contiguous` 的多设备同 room 窗口（manifest 记 unit/room/devices/锚点 event/window ts）。
+
+**待定（执行）**：event_log 查询由谁跑——⚠ 需确认施工方有无 event_log 访问，或用户/脚本导出这些窗口（同 #9 导出）。
 - **无报警正常背景**（待抽，★委员会实质2 修正 ground-truth）：用户点的「101 bedroom enter/left bed·room、hunzi sleepad 上床、HR/RR」可抽，**但「无报警」不等于「确认正常」**——本系统存在的理由就是生产会**漏摔**（#1 即真摔+firmware 漏），一段无报警可能藏未报真摔。故：
   - **enter/left room·bed 事件 + HR/RR**：本就不产报警 → 「无报警」对 label **零信息**；其可信来自**受控/标注**，可作 benign 事件积木（room-ledger/bed-state/vital 纹理）。
   - **「这段没摔」当 fall negative control（断言 DBN 不该 fire）**：**必须正向确认**（住户自述/视频/受控实验），不是「碰巧没报」。无法正向确认的段 → manifest 标 `groundtruth: unverified-benign`，**只当背景纹理不当 negative control**（否则藏真摔→惩罚 DBN 正确 fire = 反 R5）。
