@@ -75,7 +75,25 @@
 - **ground-truth**：这类窗口的「正常」由**结构正向确认**（有完整生活事件链 + 全程无 fall），非「沉默」→ 满足委员会实质2（可作 benign 背景；是否可当 fall negative control 仍以「该窗确无摔」为准）。
 - **产物**：每个 benign 积木 = 一个 `causality: real-contiguous` 的多设备同 room 窗口（manifest 记 unit/room/devices/锚点 event/window ts）。
 
-**待定（执行）**：event_log 查询由谁跑——⚠ 需确认施工方有无 event_log 访问，或用户/脚本导出这些窗口（同 #9 导出）。
+**✅ 已跑（2026-06-09，owl_v2）—— 410 个合格 benign 窗**：地址 /88 高字节编房（101 bedroom=`…111:3:01xx`=0978+09E7+D523；201 bedroom=`…112:3:01xx`=1641+CD2B；bathroom=`02xx/03xx`）。挖掘 SQL（可复现）：
+
+```sql
+-- anchor=sleepad InBed/LeftBed；同 /88 room 全 device 有 event(dev>=2) 且 ±15min 无 Fall
+WITH anchors AS (
+  SELECT e.ts a_ts, network(set_masklen(e.device_addr,88)) room88
+  FROM event_log e JOIN devices d ON e.device_addr=d.device_addr
+  WHERE d.device_uid IN ('BM87224601641','BM87224700978') AND e.event_kind IN ('InBed','LeftBed'))
+SELECT a.* FROM anchors a
+WHERE (SELECT count(DISTINCT e2.device_addr) FROM event_log e2
+        WHERE network(set_masklen(e2.device_addr,88))=a.room88
+          AND e2.ts BETWEEN a.a_ts-interval '15 min' AND a.a_ts+interval '15 min')>=2
+  AND (SELECT count(*) FROM event_log e3 WHERE network(set_masklen(e3.device_addr,88))=a.room88
+          AND e3.event_kind='Fall' AND e3.ts BETWEEN a.a_ts-interval '15 min' AND a.a_ts+interval '15 min')=0;
+```
+
+- **结果：410 窗**（101 bedroom 多为 **dev=3** 三设备同步=最富；201 bedroom dev=2）。
+- **按需挖不复制**（委员会 index-not-copy）：manifest 只记每个 benign 窗的 `unit/room/devices/anchor_ts/window` 坐标，loader 用 `export_case_v2.sh` 现挖；410 是池子，不全导。
+- **ground-truth = 正向确认**：完整 InBed→生活事件→LeftBed 链 + 全程无 Fall = 结构正常，非「沉默」（满足委员会实质2；当 fall negative control 时该窗确无摔已由 fall_cnt=0 保证）。
 - **无报警正常背景**（待抽，★委员会实质2 修正 ground-truth）：用户点的「101 bedroom enter/left bed·room、hunzi sleepad 上床、HR/RR」可抽，**但「无报警」不等于「确认正常」**——本系统存在的理由就是生产会**漏摔**（#1 即真摔+firmware 漏），一段无报警可能藏未报真摔。故：
   - **enter/left room·bed 事件 + HR/RR**：本就不产报警 → 「无报警」对 label **零信息**；其可信来自**受控/标注**，可作 benign 事件积木（room-ledger/bed-state/vital 纹理）。
   - **「这段没摔」当 fall negative control（断言 DBN 不该 fire）**：**必须正向确认**（住户自述/视频/受控实验），不是「碰巧没报」。无法正向确认的段 → manifest 标 `groundtruth: unverified-benign`，**只当背景纹理不当 negative control**（否则藏真摔→惩罚 DBN 正确 fire = 反 R5）。
