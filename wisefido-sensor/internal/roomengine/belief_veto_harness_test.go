@@ -86,7 +86,7 @@ type vetoCase struct {
 // 首批：能直接 load 的两案（其余格式 d523 raw / d5f7 txt 下周期补统一 loader）。
 var vetoCases = []vetoCase{
 	{"unit201-handoff-0609-bathroom-333B", "v2", "real-fall", "#9 firmware 真摔(pose=5)→该不否决", "", ""},
-	{"cd2b-fall-0607-0127", "v1", "false-alarm", "#7 firmware 在床误报→该否决", "", ""},
+	{"cd2b-fall-0607-twindow", "v2", "false-alarm", "#7 firmware 在床误报→该否决(T_fire 居中重导[−2m,+15m]支撑切窗)", "", ""},
 	{"hunzi-cabb-lost-0601-2247-FP", "v2", "false-alarm", "#5 lost_track 误报→该否决", "", ""},
 	// ★委员会 gate-critical:#2 = 床边跌倒身靠床→sleepad 检 HR/RR = **床占用为真的真摔**。验 bed-veto 是否误否。
 	{"bedtest-0605-2-bedside-fall-fw-detect", "txt", "real-fall", "#2 床边真摔(pose5)+床占用→bed-veto 不得误否", "2026-06-05", "fd00:0:3:111:3:101:2470:978"},

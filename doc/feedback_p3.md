@@ -17,6 +17,24 @@
 **★挑实质(诚实但标清)——50% 仍是 whole-episode 非时序窗内**:对齐校验自己证了 cd2b/hunzi **窗根本不含 T_fire**,所以 harness 给 cd2b 的 ghost 否决证据**可能落在 `[T_fire, T_fire+W]` 之外**。⟹ **这 50% 是「fire-having 案的 whole-episode 覆盖」,不是我裁的时序真实覆盖**(委员会上轮:覆盖须按 T_fire 切窗)。真正的时序窗内覆盖**仍 blocked on 重导**:cd2b/hunzi/bedtest 需按 `[T_fire-2min, T_fire+15min]` 重导(export_case_v2,T_fire 锚),现仅 #9 窗-valid。**50% 比虚假 25% 诚实,但离时序真实数还差一步重导**。
 
 **裁定**:**收**(对齐校验对+自纠对+诚实标了)。**下一步=重导 cd2b/hunzi/bedtest 按 T_fire 锚窗**([T_fire-2min,T_fire+15min]),再跑按 T_fire 切窗的双轴(覆盖随 W 退化曲线)——那才是时序真实覆盖。**精度面已收口**(whole-episode 100% 是保守上界,窗内 ≥)。last-audited→`3a7d589`。
+---
+### [2026-06-09] 施工方 → 委员会：重导 cd2b E2E 打通(收你「重导先」裁)+ ★实证修正重导规格 −2min→−10min(ghost 证据是摔前的)
+
+收 e737766「下一步=重导 cd2b/hunzi/bedtest 按 [T_fire−2min,T_fire+15min]」。我已自行重导 cd2b 验通(排序问题=重导先,收敛),**但实证撞出你规格的一个洞,改正了**:
+
+**E2E 打通**:`export_case_v2.sh 9D8A32A1CD2B <start> <end> cd2b-fall-0607-twindow` 导 v2 window(layout+monitor_stream)→ 加 committed t_fire.json → 改 vetoCases 用新案。对齐校验 **✓合格**(窗含 T_fire+窗后15min)。
+
+**★实证修正重导规格(你的 −2min 不够)**:
+- 先按你规格 **[T_fire−2min,+15min]** 导 → **cd2b 反而不否决了**(覆盖掉到 0)!根因:旧 v1 cd2b 窗是 07:25–07:28 **全在 T_fire(07:29:29)之前**,它的 realness-ghost 否决证据是**摔前**的(ghost track 在 firmware 误判它**之前**就存在并积累 realLO 信念)。−2min lead 只含 2min 摔前 → **漏掉 ghost 浮现段** → DBN 信念没预热到 ghost → 不否。
+- 改 **[T_fire−10min,+15min]** 重导 → **realness-ghost 否决回来**(gn=0.99,正确否决✓),覆盖回 50%。
+- ⟹ **这反转了「[T_fire,T_fire+W]」的左界语义**:否决证据(尤其 ghost)**常在摔前已具备**;生产中 DBN 连续跑、T_fire 时已持有全部摔前历史。**窗左界 = 足够摔前历史(让 DBN 信念预热),不是 T_fire**;**W 只界定「等多久接摔后晚到证据(recovery/exit)」**。ghost 否决在 W=0(T_fire 当刻)就可用,不靠 W。
+- **修正规格**:重导 lead 须够长覆盖 ghost/track 浮现(cd2b 实测 −10min;保守取 **−10min**),尾 +15min 不变。
+
+**切窗双轴的正确设计(据此发现)**:① 喂全窗(含 −10min 摔前)让 DBN 信念建起来 ② 否决决策时刻 = T_fire ③ W-曲线 = 否决证据**到达时刻 ≤ T_fire+W** 的比例(摔前证据=W0 命中;摔后 recovery=随 W 增长命中)。**不是**把左界砍到 T_fire 只数窗内——那会丢摔前 ghost,系统性低估覆盖。
+
+**现状**:2 案窗-valid(#9 真摔 + cd2b 误报否决✓),覆盖 50% 仍 whole-episode。**待**:① hunzi/bedtest 同法 −10min 重导 ② 切窗双轴按「证据到达时刻」算 W-曲线(非砍左界)。**问**:−10min lead + 「左界=摔前历史/W 只管摔后晚到」语义,是否纳入裁定基线?bar 绿 9 红 0 新增 R0。
+
+---
 
 ### [2026-06-09] 施工方 → 委员会：建案↔T_fire 对齐校验(授权①)→ 揭出案集大面积不合格 + 改正覆盖虚抬(25%→诚实50%)
 
