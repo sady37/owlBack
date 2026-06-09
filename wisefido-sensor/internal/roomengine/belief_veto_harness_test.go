@@ -112,6 +112,29 @@ type vetoEvidence struct {
 
 	maxGhostness float64 // belief_shadow_veto_evidence 的 track_ghostness 峰值（诊断：实证不可作否决，真摔也→0.99）
 	verdictGhost bool    // veto_reason==production_verdict_ghost（信号级多径/RCS，唯一安全 ghost 否决源）
+
+	// 切窗双轴（委员会 85e41a1 钉档）：各**安全**否决证据的**最早到达 ts**（ms,0=未现）。窗内覆盖按
+	// 「到达 ts ≤ T_fire+W」算。摔前 ghost→ts<T_fire=W 无关;摔后 recovery→ts>T_fire=W 相关。
+	ghostTsMs    int64 // 最早安全 ghost 证据(realness<.5/Artifact/TGhost/VerdictGhost)到达
+	bedVetoTsMs  int64 // 最早 bedConf≥0.9 确凿在床到达
+	recoveryTsMs int64 // 最早正向恢复(recapture/handoff)到达
+}
+
+func leTsMs(le observer.LoggedEntry) int64 {
+	if v, ok := le.ContextMap()["ts_ms"].(int64); ok {
+		return v
+	}
+	return 0
+}
+
+func minNonZero(a, b int64) int64 { // 取最早到达（0=未现，不参与 min）
+	if a == 0 {
+		return b
+	}
+	if b == 0 || a < b {
+		return a
+	}
+	return b
 }
 
 // vetoGhostX = 否决证据置信阈（委员会 pin：x = 否决证据置信阈，非 P(Fallen)）。
@@ -266,11 +289,13 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 			if s, _ := le.ContextMap()["argmax_state"].(string); s == "Artifact" {
 				ev.ghost = true // Room 层 argmax=Artifact（present 冻结/反射伪迹）= ghost 正否决证据
 				ev.argmax = s
+				ev.ghostTsMs = minNonZero(ev.ghostTsMs, leTsMs(le))
 			}
 		case "belief_shadow_track_lost":
 			if s, _ := le.ContextMap()["argmax_tstate"].(string); s == "Ghost" {
 				ev.ghost = true // lost track → Ghost verdict = 正否决证据
 				ev.argmax = "TGhost"
+				ev.ghostTsMs = minNonZero(ev.ghostTsMs, leTsMs(le))
 			}
 		case "belief_shadow_nodetect_gated":
 			// P6.1a:realnessP<0.5 = ghost 消失(镜面/反射/冻结伪迹被 realness 识别)= 正否决证据。
@@ -278,6 +303,7 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 			if ri, ok := le.ContextMap()["p6_1a_Ri"].(float64); ok && ri < 0.5 {
 				ev.ghost = true
 				ev.argmax = "realness-ghost"
+				ev.ghostTsMs = minNonZero(ev.ghostTsMs, leTsMs(le))
 			}
 		case "belief_shadow_veto_evidence":
 			// R0 结构化否决证据(belief_shadow.go 生产 emit)。★实证铁律(本 harness 揭出):stillness-based
@@ -289,14 +315,19 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 			}
 			if r, _ := le.ContextMap()["veto_reason"].(string); r == "production_verdict_ghost" {
 				ev.verdictGhost = true
+				ev.ghostTsMs = minNonZero(ev.ghostTsMs, leTsMs(le))
 			}
 		case "belief_shadow_bed_occupied_suppress":
 			ev.bed = true
 			if c, ok := le.ContextMap()["p5_bed_conf"].(float64); ok && c > ev.bedConf {
 				ev.bedConf = c // 捕最高床占用 conf,判「确凿在床」vs「靠床边」
 			}
+			if c, ok := le.ContextMap()["p5_bed_conf"].(float64); ok && c >= 0.9 {
+				ev.bedVetoTsMs = minNonZero(ev.bedVetoTsMs, leTsMs(le)) // 确凿在床(conf≥.9)的最早到达
+			}
 		case "belief_shadow_exit_recapture", "belief_shadow_lostfall_cancel", "belief_shadow_neighbor_handoff":
 			ev.recovery = true // 正向恢复（sole-resident recapture/回床/邻房 hand-off）= 正否决证据
+			ev.recoveryTsMs = minNonZero(ev.recoveryTsMs, leTsMs(le))
 		case "belief_shadow_lostfall_escalate":
 			ev.escalate = true // 窗到未佐证=真摔；**否决逻辑不得覆盖**（track 消失≠恢复，可能昏迷重伤）
 		}
@@ -401,6 +432,71 @@ func TestVetoPrecisionHarness(t *testing.T) {
 	if wrongVetos > 0 {
 		t.Fatalf("★精度破 gate：%d 例错误否决真摔——must=0", wrongVetos)
 	}
+}
+
+// TestVetoWindowScan — 切窗双轴（委员会 85e41a1 钉档）：窗=[T_fire−warmup, T_fire+W],喂全窗,覆盖按
+// 否决证据**到达 ts ≤ T_fire+W** 算。摔前 ghost(ts<T_fire)=W 无关(任何 W 否得掉);摔后 recovery(ts>T_fire)
+// =W 相关(W 内起身才否)。⟹ 覆盖-W 曲线 = 即时 ghost(平) + recovery(随 W 涨)。精度=0(真摔任何 W 不否)。
+// 仅纳入窗含 T_fire 的案(对齐校验合格);非火案天然排除(无 T_fire)。
+func TestVetoWindowScan(t *testing.T) {
+	scan := []int{5, 10, 15}
+	type wstat struct{ fpVetoed, totalFP, correctVetos, vetos, wrongVetos int }
+	stats := map[int]*wstat{5: {}, 10: {}, 15: {}}
+	rel := func(ts, tf int64) string {
+		if ts == 0 {
+			return "—"
+		}
+		return fmt.Sprintf("%+.1fmin", float64(ts-tf)/60000)
+	}
+	for _, vc := range vetoCases {
+		a, ok := loadTFire(t, vc.dir)
+		if !ok || a.TFireMs == nil {
+			continue // 非火/无锚 → 不是切窗候选
+		}
+		mn, mx, n := caseTimeSpanMs(t, vc)
+		if n == 0 || *a.TFireMs < mn || *a.TFireMs > mx {
+			t.Logf("[跳过] %s 窗不含 T_fire（需 [T_fire−warmup,+W] 重导）", vc.dir)
+			continue
+		}
+		ev := runDBNVeto(t, vc)
+		tf := *a.TFireMs
+		for _, w := range scan {
+			cutoff := tf + int64(w)*60000
+			ghostV := ev.ghost && ev.ghostTsMs != 0 && ev.ghostTsMs <= cutoff
+			bedV := ev.bedVetoTsMs != 0 && ev.bedVetoTsMs <= cutoff
+			recV := ev.recoveryTsMs != 0 && ev.recoveryTsMs <= cutoff
+			wouldVeto := ghostV || bedV || recV
+			s := stats[w]
+			if vc.truth == "false-alarm" {
+				s.totalFP++
+				if wouldVeto {
+					s.fpVetoed++
+					s.vetos++
+					s.correctVetos++
+				}
+			} else if wouldVeto { // real-fall 被否 = 破精度 gate
+				s.vetos++
+				s.wrongVetos++
+			}
+		}
+		t.Logf("[%s] %s  ghost到达=%s  bed≥.9=%s  recovery=%s（相对 T_fire）", vc.truth, vc.dir, rel(ev.ghostTsMs, tf), rel(ev.bedVetoTsMs, tf), rel(ev.recoveryTsMs, tf))
+	}
+	t.Logf("=== 覆盖-W 退化曲线（摔前 ghost=W 无关平 / 摔后 recovery=随 W 涨；委员会钉档语义）===")
+	for _, w := range scan {
+		s := stats[w]
+		cov, prec := 0.0, 1.0
+		if s.totalFP > 0 {
+			cov = float64(s.fpVetoed) / float64(s.totalFP)
+		}
+		if s.vetos > 0 {
+			prec = float64(s.correctVetos) / float64(s.vetos)
+		}
+		t.Logf("W=%2dmin: 覆盖=%d/%d=%.0f%%  精度=%d/%d=%.0f%%  真摔错否=%d", w, s.fpVetoed, s.totalFP, cov*100, s.correctVetos, s.vetos, prec*100, s.wrongVetos)
+		if s.wrongVetos > 0 {
+			t.Errorf("★W=%dmin 精度破 gate：错否真摔 %d 例——must=0（切窗只减证据,真摔被否=逻辑错）", w, s.wrongVetos)
+		}
+	}
+	t.Logf("⚠ 样本极小（窗-valid 案 <5）→ 曲线是结构验证非定量；待 bedtest 重导 + 良性 FP 扩样")
 }
 
 // tFireArtifact = 每案 committed t_fire.json（firmware 开火时刻，离线从 alarm_events 导，**测时不连库**，
