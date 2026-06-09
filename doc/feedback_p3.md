@@ -7,6 +7,19 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会裁 propose-first 延时窗提案——**要时序真实性(覆盖)+ 案↔T_fire 对齐先建**
+
+施工方 propose-first 问 3 点(下条)。**裁**:
+1. **cutover 验收要不要时序真实性?→ 覆盖面要,精度面不必**:
+   - **精度(安全 gate)**:whole-episode 已是**保守**——给 DBN 更多时间只会**更可能**误否真摔;若 whole-episode 精度 100%,窗内 ≥100%。所以精度不靠时序真实性,whole-episode 够。
+   - **覆盖(价值)**:whole-episode **乐观**——否决证据若 T_fire 后 10min 才到,生产 5min 窗否不掉=真实覆盖更低。**而「5min 砍 90% 误报」本就是时序断言**,不切窗根本验不了。⟹ **覆盖必须按 [T_fire, T_fire+W] 切窗测**,要时序真实性。
+2. **W 默认?→ 起步 5min(用户拍)+ 扫 5/10/15 出退化曲线**——曲线就是「5min 够不够」的答案(覆盖随 W 怎么涨)。
+3. **案↔T_fire 对齐校验先建?→ 同意,前置**。cd2b 目录名 `0607-0127` vs alarm_events Fall `0607 18:09` 不吻合 = 真数据陷阱(同老 UUID layout 类,会算错窗)。**先建对齐校验(window.json 时段↔alarm_events.created_at),再切窗**;误对齐 = garbage 测量。
+
+**铁律守**:alarm **立即开火不延时**(绝不延真摔告警);否决=窗内抑制/auto-resolve(同 gate-list cancel 窗语义),仍 R0。**授权建**:① 案↔T_fire 对齐校验 ② 按 T_fire 切窗的双轴(覆盖随 W 退化曲线/精度=0)。
+
+---
+
 ### [2026-06-09] 施工方 → 委员会：propose-first 实质2「延时窗 5min」——问 cutover 验收要不要时序真实性(还是 whole-episode 够)
 
 否决面已收口(覆盖 25%/精度 100%)。但**当前 harness 用整案证据(peek T_fire 之后的帧)= 乐观近似**;生产在 T_fire(firmware 开火时刻)只见**截止 T_fire** 的数据,否决证据可能**晚到**。propose-first 提一层,请委员会裁要不要进 cutover 验收:
@@ -23,6 +36,16 @@
 无代码改动,纯提案。bar 不涉。
 
 ---
+
+### [2026-06-09] ✅ 委员会 R6 收 `40960a5`——long-lie 安全闸升一等显式断言(护栏固化)
+
+施工方把上轮的 long-lie 修固化成**永久回归护栏**(test-only,答委员会 370c594 点名)。**亲跑全绿**:
+- **断言真实**(harness:376):real-fall 案被**安全** ghost 源(realness-no-detect / Room argmax / 信号 VerdictGhost)flag → `t.Errorf` 红。
+- **分离证明实测**:#9(287帧)+ #2(627帧久躺)**maxGhostness=0.99**(stillness 危险信号真实存在,久躺受害者确实貌似 frozen ghost)**但安全源未 flag → 不误否**(harness:378 ✓)。危险信号在、realness-veto 不咬钩 = 二者分离被显式断言钉死。
+- 意义:**以后谁为提覆盖把 realness 调激进去咬 stillness,这条断言立刻红**——委员会上轮「frozen-sit gap 是安全侧别盲目关」有了机器护栏。
+- precision 100% 覆盖 25%,bar 全绿 9 红 0 新增 R0。
+
+**裁定**:**收**(干净硬化,护栏对)。**否决精度面到此收口扎实**:覆盖 = 安全 realness 识别的 ghost(lost/多径/反射)25% / 精度 100% + long-lie 安全闸显式断言 / frozen-sit+bed-position 结构不可覆盖留 firmware+护士。**剩待**:① 延时窗 5min/早退(实质2,T_fire 锚需 alarm_events 导)② cutover 持久化(veto_evidence→sensor_decision_log)③ 召回方向(Neighbor,≥50% bar,post-launch)。last-audited→`40960a5`。
 
 ### [2026-06-09] ✅✅ 委员会 R6 收 `22c9292`——施工方建委员会点名的对抗案 + 实证 long-lie 灾难成真 + 闸死(高质量,loop 范例)
 
