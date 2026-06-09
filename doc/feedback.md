@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`301151a`(下次从此 commit 起算 delta)
+- **last-audited**:`672e82b`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -84,6 +84,26 @@
 + R5-lock 机械化总闸 ✅。**B 审计 未populate 仅剩 BedOccupied(data-driven)+ Neighbor(真·最后一个 wire)**。
 
 **待委员会**:复核 SD-RETIRE 退役。**#3 Neighbor + recall 案 + redis-replay 整单元待用户**——死源 wire 路径上**唯一剩余项均阻于用户输入**(谁跑整单元 redis-replay)。新节点暂停(㊻)。
+
+---
+
+### [2026-06-08 18:42 MDT] 审查59 `301151a..672e82b` SD-RETIRE 落地验收 ✅ — 死源退役干净 + 删测无真不变量丢失(亲查 live ObsEnterExit 结构守 absence≠负向)
+
+**性质**:`672e82b` 执行审查58 裁决——退役 ObsStandDuration + 整删 dead roomAdapter(#1.2)。净 **-66 行,全删**。
+
+**✅ R6 亲跑 bar 全绿**:
+- `go build ./...` rc=0 / `go vet ./internal/roomengine/...` rc=0。
+- **belief 包 `ok`**(R5-lock 去 ObsStandDuration 两行后仍过)。
+- **roomengine 失败 = 9 = 冻结基线**(TestBathroomFall_*/TestBedroomFall_* 全 firmware/alarm-path 旧红,R1 不碰),**0 新增**。
+- 残留 grep(ObsStandDuration/roomAdapter/standCapMin/gainStandFall/standFallBase/clampCap/beliefEventWindowMs)= **0**。enum/label/likelihood case/calibration 常量/clampCap helper/R5-lock 抬升行/b_replay allObsKinds 全清,无半拉子。#1.2 净度达标(对齐 SleepStage SS-B)。
+
+**★ 实质核查:删 `TestAbsenceNotNegativeEnterExit`(P2.5 absence≠负向锁)会不会丢真不变量?**——不会。亲查:
+- 该删测测的是 **dead roomAdapter 的轮询窗口逻辑**(LastExitTs 在 5s `beliefEventWindowMs` 窗内才补发 ObsEnterExit)——roomAdapter 整删,测随之删,**测的是死代码**。
+- **live ObsEnterExit emitter = `radarEventToObs`**(belief_adapter.go:419,被 belief_shadow.go:95 调)= **纯事件→obs 映射**:EnterRoom→+1 / ExitRoom→−1 / 无匹配事件→`return false 不发`。**结构上就守 absence≠负向**(事件触发,非状态轮询,无窗口可在"无事件"时误发)。原 roomAdapter 的轮询窗口才是有 absence-误发风险、需要测来锁的路径;live 路径靠"事件驱动"这一结构天然免疫。
+- 且 live 方向性仍被 **R5-lock `EnterExit-Exit` case**(r5_calibration_lock_test.go:97)锁(ExitRoom 正向退场证据)。
+- ⟹ **删的是死代码的测,真不变量(live 事件驱动 + R5 方向锁)无损**。
+
+**裁决**:**SD-RETIRE 验收通过**。toilet-still-fall 覆盖不变(live ObsDwellStill P4.1 生存-ramp 留守)。死源台账更新:**5 死源 → 已处置 4**(bed✅wire / NumberPeople✅wire / SleepStage✅retire / StandDuration✅retire),**仅 #3 Neighbor 剩**(跨房 §5.5.2,需 redis-replay 整单元真验,待用户环境)= 真·最后一个 wire。施工方裁前不建、自纠扎实、落地干净——本轮无新 req。
 
 ---
 
