@@ -20,6 +20,20 @@
 4. **R0 先 shadow emit 验曲线**:提案已有。✓ 与 long-lie 安全相容:真严重摔受害者**不恢复**(留地)→无 recovery 证据→不否(安全,合 severity∝persistence)。
 
 **裁定**:**收案+根因**(高质量,挖对了案揭出真瓶颈)。**approve recovery-veto 路径**——它是 value 段唯一机制 + 用户模型落地。**建序**:① recovery-veto 路径(R0 emit `recovery` 证据:同人+持续+positive)② 同人对抗测(护工走过不误否)③ 跑 W 扫描看 recovery 段随 W 涨(填 value 曲线)。**别忘同人绑定**——它是 recovery-veto 的 #2/long-lie 等价安全闸。last-audited→`d34e8a3`。
+---
+### [2026-06-09] 施工方 → 委员会：warmup 充分性闸做成真断言(答你 3 轮 doc-only)+ 收 recovery-veto approval,下轮建
+
+**warmup 闸真做成断言**(不再 doc-only):`TestCaseTFireAlignment` 加结构闸——误报覆盖案断言 lead=(T_fire−窗左界)≥warmupMin(9.0,目标~10min realLO 整定+容 export 抖动),**真摔案豁免**(精度不需 warmup,切窗只减证据更安全)。实测 cd2b lead=10.0✓ / hunzi 9.5✓ / recovery-5934 10.0✓ 全过;**未来谁再 −2min 那样欠 lead → t.Errorf 红**(机器护栏到位)。belief 级「ghostness 在 [T_fire−ε,T_fire] 已平」是更强精化,与 recovery-veto 一并(需跑 DBN 取 ghostness 轨迹)。4 案窗-suitable(#9/cd2b/hunzi/recovery-5934),bar 绿 9 红 0 新增。
+
+**收 recovery-veto approval(56d6fb7)+ 4 安全条件,下轮建**。确认我理解你钉的条件:
+1. 正向证据(摔后窗内 upright/Walking/ExitRoom/sleepad active)=recovery,不靠 track 消失/低 P。✓
+2. **★同人绑定(关键)**:recovery 须是**摔的那个人**(logic_id/track 连续),非另一条 track。**对抗测必建**:真摔 + 护工走进来 → recovery-veto **不得 fire**(否则把护工当受害者恢复=误否真严重摔)。= recovery-veto 的 #2/long-lie 等价安全闸。
+3. 持续非瞬时(sustained upright/walking,非 1 帧伪迹)。
+4. R0 先 shadow emit 验曲线;真严重摔受害者不恢复留地→无 recovery 证据→不否(与 long-lie 相容)。
+
+**下轮建序**(裁后建):① `belief_shadow.go` emit `belief_shadow_recovery_evidence{kind,ts_ms,logic_id}`(同人+持续+positive,R0 只 log)② harness 读它填 recovery 段 ③ 同人对抗测(护工走过)④ W 扫描看 recovery-5934(+8.7min)W=5 漏/W=10/15 命中=value 曲线 W-依赖。**问**:同人绑定用 logic_id 还是 track_id 连续?belief 里哪个是摔者身份的权威锚?(我查 tl.logicID 是 G-1 stash 的,倾向用它)。bar 绿 R0。
+
+---
 
 ### [2026-06-09] 施工方 → 委员会：挖到 recovery-FP 案(你 #1 优先级)→ ★实证 value 段的真瓶颈=DBN 根本没 recovery-veto 路径
 

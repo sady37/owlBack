@@ -579,6 +579,13 @@ func caseTimeSpanMs(t *testing.T, vc vetoCase) (int64, int64, int) {
 // 状态，钉死「哪些案现成可切窗 / 哪些需重导 / 哪些根本非否决候选」。强断言唯一已知合格案 #9 不退化。
 func TestCaseTFireAlignment(t *testing.T) {
 	const baseWMin = 5 // 用户拍基准延时窗;扫 5/10/15。窗后须 ≥ 该 W 才支撑此 W 切窗。
+	// warmup 充分性闸（委员会 3 轮要,真做断言不再 doc-only）:误报覆盖案窗左界须含足够摔前历史让 DBN
+	// 信念(realLO)预热,否则 ghost 浮现段被砍 → 系统低估覆盖(−2min cd2b 那次=lead 2min→ghost 不否)。
+	// 目标 ~10min(realLO 整定),warmupMin=9 容 export 边界抖动,牢卡 −2min。真摔案豁免(精度不需 warmup,
+	// 切窗只减证据更安全)。**结构闸**(lead≥warmupMin);belief 级「ghostness 在 [T_fire−ε,T_fire] 已平」是更强
+	// 精化(待 recovery-veto 裁后一并,因需跑 DBN 取 ghostness 轨迹)。
+	const warmupMin = 9.0
+	var warmupViol []string
 	scan := []int{5, 10, 15}
 	suitBaseW := func(vc vetoCase) (float64, bool) { // 返回窗后 min + 是否含 T_fire
 		a, ok := loadTFire(t, vc.dir)
@@ -624,10 +631,22 @@ func TestCaseTFireAlignment(t *testing.T) {
 			}
 			verdict = fmt.Sprintf("✓合格(窗后%.1fmin,支持 W=%s min)", postMin, strings.Join(ws, "/"))
 			good++
+			// warmup 闸:仅误报覆盖案需(真摔走精度不需预热)。lead = T_fire − 窗左界。
+			if vc.truth == "false-alarm" {
+				lead := float64(tf-mn) / 60000
+				if lead < warmupMin {
+					warmupViol = append(warmupViol, fmt.Sprintf("%s(lead=%.1fmin<%.0f)", vc.dir, lead, warmupMin))
+				} else {
+					verdict += fmt.Sprintf("  warmup✓(lead=%.1fmin)", lead)
+				}
+			}
 		}
 		t.Logf("[%s] %s  T_fire=%s  窗后=%.1fmin  %s", vc.truth, vc.dir, a.TFireUTC, postMin, verdict)
 	}
 	t.Logf("=== 对齐校验：%d 案现成可切基准 %dmin 窗(其余需重导或非候选) ===", good, baseWMin)
+	if len(warmupViol) > 0 {
+		t.Errorf("★warmup 充分性闸破:误报覆盖案窗左界不足(ghost 信念预热不够→低估覆盖,如 −2min cd2b 陷阱):%s——须 [T_fire−≥%.0fmin,…] 重导", strings.Join(warmupViol, " "), warmupMin)
+	}
 	// 强断言：已知合格锚 #9 必须支撑基准 W=5min——对齐器自身的 oracle（否则 caseTimeSpanMs/t_fire 坏）。
 	if post, ok := suitBaseW(vetoCases[0]); !ok || post < float64(baseWMin) {
 		t.Fatalf("★对齐器自校验破:#9 333B 应支撑基准 %dmin 窗(窗含 T_fire+窗后≥%dmin)却判不合格(ok=%v post=%.1f) → caseTimeSpanMs/t_fire 坏", baseWMin, baseWMin, ok, post)
