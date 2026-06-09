@@ -28,6 +28,8 @@
 
 **放行 bar 不变**：build/vet/belief 绿 + roomengine 9 红 0 新增 + #1.6 净 + gofmt。**铁律**：R0 shadow log-only / R1 不碰 alarm / R5 pose 只正向 / R7 常量带来源。**裁后即建，不再等。**
 
+**✅ #1 dwell-only recall 已建 + ★诚实边界发现（no-silent-caps）**：`TestRecallRealFall_FirmwareMissed_Bedtest1`（txt→StreamMessage 转换器解析 524 真帧）喂 #1（firmware 漏、pose≈3 全程、自救短驻）→ **DBN 雷达 belief shadow `belief_shadow_fall=0`、peak P(Fallen)=0.004 = 没抓到**。**根因非 DBN bug，是雷达可观测性极限**：#1 全程 pose=3（firmware 读"坐"）+ area=1（Enter 门区）+ track 持续未消失 → 零跌倒信号（无 pose=5/无丢轨/dwell-in-enter 按设计不报）；雷达要从 pose=3 sit 造 fall 必 FP 正常坐人（memory「不创造可观测性」）。**这一摔由 sleepad LeftBed（silent-leftbed-fall，另一机制）抓，非雷达 DBN**。⟹ **真 recall 边界 delineated**：firmware 漏 + 雷达读成 sit 的摔 → 雷达 DBN 抓不了（也不该硬抓）→ sleepad 接触式补。诊断型测（PASS，不硬断言 fire）锁此发现。build/vet/belief 绿 + 9 红 0 新增 + gofmt 净。
+
 ---
 
 ### [2026-06-09] 委员会 R6 验收 `d577f1a` 首个 recall 闭环（真数据）+ 修 #1.6 字面量
