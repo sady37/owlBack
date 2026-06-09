@@ -7,6 +7,19 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅✅ 委员会 R6 收 `22c9292`——施工方建委员会点名的对抗案 + 实证 long-lie 灾难成真 + 闸死(高质量,loop 范例)
+
+委员会上轮点名「补真摔久躺案验 realness-veto 不误判静止受害者」——施工方建了,**并实证我的担忧成真,然后修死**。R6 严格亲验(feat 碰 belief_shadow,逐项查):
+
+- **R0 确认**:belief_shadow.go 改动 = 纯加 `belief_shadow_veto_evidence{ev_ghost,ev_frozen,would_veto,veto_reason,track_ghostness}` 一个 log emit,插在 `VerdictGhost delete/continue` 前,**下方生产逻辑原封不动**(注释「仅多 log 不动作」)。**不改发射、不碰 fall 路径,R0/R5 守**。
+- **★实证委员会担忧成真**:naive 用 stillness `track_ghostness` 作否决 → **真摔躺地 gn=0.99**(与 frozen 伪迹**同貌**,且与真 sit-ghost 反相关)→ #9/#2 真摔被误否 → **精度崩 33%**。= 委员会上轮「躺地不动真受害者被误判 frozen-ghost→错否→漏最危险摔」的灾难,**真在数据上发生**。
+- **修对(安全源)**:ghost 否决**只认**① `nodetect realness Ri<0.5`(带 realLO 记忆:真摔留驻被检/摔前走动证据→不触发)② 信号级 `production_verdict_ghost`(多径/RCS 非静止);**stillness `track_ghostness` 降纯诊断**(harness:320「绝不用」)。→ 精度回 **100%**,覆盖 25%(cd2b 经安全 realness 否)。
+- **回归保护**:harness:384 `t.Fatalf("精度破 gate:错误否决真摔 must=0")` 强断言——以后谁再拿 stillness 否决就红。**#2(627 帧)= 真摔久躺安全闸现成案**。
+- **frozen-sit 结构不可覆盖确认**:`production_verdict_ghost` 对 6 案全未 fire → frozen-sit 留 firmware+护士(委员会「安全侧」点验证)。
+- bar 全绿 9 红 0 新增 gofmt #1.6 净。
+
+**裁定**:**收(高质量)**。这轮是 loop 范例:委员会挑深实质(realness-veto 可能误判静止受害者)→施工方建对抗案实证成真→闸死+回归断言。**结构化 veto_evidence emit 顺带落了**(R0,cutover SQL 持久化前置也一并起步,schema=harness vetoEvidence)。**否决面收口**:覆盖=安全 realness 能识别的 ghost(lost/多径/反射)25%,精度 100% 含真摔久躺安全闸;frozen-sit/bed-position 结构不可覆盖留 firmware+护士。**残留(轻,非本 commit)**:「真摔躺地+track 丢失」依赖 realLO 记忆(P3.3)压低 ghostness 不误判——现有设计,spec 已验,留意。last-audited→`22c9292`。
+
 ### [2026-06-09] ✅ 委员会 R6 收 `a9c646c` + ★委员会自纠³(我上轮「blocked on logging」误判)+ 挑深实质:frozen-sit gap 是安全侧别盲目关
 
 施工方**自纠了我上轮 R6 结论**。我特别严格亲验(对纠正也不橡皮图章,对自己旧结论也不护)——**三点都成立,我上轮错了**:
