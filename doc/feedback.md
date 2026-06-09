@@ -88,7 +88,7 @@
 
 **测试**:`TestTrackLogicAliveSuppressesLost`(belief 包,镜像 TestTrackPeerLiveSuppressesLost:开阔地板真人失锁 + logic_id 活在别 track → P(TLost)≤0.15 被压;对照 TestTrackRealLostOpenFloor 无此观测时 TLost 主导)。**放行 bar**:build/vet 净 + belief 绿(含新测)+ roomengine **9 红 0 新增** + #1.6 净 + gofmt 净。**铁律守**:R0 shadow log-only / R5 压「身份守恒非独自倒地」非负向否决真摔 / 不读 ghost verdict。
 
-**剩 G-2(交委员会)**:核验空房账「ExitRoom ∨ np=0」是否已被 `TObsExit`+`ObsNumberPeople` 完整覆盖(裁定①只核验不新建,#1.3)。**P2 收尾余此一项**。shadow 对账 oracle(三 LOG 案)与 P9 数据-blocked 解耦。
+**G-2(交委员会)→ 已完成(c158023,见顶「P2 收尾完成」entry)**:委员会**自纠**先前「已覆盖」裁定——亲查证 Room 层 lost-sweep 从不查 `roomLedgerEmpty`(只 Track 层 TObsExit 接 ExitRoom),残影-after-exit 在 shadow ramp Fallen 而 gate 硬 skip → 破 cutover parity → G-2 须建(**恰是本帖原稿点的缺口**:np=0/房账空未进 lost-sweep)。建自锁 `RoomLedgerEmpty()` wrapper 喂 Room+Track 层(单源 roomLedgerEmpty,#1.3 不新建第二源)。**🏁 P2 收尾完成**:G-1 id-swap + G-2 空房账 + G-3 距离闸三治本闸全进 DBN。
 
 ---
 
