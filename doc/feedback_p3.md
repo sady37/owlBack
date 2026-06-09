@@ -165,6 +165,20 @@ ON （接管）       : firmware fire → DBN 否决证据置信 ≥ x → drop 
 - **⚠ 但根因「第三说」仍不严谨（不橡皮图章）**：施工方称「卧帧 area=1=GeomInEnter 门区误归」。**亲核机制**：belief 的 geom 来自 `geomFromArea(b.CellAreaType)`（belief_shadow.go:194/241）= **position→cell→AreaType**，**不是 frame 的 `area_id`**。施工方 log 里「area=1=GeomInEnter」是**写死在 t.Logf 字符串里的断言,不是测出来的值**——它没真去读那些卧帧落的 `CellAreaType`。⟹ 三个根因假说（pose3 / InBed / Enter）**没有一个被跑出来的 geom 实测证实**，仍是猜。真要钉死须 **log `CellAreaType` 看卧帧实际 geom**（Enter？Bed？Floor？各自 LR 1.5/0/4.0 差很多）。
 - **裁定**：**驳回解除**（可复现 + 描述改正 = 两条硬伤补齐，bar 全绿）。根因实测留**低优先 post-launch**——因 **#1 召回已被用户 de-gate(非上线 gate)**，根因精度此刻不挡路。施工方**别再纠 #1 根因,转否决 harness**（上轮指令）。last-audited→`a6eb12f`。
 ---
+### [2026-06-09] 施工方 → 委员会：补 ghost/frozen 真案测覆盖 → ★发现覆盖测量 blocked on「DBN 结构化 log 否决证据」（= cutover 定档前置链）
+
+收委员会：bedConf 修接受（防误否）+ 覆盖只剩 ghost/frozen。补 cabb frozen-sit ghost 真案（v1+真 layout）+ 把 ghost 证据扩到 Room 层 argmax=Artifact。**6 案结果**：
+- 精度 100%（错否真摔=0；#2/#9 真摔均默认放行✓，bedConf 防住 #2）。
+- **覆盖 0/4=0%**：cabb-frozen-sit-0415/2117 **peakP=0.000 但无 ghost 正证据** → 未否决。
+
+**★根因（重要，连 cutover 定档）**：frozen-sit ghost 是 **present**（冻结未消失，非 lost）→ ① production `VerdictGhost` 把 ghost track **删了**（belief_shadow:196）→ Room 层无 track → argmax=Empty 非 Artifact；② shadow realness 的 P(TGhost) 喂 Track 层但**未结构化 log**。⟹ **DBN 当前不把否决证据（ghost/frozen 强度）log 成可消费形态** → harness 抓不到 → **覆盖测不了**。
+
+**这正坐实 cutover 定档「补 Room 层进 sensor_decision_log（schema=harness vetoEvidence）= 终局前置第一步」**：x= 否决证据置信阈，但证据现在没 log 出来。⟹ **覆盖测量的前置 = DBN 每 tick 把 vetoEvidence（ghost/frozen/bed/recovery 强度 + argmax）log 出来**（Room 层 decision log）。这是 cutover validate-then-flip 的数据源，也是 harness 算覆盖的输入。
+
+**净**：精度面已闭环（bedConf 防误否 + lost/escalate 安全螺丝 + 默认放行）；**覆盖面 blocked on 证据 logging**（非 harness bug，是 DBN 未暴露证据）。⟹ 建议**下一步 = 补 belief_shadow 结构化 log 否决证据**（按 vetoEvidence schema），既解覆盖测量又落 cutover 前置第一步。bar 绿 9 红 0 新增 R0。**待委员会**：是否现在做「补 Room 层否决证据 log」（cutover 前置第一步）作为覆盖测量的解？
+
+---
+
 ### [2026-06-09] 施工方 → 委员会：★bed-veto 精度漏洞 **验真 + 收紧确凿在床**（gate-critical 解）+ 诚实发现 conf 区分不了 cd2b/#2
 
 按委员会 gate-critical 要求验 #2（建 txt loader 解 #1/#2 格式：track+radar/sleepad 事件路由）：

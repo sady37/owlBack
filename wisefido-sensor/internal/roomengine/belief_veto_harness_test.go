@@ -89,6 +89,9 @@ var vetoCases = []vetoCase{
 	{"hunzi-cabb-lost-0601-2247-FP", "v2", "false-alarm", "#5 lost_track 误报→该否决", "", ""},
 	// ★委员会 gate-critical:#2 = 床边跌倒身靠床→sleepad 检 HR/RR = **床占用为真的真摔**。验 bed-veto 是否误否。
 	{"bedtest-0605-2-bedside-fall-fw-detect", "txt", "real-fall", "#2 床边真摔(pose5)+床占用→bed-veto 不得误否", "2026-06-05", "fd00:0:3:111:3:101:2470:978"},
+	// ghost/frozen 真案（覆盖唯一来源，委员会：bed/lost 不能覆盖）——cabb frozen-sit ghost FP，v1 格式+真 layout：
+	{"cabb-ghost-frozen-sit-0415", "v1", "false-alarm", "frozen-sit ghost 误报→该否决(ghost/frozen 证据)", "", ""},
+	{"cabb-ghost-frozen-sit-2117", "v1", "false-alarm", "frozen-sit ghost 误报→该否决(ghost/frozen 证据)", "", ""},
 	// #13 d523-ghost：raw loader 已就绪，但 d523 的 room_visual_layout.canvas **无 Radar object**
 	// （只 Wall/Enter/Furniture）→ ParseLayoutConfig 建不出 mount → pipeline 跑不了。待补带雷达 mount 的
 	// d523 layout（不得捏造）后启用。raw 格式 loader 本身已验（hunzi v2 + 此 raw 路径）。
@@ -103,6 +106,7 @@ type vetoEvidence struct {
 	bedConf  float64 // 床占用最高 conf（确凿在床判据：sleepad 0.9/human-bed 0.99 ≫ radar 0.6「靠床边」）
 	recovery bool    // 正向恢复：recapture(回床/离场)/neighbor-handoff(人证在邻房)——非 track 消失
 	escalate bool    // belief_shadow_lostfall_escalate（窗到未佐证=真摔，**否决逻辑不得覆盖**，仅记防误否）
+	argmax   string  // 诊断:ghost 证据来源（Artifact/TGhost）
 	frames   int
 }
 
@@ -242,9 +246,14 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 			if v, ok := le.ContextMap()["p_fallen"].(float64); ok && v > ev.peak {
 				ev.peak = v
 			}
+			if s, _ := le.ContextMap()["argmax_state"].(string); s == "Artifact" {
+				ev.ghost = true // Room 层 argmax=Artifact（present 冻结/反射伪迹）= ghost 正否决证据
+				ev.argmax = s
+			}
 		case "belief_shadow_track_lost":
 			if s, _ := le.ContextMap()["argmax_tstate"].(string); s == "Ghost" {
-				ev.ghost = true // 镜面/反射 ghost verdict = 正否决证据
+				ev.ghost = true // lost track → Ghost verdict = 正否决证据
+				ev.argmax = "TGhost"
 			}
 		case "belief_shadow_bed_occupied_suppress":
 			ev.bed = true
