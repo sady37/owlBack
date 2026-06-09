@@ -7,6 +7,18 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `86f8cd0`——覆盖测量 blocked on「DBN 不 log 否决证据成可消费形态」= cutover 前置,**升为关键路径**
+
+施工方补 ghost/frozen 真案测覆盖,发现真瓶颈。**亲跑核验属实**:
+- 6 案,两个 `cabb-ghost-frozen-sit-{0415,2117}` **peak P=0.000(DBN 确实判非摔)但 harness 抓不到 ghost 正证据 → 未否决**,覆盖 **0/4=0%**。
+- **根因亲核**:harness 读 ghost 证据 = `belief_shadow_track_lost argmax=Ghost`,而它**只在 track 丢失时 fire**;frozen ghost 是 **present 静态 track**,被 `VerdictGhost`(belief_shadow.go:207)删掉,**不走 track_lost 路径** → ghost 证据从未 log 成可消费形态。**DBN 内部知道(VerdictGhost/P=0.000)但不 log 出来**,harness 抓不到。
+- bar 全绿 9 红 0 新增 R0。
+
+**★这把覆盖测量和 cutover 前置统一了(重要)**:覆盖测不了 ≠ DBN 否决力弱,是 **DBN 没把否决证据(ghost/frozen verdict + features)log 成结构化可消费形态**。而这正是 cutover 终局的**前置第一步**(补 Room 层 `sensor_decision_log`,schema=harness `vetoEvidence`)。⟹ **同一件事 unblock 三样**:① harness 覆盖测量 ② SQL 批量归因 ③ cutover validate-then-flip 的数据源。
+
+**裁定**:**收**(高质量发现,定位真瓶颈)。**升级:Room 层否决证据 logging = 当前关键路径,优先级超过「补更多 ghost 案」**——案补再多,DBN 不 log 证据就测不到覆盖。**要求**:生产 belief_shadow emit 结构化否决证据(`{ghost,frozen,bed,bedConf,recovery,neighbor}`+wouldVeto+reason+p_fallen)到可消费 log/`sensor_decision_log`(**仍 R0**:只多 log 不动作,守 shadow=生产同代码)。harness 改读这个结构化证据 → 覆盖即可测。**精度面已闭环**(bedConf 防误否+安全螺丝+默认放行);**覆盖面待这个 logging**。last-audited→`86f8cd0`。
+
+
 ### [2026-06-09] ✅ 委员会 R6 收 `cc7a4e8` bed-veto #2 验真+收紧 + ★委员会自纠（我上轮 retraction 错了）
 
 施工方**直接跑了 #2**(委员会两轮要的)——数据把争议结了,且**结向委员会原始 flag**:
