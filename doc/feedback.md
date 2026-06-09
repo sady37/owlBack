@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`d0b0727`(下次从此 commit 起算 delta)
+- **last-audited**:`88870d2`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,36 @@
 
 
 
+
+### [2026-06-08 19:55 MDT] 审查63 `9dff9fb..88870d2`(**首个 code commit**)#3 Neighbor wire shadow-first 落地 — R6 亲跑全绿 + 三建中条件真交 → **验收 wire(死源 5/5 全处置)**;但 ★挑出 N-7 visitor-盲点漏报洞(N-3 门数 resident 但 room-ledger 身份盲)→ 入生产-gate 硬前置
+
+**性质**:`88870d2` 首个有代码 commit(belief_neighbor.go 81L + 测 140L + 接线/param/accessor)。**Case 2 → R6 亲跑核验(不信声明,逐项亲验)**。
+
+**✅ R6 机械核验全过(亲跑非读声明)**:
+- `go build ./...` rc=0 / `go vet ./...` 净。
+- belief 包 **ok**(含新 `TestR5LockNeighborCorroborationNotSubstitution`)。
+- roomengine **精确 9 红**(逐条比对冻结基线:StillFall_{ToiletStandStill,DedupSameTrack}/BedsideFall_{90sGrace,GhostCompanion}/LostWeak_{Static7min,DedupSamePerson}/PublicMode/Bedroom_{FiresWithLeftBed,DedupPerLeftBed})= **0 新增**;新 `TestNeighborHandoffSuppress` 6 case 全绿(不在 FAIL 列)。
+
+**✅ 审查62 三建中硬条件亲验真交(非仅声明)**:
+- **① N-6 单合并**:亲读 `neighborHandoff`(belief_neighbor.go:57 `consider` 取 `conf>r.conf` max)→ 返**至多一条** occ;消费侧(belief_shadow.go:270)只 `obs=append(neighborToObs(1,nb.conf,...))` **单条**,非 room∧bed 双似然相乘。✅
+- **② stale_corr LOG**:消费侧 `else if nb.staleOcc → LOG belief_shadow_neighbor_stale_corr(记 staleGap)`;测 ③④ 断言 fire、⑤⑥ 断言不 fire(gate-OFF/空不记)。✅ no-silent-caps 守。
+- **③ 双向 R5**:似然层 occ=0→SFallen-LR=1.0(不压裸 absence)/occ=1→<1(真占用压);gate 层 synthetic ⑤ multi-resident→gate-OFF(漏报方向)。架构正确落位(census 在 roomengine→gate 锁落 roomengine,似然锁落 belief)。✅
+- N-3 复用 `SoleResidentRecaptureState`(`rc!=1→{}`)、零新管(e.rooms 快照 e.mu.RLock + tm 访问器自锁)、R0 log-only 不碰 alarm、R5 压制走 reliable(room-ledger/bed 接触非 pose/z)、R7 窗口常量带来源。**全守**。
+- 「非全空间监控」correlation-not-durable 安全法理(施工方落 memory):与审查62 销项一致,**委员会对齐认可**(durable「上次在哪」证不了此刻在哪,人可穿盲区真摔→只取 fresh 有向 hand-off)。
+
+**🟢 死源台账:5/5 全处置**。#3 Neighbor → **wired(shadow-first R0)**。最后一个死源落地;委员会 wire-loop 核心工作完成,余下仅生产-gate 前置(非 wire)。
+
+**★ 挑实质(不橡皮图章)— N-7:N-3 门数 resident,但抑制证据 room-ledger 身份盲 → visitor 盲点漏报洞。** 亲验 census:`SuitePersonVisitor` 模型在(suite_census.go:302 建 visitor 候选),`SoleResidentRecaptureState` **只数 `Role==resident`**(:486 跳过非 resident),**无 total-headcount accessor**。⟹ 单元 = 1 resident + 1 visitor 时 `rc==1` → N-3 门**放行**。但 `NeighborRoomEnterMs`/`NeighborBedHandoff` 读的 room ledger(`lastEnterMs`,radar EnterRoom 驱动)+ bed 是**身份盲**(任何人过门/上床都 bump)。
+- **漏报路径**:sole resident 在本房 A 真摔(丢轨),hand-off 窗 [−5s,+60s] 内 **visitor** 走进兄弟房 B(或上 B 床)→ `neighborHandoff` fresh hit → ObsNeighbor 压 A 的 lost-fall → **压掉真摔**。visitor 在 B 与 resident 是否摔在 A **无任何因果关系**,纯误压。
+- **P6.5 为何不中此洞、neighbor 中**:P6.5 recapture 绑 `sole.SleepadAnchored ∨ sole.AnchorRoomType==bedroom` = **sole resident 本人的锚态**(visitor 不可能是 sole resident 的锚)= 身份绑定;neighbor 绑 room-ledger = **无身份绑定**。施工方 N-3「复用 SoleResidentRecapture 门」的预设遗漏:复用的是 sole-resident **计数**,丢了 P6.5 的 **resident-本人-锚** 身份语义。
+- **方向/严重度**:漏报真摔(最危险方向)。R0 shadow 下**无生产漏报**(永不 fire),但**污染 recall 验证**——visitor 巧合时 shadow 会 log 一次"压掉真摔",令 recall 数偏乐观。N-6 终验 / recall 真摔集前置须扣此偏。
+- **生产-gate 硬前置(N-7,新增,R0 不阻塞)**:N-3 门须**加总人头==1**(residents+visitors,真单体→兄弟房任何 ledger-enter 必是 resident→归因安全),**或**把 occ 绑 resident 身份。当前无 headcount accessor → 须加(或查 visitor-count==0)。本质=令 N-4 预设「人只在一处」与现实对齐(`rc==1 ≠ 单体`)。
+
+**裁定:验收 #3 Neighbor wire shadow-first 落地**(R6 全绿 + 3 建中条件真交 + 铁律全守)。死源 5/5 全处置,wire-loop 核心完成。**shadow 继续(R0 不阻塞)。生产-gate 硬前置 4 项**:#5 整单元 redis-replay(unit201 三设备)/ N-6 终验过压不发生 / **N-7 visitor 身份盲点(加总人头==1 或绑 resident 身份)** / DBN recall 真摔集(铁律:recall 从未验证,且须扣 N-7 偏)。
+
+**铁律守**:R0 shadow-first log-only 永不 fire / R1 不碰 alarm / R5 压制走 reliable / R7 常量带来源。
+
+---
 
 ### [2026-06-08 19:05 MDT] 审查62 `9e91fdd..d0b0727`(doc-only)施工方+用户细化 60s 语义回应审查61 → 委员会:**60s 窗挑战销项**(correlation gate 非 freshness,A 定档尊重)+ **N-6 双喂仍未解(重申硬条件)**+ 新增 deferred 留驻-gap 的 no-silent-caps LOG 要求
 
