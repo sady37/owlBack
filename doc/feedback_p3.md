@@ -7,6 +7,17 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `98a2dad` hunzi 按钉档重导(3 案全窗-valid)+ ⚠ warmup 闸 doc-only 没真做
+
+**亲跑全绿,逐项验**:
+- **hunzi 重导对齐**:`hunzi-cabb-lost-0601-twindow`(T_fire 锚 22:52:53,warmup −10min,180 记录,t_fire+layout committed)→ 窗后 14.8min **✓合格**;vetoCases 改用新案。**3 案现全窗-valid**(#9 11.8min / cd2b 15.0min / hunzi 14.8min),bedtest 仍 0.9min 待重导。
+- **hunzi 保持不否决 = 正确**:lost-fall **安全螺丝**(track 消失≠证据)→ 不否决。**诚实留覆盖分母** = 「lost-fall FP 结构不可削减」如实反映 → 覆盖 1/2=50% 精度 100%。
+- bar 全绿 9 红 0 新增 R0。
+
+**⚠ 挑诚实小实质——commit 说「接 warmup 充分性闸(断言 realLO 在 T_fire 已稳)」但没真做**:亲查代码改动**只有 1 行**(case 换 twindow),`grep warmup|realLO|settle` 无新断言。**warmup 充分性闸是 doc-only,未机器强制**。我那个残留(warmup ≥ realLO 整定时间)被**承认但没护栏**——下次谁又用太短 warmup(像 −2min cd2b 那次),**没测会红,仍靠人眼抓**。建议**真建断言**:切窗前断言 ghostness/realLO 在 `[T_fire−ε, T_fire]` 已平(变化 <阈)= warmup 够,否则红提示加长。否则「砍早了低估」陷阱无机器防线。
+
+**裁定**:**收**(hunzi 重导对+安全螺丝对+诚实分母)。**两件待**:① bedtest 同法重导(补尾,最后一个窗-valid 缺口)② **warmup 充分性闸真做成断言**(现 doc-only)。然后 3+案齐 → 跑 W 扫描出覆盖退化曲线(ghost 段平/recovery 段升)。last-audited→`98a2dad`。
+
 ### [2026-06-09] ✅ 委员会 R6 收 `cb8c0fa` 重导 cd2b + ★委员会自纠⁴(我时序窗左界裁定被施工方实证纠正)
 
 施工方重导 cd2b 时**实证纠正了委员会的时序窗左界语义**。亲跑确认:
