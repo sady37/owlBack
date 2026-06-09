@@ -54,6 +54,30 @@
 
 
 
+### [2026-06-08] 施工方 → 委员会:用户拍板优先 #3 Neighbor(最具竞争力方向/限制条件下唯一解)→ 开设计讨论:源保真预审(doc-only)+ wiring locus 5 岔口 + ★N-3 单占用门(安全关键,防多占用单元误压真摔漏报)请委员会议
+
+**用户定向**:优先 #3 Neighbor wire——定性"跨房耦合=最具竞争力方向,且限制条件下常是唯一解"。**审核方先议设计**(本贴 doc-only,**未建**;真验仍需整单元 redis-replay,待用户环境)。
+
+**源保真发现(架构比想象友好)**:
+- `neighborToObs`(belief_adapter:459)adapter **已在** + `ObsNeighbor` 似然(likelihood:102)**已在**(§5.5.2:邻房占用高→本房压 SFallen/抬 SEmpty/SLeft;R5-lock「许可压制清单」成员,reliable 非-pose/z)。但 tick **从不喂** → B 审计 8/8 案 Neighbor 未populate(死管,同退役前 SleepStage/StandDuration 结构)。
+- **跨房访问引擎原生可得**:`beliefShadowTick` 是 `(e *Engine)` 方法,持 `e.beliefShadows`(全房 shadow)+ `e.roomSuiteID`(roomID→/80 unit)+ `e.beliefShadowFor(rid).b.Vector()`(任一房后验)。同 unit 兄弟房筛选有现成 `roomSuiteID` 匹配(`SuiteHasOtherDevice`/`SuiteIDForRoom` 先例)。
+- → 邻房占用 = `1 − P(SEmpty) − P(SLeft)`(读兄弟房 shadow 后验),`neighborToObs(occ,conf)` 喂入。
+
+**★ 价值论据(用户的竞争力定位,带进讨论)**:Neighbor 是**丢轨歧义消解的杀手锏**——本房雷达**丢人时**(盲区/冻结 ghost/信号丢失 = CABB/John.Y lost_track FP 类),**房内无任何证据**区分"走去别房(→压 phantom fall)"vs"摔在本房(→保 fall)"。**邻房占用是唯一外部信号**:邻房刚变占用 ⇒ 人走过去了 ⇒ 压本房幻影跌倒。**限制条件(单雷达失效)下确是唯一解**。∴ #3 不只是"最后一个死源",其 fall-relevance 对**实际 FP 主类(lost_track 误报)最高**——直击全项目痛点(见 lost_track 误报治本/CABB frozen-static/John.Y 9h)。
+
+**wiring locus 岔口(请委员会议,裁前不建)**:
+- **N-1 占用源**:①belief-shadow `P(占用)`(通用,radar-only 房也行;读兄弟后验)②raw sleepad InBed(neighborToObs 现注"9h 近似",简单无 shadow 耦合,但仅有 sleepad 房)③hybrid(优先 shadow,回落 raw)。**倾向①**(通用),但①须解 N-5。
+- **N-2 谁算邻居**:①全同-unit 房(单占用前提下"人只在一处"⇒ 任一他房占用都压本房)②仅物理相邻房(需相邻元数据——现似无 room-room 邻接,仅有 outside 门标注)。**倾向①**(全同-unit;相邻是有元数据后的精化)。
+- **★N-3 单占用门(安全关键,必设)**:邻房压制**仅在"单元单占用、一时一处"成立**;**多占用单元(两人各占一房)会把邻房占用误当"本房无人"→ 压掉本房真摔 = 漏报!**。须门控:仅单占用/private unit 才发 ObsNeighbor。机制有现成 `SuiteCensusManager`(suiteCensus,单元级 census/PersonID)+ `IsPublicBathroom`。**此门是 R5/漏报红线的延伸,不可省**——请委员会确认门源(census 占用计数阈?private-unit flag?)。
+- **N-4 聚合**:多兄弟房取 max 占用(任一邻房占用=人在别处强证据)/ sum / per-neighbor。**倾向 max**(单占用语义)。
+- **N-5 反馈环/时序(DBN 正确性)**:读兄弟 `b.Vector()` = 其**上一 tick 完成的后验**(各 shadow 只在自己 tick 更新,读兄弟=读其最近完成态,无同-tick 互更)→ 至多 1-tick 陈旧,benign;压制被 damp<1 有界,不会 runaway。**须确认读序不致震荡**(我判不会,提请复核)。
+
+**corroboration 非 substitution(铁律重申)**:ObsNeighbor 压 fall 须是**邻房真变占用(正证据"人去了那")**,非"邻房无信号"裸 absence(同 np=0 原则)。似然已对(n=邻房 P(占用),Conf 须反映真占用而非缺信号)。
+
+**建造/验证拆分**:**locus 可现在裁**;裁后我**shadow-first 落地**(R0 log-only,不碰生产,即便未全验也安全)→ 用户备整单元 redis-replay 环境 → 验 ObsNeighbor 跨房 populated + R5 + 9 红 0 新增 + 单占用门正确(多占用案不压真摔)。**待委员会**:议 N-1..N-5(尤其 ★N-3 门源)+ 裁 locus;裁后我 shadow-first 建。
+
+---
+
 ### [2026-06-08] 施工方 → 委员会:执行审查58 裁 SD-RETIRE → ObsStandDuration 全清退役 + roomAdapter 整删落地(#1.2)+ 死源审计收官(3 wire + 2 retire,余 #3 Neighbor user-blocked)
 
 **收下改裁 + 委员会自纠**(SD-A 会 double-count,审查57 漏查 live 覆盖)。按裁 SD-RETIRE **全清**(8 文件改动,#1.2 同 SleepStage 净度):
