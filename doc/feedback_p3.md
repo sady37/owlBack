@@ -7,6 +7,29 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] 委员会 → 施工方：**compose 架构定调（真碎片地基 + augmentation + 合成组装）+ 授权开干清单**（用户 + 项目组拍）
+
+**★定调（项目组 + 用户，委员会自纠落档）**：**纯全合成会复刻 gate-list 历史坑**——「知道格式 ≠ 知道内容，bug 住内容不住格式」。从零造 raw monitor/event 只能造出**干净理想化数据**，正好漏掉系统存在理由的那些真脏东西（frozen-frame / 镜面·多径 ghost / edge weak-echo / pose-z 抖断 still-box / firmware 怪癖：pose=2→5 升级、5.5min 冻结超时、sleepad ~107s 晚锁、离床 noreport）。**可观测性是物理限制不是代码属性**（雷达分不开「地上躺 vs 床上躺」），合成造不出。⟹ **合成验程序完备（处理我造的输入），非正确（处理真输入）；recall/precision oracle 必须真碎片**。
+
+**锁定三档谱系（真在底，合成在上）**：
+
+| 档 | 谁 | 产出 | causality 标 |
+|---|---|---|---|
+| **真碎片 M_i（地基）** | 项目组导出 | 扛真 artifact 纹理（frozen/ghost/多径/firmware 怪癖）——合成不出 | `real-contiguous` |
+| **augmentation（中档★新增）** | 委员会 | 真碎片**轻扰动**（位置抖/pose 移/时长缩扩），**保 artifact 结构**，扩覆盖 | `augmented` |
+| **合成组装（上层）** | 委员会(生成器) | `(offset,duration)` 拼 + reduce/scale/copy-insert + 真事件注真背景 | `synthetic-composite` |
+
+**铁纪律（生成逻辑归委员会）**：合成层「合成」= **组装与变形，绝不从零造原始传感器纹理**。raw frame 永远来自真碎片；生成器只决定「真碎片怎么排布 / 怎么轻扰」。
+
+**✅ 授权开干（R0 测试侧，shadow-only，不碰生产 gate）**：
+1. **#1 dwell-only recall 闭环（优先 = 真 meaningful recall）**：补 R6 标的缺口。喂 **#1**（`bedtest-0605-1-bedside-fall-no-fw-detect`，pose≈3 全程、**零 pose=5**、firmware 漏报）→ 断言 DBN **仅靠 dwell ramp** 抬 P(Fallen)（无 pose 助攻）。这是「DBN 抓 firmware **漏**的摔」的真证明，#9 易方向补不了。**注意格式**：#1 是 `test_record.txt`（非 window.json）→ 需 txt→生产 StreamMessage 小转换器（#9 的 window.json loader 不通用）。
+2. **augmentation 引擎**：真碎片轻扰（位置抖 / pose 移 / 时长缩扩），标 `causality: augmented`，**保 artifact 结构**（扰动不破 frozen/ghost 纹理）。
+3. **formalize loader → `testkit/` + manifest**（按已裁 schema，+ `causality: augmented` 档 + compose 的 `(offset,duration)`）。
+
+**放行 bar 不变**：build/vet/belief 绿 + roomengine 9 红 0 新增 + #1.6 净 + gofmt。**铁律**：R0 shadow log-only / R1 不碰 alarm / R5 pose 只正向 / R7 常量带来源。**裁后即建，不再等。**
+
+---
+
 ### [2026-06-09] 委员会 R6 验收 `d577f1a` 首个 recall 闭环（真数据）+ 修 #1.6 字面量
 
 **亲跑全绿(不信声明)**：build/vet rc0 + belief 绿 + roomengine **精确 9 红 0 新增**(冻结清单逐条对上) + gofmt 净 + `TestRecallRealFall_201Handoff333B` PASS（`belief_shadow_fall=1`，peak P(Fallen)=0.998）。
