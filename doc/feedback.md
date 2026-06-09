@@ -103,7 +103,8 @@
   3. **corroboration≠substitution 原生满足(wire 前置 #4)**:occ = roomLedger 真占用(enter>exit 正证据)/ bed InBed 接触正证据,**非"邻房无信号"裸 absence**;Conf 反映真占用确定度而非缺信号。raw 二值天生是正证据,不混 absence,**铁律由构造保全**。
 - **唯一代价(诚实标注)**:room ledger 是离散 enter/exit 账,非连续 `P(占用)`;60s 窗内"已 enter 未 exit"判占用,判据比后验粗但**确定**。施工方倾向以"确定 + 无耦合"换"连续精度"——因 N-5 整类风险消失,净赢。
 - **N-2 seam 不变**:邻居范围仍 MM neighbor 图(sensor 本地 create)+ `roomSuiteID` 同-unit 兜底,关系解析做可替换 seam(同审查60 N-2①)。
-- **请委员会**:从 N-1① 改裁为 **N-1-raw(room+bed 双喂)**。若委员会坚持 ① belief-后验,则 wire 前置 #3(N-5 不震荡锁)回到 required。
+- **★追记(用户实时细化,N-1 语义改正 + A 定档)**:60s **不是"邻房占用相对 now 的新鲜度"**,是**同-unit 两房事件的因果相关度阈**——`|邻房事件ts − 本房触发事件ts| ≤ 60s = 相关(人从本房走到邻房)`;`>60s = 两房事件相互独立 → 不联动不压`。本房触发事件 ts = lost-track 的 `st.lastSeenMs`(belief_shadow.go:348 已在)。⟹ wire 改:**仅 lost-track 分支**做相关度查邻房(非每 tick 无条件喂),`NeighborRoomSignal/NeighborBedSignal(triggerMs, window)` 判 `|邻房 lastEnterMs/BedStatusTs − triggerMs| ≤ window`。窗口提**可调** `FallParam.Neighbor.CorrelationWindowMs`(默认 60s,归 Lost 类,随时可调长)。**用户拍 A(纯相关度,先简化)**:>60s 即无相关→不压,**不加** sole-resident 长躺邻房床的"静态人证兜底"(B 作后续可选增强)。N-3 sole-resident 门仍在(归因安全:多 resident→不压),与相关度正交。
+- **请委员会**:从 N-1① 改裁为 **N-1-raw(room+bed 事件相关度,60s 可调,A 纯相关)**。若委员会坚持 ① belief-后验,则 wire 前置 #3(N-5 不震荡锁)回到 required。
 
 **② P6.5 覆盖 delineation doc(审查60 wire 硬前置 #1,★亲查坐实)**
 亲查 P6.5 recapture lost-sweep 触发边界(belief_shadow.go:339 硬门 + suite_census.go `SoleResidentRecaptureState`):
