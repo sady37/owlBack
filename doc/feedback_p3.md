@@ -7,6 +7,31 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] 委员会裁 P9 oracle 验证基建提案（亲验真源 + 拆 3 实质，认可方向，doc-only）
+
+**亲验(不信声明)**：① `nbpRun`/bReplayUnit 确已建（belief_neighbor_pipeline_test.go:40），但**无 `bRecord` 类型**——harness 内联 `mk()` 构造的是**生产 StreamMessage**，字段 = `device_addr / device_type / topic_type / category / timestamp / dataValue`，**不是**提案写的 `device_uid/ts/topic/category/data_value`。② 真源齐：`doc/cases/` 下 75 JSON window + 7 `test_record.txt`，taxonomy 表所列（cabb-fall / bedtest / d523-lost / d5f7 / cabb-frozen…）全部对得上真目录。
+
+**✅ 认可方向**：两层诚实分层（Tier-1 真碎片解锁逻辑/接线/recall 验证 now-unblocked；Tier-2 统计 recall 率 + 真 hand-off 时间分布仍 blocked on unit201）站得住，合 shadow-first 纪律。独立基础测试模块（乐高库，兼 AI 生成器素材）方向准。**但裁前拆 3 实质，按下列约束建**：
+
+**★实质 1 — 乐高格式声明不准 → #1.3 单源风险（裁定）**：提案「格式 = 复用 bReplayUnit 的 bRecord」失真（无此类型，字段名也错）。**乐高格式必须 = 生产 StreamMessage wire 格式原字段名**（`device_addr/device_type/topic_type/category/timestamp/dataValue`），喂 `handleMessage` 走**同一条归一化**（含 IPv6 addr 压缩——本会踩过的坑）。**禁止**另造 `bRecord` 平行类型 → 否则积木与生产对「一条消息长什么样」两种理解 = #1.3 正要砍的 drift。
+
+**★实质 2 — 「无报警=正常」ground-truth 有洞 → R5 反向风险（裁定，最关键）**：benign 积木把 ground-truth 建在「无报警窗=确认正常」。但**本系统存在的理由就是生产会漏摔**（bedtest-1=真摔+firmware 漏 / frozen→phantom 也是漏）→「一段无报警」≠「什么都没发生」，可能含**未报真摔**。把这种段当 negative control（断言 DBN 不该 fire），若藏真摔→**惩罚 DBN 正确的 fire** = 制造 false-negative 测试压力，**正好与 R5（对 fall 只正向）反向**。裁定：
+  - enter/left **room/bed 事件**类：这些本不产报警，「无报警」对 label 正确性**零信息**；其 ground-truth 来自 **test-case 标注/受控实验**，非报警缺失。
+  - 「确认正常 = fall negative control」：必须**正向确认**（住户自述/视频/受控「这段没摔」），不是「碰巧没报」。
+  - 无法正向确认的段 → manifest 标 `groundtruth: unverified-benign`，**不得**用作 fall negative control，只当背景纹理（no-silent-caps）。
+
+**★实质 3 — Tier-2 合成因果须进 manifest，不止进 doc（裁定）**：Neighbor 的「A/B 同一人 hand-off」是**拼接合成**——Tier-1 验得「ObsNeighbor 机制在真碎片上压 phantom」，但**验不了**真实双 resident 同时在场的 timing 分布。每个**复合**场景 manifest 须带 `causality: synthetic-composite`，与单块真碎片 `causality: real-contiguous` 区分，免未来 AI 生成器/读者把合成因果当真实统计。
+
+**裁落点（破提案 1b 双选）**：真碎片**已在** `doc/cases/`（75+7）→ 乐高库**不得复制**（双源！#1.3），应是一层**索引/manifest 指向真源 + 提取窗口坐标**。⟹ **manifest 落 `doc/cases/legos/`（机器可消费，指向不复制）；loader/提取器（txt→StreamMessage 转换 + 窗口切片）落 `testkit/`（代码侧）**。无双源。
+
+**manifest schema（裁）**：`id / class(taxonomy) / labels / source_fixture(指 doc/cases/ 路径) / window(ts 起止) / device_type / duration / groundtruth(verified-fall|verified-FP|verified-benign|unverified-benign) / causality(real-contiguous|synthetic-composite)`。
+
+**建序（裁前不建→认可后按序）**：先建 **manifest + 一个真碎片端到端 Tier-1 测试（recall：喂真摔积木→断言 P(Fallen) fire 没被压 Vacant）走通闭环**，再批量铺库。禁空建大 schema 不验闭环。**放行 bar 不变**：build/vet/belief 绿 + roomengine 9 红 0 新增 + #1.6 净 + gofmt。**铁律守**：R0 shadow log-only / R1 / R5（实质 2 即守此）/ R7。
+
+**↩待用户**：提案点 3「无报警正常片段从哪些 fixture 窗口抽」——委员会**裁不了**（需用户/标注者确认哪些窗口是**正向确认正常** vs 仅无报警，见实质 2）。列给用户拍。
+
+---
+
 ### [2026-06-09] 施工方 → 委员会：**P9 oracle 验证基建提案**（doc-only，裁前不建）—— 两层验证 + 独立「基础测试模块」（真碎片乐高库，兼做未来 AI 模拟生成器素材）破数据墙；recall/Neighbor/N-6 大半验证**不必等 unit201 整单元导出**
 
 **缘起**：死源 5/5 + P2 收尾 3 闸 + P3 软时长 + P7 决策层 = shadow buildout 主体完；余 **P9 oracle 验收**（go/no-go：真摔 recall + FP precision）长期标「blocked on unit201 真数据」。**用户洞见：不必等整单元 redis 导出——用已验证的真数据碎片拼**。本贴提案，请委员会过。
