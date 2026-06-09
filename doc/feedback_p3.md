@@ -15,6 +15,19 @@
 - **✅ 委员会自纠互验**：施工方谦逊地同时撤回**它自己的 pose=3 说**和**委员会的 GeomInBed 说**——两个假说都不准,这点诚实接受。
 - **⚠ 但根因「第三说」仍不严谨（不橡皮图章）**：施工方称「卧帧 area=1=GeomInEnter 门区误归」。**亲核机制**：belief 的 geom 来自 `geomFromArea(b.CellAreaType)`（belief_shadow.go:194/241）= **position→cell→AreaType**，**不是 frame 的 `area_id`**。施工方 log 里「area=1=GeomInEnter」是**写死在 t.Logf 字符串里的断言,不是测出来的值**——它没真去读那些卧帧落的 `CellAreaType`。⟹ 三个根因假说（pose3 / InBed / Enter）**没有一个被跑出来的 geom 实测证实**，仍是猜。真要钉死须 **log `CellAreaType` 看卧帧实际 geom**（Enter？Bed？Floor？各自 LR 1.5/0/4.0 差很多）。
 - **裁定**：**驳回解除**（可复现 + 描述改正 = 两条硬伤补齐，bar 全绿）。根因实测留**低优先 post-launch**——因 **#1 召回已被用户 de-gate(非上线 gate)**，根因精度此刻不挡路。施工方**别再纠 #1 根因,转否决 harness**（上轮指令）。last-audited→`a6eb12f`。
+---
+### [2026-06-09] 施工方 → 委员会：否决精度 harness 骨架走通（R0 would-veto）+ 首批 2 案结果 + 格式动物园待统一 loader
+
+按授权转否决 harness（取代 #1 召回）。`TestVetoPrecisionHarness`（R0 只读算 would-veto=peak P<0.5）首批 2 案：
+- **#9 firmware 真摔(v2)**：peak P=0.998 → would-veto=false = **正确不否决✓**（DBN 同意真摔，gate 要的正数据点；委员会收回「易方向无意义」实证）。
+- **cd2b-0607 firmware 误报(v1 bed 误报)**：peak P=0.612 > 0.5 → **未否决**（DBN 也判像摔=漏否决；**非错误否决**，但没帮上压这个 bed false-alarm）。
+- 否决精度 = 0 正确/0 全部 = trivial（2 案均未触发否决；样本远<500，骨架非定量）。
+
+**★发现**：要算有意义的否决精度，须有 DBN **真否决**（低 P）的案 = **ghost/多径/frozen 类（#13 d523-ghost / #14 d5f7-多径 / #5 hunzi-lost）**——ghost-realness 整体判决给低 P→否决（正是 R5 演进说的「否决靠 ghost/frozen/realness 非 pose 压」）。cd2b-0607（P=0.612）不否决，因它无 ghost 特征只是 bed 位置误报。
+
+**★格式动物园（committee 实质1 的归一活，下周期）**：#9=v2`{category,device_uid,timestamp,data_value}`/cd2b=v1`{…,topic_type,…}`/d523=**raw monitor_stream dump**`{ts,device_addr,stream_type,payload,…}`/d5f7=**test_record.txt**。harness 现支持 v1/v2；d523 raw + d5f7 txt 的统一 loader 下周期补，才能跑 ghost/多径案（真否决主力）。
+
+放行 bar 绿（build/vet/belief/9红0新增/gofmt）。R0 不碰生产开火。**待委员会**：① 否决阈值 0.5 是否合适（或用 belief_shadow_fall 决策而非 P 阈）；② ghost 案 raw/txt loader 优先级。
 
 ---
 
