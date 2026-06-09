@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`3c4f901`(下次从此 commit 起算 delta)
+- **last-audited**:`d0b0727`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,28 @@
 
 
 
+
+### [2026-06-08 19:05 MDT] 审查62 `9e91fdd..d0b0727`(doc-only)施工方+用户细化 60s 语义回应审查61 → 委员会:**60s 窗挑战销项**(correlation gate 非 freshness,A 定档尊重)+ **N-6 双喂仍未解(重申硬条件)**+ 新增 deferred 留驻-gap 的 no-silent-caps LOG 要求
+
+**性质**:`d0b0727` doc-only(施工方追记用户实时细化 N-1 语义,无代码,裁前不建)。**无代码 → R6 build-verify moot**,设计裁定。冻结 9 红无需重跑。
+
+**✅ 审查61「60s 窗误期 durable 占用」挑战 — 销项。** 施工方澄清:60s **不是占用相对 now 的新鲜度**,是**同-unit 两房事件因果相关度阈** `|邻房事件ts − 本房 lost-track 触发ts| ≤ 60s`,触发 ts = `st.lastSeenMs`(亲验:belief_shadow.go:33 字段,贯穿 207/221/258 lost-track 逻辑,**原生可得**)。这正面回应我审查61 的歧义指控:窗不 expire B 占用,只判 A→B transition 时近性。配套两点接受:
+- **仅 lost-track 分支查邻房(非每 tick 无条件喂)**:接受。Neighbor 价值定位=丢轨歧义消解,只在 lost-sweep 查邻房语义正确,省常态计算。
+- **`CorrelationWindowMs` 可调(默认 60s,归 Lost 类)**:接受(R7 配置化,非硬编码)。
+
+**⚠️ A 定档(纯相关,先简化)尊重用户拍板 —— 但留驻-durable 是已知 deferred gap,须显式 LOG(no-silent-caps,硬要求)。** 用户明确弃「sole-resident 长躺邻房床静态人证兜底」(=plan-B 后续可选)。残留覆盖缺口:**sole resident 长躺邻房 B >window 后本房 A 抛 phantom lost-fall → plan-A 相关度 stale → 不压**。方向核查 = **漏-suppression = precision miss 非安全 miss**(phantom 存活,生产侧漏报-safe 但 FP 污染;shadow R0 只污染 recall/precision 日志)。**这是用户合法 scoping,但 gap 不得静默**(#1.2 精神 / 镜像 `belief_shadow_recapture_skip_multiresident` 数据闸先例):
+- **硬要求**:lost-track fire 且邻房有占用账(`lastEnterMs>lastExitMs` ∨ bed InBed)但相关度 stale(>window)时,须 LOG 一条(如 `belief_shadow_neighbor_stale_corr`,记 gap_ms / 邻房 occ 真值),令 plan-B 价值可量化,不静默吞缺口。
+
+**❌ N-6(审查61 ★双喂条件独立性 double-count)仍未解 —— 重申为建中硬条件。** 细化保留 **`NeighborRoomSignal` + `NeighborBedSignal` 双信号**(:细化文「room+bed 事件相关度」)。若人 A→B 且入 B 床,room-corr ∧ bed-corr 同窗内 fire = **同一底层事实(人在 B)的两次独立似然相乘 → 过压 SFallen**(bed⊂room 强相关,非条件独立)。审查61 N-6 受理条件**未满足**:
+- **硬条件不变**:每邻房**至多一条** ObsNeighbor occ-obs,occupancy = `NeighborRoomSignal` **OR** `NeighborBedSignal`(相关度任一过即占),confidence = **max**(bed 在则更硬)。**双信号是 occ 的两个来源(OR 取最强),非两条相乘的独立证据**。这是建中硬条件(否则 recall 验不可信 / 生产 gate 漏报真摔)。
+
+**✅ N-3 与相关度正交 — 接受。** sole-resident 门(多 resident→不压,归因安全)独立于 correlation window,二者皆须过(AND)。同审查61 N-3。
+
+**裁定:维持审查61 条件受理。** 60s 语义销项,locus + N-1-raw(相关度版)+ N-3 全准 → shadow-first 仍可即建。**建中硬条件更新为 3 项**:① N-6 单-合并-obs(OR/max,非双似然);② deferred 留驻-gap 的 `neighbor_stale_corr` LOG(no-silent-caps);③ wire 前置#2 双向 R5 多-resident 漏报方向 case(R5-lock 测,施工方仍 defer 未交)。**生产 gate 前**:#5 整单元 redis-replay(unit201 三设备)/ N-6 终验过压不发生 / DBN recall 真摔集。放行 bar:build/vet/belief 绿 + R5-lock 绿(含多-resident 漏报)+ 9 红 0 新增。
+
+**铁律守**:R0 shadow-first log-only 永不 fire / R1 不碰 alarm / R5 压制走 reliable(room-ledger/bed 接触相关度,非 pose/z)/ R7 窗口常量化可调带来源。
+
+---
 
 ### [2026-06-08 18:50 MDT] 审查61 `b48831b..3c4f901`(doc-only)施工方受理审查60 → 委员会**条件受理**:N-1-raw 改裁准 + P6.5 delineation 坐实(亲验代码)+ N-3 准;但 raw 版 pivot 有**两个未触及实质问题**(★双喂条件独立性 double-count / 60s 窗误期 durable 占用)→ 列 N-6 + 窗语义澄清为受理条件;#2/#5 仍 required
 
