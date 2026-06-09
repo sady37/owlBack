@@ -176,8 +176,8 @@
       <tr>
         <td class="c">7</td>
         <td>still-fall 站立时长门 / confirmMs=90s</td>
-        <td>驻留时长 → 应 <b>HSMM</b> 状态时长分布替代 ramp+timer</td>
-        <td class="c"><span class="tag todo">P3 未开工</span></td>
+        <td>驻留时长 → <b>HSMM</b> 软时长生存 ramp 替代硬悬崖（观测层）</td>
+        <td class="c"><span class="tag shadow">软时长已落（ObsDwellStill/survival.go P4.1+P4.3 夜尾）；A 层显式时长=v3 deferred</span></td>
       </tr>
     </tbody>
   </table>
@@ -262,8 +262,8 @@ Room  层  S_t ∈ {Empty, BedLying, BedRestless, Sit, StandWalk,
       <code>ObsReachableExit</code>（丢失点近门+单帧可达→偏 Left 压 Fallen）已有观测种类，
       文档 <code>belief_p2_absence_emission.md</code>。距离闸(#5)/id-swap(#6)待内化。</div>
     </div>
-    <div class="ev todo">
-      <div class="t">P3 · HSMM 驻留时长 <span class="tag todo">未开工</span></div>
+    <div class="ev shadow">
+      <div class="t">P3 · HSMM 驻留时长 <span class="tag shadow">软时长已落（P4.1 生存 ramp + P4.3 夜尾，survival.go 单源）；A 层显式时长 v3 deferred</span></div>
       <div class="d">lost ramp / confirmMs=90s / still-fall 时长门 / MovingPreconditionMs=60s 全是驻留时钟。
       HMM 的几何分布装不下"维持数分钟才算真"，需半马尔可夫 HSMM 状态时长分布替代 ramp+timer。</div>
     </div>
