@@ -265,6 +265,28 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			st.lostAnchor = st.lastSeenMs
 		}
 
+		// 死源#3(Neighbor,shadow-first R0)：仅压**二义 lost-fall**——本房丢轨(摔/走二义)后 hand-off 窗内,
+		// 邻房出现新鲜有向事件=人挪去邻房 → 喂 ObsNeighbor 压 phantom fall(直击 CABB/John.Y lost_track 主类)。
+		// 铁律(非全空间监控)：stale/durable 不算,仅极近两事件可排除;N-3 sole-resident 门 + N-6 单合并。
+		// corroboration≠substitution：邻房真出现正证据(occ),非裸 absence。已确证 fall 不经此路径(R5 许可压制)。
+		if nb := e.neighborHandoff(roomID, st.lastSeenMs, nowMs); nb.hit {
+			obs = append(obs, neighborToObs(1, nb.conf, nowMs))
+			e.logger.Info("belief_shadow_neighbor_handoff", // 仅 log，无 alarm(R0)
+				zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
+				zap.Int64("n3_lost_seen_ms", st.lastSeenMs),
+				zap.Float64("n3_neighbor_conf", nb.conf),
+				zap.String("n3_neighbor_src", nb.src))
+		} else if nb.staleOcc {
+			// no-silent-caps(审查62)：邻房有 durable 占用但相关度 stale(留驻 gap)→ plan-A 不压(铁律:证不了此刻在哪),
+			// 但不静默吞缺口 → LOG gap 量化 plan-B(静态人证兜底)价值。镜像 belief_shadow_recapture_skip_multiresident 数据闸。
+			e.logger.Info("belief_shadow_neighbor_stale_corr",
+				zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
+				zap.Int64("n3_lost_seen_ms", st.lastSeenMs),
+				zap.Int64("n3_stale_gap_ms", nb.staleGap),
+				zap.String("n3_stale_src", nb.staleSrc),
+				zap.Bool("n3_neighbor_occ", true))
+		}
+
 		// P6.1b-D(审查㉛ Opt-1)小卫生间 lost → provisional/分级状态机(替标准 reachableExit 抑制)。
 		// 门距退化(处处近门)→ 不靠 door-distance;Fallen 经 NoDetect 真 ramp(dx=0),离场判别交 cancel 窗。
 		// cancel 须**既 attribution-safe 又 leave-discriminating**(扩展不变量 审查㉝):正向离场证据,非缺证。

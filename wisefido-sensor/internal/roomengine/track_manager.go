@@ -502,6 +502,20 @@ func (tm *TrackManager) roomLedgerEmpty() bool {
 	return tm.lastExitMs > tm.lastEnterMs
 }
 
+// NeighborRoomEnterMs 跨房 hand-off：最近一次 EnterRoom 的 ts + 当前是否仍占用（未被 ExitRoom 翻掉）。
+// 自锁（与 RecordRadarEvent 写 lastEnterMs 持的 tm.mu 一致；仅 beliefShadowTick 跨房读，无重入）。
+func (tm *TrackManager) NeighborRoomEnterMs() (enterMs int64, occupied bool) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return tm.lastEnterMs, tm.lastEnterMs > tm.lastExitMs
+}
+
+// NeighborBedHandoff 跨房 hand-off：bed InBed 翻转 ts + 当前是否在床（接触式，BedConfidence>0 才有效）。
+func (tm *TrackManager) NeighborBedHandoff(nowMs int64) (statusTs int64, inBed bool, conf float64) {
+	bs := tm.BedOccupancyState(nowMs)
+	return bs.BedStatusTs, bs.BedStatus == 0 && bs.BedConfidence > 0, float64(bs.BedConfidence) / 100
+}
+
 func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
 	conf := 100 - ts.GhostPenalty
 	if conf < 0 {

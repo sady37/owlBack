@@ -124,10 +124,21 @@ type cellHistoryParam struct {
 }
 
 // fallRulesParam 顶层（不导出，避免外部直接构造；用 FallRulesParam 单例）
+// neighborParam 跨房 hand-off 抑制（仅二义 lost-fall）参数。铁律（非全空间监控）：只有本房丢轨与邻房
+// 出现两事件**极近 + 有向**才能排除本房跌倒；stale/durable「上次在哪」不可用（人可能穿盲区真摔）。
+type neighborParam struct {
+	// HandoffWindowMs 邻房 hand-off 事件相对本房丢轨（st.lastSeenMs）的最大**滞后**（人先走后到）。
+	// 固定绝对阈，**不随房间距离/邻接伸缩**（穿行越久=穿过盲区越多=摔机会越大，放宽=最该警惕时松手）。
+	HandoffWindowMs int64
+	// JitterMs 传感器上报时序抖动的反向余量（允许邻房事件略早于本房丢轨此值内，非真"先到后走"）。
+	JitterMs int64
+}
+
 type fallRulesParam struct {
 	Silent      silentFallParam
 	Still       stillFallParam
 	Lost        lostFallParam
+	Neighbor    neighborParam
 	CellHistory cellHistoryParam
 }
 
@@ -169,6 +180,10 @@ var FallRulesParam = fallRulesParam{
 		EffectiveWaitFloorSec:      60,    // 兜底最少等 60s
 		NumberPeopleZeroFallbackMs: 60000, // ExitRoom 缺失时 number_people=0 兜底窗口 60s（仅 non-frozen 时生效）
 		DistanceGateCm:             500,   // 丢轨点距雷达 >500cm（d_fall）抑制 lost_fall（贴地弱回波，见 §3.7）
+	},
+	Neighbor: neighborParam{
+		HandoffWindowMs: 60_000, // 默认 60s（30-60 适宜；容下"先走后到"先后差）；超窗→中间可能盲区真摔→不排除
+		JitterMs:        5_000,  // 5s：仅留传感器时序抖动反向余量
 	},
 	CellHistory: cellHistoryParam{
 		FakeAlarmThreshold:      3,

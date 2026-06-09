@@ -110,6 +110,22 @@ func TestR5LockPermittedSuppressionRegistry(t *testing.T) {
 	}
 }
 
+// TestR5LockNeighborCorroborationNotSubstitution — ObsNeighbor 只在邻房**真占用**(Value>0)时压 fall;
+// Value=0(邻房无信号)→ SFallen-LR=1.0 不压。锁"corroboration≠substitution"(wire 前置#4,同 np=0/NoDetect realness):
+// 邻房**缺信号 ≠ 人在别处**,裸 absence 不得压本房 fall(否则邻房静默时压掉本房真摔=漏报)。
+// (gate 层"多resident→不发 ObsNeighbor"的漏报方向锁在 roomengine/belief_neighbor_test.go ⑤——
+//  census 在 roomengine 包,belief 包看不到,故 gate 锁落 roomengine,似然锁落此。)
+func TestR5LockNeighborCorroborationNotSubstitution(t *testing.T) {
+	v0 := rawLikelihood(Observation{Kind: ObsNeighbor, Value: 0, Conf: 1, Fresh: true, Geom: GeomUnknown})
+	if d := v0[SFallen] - 1.0; d < -r5Eps || d > r5Eps {
+		t.Fatalf("R5 违规:ObsNeighbor occ=0 应不压 fall(SFallen-LR=1.0)却得 %.4f → 裸 absence 压 fall=漏报", v0[SFallen])
+	}
+	v1 := rawLikelihood(Observation{Kind: ObsNeighbor, Value: 1, Conf: 1, Fresh: true, Geom: GeomUnknown})
+	if v1[SFallen] >= 1.0-r5Eps {
+		t.Fatalf("R5 违规:ObsNeighbor occ=1 应压 fall(SFallen-LR<1)却得 %.4f → 真占用证据被误中性化", v1[SFallen])
+	}
+}
+
 // 文档化:ObsVitalPresent/ObsTimeContext 对 SFallen 不写(恒 1.0 中性)——既非抬升亦非压制,
 // 走自己态(Empty/Artifact/Bed*/prior),不入 fall 通道。无需单测(上三类已覆盖"非清单源不得 <1"由 pose/z/lift/np 守;
 // 这三源本就不碰 SFallen,留此注记备 source-fidelity 审计对账)。

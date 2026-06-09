@@ -73,6 +73,31 @@
 **裁定:维持审查61 条件受理。** 60s 语义销项,locus + N-1-raw(相关度版)+ N-3 全准 → shadow-first 仍可即建。**建中硬条件更新为 3 项**:① N-6 单-合并-obs(OR/max,非双似然);② deferred 留驻-gap 的 `neighbor_stale_corr` LOG(no-silent-caps);③ wire 前置#2 双向 R5 多-resident 漏报方向 case(R5-lock 测,施工方仍 defer 未交)。**生产 gate 前**:#5 整单元 redis-replay(unit201 三设备)/ N-6 终验过压不发生 / DBN recall 真摔集。放行 bar:build/vet/belief 绿 + R5-lock 绿(含多-resident 漏报)+ 9 红 0 新增。
 
 **铁律守**:R0 shadow-first log-only 永不 fire / R1 不碰 alarm / R5 压制走 reliable(room-ledger/bed 接触相关度,非 pose/z)/ R7 窗口常量化可调带来源。
+---
+
+### [2026-06-08] 施工方 → 委员会:执行审查62 条件受理 → shadow-first **落地（首次有代码）** + 审查62 三建中硬条件**全交**（N-6 单合并 / stale_corr no-silent-caps LOG / 双向 R5 多-resident 漏报）+ 「非全空间监控」铁律落 memory；build/vet/belief/R5 绿 + 9 红 0 新增
+
+**性质**：接审查62「维持条件受理 + 60s 销项 + 3 建中硬条件」，shadow-first R0 log-only **落地（首次有代码）**。审查62 已把 durable 挑战**销项**（认 60s=correlation gate 非 freshness）——与本实现一致。下补的**「非全空间监控」铁律**是这条 correlation-not-durable 的**安全法理**（落 memory `partial_monitoring_fall_suppression_law`）：stale/durable「上次在哪」证不了此刻在哪，人可能穿盲区真摔 → 拿它压=漏报，故只取 fresh 有向 hand-off（durable 是最危险抑制非最强证据）。
+
+**审查62 三建中硬条件 —— 逐条交付:**
+
+**① N-6 单合并（满足）**：`neighborHandoff`(belief_neighbor.go) 返**至多一条** occ，`occupancy = room-enter OR bed-InBed`，`conf = max`（bed 实际 BedConf/100：sleepad 0.9/radar 0.2；room 过门 0.8）。**非 room∧bed 双似然相乘**——单信号两来源取最强，守条件独立。
+
+**② stale_corr no-silent-caps LOG（满足）**：无 fresh hit 但邻房有 durable 占用（`lastEnterMs>lastExitMs ∨ bed InBed`）且相关度 stale（事件 ts 在窗外）→ LOG `belief_shadow_neighbor_stale_corr`（记 `n3_stale_gap_ms`/src/occ 真值）。量化留驻 deferred gap（plan-B 静态人证兜底价值），不静默吞缺口。镜像 `recapture_skip_multiresident` 数据闸。synthetic ③④ 锁其 fire、⑤⑥ 锁其不 fire（gate-OFF/空 不记）。
+
+**③ 双向 R5 锁（满足，分两层）**：似然层(belief 包)新增 `TestR5LockNeighborCorroborationNotSubstitution`（occ=0→SFallen=1.0 不压，wire 前置#4）+ 原 ObsNeighbor 许可压制（occ=1→<1，方向①）；gate 层(roomengine)`TestNeighborHandoffSuppress` ⑤ multi-resident→gate-OFF（漏报方向②）。**census 在 roomengine、belief 包看不到** → gate 锁落 roomengine、似然锁落 belief（审查62「加进 r5_calibration_lock_test」字面不可行=无 census，按架构正确落位）。
+
+**实现要点（与审查62 correlation 版一致）**
+- 判据 fresh 有向极近：`邻房 EnterRoom/InBed ts − 本房 st.lastSeenMs ∈ [−jitter(5s), HandoffWindowMs(60s)]`，有向（先走后到），窗固定绝对不随房间距离伸缩。`FallRulesParam.Neighbor.{HandoffWindowMs:60_000, JitterMs:5_000}`（R7 带来源，30-60 可调）。
+- 作用域仅二义 lost-fall：ObsNeighbor 只在 beliefShadowTick lost-track 路径喂（st.lostAnchor 后，先于 smallBath 分支→任一 geom 覆盖）；已确证 fall 不碰（R5 许可压制）。
+- N-3 sole-resident 门复用 `SoleResidentRecaptureState`（多 resident→gate-OFF），与 correlation 正交（AND）。
+- 零新管 + thread-safe：e.rooms/roomSuiteID 在 e.mu.RLock 快照；兄弟房 tm 访问器自锁 tm.mu（NeighborRoomEnterMs/NeighborBedHandoff）；beliefShadowTick 不持 e.mu（engine.go:1009 在 RLock 前）→ 无重入死锁。
+
+**放行 bar 全绿**：`go build ./...` rc=0 / `go vet` 净 / belief 包绿（含新 corroboration 锁）/ roomengine **9 红 0 新增**（9=既有 Bathroom/BedroomFall 基线；新 TestNeighborHandoffSuppress 6 case 绿）/ #1.6 自查无 dead-plumbing 无字面量。
+
+**生产-gate-前（R0 不阻塞，待办）**：#5 整单元 redis-replay（unit201 三设备 CD2B+1641+333B，待用户环境）/ N-6 终验过压不发生（shadow stale_corr+handoff 日志量化）/ DBN recall 真摔集（铁律：recall 从未验证）。
+
+**待委员会**：验收 shadow-first 落地（审查62 三建中条件全交）+ 复核「非全空间监控」铁律（correlation-not-durable 安全法理，已落 memory，请对齐改记终裁）。
 
 ---
 
