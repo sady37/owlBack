@@ -437,6 +437,90 @@ func TestVetoPrecisionHarness(t *testing.T) {
 	}
 }
 
+func toIntField(v interface{}) int {
+	switch x := v.(type) {
+	case float64:
+		return int(x)
+	case int:
+		return x
+	case int64:
+		return int(x)
+	}
+	return 0
+}
+
+// analyzeRecoveryV2 — recovery-veto value 段 R0 验证（harness-side 选 B,不碰 production 安全语义；待委员会裁
+// A/B 后再决定 production wiring）。从 v2 window 帧 pose 时间线直接算判别力——验「摔后倒地时长」能否分开
+// **自救型真摔(#9 倒73s,不可否)** vs **误报(5934 +2s 即站,可否)**：
+//
+//	① 同人 = track 在 T_fire 前已现(护工后进=新 track firstSeen>T_fire→排除,条件②)。
+//	② 摔后(T_fire 后)持续倒地 ≥genuineFallenMs(15s) = 自救型真摔 → genuineFall=true → 不算恢复(不否)。
+//	③ 否则首个持续直立(≥3s,条件③)= 恢复,到达 ts 入 W-曲线。
+func analyzeRecoveryV2(t *testing.T, vc vetoCase, tFireMs int64) (recoveryTsMs, postFireFallenMs int64, genuineFall bool) {
+	if vc.format != "v2" {
+		return 0, 0, false // recovery 候选都是 v2;bedtest txt 真摔不需
+	}
+	const sustainUprightMs, genuineFallenMs = 3000, 15000
+	const lostGapMs = 60000                                                                // track 超此无帧=丢失(对齐 beliefShadowLostTTLMs)
+	isUpright := func(p int) bool { return p == 1 || p == 4 }                              // Walking/Standing
+	isFallen := func(p int) bool { return p == 2 || p == 5 || p == 6 || p == 7 || p == 8 } // 倒地/卧/坐地
+	type tk struct {
+		uprightSince, fallenSince, firstSeen, lastTs int64
+		lostGap                                      bool // 摔后曾丢轨>TTL(委员会螺丝:track-lost≠up,盲区受害者倒地显短是假象)
+	}
+	tracks := map[int]*tk{}
+	for _, r := range legoLoadWindow(t, vc.dir) {
+		if r.Category != "track" {
+			continue
+		}
+		for _, d := range r.DataValue {
+			pose, tid, ts := toIntField(d["pose"]), toIntField(d["track_id"]), r.Timestamp
+			s := tracks[tid]
+			if s == nil {
+				s = &tk{firstSeen: ts, lastTs: ts}
+				tracks[tid] = s
+			}
+			// ★track-lost 安全螺丝:摔后帧间隔 >TTL = 曾丢轨 → 倒地段"显短"是丢轨假象非真站起 → 永久禁本 track 恢复
+			//   (盲区躺地受害者雷达看不见,绝不当"短倒地=误火"否掉=long-lie 同类灾难)。
+			if s.lastTs > tFireMs && ts-s.lastTs > lostGapMs {
+				s.lostGap = true
+			}
+			s.lastTs = ts
+			switch {
+			case isUpright(pose):
+				if s.uprightSince == 0 {
+					s.uprightSince = ts
+				}
+				s.fallenSince = 0
+			case isFallen(pose):
+				if s.fallenSince == 0 {
+					s.fallenSince = ts
+				}
+				s.uprightSince = 0
+				postStart := s.fallenSince
+				if tFireMs > postStart {
+					postStart = tFireMs
+				}
+				if ts > tFireMs && ts-postStart > postFireFallenMs {
+					postFireFallenMs = ts - postStart
+				}
+			default:
+				s.uprightSince, s.fallenSince = 0, 0
+			}
+			// 恢复=同人(firstSeen≤T_fire)+摔后(ts>T_fire)+持续**正向直立**≥sustain+**无丢轨 gap**(正向 up 证据非 track-presence)。
+			if s.firstSeen <= tFireMs && !s.lostGap && ts > tFireMs && s.uprightSince > tFireMs &&
+				ts-s.uprightSince >= sustainUprightMs && recoveryTsMs == 0 {
+				recoveryTsMs = ts
+			}
+		}
+	}
+	genuineFall = postFireFallenMs >= genuineFallenMs
+	if genuineFall {
+		recoveryTsMs = 0 // 自救型真摔:不算恢复(留告警,不静默抹,呼应 silent_leftbed)
+	}
+	return recoveryTsMs, postFireFallenMs, genuineFall
+}
+
 // TestVetoWindowScan — 切窗双轴（委员会 85e41a1 钉档）：窗=[T_fire−warmup, T_fire+W],喂全窗,覆盖按
 // 否决证据**到达 ts ≤ T_fire+W** 算。摔前 ghost(ts<T_fire)=W 无关(任何 W 否得掉);摔后 recovery(ts>T_fire)
 // =W 相关(W 内起身才否)。⟹ 覆盖-W 曲线 = 即时 ghost(平) + recovery(随 W 涨)。精度=0(真摔任何 W 不否)。
@@ -463,11 +547,14 @@ func TestVetoWindowScan(t *testing.T) {
 		}
 		ev := runDBNVeto(t, vc)
 		tf := *a.TFireMs
+		// recovery 信号:R0 harness-side(选 B)算自 pose 时间线 + 摔后倒地闸(self-rescue 判别)。
+		// production wiring(Fall 事件进 shadow)待委员会裁 A/B;现先验判别力在真数据上分不分得开。
+		recTs, postFallenMs, genuineFall := analyzeRecoveryV2(t, vc, tf)
 		for _, w := range scan {
 			cutoff := tf + int64(w)*60000
 			ghostV := ev.ghost && ev.ghostTsMs != 0 && ev.ghostTsMs <= cutoff
 			bedV := ev.bedVetoTsMs != 0 && ev.bedVetoTsMs <= cutoff
-			recV := ev.recoveryTsMs != 0 && ev.recoveryTsMs <= cutoff
+			recV := recTs != 0 && recTs <= cutoff
 			wouldVeto := ghostV || bedV || recV
 			s := stats[w]
 			if vc.truth == "false-alarm" {
@@ -482,7 +569,7 @@ func TestVetoWindowScan(t *testing.T) {
 				s.wrongVetos++
 			}
 		}
-		t.Logf("[%s] %s  ghost到达=%s  bed≥.9=%s  recovery=%s（相对 T_fire）", vc.truth, vc.dir, rel(ev.ghostTsMs, tf), rel(ev.bedVetoTsMs, tf), rel(ev.recoveryTsMs, tf))
+		t.Logf("[%s] %s  ghost=%s  bed≥.9=%s  recovery=%s  摔后倒地=%.0fs%s", vc.truth, vc.dir, rel(ev.ghostTsMs, tf), rel(ev.bedVetoTsMs, tf), rel(recTs, tf), float64(postFallenMs)/1000, map[bool]string{true: " ★自救真摔→不否", false: ""}[genuineFall])
 	}
 	t.Logf("=== 覆盖-W 退化曲线（摔前 ghost=W 无关平 / 摔后 recovery=随 W 涨；委员会钉档语义）===")
 	for _, w := range scan {

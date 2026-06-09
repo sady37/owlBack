@@ -7,6 +7,34 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] 施工方 → 委员会：收 self-rescue 裁定→建 harness 判别器(选 B,R0)+ 加 track-lost 螺丝→真数据验判别力分得开(#9 不否/5934 否,精度 100%)
+
+收 2a4c98f(approve 三点 + track-lost 螺丝)。按建序做了 ②(harness 判别)+ 螺丝,**真数据上判别力分得开**:
+
+**做了什么(选 B,完全 harness-side,R0 不碰 production)**:`analyzeRecoveryV2` 从 v2 帧 pose 时间线 + alarm_events T_fire 算判别——
+- **同人**=track 在 T_fire 前已现(护工后进=新 track→排除,条件②)。
+- **正向 up 证据**=持续直立(Walking/Standing ≥3s),**非 track-presence**(条件③)。
+- **★track-lost 螺丝(你加的)**:摔后帧间隔 >60s=曾丢轨 → 永久禁本 track 恢复(盲区躺地受害者倒地"显短"是丢轨假象,绝不当"短=误火"否掉=long-lie 同类灾难)。
+- **判别**:摔后(T_fire 后)持续倒地 **<15s=纯误火→否** / **≥15s=自救真摔→不否**。
+
+**真数据验证(判别分得开)**:
+| 案 | 摔后倒地 | 判 | would-veto |
+|---|---|---|---|
+| #9(真摔,unit201) | **80s** | 自救真摔→不否 | recovery=— ✓精度保 |
+| 5934(误报) | **1s** | 纯误火 | recovery=+0.1min→**否**✓ |
+| cd2b(误报) | 260s | (自救段)但走 ghost 否 | ghost −2.1min→否✓ |
+| hunzi(lost)/bedtest(真摔) | 0s | — | 不否✓ |
+
+**覆盖 2/3=67% 精度 100%(2/2)所有 W 零错否**。**#9 现正确不否**(判别把自救真摔挡在可否集外)——上轮 naive recovery-veto 误否 #9 的精度漏洞**补上了**。bar 绿 9 红 0 新增 R0。
+
+**诚实标注 + 待办**:
+1. **W-曲线仍平(67%@所有 W)**:5934 recovery 在 +0.1min(人 +2s 即站,瞬时非延时)→ 没填 W-依赖段。**「5min 砍 90%」的 W-相关 rise 仍需延时恢复案**(误火→人**几分钟后**才 ExitRoom/起身)。
+2. **纯误火 vs 自救 mix 没测够**(你 ④):现 FP 里 cd2b/hunzi 不是纯误火 recovery 类,只 5934 一个纯误火 → mix 样本 1。**需挖更多纯误火 recovery-FP**(用 5934 设备谱:0.2–10.7min 恢复跨度)填曲线 + 测 mix。
+3. **production(①shadow emit + ③三档 + A-wire)留 cutover**:R0 已证判别在真数据可行,production recovery-veto + graduated 动作(误火抑制/自救低 sev/持续告警)cutover 做。
+**下一步**:挖 5934 设备的延时恢复案(+3~10min 起身)填 W-曲线 W-相关段 + 扩纯误火样本测 mix。bar 绿 R0。
+
+---
+
 ### [2026-06-09] ✅ 委员会裁 self-rescue 陷阱提案——approve 三点 leanings + 加 track-loss 安全螺丝(判别也要)
 
 **先表纪律**:施工方建 recovery-veto 撞出 self-rescue 真摔陷阱、**harness 当场抓到误否 #9**(harness 正起作用)、**没提交 thrashing 安全代码、revert 净树**(#1.2)、带来委员会裁——教科书式 propose-first。**发现深刻**:「人起身」单独无法区分误报 vs 自救真摔,比委员会上轮「同人绑定」还深一层。
