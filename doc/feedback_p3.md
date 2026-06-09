@@ -7,6 +7,30 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] 施工方 → 委员会：★建 recovery-veto 撞出 self-rescue 真摔陷阱——harness 当场抓到否 #9(倒73s后自救),需 firmware-Fall-time 判别,revert 待裁
+
+按 56d6fb7 approve 建 recovery-veto(同人 logicID 快照+持续直立 Stand/Move+R0 emit),**harness 当场破 gate**——揭出比预想深的安全问题,已 **revert 待你裁**:
+
+**建了什么**:`belief_shadow.go` fall 确认时快照在场 logicID(摔者候选),摔后同 logicID 持续直立(≥3s,条件③)→ emit `recovery_evidence{same_faller}`;护工后进=新 logicID 不在快照→排除(条件②)。
+
+**★harness 当场抓到误否真摔 #9**(这正是 harness 的意义):
+- #9(unit201 真摔)recovery=+1.4min → **错否真摔,精度破 gate**。查 #9 真实 pose 序列:T_fire 后 **pose=5(Fallen)持续 73s** → +84s pose=1(走)→ +95s 站 → +99s ExitRoom。= **自救型真摔**(人真倒地 73s 后自己起身走出),**非绑定 bug**(确是摔者本人 logicID)。
+- ⟹ **recovery「人起身」单独无法区分**:误报(从没真倒)vs **自救真摔**(倒了又起)。呼应 [[silent_leftbed_fall_recovery_window_gap]]:自救跌倒不可静默抹(是下次救不回的先行指标)。
+
+**判别力调查(对比 #9 vs 5934)**:判别 = **摔后(T_fire 后)持续倒地时长**——#9 摔后倒 **73s**(真摔)/ 5934 摔后 **+2s 即站**(其 pose=5 在 T_fire **之前**,firmware 在人将起时误火=真误报)。
+- **但实现需 firmware-Fall **时刻**作参考**:#9 与 5934 倒地段都长,唯一区别=Fall 火在倒地段的**起点(#9)还是终点(5934)**。没 firmware-Fall-time 无法定"摔后"。
+- **而 firmware Fall 事件目前不流进 belief_shadow**(走 iot:alarm 另路,beliefShadowEvent 只收 radar EnterRoom/ExitRoom)→ 需 wire,是设计改动。
+
+**revert 理由**:三次迭代时序语义在 production 安全代码里破两次(用 DBN 确认时刻当参考不稳)→ 按协作协议不提交 thrashing 安全代码,**全 revert**(净 0 改动,树干净),报告+提案。recovery-fp-5934 留作诚实未否覆盖缺口(覆盖 33%)。
+
+**propose(裁前不建)**:
+1. **判别**:recovery-veto 仅当摔后持续倒地 **< 阈(~15s)**(从没真倒=误报)才否;≥阈=自救真摔→**不否**(留告警,可后续低 severity,呼应 silent_leftbed)。
+2. **firmware-Fall-time 怎么进 shadow**?选 A:wire Fall 事件进 beliefShadowEvent(production 含判别);选 B:shadow 只 emit raw recovery 候选,**harness 用 alarm_events T_fire 做判别**(R0 验曲线,production 判别留 cutover)。我倾向 **B**(production 简单,R0 先验 value 曲线对不对)。
+3. **自救真摔策略**:否(抑制)还是低 severity 记录(不抑制)?我倾向**后者**(silent_leftbed 铁律:自救跌倒不可静默抹)。
+bar 绿 9 红 0(树净)。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 收 `71f6e8f` warmup 充分性闸做成真断言(我 3 轮 flag 闭合)
 
 **亲跑全绿,flag 闭合**:
