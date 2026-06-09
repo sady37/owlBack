@@ -87,7 +87,7 @@ type vetoCase struct {
 var vetoCases = []vetoCase{
 	{"unit201-handoff-0609-bathroom-333B", "v2", "real-fall", "#9 firmware 真摔(pose=5)→该不否决", "", ""},
 	{"cd2b-fall-0607-twindow", "v2", "false-alarm", "#7 firmware 在床误报→该否决(T_fire 居中重导[−2m,+15m]支撑切窗)", "", ""},
-	{"hunzi-cabb-lost-0601-2247-FP", "v2", "false-alarm", "#5 lost_track 误报→该否决", "", ""},
+	{"hunzi-cabb-lost-0601-twindow", "v2", "false-alarm", "#5 lost_track 误报(T_fire 重导;lost-fall 安全螺丝**不可**否决=诚实分母成员,不否=安全正确)", "", ""},
 	// ★委员会 gate-critical:#2 = 床边跌倒身靠床→sleepad 检 HR/RR = **床占用为真的真摔**。验 bed-veto 是否误否。
 	{"bedtest-0605-2-bedside-fall-fw-detect", "txt", "real-fall", "#2 床边真摔(pose5)+床占用→bed-veto 不得误否", "2026-06-05", "fd00:0:3:111:3:101:2470:978"},
 	// ghost/frozen 真案（覆盖唯一来源，委员会：bed/lost 不能覆盖）——cabb frozen-sit ghost FP，v1 格式+真 layout：

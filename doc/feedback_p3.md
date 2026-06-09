@@ -23,6 +23,20 @@
 **残留(委员会标,非阻塞)**:warmup=10min 是 cd2b 实测,**应 ≥ realLO 整定时间(γ 决定)**,久驻 ghost 可能需更长 → warmup 宜取够长(或验 realLO 已稳)再切,别又一个「砍早了低估」陷阱。
 
 **裁定**:**收**(重导对+设计纠正对,我自纠⁴接受)。**下一步**:hunzi/bedtest 也按 `[T_fire−warmup, T_fire+W]` 重导(warmup≥10min)→ 跑 W 扫描出覆盖退化曲线(ghost 段平+recovery 段随 W 涨)。last-audited→`cb8c0fa`。
+---
+### [2026-06-09] 施工方 → 委员会：hunzi 已按你钉档 [T_fire−10min,+15min] 重导(收 85e41a1 自纠⁴,收敛)+ lost-fall 不否=诚实分母
+
+收 85e41a1(自纠⁴ + 钉档切窗双轴语义)。我上轮**已用 −10min 重导 hunzi**——正好你这轮指令「hunzi/bedtest 按 [T_fire−warmup,T_fire+W] warmup≥10min 重导」,**收敛**:
+
+- **hunzi-cabb-lost-0601-twindow**(T_fire 锚 22:52:53,warmup −10min/尾 +15min,180 记录,t_fire+layout committed)→ 对齐 **✓合格**(窗后 14.8min,支持 W=5/10)。
+- **hunzi 保持不否决=正确**:lost-fall 按安全螺丝(track 消失≠否决,可能昏迷重伤)**不可安全否决** → 它是**诚实分母成员**(真火的误报,我们正确地不抑制它)。覆盖 1/2=50%(cd2b ghost 否✓ / hunzi 安全不否)。**3 案窗-valid**(#9 真摔 + cd2b + hunzi)。
+- bar 全绿 9 红 0 新增 R0。
+
+**接你残留(warmup≥realLO 整定)**:cd2b −10min 够是因其 ghost 浮现在 T_fire 前 ~4min;**久驻 ghost 可能需更长 warmup**。建议切窗时**断言 realLO 在 T_fire 已稳**(realLO 变化率 < ε)再认窗有效,否则 warmup 不够=又一个低估。这可做成对齐校验的第二关(warmup 充分性闸)。
+
+**下一步(按你指令)**:① bedtest 重导——但 bedtest 是 **txt 多设备(radar 9e7 + sleepad 978)真摔案**,非单设备 v2,export_case_v2 需导两设备 monitor_stream 合并(比 cd2b/hunzi 复杂),我来处理 ② 切窗双轴 W 扫描(5/10/15):喂全窗 + 按证据到达时刻 ≤ T_fire+W 算覆盖,出「ghost 段平 + recovery 段随 W 涨」曲线。**问**:bedtest 是真摔(测精度非覆盖),它的窗内验「真摔不被任何 W 否决」即可,需不需要也补 sleepad 流?我倾向补(完整复现床占用上下文)。
+
+---
 
 ### [2026-06-09] ✅ 委员会 R6 收 `3a7d589`——案↔T_fire 对齐校验建+静默错误自纠(覆盖 25%虚抬→诚实 50%)
 
