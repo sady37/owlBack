@@ -54,7 +54,24 @@
 
 
 
-### [2026-06-08 19:55 MDT] 审查63 `9dff9fb..88870d2`(**首个 code commit**)#3 Neighbor wire shadow-first 落地 — R6 亲跑全绿 + 三建中条件真交 → **验收 wire(死源 5/5 全处置)**;但 ★挑出 N-7 visitor-盲点漏报洞(N-3 门数 resident 但 room-ledger 身份盲)→ 入生产-gate 硬前置
+### [2026-06-08 20:10 MDT] 审查64(用户纠 + 委员会自纠,doc-only,last-audited 不动)**撤回审查63 的 N-7** — 把 soft Bayesian 证据误当 hard 抑制器,误提的 headcount==1 硬门会在有 visitor 的单元废掉整特性=净负
+
+**性质**:用户纠审查63 N-7(「错,本来就是二义性场景,用 60s 时间窗口只是用来排除的,有了这个信息,胜率更高」)。委员会自纠(审查58 委员会自纠先例)。无代码,last-audited 维持 `88870d2`,不 bump。
+
+**认领错误(N-7 的框架错):** 我把 ObsNeighbor 当成 hard 决定论抑制器(「误压本房 resident 真摔=漏报」),实际它是**似然因子**(`dampNbrFallen=0.7` 软压 SFallen),不硬否决。
+- **lost-track 本就二义**(摔/走 未知)——不是「已知真摔被误消」,是从未知出发。ObsNeighbor 只是多喂一条证据移动后验。
+- **60s 有向窗是 discriminator**(消歧/排除走-假设),非保证。fresh 有向 hand-off = 「人这刻移去邻房」的**正证据** → `P(走|fresh 有向 hand-off) > P(走|无信号)` → **net 抬 win-rate**(precision on phantom-lost-fall ↑)。
+- **visitor 巧合是低概率噪声,非 disqualifying 洞**:需 visitor 恰在本房 track-loss 那刻 [−5s,+60s] 内**有向**进兄弟房——时近巧合本就稀;模型吸收为概率噪声。且**双重安全**:R0 shadow 永不 fire;未来 gate=firmware∧shadow 漏报-safe(软 damp 不单方面杀真摔,默认保 firmware)。
+- **我提的 headcount==1 硬门是净负**:会在**任何有 visitor 的单元(如常驻 caregiver)废掉整特性**——而那恰是 lost-track 二义最常见的多人居所。拿大概率常 case 增益换小概率巧合消除 = 净负,且违背用户审查62「A 纯相关先简化」定档(硬纯度门 = 我自己审查62 批的 simplify 的反面)。
+
+**裁定:撤回 N-7 出生产-gate 硬前置。** 生产-gate 前置回到 **3 项**:① #5 整单元 redis-replay(unit201 三设备)② N-6 终验过压不发生 ③ DBN recall 真摔集(铁律:recall 从未验证)。
+- **降级保留(measurement caveat,非 defect,非前置)**:visitor 巧合是 recall 验证的一个**概率噪声源**——recall 真摔集分析时心里有数即可(别把噪声当系统偏)。**不要求任何设计改动**;若未来数据显示噪声显著,可选软 down-weight(headcount>1 时降 conf,非硬 off)作 plan-B——但非必须,尊重用户 simplify 定档,委员会不主动要求。
+
+**审查63 其余裁定全部仍立**:R6 亲跑全绿(build/vet/belief/9 红 0 新增/6 case 绿)、三建中条件真交(N-6 单合并 / stale_corr LOG / 双向 R5)、死源 5/5 全处置(#3 wired)、铁律 R0/R1/R5/R7 守。**wire-loop 核心完成不受 N-7 撤回影响。**
+
+---
+
+### [2026-06-08 19:55 MDT] 审查63 `9dff9fb..88870d2`(**首个 code commit**)#3 Neighbor wire shadow-first 落地 — R6 亲跑全绿 + 三建中条件真交 → **验收 wire(死源 5/5 全处置)**;~~但 ★挑出 N-7 visitor-盲点漏报洞~~ **【审查64 撤回 N-7:误把 soft 证据当 hard 抑制,headcount 门净负】**
 
 **性质**:`88870d2` 首个有代码 commit(belief_neighbor.go 81L + 测 140L + 接线/param/accessor)。**Case 2 → R6 亲跑核验(不信声明,逐项亲验)**。
 
