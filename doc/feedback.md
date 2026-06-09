@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`88870d2`(下次从此 commit 起算 delta)
+- **last-audited**:`e546d96`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,29 @@
 
 
 
+
+### [2026-06-08 20:30 MDT] 审查65 `88870d2..e546d96`(doc-only)复核施工方验证 spec + harness-gap — **gap 亲验属实 + spec 接受**;★挑 sequencing:bReplayUnit 是 R0 测试基建可**现在就建**(合成 multi-room fixture 验),别把可建的 harness 也 block on data
+
+**性质**:`e546d96` doc-only(`neighbor_verification_spec.md` + feedback 收口段),无代码。**spec/设计复核 + 状态裁定**,非 R6(无 code)。
+
+**✅ harness-gap 亲验属实(不信声明)**:`bReplay` 单次 `RegisterRoom(cfg)`(belief_b_replay_test.go:106 单房);`allObsKinds` 含 "Neighbor"(:214);`TestBSourceFidelityAudit` 是「纯 observability 不刚性断言」→ 单房 replay 里 `neighborHandoff` 在 `e.rooms` 找不到兄弟房 → ObsNeighbor 必「未 populate」=**单房结构使然,非 wire 死管**。施工方区分准确:**审查63 的 Neighbor 验是走 synthetic 2-room `TestNeighborHandoffSuppress`(手搓双房,已绿),replay 单房从未覆盖** → 真 replay 验确需整单元 harness。无 false-green(audit 非断言不会误判死管)。
+
+**✅ 验证 spec(V1-V5 + recall + §0 bReplayUnit)复核接受**:
+- V1 populated / V2 stale_corr / **V3 N-6 无过压** / V4 R5 多-resident gate-OFF / V5 回归绿 + recall 真摔集——覆盖审查62/63 全部硬条件。
+- N-7 撤回**正确落地 spec §2**:recall 噪声扣偏(visitor 命中标 noise 剔除)/ 不要求 headcount 硬门 / 可选 plan-B 软 down-weight。对齐审查64。
+- §0 `bReplayUnit` 设计(多房注册 + per-device 路由 + census seed + 按 ts 全局合并喂 + per-room 采日志)保真硬条件守(只喂 raw record 进生产 handler,禁手搓 bases)。
+
+**精度备注(非阻塞)**:V3 的 `Neighbor 计 1` 是**结构保证**——`neighborHandoff` 返单条 neighborResult + 消费侧 append 单条 `neighborToObs`,构造即 enforce N-6(不可能喂 2),故该断言恒过=确认结构而非靠测发现。`damp==0.7 非 0.49` 仅在 room/bed conf 相等时精确成立(conf 不等则双压量≠0.7²);**count==1 是 authoritative N-6 检,0.7-damp 是 equal-conf 下的 corroboration heuristic**——两者都留无害,但终验以 count==1 为准。
+
+**★ 挑 sequencing(拆「全 pause」预设):bReplayUnit 可现在就建,别和 unit201 数据捆同一 blocker。** spec §4「数据到 → 实现 harness → 逐跑」把 harness 实现也推到数据到之后。但:
+- `bReplayUnit` 是**R0-safe 测试基建代码**(永不碰生产),redis record 格式**已知**(`bLoadRecords` 已解析),`TestNeighborHandoffSuppress` 已证 multi-room engine wiring 可跑 → **harness 现在就能写,且能用合成 multi-room fixture 验**(手造两房 raw record 序列,按 ts 交织喂,断言 hand-off 涌现 + V1-V4 逻辑过)。
+- 这样**解耦两个 blocker**:harness-code(现在可建可 R6 复核)vs 真 unit201 数据(用户-blocked)。**只有 real-data RUN 该 block on data**,harness 实现不该。
+- 收益:数据到真 turnkey(harness 已先过 R6,而非数据落地时仓促写)+ 合成 fixture 先把 V1-V5 断言逻辑跑通。**这才是用户「向下推进」的实质**(比纯 doc spec 更进一步)。
+- 非硬 mandate(施工方若有"合成 fixture 易与真数据格式分叉"的理由可反驳;但格式已知,分叉风险低)。**委员会建议:下一步建 bReplayUnit + 合成 multi-room fixture(R0 不阻塞),把 data-blocker 缩到只剩真数据导入。**
+
+**裁定**:harness-gap 属实 + spec 接受为生产-gate 验证手册。wire-loop 核心确认完成(死源 5/5)。**loop 状态 = blocked on data(真数据),但 harness 实现可先行解耦**;非 blocked on 设计。**铁律 R0/R1/R5/R7 守**(spec §3 放行 bar 含)。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:收审查63 验收 + 审查64 撤回 N-7 → wire-loop 核心**记录收口**;生产-gate 验证 **blocked on test data**(无 unit201 数据)→ 向下推进=doc-first 出验证 spec + ★逮 harness gap(bReplay 单房→Neighbor 无法真验,须扩整单元)
 
