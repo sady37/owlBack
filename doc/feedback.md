@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`21533be`(下次从此 commit 起算 delta)
+- **last-audited**:`301151a`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,28 @@
 
 
 
+
+### [2026-06-08 18:18 MDT] 审查58 `21533be..301151a`(doc-only)SD double-count 自纠属实 → 改裁 SD-RETIRE + 委员会自纠审查57 + 精炼死源分流
+
+**性质**:`301151a` doc(SD-A 勘察逮回 double-count → 改提 SD-RETIRE)。无代码(SD-A 未建)。
+
+**✅ R6 亲验 double-count 属实**:`ObsDwellStill` **live**(belief_adapter:193 radarFrameAdapter emit,`dwellSec`)+ GeomInToilet → `SFallen=1+(d/dwellScaleToiletSec)²`(P4.1 生存 ramp);`dwellSec` 由 **StillBoxRunStart 无界**派生(:1238)。`ObsStandDuration` 也 GeomInToilet→SFallen(legacy 线性,自注"v2 由 HSMM 替代")。**两者同从"toilet 静止时长"这一物理证据抬 SFallen → wire SD-A = 同源双计**,正撞我审查57 驳 SD-B 援引的"派生/同源禁双计"铁律。施工方自纠扎实。
+
+**★ 委员会自纠审查57(我同盲点)**:我审查57 裁 SD-A wire 时**只查了 ObsStandDuration 自身 emit(roomAdapter dead),没查"同 fall 信号是否已有 live 源"**——DwellStill 已 live 覆盖 toilet-still-fall。**我裁 SD-A=放行一个 double-count**。施工方逮回,认领委员会失误。+ 我审查57 req1"StillBoxSec cap 太低够不到 8min"**moot**:StillBoxRunStart 本就无界(DwellStill 正用),我误判。
+
+**改裁 SD-RETIRE**:退役 ObsStandDuration(= live ObsDwellStill 的 legacy 重复源)——**toilet-still-fall 覆盖不变**(DwellStill 留守,且是 P4.1 现代生存-ramp 替代,优于 legacy 线性)+ **整删 dead roomAdapter**(#1.2,np/EnterExit dead-dup)。全清 likelihood/enum/calibration(lrStandFall*)/roomAdapter,同 SleepStage SS-B 净度。**驳 SD-A**(double-count)。
+
+**★ 精炼死源分流(第二次细化,采施工方 reframe)**:死源处置三分——
+1. **非 fall-relevant** → 退役(SleepStage)。
+2. **fall-relevant 但 fall 信号已被 live 源覆盖** → 退役重复源(StandDuration,被 DwellStill 覆盖;防同源双计)。
+3. **fall-relevant 且未被任何 live 源覆盖** → wire(bed/NumberPeople/Neighbor)。
+→ **"5 死源"实为 3 wire(bed✅/NumberPeople✅/Neighbor 待)+ 2 retire(SleepStage✅/StandDuration)**。源-保真审计的"5 个待 wire"被两道过滤(fall-relevance + live-coverage)砍成 3。
+
+**审查57 req2/req3 重定向**:StandDuration 退役后,分钟单位 moot;**toilet-still-fall 的灵敏度/track-gap 鲁棒(req3 合理关切)→ 调单一源 DwellStill**(其 scale/StillBoxRunStart 容 gap),非加第二源。P4 调参项,非死源 wire。
+
+**裁决**:**SD-RETIRE 批准**(退役 ObsStandDuration 全清 + roomAdapter 整删,#1.2)。委员会自纠审查57(SD-A 会 double-count,我漏查 live 覆盖)。死源仅 **#3 Neighbor** 剩(跨房,redis-replay 整单元,待用户)= 真·最后一个 wire。放行:roomAdapter/ObsStandDuration grep=0 + R5-lock 去 StandDuration 行仍绿 + 9 红 0 新增。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:执行 SD-A 勘察时**当场逮回自己漏判** → ObsStandDuration 的 fall 信号已被 live 的 ObsDwellStill 覆盖,SD-A=double-count(撞用来驳 SD-B 的同一铁律)→ 改提 SD-RETIRE,请委员会重裁(裁前不建,未写 SD-A 代码)
 
