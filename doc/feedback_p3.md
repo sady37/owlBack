@@ -7,6 +7,23 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `cc7a4e8` bed-veto #2 验真+收紧 + ★委员会自纠（我上轮 retraction 错了）
+
+施工方**直接跑了 #2**(委员会两轮要的)——数据把争议结了,且**结向委员会原始 flag**:
+
+**亲跑确认(4 案,#2 经 txt loader 进来)**:
+- **#2 验真**:旧判据(bed bool 无 conf)下 **#2 床边真摔被 bed 误否 → 精度 50%** = **委员会原始 concern 是对的,真 bug**。
+- **收紧修好**:`bedVeto = ev.bed && ev.bedConf >= 0.9`(`belief_recall_dwell`/harness:273)。#2 bedConf=0.20「靠床边」<0.9 → 不否 → **精度回 100%**。
+- bar 全绿 9 红 0 新增 R0。
+
+**★委员会自纠(对自己不橡皮图章)**:**我上轮基于用户「bed 不对称保护 #2」收回 concern = 错**。亲查发现错在哪:我验了不对称**机制存在**(any-OR-LeftBed→占用降),但**没验它对 #2 是否 *触发***。#2「身子靠床 sleepad 仍检 HR/RR」= **vital 在 → bed belief 解向 InBed(radar-only conf 0.20),没出 LeftBed 信号** → 不对称那条根本没触发 → bed_occupied_suppress fire → #2 被否。**「机制存在」≠「对此案触发」**——该坚持跑 #2 而非凭代码推断 retract。施工方跑 #2 settle 了,正确。
+
+**★诚实净发现(施工方报,委员会确认,重要)**:**cd2b 与 #2 的 bed 都是 radar-only conf 0.20,bedConf 阈区分不了**(雷达分不开「床边摔读成 InBed」vs「真在床」)。strict≥0.9 防住 #2 误否 ✓,但 **cd2b 覆盖也丢了**(它也 0.20)→ **覆盖现 0/2=0%**。⟹ **bed-occupancy 在 radar 置信下不能作否决覆盖,只能作高 conf(sleepad/human-bed)的「防误否」**。**净:否决覆盖只剩 ghost/frozen**(lost 被安全螺丝排除、bed 不能覆盖)。这坐实了上轮答施工方第二问的「bed-context FP 结构压不了」。
+
+**裁定**:**收**(#2 验真+收紧+诚实净发现=高质量自纠对)。**覆盖期望(≈90%)现完全压在 ghost/frozen 上** → 下一步**补 #13 d523-ghost / cabb-frozen 真案**(d523 待带 mount layout)才能测真覆盖;cd2b 类 bed-position FP 否不掉=当 firmware fire 护士驳回(安全无害,覆盖损失)。last-audited→`cc7a4e8`。
+
+---
+
 ### [2026-06-09] ★★ 委员会 → 施工方：**cutover 终局定档**（用户拍：开关量接管 + x=否决证据阈 + SQL 调 x 验 95% + 仅退 gate-list）
 
 cutover 机制/判据/清理范围/验证全闭合,定为 roadmap 终点靶子。

@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`5a21cc9`(委员会 R6 收双轴+正向恢复+escalate-not-veto 安全螺丝;**bed-veto #2 委员会自纠**:用户指出 bed belief 有意不对称〔跌床偏 LeftBed + any-OR-LeftBed→占用降→fall 浮出〕,委员会亲查代码确认→**收回「#2 必然误否」方向**,#2 按设计不被否决;#2 仍值得跑确认 leaning-vital 冲突下不对称仍解 LeftBed〔降为确认型非阻塞〕。详见 `doc/feedback_p3.md`)
+- **last-audited**:`cc7a4e8`(委员会 R6 收 bed-veto #2 验真+收紧;**★委员会自纠²**:上轮基于用户不对称说 retract 的 concern **错了**——施工方跑 #2 证旧判据**确实**误否 #2〔精度 50%,委员会原始 flag 对〕;错在我验了不对称机制存在却没验它对 #2 触发,#2 vital 在→解 InBed 没出 LeftBed→不对称没触发。修:bedConf≥0.9 strict→#2 不否精度 100%。诚实净:cd2b 与 #2 都 radar-only 0.20 区分不了,strict 防误否但 cd2b 覆盖丢→覆盖 0%,bed 不能作覆盖只防误否,覆盖只剩 ghost/frozen。详见 `doc/feedback_p3.md`)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
