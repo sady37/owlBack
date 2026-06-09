@@ -7,6 +7,36 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ★★ 委员会 → 施工方：**cutover 终局定档**（用户拍：开关量接管 + x=否决证据阈 + SQL 调 x 验 95% + 仅退 gate-list）
+
+cutover 机制/判据/清理范围/验证全闭合,定为 roadmap 终点靶子。
+
+**一、接管 = 一个开关量（同一份代码,flag 门控动作）**
+```
+OFF（shadow,现在）: firmware fire → pass（照常报）+ DBN log 自己的 judge,不动作 = R0
+ON （接管）       : firmware fire → DBN 否决证据置信 ≥ x → drop fire + log；否则放行
+```
+- **最强安全属性**:shadow 与生产**同一条代码路径**,开关只门控「要不要真 drop」→ shadow 验的就是生产将跑的代码,**翻开关零行为漂移**。OFF 不是另写一套,就是这开关的关态。
+
+**二、x = 否决证据置信阈,不是 P(Fallen)（钉死,防反向）**
+- 「belief ≥ x」的 belief **必须 = 否决/ghost 证据置信**(ghost/frozen/bed/正向恢复 强度),**绝不是 P(Fallen)**（否则「fall 信心越高越 drop」是反的，制造 FN）。
+- **x = 精度旋钮**:调高=否决更严=精度更高;95% gate = 把 x 调到精度达标点。这是「正证据判据」用阈值表达,二者一致。
+- 外包两层不变:**5min 延时窗**(x 须窗内达到否则默认放行)+ **track 消失≠证据**(安全螺丝)。
+
+**三、validate-then-flip（SQL 调 x，全部 OFF 期数据背书）**
+1. OFF 期:DBN 每 tick 算 would-veto + evidence → 落 `sensor_decision_log`(**补 Room 层 = 本终局前置第一步**,schema=harness `vetoEvidence`)。
+2. SQL 批量:几千护士确认案 → 扫不同 x → 算「该 x 下否决精度/覆盖」。
+3. 找 x 使精度=95% → **翻开关** → 同一代码 x 定死开始动作。
+
+**四、清理 = 仅 gate-list 规则层（用户两次确认）**
+- **废**:`bathroom_fall.go`/`bedroom_fall.go`/`fall_rules_param.go`/`fall_verify.go`/`fall_exempt.go` + 抑制逻辑 + **9 红测试**(=#1.2 删即删对旧 fall 规则)。
+- **留**:**firmware Fall**(雷达硬件事件=漏报-safe 地板,非规则代码)+ DBN belief 层(成决策主体)。
+- **逐条退役非整层一刀切**:乐高库+SQL 先证「DBN 在该规则场景判得≥旧规则对」(覆盖其 known-good 召回)→ 验过才删那条(同审查58-59 退 SD/SS 死源节奏:亲验 live 覆盖才删)。
+
+**前置链**:补 Room 层进 sensor_decision_log（开关 SQL 验证的数据源）→ OFF 期攒数据 → SQL 调 x → 翻开关 → 逐条退 gate-list。**施工方现阶段仍按否决 harness 指令推进**(#2 确认/延时窗/补 ghost 案);本条是终点,不是现在动 gate-list。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 收 `5a21cc9`（双轴+正向恢复+escalate-not-veto 安全螺丝）+ bed-veto #2 委员会自纠（用户指出 bed 不对称→收回「必然误否」）
 
 **亲跑全绿**:bar/9 红/gofmt/#1.6/R0。实现确认:① **双轴**(覆盖 1/2=50% + 精度 1/1=100%,诚实标「样本<500 非定量」)② **正向恢复证据**(recapture/exit/neighbor-handoff,**非 track 消失**)③ **escalate-not-veto**(`lostfall_escalate` 窗到未佐证=真摔 → **不算否决证据,仅记**,防昏迷重伤盲区误否)。**②③ = 委员会安全螺丝(指令四)正确落地**,赞。
