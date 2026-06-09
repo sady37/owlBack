@@ -54,6 +54,25 @@
 
 
 
+### [2026-06-08 21:40 MDT] P7.1 落地(委员会执行,用户拍「进入下一步」=P7 统一判定阈)— fall 后验 → 单一代价比 τ\* 读出(shadow-first R0);θ_fire 魔数 0.55 单源化为 `TauConfirm.Tau()`;suspect/confirm 两工作点
+
+**性质**:#3 Neighbor wire-loop 完(死源 5/5 + V1-V4 整单元逻辑保真绿)→ 用户拍进入 roadmap 关键路径下一节 **P7 decision τ\***(impl_plan §6)。本 commit = **P7.1**(fall 后验→τ\* 判决读出),纯 shadow 不碰 alarm。**自验 R6**(我既是 builder 又自核)。
+
+**R0 安全前提亲验**:`belief.Decider`/`Decide()` **全仓仅 belief_shadow.go 用**(grep 净:sh.decider line 523,生产 alarm 路径零引用)→ 改 τ\* 形式化 = shadow-only,永不碰 alarm(R1 守)。
+
+**做了什么(P7.1)**:
+- **新 `belief/decision_tau.go`**:`CostRatio{CFP,CFN}.Tau()=C_FP/(C_FP+C_FN)`(Bayes 代价敏感阈,§2.4 belief≠报警=belief×非对称代价)。两工作点 `TauConfirm`(τ\*=0.55)+ `TauSuspect`(τ\*=0.30);`DecideTau(pFallen)→三档`(none/suspect/confirm)。
+- **单源化(#1.3)**:belief.go `thFire` 魔数 `0.55` → `var thFire = TauConfirm.Tau()`(改 τ\* 即改决策,无第二份魔数)。**等价复现**:TauConfirm.Tau()==0.55==历史 θ_fire → Decider 行为零变(confirmMs 90s 去抖不动)。
+- **shadow 读出(R0)**:belief_shadow_trace + belief_shadow_fall 加 `p7_1_tau_decision`/`p7_1_tau`(suspect/confirm vs gate-list 对账,P9 oracle 用);只 log 不接 alarm。
+
+**测试**(belief/decision_tau_test.go):等价复现(confirm=0.55=θ_fire/suspect=0.30/thFire 派生)+ τ\* 方向(C_FN≫C_FP→<0.5)+ 三档边界 + **Decider 行为不变**(踩坑:fireSince==0 在 t=0 歧义,测试用真 epoch ms 避开;生产 nowMs 永非 0 非代码 bug)。
+
+**放行 bar**:build/vet 净 + belief 绿(含 4 新测)+ roomengine **9 红 0 新增** + #1.6 净。**铁律守**:R0 shadow log-only / R1 不碰 alarm(Decider 仅 shadow)/ R5 不涉 / R7 τ\* 常量带来源 + 终值待 P9 标定(同 P2.4 deferral)。
+
+**P7 剩(后续 commit)**:P7.2 τ\* 随 context(夜间/浴室 C_FN 高→τ\* 低)/ P7.3 reason 路由(哪节点后验主导)/ P7.4 human-bed 豁免接 τ\* veto / P7.5 ghost/bed 是否并入(建议保节点内,不过度统一)。
+
+---
+
 ### [2026-06-08 21:10 MDT] 审查66 `e546d96..7d82d4c`(+委员会执行 B)整单元 bReplayUnit 落地 — 验收施工方 `7d82d4c`(收敛实现 V1+V4 全-pipeline R6 真绿)+ 委员会**合并去重**补 V2/V3 → spec **V1-V4 全绿**(逻辑保真);recall 仍 blocked on 真数据
 
 **性质**:用户拍 B(审查65 sequencing「现在就建 bReplayUnit」)→ 委员会执行建 harness。期间施工方 **独立收敛** 推 `7d82d4c`(`belief_neighbor_pipeline_test.go`,同思路全-pipeline:借真 cabb layout + 合成 in-FOV 帧,本房丢轨真涌现 + 兄弟房 EnterRoom 真 handleEventMessage)。两份近乎逐行同构(连 suite/addr 常量值都同)= **强信号:机制正确**(两独立实现自洽)。

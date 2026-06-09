@@ -73,11 +73,11 @@ const (
 	DecisionUncertain                 // 信念摊平，升级人工/不瞎猜
 )
 
-// 决策阈值（非对称）。θ_fire 高（漏报代价远大于误报）；θ_uncertain 低=信念摊平触发线。
-const (
-	thFire      = 0.55
-	thUncertain = 0.40
-)
+// 决策阈值（非对称）。θ_fire = τ* confirm 工作点（P7.1 单源:代价比 TauConfirm.Tau()=0.55,取代魔数）；
+// θ_uncertain 低=信念摊平触发线。
+var thFire = TauConfirm.Tau()
+
+const thUncertain = 0.40
 
 // Decide 当前瞬时决策（无状态快照）。
 func (be *Belief) Decide() Decision {
