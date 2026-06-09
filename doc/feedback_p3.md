@@ -7,6 +7,22 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `a9c646c` + ★委员会自纠³(我上轮「blocked on logging」误判)+ 挑深实质:frozen-sit gap 是安全侧别盲目关
+
+施工方**自纠了我上轮 R6 结论**。我特别严格亲验(对纠正也不橡皮图章,对自己旧结论也不护)——**三点都成立,我上轮错了**:
+- ① **frozen 案上轮没真跑**:老 UUID layout 非 INET → 路由失败 msgs 空 → 上轮「P=0.000」是空数据。导 INET layout 修 → 现真跑(peak 0.008/0.012)。
+- ② **ghost 证据现成,非「blocked on logging」**:harness 加读 `belief_shadow_nodetect_gated p6_1a_Ri<0.5`(realness 识别镜面/反射/冻结)→ **cd2b 现经 realness-ghost 正确否决**,覆盖 1/4=25%,精度 1/1=100%(#2/#9 真摔保住)。
+- ③ **frozen-sit 仍不否 = realness 保守(P3.2 设计)非 logging 缺**。
+- ⟹ **我上轮「补 Room 层 log 是覆盖前置/关键路径」= 误判,撤回**。覆盖测量用现有 zap log 够;sensor_decision_log 补 Room 层是 **cutover 持久化/SQL 的事**(仍要,但不是覆盖测量前置)。我把两件事 conflate 了,认领。
+
+**★挑深实质(委员会该加的,不止接受纠正)——frozen-sit「gap」是安全侧,别盲目关**:
+- frozen-sit 不被否的根因 = realness **保守**(`shadowFrozenArtifact` 注释「**真人久站缺 A→不判**」)。这不是 bug,是**雷达观测极限的安全选择**:雷达**分不开「冻结反射伪迹」vs「真人静止」**(物理极限,你们自己提过)。
+- **若为关这个 gap 把 realness 调激进**(去抓 frozen-sit ghost)→ **同样的激进会把「真摔后躺地不动的受害者(危险 long-lie)」误判成 frozen-ghost → 错否 → 漏掉最危险的摔**。这是灾难方向。
+- ⟹ **这个 gap 大概率该留着**:frozen-sit ghost FP 否不掉 = 当 firmware fire 护士驳回(安全无害);realness 保持保守**保护静止真受害者**。**覆盖损失换精度安全,值**——和 bed-position FP 同理。
+- **realness-veto 仍欠一个对面测**:cd2b 经 realness 否决了,但要验 realness **不会**把「真摔躺地不动」误判 ghost(= realness-veto 的 #2 等价对抗案)。现 harness 无「真摔+久躺不动」案。**补一个:真摔受害者静止数分钟 → 断言 realness 不 flag ghost(不否决)**——这是 realness-veto 的精度安全闸。
+
+**裁定**:**收**(自纠对+覆盖部分解封 25%)。**修正路线**:① 撤回「Room 层 log 是覆盖前置」(它是 cutover 持久化事)② frozen-sit gap 倾向**保留**(安全侧),不为覆盖盲目调激进 realness ③ 补「真摔久躺」案验 realness-veto 精度安全。覆盖真实上限 = realness 安全能识别的 ghost(lost/反射),frozen-sit 与 bed-position 都结构性不可覆盖(留 firmware+护士)。last-audited→`a9c646c`。
+
 ### [2026-06-09] ✅ 委员会 R6 收 `86f8cd0`——覆盖测量 blocked on「DBN 不 log 否决证据成可消费形态」= cutover 前置,**升为关键路径**
 
 施工方补 ghost/frozen 真案测覆盖,发现真瓶颈。**亲跑核验属实**:

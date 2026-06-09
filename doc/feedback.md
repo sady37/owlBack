@@ -31,7 +31,8 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`86f8cd0`(委员会 R6 收 ghost/frozen 案测覆盖→发现**覆盖 blocked on DBN 不 log 否决证据成可消费形态**:frozen ghost 是 present 被 VerdictGhost 删不走 track_lost,DBN 知道 P=0.000 但不 log 出来 harness 抓不到;**升级:Room 层否决证据 logging=关键路径**,同一件事 unblock 覆盖测量+SQL 归因+cutover validate-then-flip,优先超「补更多案」;精度面已闭环。详见 `doc/feedback_p3.md`。上轮 `cc7a4e8`:bed-veto #2 验真+收紧+委员会自纠²)
+- **last-audited**:`a9c646c`(委员会 R6+**自纠³**:上轮「blocked on logging」**误判,撤回**——施工方证 frozen 案上轮没真跑〔老 UUID layout msgs 空〕+ghost 证据现成〔realness `nodetect_gated Ri<0.5`〕→cd2b 经 realness-ghost 否决覆盖 25%精度 100%;我把覆盖测量与 cutover 持久化 conflate 了。**挑深实质**:frozen-sit gap 是安全侧〔realness 保守不判真人静止为 ghost=物理极限安全选择〕,关它=激进 realness 会误判躺地真受害者为 ghost 错否→**该留,frozen-sit/bed-position 结构性不可覆盖留 firmware+护士**;补「真摔久躺」案验 realness-veto 精度安全。详见 `doc/feedback_p3.md`)
+- **(旧)** `86f8cd0`(committee R6 收 ghost/frozen 案;原判「blocked on logging」已被 `a9c646c` 自纠撤回:frozen ghost 是 present 被 VerdictGhost 删不走 track_lost,DBN 知道 P=0.000 但不 log 出来 harness 抓不到;**升级:Room 层否决证据 logging=关键路径**,同一件事 unblock 覆盖测量+SQL 归因+cutover validate-then-flip,优先超「补更多案」;精度面已闭环。详见 `doc/feedback_p3.md`。上轮 `cc7a4e8`:bed-veto #2 验真+收紧+委员会自纠²)
 - **(旧)** `cc7a4e8`(委员会 R6 收 bed-veto #2 验真+收紧;**★委员会自纠²**:上轮基于用户不对称说 retract 的 concern **错了**——施工方跑 #2 证旧判据**确实**误否 #2〔精度 50%,委员会原始 flag 对〕;错在我验了不对称机制存在却没验它对 #2 触发,#2 vital 在→解 InBed 没出 LeftBed→不对称没触发。修:bedConf≥0.9 strict→#2 不否精度 100%。诚实净:cd2b 与 #2 都 radar-only 0.20 区分不了,strict 防误否但 cd2b 覆盖丢→覆盖 0%,bed 不能作覆盖只防误否,覆盖只剩 ghost/frozen。详见 `doc/feedback_p3.md`)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
