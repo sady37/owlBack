@@ -118,6 +118,19 @@
 - **⚠ 但根因「第三说」仍不严谨（不橡皮图章）**：施工方称「卧帧 area=1=GeomInEnter 门区误归」。**亲核机制**：belief 的 geom 来自 `geomFromArea(b.CellAreaType)`（belief_shadow.go:194/241）= **position→cell→AreaType**，**不是 frame 的 `area_id`**。施工方 log 里「area=1=GeomInEnter」是**写死在 t.Logf 字符串里的断言,不是测出来的值**——它没真去读那些卧帧落的 `CellAreaType`。⟹ 三个根因假说（pose3 / InBed / Enter）**没有一个被跑出来的 geom 实测证实**，仍是猜。真要钉死须 **log `CellAreaType` 看卧帧实际 geom**（Enter？Bed？Floor？各自 LR 1.5/0/4.0 差很多）。
 - **裁定**：**驳回解除**（可复现 + 描述改正 = 两条硬伤补齐，bar 全绿）。根因实测留**低优先 post-launch**——因 **#1 召回已被用户 de-gate(非上线 gate)**，根因精度此刻不挡路。施工方**别再纠 #1 根因,转否决 harness**（上轮指令）。last-audited→`a6eb12f`。
 ---
+### [2026-06-09] 施工方 → 委员会：★bed-veto 精度漏洞 **验真 + 收紧确凿在床**（gate-critical 解）+ 诚实发现 conf 区分不了 cd2b/#2
+
+按委员会 gate-critical 要求验 #2（建 txt loader 解 #1/#2 格式：track+radar/sleepad 事件路由）：
+- **①漏洞验真**：旧 bed 判据下 **#2（床边真摔 pose5+InBed）peakP=0.785 正证据=bed → 错误否决真摔✗ 破gate**（精度 1/2=50%）。委员会预测**确认**。
+- **②收紧「确凿在床」**：bed-veto 加 `bedConf≥0.9`（sleepad 接触/human-bed ≫ radar-only 0.6 靠床）。→ **#2 bedConf=0.20<0.9 不再否=修好✓**（精度 100%，真摔保住）。
+- **③★诚实发现（委员会假设不成立）**：**cd2b 与 #2 的 bed-occupancy 都是 radar-only conf=0.20**（非 sleepad 在床）→ bedConf 阈**区分不了**二者。strict≥0.9 安全（#2 保住）但 cd2b 也够不到 → **覆盖丢失（0/2）**。委员会「cd2b 高 conf / #2 低 conf」前提对此 export 不成立。
+
+**净**：bed-veto 收紧后**精度安全**（错否真摔=0，gate-critical 解）；但 **bed-FP 覆盖需真 sleepad-确凿在床案**（睡床误报，本样本无）才测得到——radar-only InBed 的「在床」对真/假摔不可分（雷达可观测性极限:床边地上 vs 床上）。⟹ **bed-occupancy 单独不可作覆盖来源,只能 strict 确凿在床防误否**。
+
+**待补**：①找 sleepad-确凿在床的真 FP 案测覆盖 ②实质2 延时窗 5min(T_fire 需 alarm_events) ③ghost 真案(d523 待真 layout)。bar 绿 9 红 0 新增 R0。**待委员会**：bed-veto 覆盖既靠不住,是否 bed-FP 改靠别的证据(sleepad 连续居中 in-bed 而非 radar InBed)?
+
+---
+
 ### [2026-06-09] 施工方 → 委员会：否决 harness 双轴 + 正向恢复证据 + escalate-不否决（be229fd 四/五部分落）
 
 按 be229fd：①**正向恢复**入证据（`belief_shadow_exit_recapture`/`lostfall_cancel`/`neighbor_handoff`=回床/离场/邻房人证），②★安全螺丝（四）`belief_shadow_lostfall_escalate`（窗到未佐证=真摔）**不算否决证据**仅记（track 消失≠恢复，防昏迷重伤盲区误否），③**双轴输出**（五）。3 案：

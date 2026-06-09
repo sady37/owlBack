@@ -1,9 +1,11 @@
 package roomengine
 
 import (
+	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -72,17 +74,21 @@ func parseDumpTs(s string) (int64, bool) {
 // 不碰生产开火（R0）。**实质2 待补**：延时窗 5min（窗内无证据→放行 / 早退）+ 双轴（覆盖+精度）+ 窗长参数化。
 
 type vetoCase struct {
-	dir    string
-	format string // v1=带topic_type window / v2=不带(category推断)
-	truth  string // real-fall(firmware对,DBN不该否决) / false-alarm(firmware错,DBN该否决)
-	note   string
+	dir     string
+	format  string // v1=带topic_type window / v2=不带(category推断) / raw=monitor dump / txt=test_record.txt
+	truth   string // real-fall(firmware对,DBN不该否决) / false-alarm(firmware错,DBN该否决)
+	note    string
+	dayUTC  string // txt 格式:窗口日期(UTC,如"2026-06-05")
+	sleepad string // txt 格式:sleepad addr(:978 路由)
 }
 
 // 首批：能直接 load 的两案（其余格式 d523 raw / d5f7 txt 下周期补统一 loader）。
 var vetoCases = []vetoCase{
-	{"unit201-handoff-0609-bathroom-333B", "v2", "real-fall", "#9 firmware 真摔(pose=5)→该不否决"},
-	{"cd2b-fall-0607-0127", "v1", "false-alarm", "#7 firmware 在床误报→该否决"},
-	{"hunzi-cabb-lost-0601-2247-FP", "v2", "false-alarm", "#5 lost_track 误报→该否决"},
+	{"unit201-handoff-0609-bathroom-333B", "v2", "real-fall", "#9 firmware 真摔(pose=5)→该不否决", "", ""},
+	{"cd2b-fall-0607-0127", "v1", "false-alarm", "#7 firmware 在床误报→该否决", "", ""},
+	{"hunzi-cabb-lost-0601-2247-FP", "v2", "false-alarm", "#5 lost_track 误报→该否决", "", ""},
+	// ★委员会 gate-critical:#2 = 床边跌倒身靠床→sleepad 检 HR/RR = **床占用为真的真摔**。验 bed-veto 是否误否。
+	{"bedtest-0605-2-bedside-fall-fw-detect", "txt", "real-fall", "#2 床边真摔(pose5)+床占用→bed-veto 不得误否", "2026-06-05", "fd00:0:3:111:3:101:2470:978"},
 	// #13 d523-ghost：raw loader 已就绪，但 d523 的 room_visual_layout.canvas **无 Radar object**
 	// （只 Wall/Enter/Furniture）→ ParseLayoutConfig 建不出 mount → pipeline 跑不了。待补带雷达 mount 的
 	// d523 layout（不得捏造）后启用。raw 格式 loader 本身已验（hunzi v2 + 此 raw 路径）。
@@ -93,10 +99,62 @@ var vetoCases = []vetoCase{
 type vetoEvidence struct {
 	peak     float64 // peak P(Fallen)（仅诊断，不作判据）
 	ghost    bool    // belief_shadow_track_lost argmax=Ghost（镜面/反射伪迹，definitively 非摔）
-	bed      bool    // belief_shadow_bed_occupied_suppress（接触式床占用，非地板摔）
+	bed      bool    // belief_shadow_bed_occupied_suppress 触发（**单独不够**，须配 bedConf 确凿在床）
+	bedConf  float64 // 床占用最高 conf（确凿在床判据：sleepad 0.9/human-bed 0.99 ≫ radar 0.6「靠床边」）
 	recovery bool    // 正向恢复：recapture(回床/离场)/neighbor-handoff(人证在邻房)——非 track 消失
 	escalate bool    // belief_shadow_lostfall_escalate（窗到未佐证=真摔，**否决逻辑不得覆盖**，仅记防误否）
 	frames   int
+}
+
+// txtEventRe 解析 test_record.txt 的 EVENT 行：time | :dev | EVENT <name>。（track 行复用 txtTrackRe，:9e7 专用）
+var txtEventRe = regexp.MustCompile(`^(\d\d:\d\d:\d\d)\s*\|\s*:(\w+)\s*\|\s*EVENT\s+(\w+)`)
+
+// feedTxtCase 解析 #1/#2 类 test_record.txt：radar :9e7 track（txtTrackRe）+ radar/sleepad InBed/LeftBed/Enter/Exit
+// 事件，路由 :9e7→radar / :978→sleepad，喂生产入口。dayUTC=窗口日期(UTC)。
+func feedTxtCase(t *testing.T, dir, dayUTC, radarAddr, sleepadAddr string,
+	feedDev func(addr, devType, topic, cat string, dv []map[string]interface{}, ts int64)) int {
+	t.Helper()
+	f, err := os.Open(filepath.Join(casesDir, dir, "test_record.txt"))
+	if err != nil {
+		t.Skipf("test_record.txt 缺 %s: %v", dir, err)
+	}
+	defer f.Close()
+	atoi := func(s string) int { n, _ := strconv.Atoi(s); return n }
+	tsOf := func(hms string) (int64, bool) {
+		tt, err := time.Parse("2006-01-02 15:04:05", dayUTC+" "+hms)
+		if err != nil {
+			return 0, false
+		}
+		return tt.UTC().UnixMilli(), true
+	}
+	frames := 0
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if m := txtTrackRe.FindStringSubmatch(line); m != nil { // :9e7 track
+			ts, ok := tsOf(m[1])
+			if !ok {
+				continue
+			}
+			feedDev(radarAddr, "radar", "monitor", "track", []map[string]interface{}{{
+				"pose": atoi(m[2]), "position_x": atoi(m[3]), "position_y": atoi(m[4]), "position_z": atoi(m[5]),
+				"track_id": atoi(m[6]), "area_id": atoi(m[7]), "track_confidence": atoi(m[8]),
+			}}, ts)
+			frames++
+		} else if m := txtEventRe.FindStringSubmatch(line); m != nil { // EVENT <name>
+			ts, ok := tsOf(m[1])
+			if !ok {
+				continue
+			}
+			addr, dt := radarAddr, "radar"
+			if m[2] == "978" {
+				addr, dt = sleepadAddr, "sleepad"
+			}
+			feedDev(addr, dt, "event", m[3], []map[string]interface{}{{"event_status": "start", "heart_rate": -1, "respiratory_rate": -1}}, ts)
+			frames++
+		}
+	}
+	return frames
 }
 
 // runDBNVeto 喂一案真数据走真 pipeline → 采集 peak P + 正否决证据（R0 只读）。
@@ -121,6 +179,19 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 			e.handleEventMessage(mk(topic, cat, dv, ts))
 		} else {
 			e.handleMessage(nil, mk(topic, cat, dv, ts))
+		}
+	}
+	// feedDev：txt 用，按 addr/devType 路由（radar :9e7 / sleepad :978）。
+	feedDev := func(addr, devType, topic, cat string, dv []map[string]interface{}, ts int64) {
+		dvJSON, _ := json.Marshal(dv)
+		msg := rediscommon.StreamMessage{Values: map[string]interface{}{
+			"device_addr": addr, "device_type": devType, "topic_type": topic, "category": cat,
+			"timestamp": strconv.FormatInt(ts, 10), "dataValue": string(dvJSON),
+		}}
+		if topic == "event" {
+			e.handleEventMessage(msg)
+		} else {
+			e.handleMessage(nil, msg)
 		}
 	}
 
@@ -158,6 +229,11 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 			feed("monitor", cat, r.Payload, ts)
 			frames++
 		}
+	case "txt": // test_record.txt（#1/#2）：radar track + radar/sleepad 事件，:978 sleepad 路由
+		if vc.sleepad != "" {
+			e.deviceRoom[vc.sleepad] = roomID
+		}
+		frames = feedTxtCase(t, vc.dir, vc.dayUTC, radarAddr, vc.sleepad, feedDev)
 	}
 	ev := vetoEvidence{frames: frames}
 	for _, le := range logs.All() {
@@ -171,7 +247,10 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 				ev.ghost = true // 镜面/反射 ghost verdict = 正否决证据
 			}
 		case "belief_shadow_bed_occupied_suppress":
-			ev.bed = true // 接触式床占用 = 正否决证据（在床非地板摔）
+			ev.bed = true
+			if c, ok := le.ContextMap()["p5_bed_conf"].(float64); ok && c > ev.bedConf {
+				ev.bedConf = c // 捕最高床占用 conf,判「确凿在床」vs「靠床边」
+			}
 		case "belief_shadow_exit_recapture", "belief_shadow_lostfall_cancel", "belief_shadow_neighbor_handoff":
 			ev.recovery = true // 正向恢复（sole-resident recapture/回床/邻房 hand-off）= 正否决证据
 		case "belief_shadow_lostfall_escalate":
@@ -186,17 +265,27 @@ func TestVetoPrecisionHarness(t *testing.T) {
 	var totalFP, fpVetoed, totalReal int // 双轴(be229fd 五):覆盖=fpVetoed/totalFP / 精度=correctVetos/vetos
 	for _, vc := range vetoCases {
 		ev := runDBNVeto(t, vc)
-		// ★委员会实质1:否决须**正证据**（ghost/bed/正向恢复），中 P 无证据→**默认放行**。P 仅诊断。
+		// ★委员会实质1:否决须**正证据**；中 P 无证据→**默认放行**。P 仅诊断。
+		// ★bed-veto 精度漏洞(委员会 gate-critical):bed 单独**不够**——#2 床边真摔靠床→radar InBed(conf 0.6)
+		//   触发 bed_occupied_suppress 会误否真摔。收紧成「**确凿在床**」:bedConf ≥ 0.9(sleepad 接触式/human-bed),
+		//   区别于「靠床边」partial(radar-only 0.6)。「靠床」的真摔受害者 conf 低→不否;「确凿睡床」conf 高→否。
 		// ★四:track 消失/escalate **不**算否决证据（可能昏迷重伤盲区）→ 不进 wouldVeto。
-		wouldVeto := ev.ghost || ev.bed || ev.recovery
+		const bedConfFloor = 0.9
+		bedVeto := ev.bed && ev.bedConf >= bedConfFloor
+		wouldVeto := ev.ghost || bedVeto || ev.recovery
 		reason := ""
-		for _, e := range []struct {
-			b bool
-			s string
-		}{{ev.ghost, "ghost "}, {ev.bed, "bed "}, {ev.recovery, "recovery "}} {
-			if e.b {
-				reason += e.s
+		if ev.ghost {
+			reason += "ghost "
+		}
+		if ev.bed {
+			if bedVeto {
+				reason += "bed-确凿(conf≥.9) "
+			} else {
+				reason += "bed-靠床(conf<.9不否) "
 			}
+		}
+		if ev.recovery {
+			reason += "recovery "
 		}
 		if reason == "" {
 			reason = "(无正证据→默认放行)"
@@ -225,7 +314,7 @@ func TestVetoPrecisionHarness(t *testing.T) {
 		} else {
 			correct = "未否决(无正证据放行;漏覆盖,非 gate)"
 		}
-		t.Logf("[%s] %s  帧=%d  peakP=%.3f(诊断)  正证据=%s  would-veto=%v  %s", vc.truth, vc.dir, ev.frames, ev.peak, reason, wouldVeto, correct)
+		t.Logf("[%s] %s  帧=%d  peakP=%.3f bedConf=%.2f 正证据=%s  would-veto=%v  %s", vc.truth, vc.dir, ev.frames, ev.peak, ev.bedConf, reason, wouldVeto, correct)
 	}
 	cov, prec := 0.0, 1.0
 	if totalFP > 0 {
