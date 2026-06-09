@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`672e82b`(下次从此 commit 起算 delta)
+- **last-audited**:`d57240e`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,34 @@
 
 
 
+
+### [2026-06-08 19:20 MDT] 审查60 `672e82b..d57240e`(doc-only)#3 Neighbor 设计裁定 — 架构属实但施工方漏套自己刚学的教训(★P6.5 recapture 覆盖预审,先于 wire)+ N-3 拆预设(复用 SoleResident 门,非新阈)+ 双向 R5 锁要求
+
+**性质**:`d57240e` doc 设计讨论(用户拍板优先 #3 Neighbor,施工方请委员会裁 N-1..N-5 + locus,裁前不建)。无代码。
+
+**✅ R6 亲验架构声明全属实**:neighborToObs(belief_adapter:459)+ ObsNeighbor 似然(likelihood:102,`dampNbrFallen=0.7` 压 SFallen / `gainNbrEmpty=3.0` 抬 Empty,R5 许可压制成员)**在但从不喂**=死管(同退役前 SleepStage/StandDuration 结构)。跨房访问原生可得(`beliefShadowTick`=`(e *Engine)`,engine.go:247 roomSuiteID/:278 beliefShadows/belief_shadow.go:74 beliefShadowFor)。census 门先例在(SuiteCensusManager + suppressedByMultiResident + SoleResidentRecaptureState + hasSoleResidentInBedroom)。常量带来源(calibration:53-57,R7)。
+
+**★★ 阻塞核查(挑实质):施工方刚在审查58/59 学了"wire 前先查 live 源是否已覆盖该信号"(SD double-count 教训),本贴却没对 Neighbor 套用同一刀。** Neighbor 的核心价值定位是"丢轨歧义消解 / lost_track FP 压制"——**但这正是 P6.5 `SoleResidentRecaptureState` + exit-recapture lost-sweep 已经在做的事**(单 resident 浴室丢轨 + SleepadAnchored 回床 → recapture 抑制 phantom fall)。**wire 前必须先做覆盖预审**(死源分流第②类:fall-relevant 但已被 live 源覆盖 → 退役 dup,不 wire)。
+- 我亲查覆盖边界:P6.5 recapture 触发条件 = **单 resident + SleepadAnchored 回床(锚点=床/sleepad 接触)**;邻房非床(站在卧室、radar 见人但无 sleepad 接触)→ **P6.5 不 recapture**。ObsNeighbor 读兄弟房 **radar belief 后验占用** → 此例**会**压。
+- ⟹ **结论:Neighbor 非纯 double-count(不同于 StandDuration)**——它有**真增量覆盖** = "兄弟房 radar 检到人但未 sleepad-锚床"(P6.5 sleepad-anchor 够不到的区域)。重叠区(单 resident + 浴室丢轨 + 回床)是双压,但**单 resident FP 同向安全**(不增漏报)。
+- **但要求施工方在 wire 前的设计 doc 里显式写清这条 delineation**(P6.5 覆盖 X / Neighbor 增量 Y / 重叠 Z 双压同向安全),把刚学的教训落到这个源上——否则等于没学。**这是受理 #3 wire 的前置条件**。
+
+**locus 裁定(拆预设,不简单选 A/B)**:
+- **★N-3 单占用门(安全关键)——拆掉"新 census 阈/private-flag"预设**:N-3 的真本质**不是"单元单占用"这个计数,是审查㉚ 归因不变量**——压制须"邻房占用可归因于同一丢轨人 + 无其他未交代人可能是 faller"。**多 resident 单元里"邻房占用"可能是另一个人 → 归因不安全 → 必须不压(否则压掉真摔=漏报)**。**裁:复用现成 `SoleResidentRecaptureState` 的 sole-resident 语义**(已排除 visitor、已 LOG skip-multiresident、P6.5 实证)——**禁新建第二个 census 占用阈(#1.3 单源真相;两个占用门=drift 风险,同 #2.4)**。N-3 = "sole-resident gate 复用",非新机制。
+- **N-1 占用源**:接受倾向①(读兄弟 shadow 后验 `1−P(Empty)−P(Left)`,通用 radar-only 房也行),驳②(raw sleepad 仅 sleepad 房,覆盖窄)。**但①引入跨房 belief 耦合**,须 N-5 锁(下)。
+- **N-2 谁算邻居 / N-4 聚合**:均下游于 N-3 门——sole-resident 前提下"人只在一处",倾向①(全同-unit)+ max 聚合(任一兄弟占用=人在别处强证据)成立,接受。物理相邻精化待 room-room 邻接元数据(现无),不阻塞。
+- **N-5 反馈环**:接受"读兄弟 `b.Vector()`=上一 tick 完成后验,至多 1-tick 陈旧,damp<1 有界不 runaway"分析,**但须落测**(下)。
+
+**wire 受理的硬前置(裁后 shadow-first 建,R0 log-only)**:
+1. **P6.5 覆盖 delineation doc**(上★★)——先于 wire。
+2. **双向 R5 锁补 Neighbor 多占用漏报 case**:r5_calibration_lock_test 现仅锁"Neighbor 压 fall 是许可压制(<1)";**须加多-resident 单元 case 证 ObsNeighbor 此时 gate-OFF 不压真摔**(漏报方向锁,对齐 P6.5 ③ skip-multiresident)。
+3. **N-5 不震荡锁**:测证跨房读序不致压制 runaway(1-tick 陈旧 + damp 有界)。
+4. corroboration≠substitution(铁律重申,施工方已认):ObsNeighbor 压 fall 须邻房**真变占用**(正证据 occ=P(占用)),**非"邻房无信号"裸 absence**;**Conf 须反映真占用确定度而非缺信号**——落测锁(同 np=0/NoDetect realness 原则)。
+5. 整单元 redis-replay 真验(ObsNeighbor 8 案 populated + R5 + 9 红 0 新增 + 多占用案不压真摔)——待用户环境,**shadow-first 可先建(R0 安全)不阻塞**。
+
+**裁决**:**locus 批准**(N-1①/N-2①/N-3 复用 SoleResident/N-4 max/N-5 1-tick-stale),**但 wire 前置 = P6.5 覆盖 delineation doc(★必须,落施工方刚学的"查 live 覆盖"教训)**。裁后施工方 shadow-first 落地(R0 log-only 安全,不碰生产 #1/R1)。#3 是直击 lost_track FP 主类(CABB/John.Y)的真杀手锏,方向认同;门(N-3)是漏报红线延伸,复用单源不新建。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:用户拍板优先 #3 Neighbor(最具竞争力方向/限制条件下唯一解)→ 开设计讨论:源保真预审(doc-only)+ wiring locus 5 岔口 + ★N-3 单占用门(安全关键,防多占用单元误压真摔漏报)请委员会议
 
