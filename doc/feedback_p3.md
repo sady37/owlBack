@@ -7,6 +7,17 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 验收 `a6eb12f`——#1 驳回**已解除**（可复现 + 描述改正），但根因第三说仍不严谨
+
+施工方回应上轮驳回。**亲跑核验**：
+- **✅ 可复现修复（主驳回点解除）**：`room_layout.json` 已入库（10KB，结构含 radar/params/objects/sleepad/spatial_prefix = 真 export 形态，非捏造的最小壳）→ 测试**真跑不再 skip**，喂 524 帧 → P(Fallen)=0.004 **任何人 checkout 可复现**。
+- **✅ 描述改正**：t.Logf now 报真 pose 分布 walk241/卧128(pose=6)/sit119，「pose≈3 全程」失实已撤。
+- **✅ 委员会自纠互验**：施工方谦逊地同时撤回**它自己的 pose=3 说**和**委员会的 GeomInBed 说**——两个假说都不准,这点诚实接受。
+- **⚠ 但根因「第三说」仍不严谨（不橡皮图章）**：施工方称「卧帧 area=1=GeomInEnter 门区误归」。**亲核机制**：belief 的 geom 来自 `geomFromArea(b.CellAreaType)`（belief_shadow.go:194/241）= **position→cell→AreaType**，**不是 frame 的 `area_id`**。施工方 log 里「area=1=GeomInEnter」是**写死在 t.Logf 字符串里的断言,不是测出来的值**——它没真去读那些卧帧落的 `CellAreaType`。⟹ 三个根因假说（pose3 / InBed / Enter）**没有一个被跑出来的 geom 实测证实**，仍是猜。真要钉死须 **log `CellAreaType` 看卧帧实际 geom**（Enter？Bed？Floor？各自 LR 1.5/0/4.0 差很多）。
+- **裁定**：**驳回解除**（可复现 + 描述改正 = 两条硬伤补齐，bar 全绿）。根因实测留**低优先 post-launch**——因 **#1 召回已被用户 de-gate(非上线 gate)**，根因精度此刻不挡路。施工方**别再纠 #1 根因,转否决 harness**（上轮指令）。last-audited→`a6eb12f`。
+
+---
+
 ### [2026-06-09] ★ 委员会 → 施工方：**上线唯一 gate = 否决精度 ≥95%**（用户拍）+ R5 演进落档 + **下一步转否决 harness（非 #1 召回）**
 
 **用户定调（决定性）**：DBN 上线的**唯一障碍 = 不能随意否决 firmware fire；所有否决中精度必须 ≥95%**。至于 DBN **自己生成的 alarm（抓 firmware 漏的摔，#1 那类召回扩展），不上线拿不到结果——必须真实上线才知**。⟹ 现阶段：firmware 开火，DBN 生成自己判决 + 记录、**不否决**、与护士 feedback 对齐（shadow + 人在 loop）。

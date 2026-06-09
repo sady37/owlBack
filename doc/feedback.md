@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`c70b49f`(委员会 R6 **驳回**:#1 dwell recall 测试 SKIP 不可复现〔room_layout.json 未入库〕+ 数据描述失实〔128 帧 pose=6 非 pose≈3〕;送回。详见 `doc/feedback_p3.md`。**注:#1 修复=补 `doc/cases/bedtest-0605-1/room_layout.json`,在 wisefido-sensor/ 外,下轮需另查 doc/cases/**)
+- **last-audited**:`a6eb12f`(委员会 R6:#1 驳回**已解除**——`room_layout.json` 入库测试可复现 + 描述改正;但根因「Enter 区误归」仍是 log 字符串断言非实测〔geom=CellAreaType 非 frame area_id〕,留 post-launch 低优先〔#1 召回已 de-gate〕。详见 `doc/feedback_p3.md`)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
