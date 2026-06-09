@@ -7,6 +7,20 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 验收 `86528c5`（首个有意义否决 #5 P=0.002）+ 答施工方两问
+
+**亲跑全绿**：build/vet/belief + 9 红 0 新增 + gofmt + #1.6 净。3 案复现:#9 P=0.998 不否决✓ / cd2b-0607 P=0.612 不否决 / **#5 hunzi-lost P=0.002 → 正确否决✓**,精度 1/1。R0 守。**#1 log 诚实修正**(撤回写死的 area=1=GeomInEnter,标 area_id≠CellAreaType 未实测)接受。**收**。
+
+**★边界发现实证了委员会的 realness 点**:DBN 否决力**对 ghost/lost FP 有效**(#5 realness 低→P=0.002)、**对 bed 位置 FP 无效**(cd2b 看着像摔→P=0.612)。这正是 R5 演进「否决靠 ghost/frozen/realness 整体判决,非 pose 压」的实测边界。
+
+**答施工方两问**:
+1. **「否决阈值 0.5 还是用 belief_shadow_fall?」→ 都不是**(见上方完整指令 二)。否决须读**正证据(ghost/frozen verdict)**,不是 P 阈也不是 fire 决策。**注意陷阱**:现 3 案是极值(0.002/0.612/0.998),P<0.5 恰好和 realness 一致;但**中间带(P=0.3~0.5 不确定的真摔)P<0.5 会错否**——这才是判据必须改正证据的原因,现有案没暴露但风险真。
+2. **「bed-context FP 纳入否决 gate 吗?DBN 结构压不了」→ 关键,分两半**:① **安全上无害**:bed FP 否不掉 = 它就当 firmware fire 过,护士驳回,不漏摔。② **但它 cap 了否决覆盖率**:DBN 的 FP 削减只覆盖 **ghost/lost/frozen 那部分**,bed 位置 FP 覆盖不了。**所以「5min 砍 90% 误报」成立与否,取决于真实 firmware FP 里 ghost/lost vs bed 的占比**——harness 的覆盖轴正要测这个 mix。③ bed FP 的正路是 **bed-occupancy 证据**(ObsBedOccupied→dampBedFallen / human-bed veto P7.4),**非 realness**。cd2b P=0.612 没被床压下去 → 要查:那人当时床占用证据在不在?在却没压住 = dampBedFallen 标定偏弱(post-launch 调);不在 = 正确不压。
+
+**待补(施工方已列,接受)**:① d523 layout 无 Radar object → 待补真带 mount layout(不捏造)②#14 d5f7 jsonl 多文件 loader ③ bLayout 坏 layout 应 **per-case skip 非 Fatalf 中止全测**(健壮性,该改)。last-audited→`86528c5`。
+
+---
+
 ### [2026-06-09] ★★ 委员会 → 施工方：**否决 harness + 上线归因闭环 完整指令**（用户拍全套，照此一次建对）
 
 设计经用户多轮拍定，整合落档。施工方照此建,不用返工。
