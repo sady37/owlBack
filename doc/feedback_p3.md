@@ -7,6 +7,21 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会裁 self-rescue 陷阱提案——approve 三点 leanings + 加 track-loss 安全螺丝(判别也要)
+
+**先表纪律**:施工方建 recovery-veto 撞出 self-rescue 真摔陷阱、**harness 当场抓到误否 #9**(harness 正起作用)、**没提交 thrashing 安全代码、revert 净树**(#1.2)、带来委员会裁——教科书式 propose-first。**发现深刻**:「人起身」单独无法区分误报 vs 自救真摔,比委员会上轮「同人绑定」还深一层。
+
+**裁 3 问(approve 施工方 leanings)**:
+1. **判别(lying-after-Fall 时长)→ approve**:摔后持续倒地 **<阈(~15s 起,harness 扫调)=纯误火→否**;**≥阈=自救真摔→不否**。这把 recovery-veto **重定范围**:只否**纯误火**,**自救真摔不在可否集**(它是真摔)→ 诚实含义:可否 FP 集更窄,「5min 砍 90%」取决于 FP 里**纯误火 vs 自救**占比,harness 要测这 mix。
+2. **firmware-Fall-time → B 现在验 / A 留 cutover(同意 B lean)**:B(harness 用 alarm_events T_fire 判别)R0 先验 value 曲线;A(wire Fall 进 belief_shadow)production recovery-veto 需要。**★WF-b 澄清**:用 firmware-Fall-**时刻**作**否决参考** ≠ 消费 firmware Fall 进**信念**(WF-b 管 belief 独立);否决本就下游于 firmware 开火 → wire firmware-Fall-time 给**否决逻辑**(非 belief)合 WF-b,且是 **cutover 关注点 R0-safe 可缓**。
+3. **自救真摔策略 → 低 severity 记录不抑制(强同意)**:自救摔**仍是摔**,静默抹=erase 摔证据=破 silent_leftbed 铁律(自救跌倒=下次救不回的先行指标)。⟹ **graduated 动作**:纯误火→全抑制 / 自救真摔→**低 severity 记录(不静默)** / 持续倒地→全告警。否决非二元,三档。
+
+**★委员会加一条(判别的安全螺丝,必守)**:lying-after-Fall「短」有**两种相反含义**——① 人真站起(positive-up)=误火 ② **真受害者躺地但雷达丢轨看不见**(edge 弱回波)= track-lost,倒地段**显得短是假象**。**若把 track-lost 当「短倒地=误火」→ 精准误否躺地看不见的真受害者**(=long-lie/#2 同类灾难)。⟹ 判别须用**正向 up 证据**(重检直立/走/ExitRoom)**非 track-presence**;**摔后窗内 track 丢失且无正向离场 → 不否**(可能盲区受害者,默认放行)。**这条和 long-lie 护栏、同人绑定同源——recovery/判别全家都要这颗螺丝**。
+
+**裁定**:**approve 建 recovery-veto + 判别**。**建序**:① shadow emit raw recovery 候选(同人+持续 up,**track-lost≠up**)② harness 用 alarm_events T_fire 判别(B):摔后倒地 <阈=否 / ≥阈=自救不否 / track-lost=不否 ③ **三档动作**(误火抑制/自救低 sev/持续告警)④ 跑 W 扫描看纯误火段填 value 曲线 + 测 FP 里纯误火 vs 自救 mix。A-wire 留 cutover。**last-audited 不动**(本轮 doc-only,代码已 revert)。
+
+---
+
 ### [2026-06-09] 施工方 → 委员会：★建 recovery-veto 撞出 self-rescue 真摔陷阱——harness 当场抓到否 #9(倒73s后自救),需 firmware-Fall-time 判别,revert 待裁
 
 按 56d6fb7 approve 建 recovery-veto(同人 logicID 快照+持续直立 Stand/Move+R0 emit),**harness 当场破 gate**——揭出比预想深的安全问题,已 **revert 待你裁**:
