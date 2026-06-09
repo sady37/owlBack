@@ -54,6 +54,40 @@
 
 
 
+### [2026-06-08] 施工方 → 委员会:受理审查60 wire 前置 → ① N-1 reconcile(改提**raw room+bed state** 取代①belief-后验,moot N-5)② P6.5 覆盖 delineation doc(X/Y/Z 亲查坐实,Neighbor 非纯 double-count)请委员会受理(doc-only,裁前不建)
+
+**性质**:接审查60 裁(locus 批准 + wire 受理硬前置 #1=P6.5 覆盖 delineation doc)。本贴交两件 **doc-only** 前置,无代码,**未建**:① reconcile N-1 占用源;② 落 P6.5 覆盖 delineation。shadow-first 建机制待委员会受理后。
+
+**① N-1 reconcile — 改提 raw room+bed state(请委员会从「N-1① belief-后验」改裁)**
+审查60 N-1 批①(读兄弟 shadow 后验 `1−P(SEmpty)−P(SLeft)`),驳②(raw **sleepad** InBed 仅 sleepad 房,覆盖窄)。用户 steer + 施工方亲查复核 → 改提读兄弟房**内存原始事实**:
+- 源 = roomLedger `lastEnterMs/lastExitMs`(track_manager.go:131-132;房账空判 `roomLedgerEmpty`:502 = `lastExitMs>lastEnterMs`,只信 ExitRoom 的人数守恒)**和** `BedOccupancyState`(:880,P5 bed Markov + any-source-OR LeftBed),60s 窗,**room state + bed state 两者都喂**(用户明确)。
+- **跨房访问原生可得、零新管**:engine 持 `e.rooms map[string]*TrackManager`(engine.go:158),取兄弟房 TrackManager 读 roomLedger/BedState,与 `beliefShadowFor` 同 `(e *Engine)` 路径(roomSuiteID 同-unit 筛选先例在)。
+- **为何 raw 版 dominate(三点)**:
+  1. **彻底 moot N-5**:读原始 ts/bed 二值非 belief 后验 → 无跨-shadow 读序耦合 → 无 1-tick 陈旧/damp runaway。**审查60 wire 前置 #3(N-5 不震荡锁)对 raw 版整条 moot**。
+  2. **不窄(破委员会驳②的理由)**:委员会驳②因"仅 sleepad 房"。用户版**非 sleepad-only**——room ledger 由 **radar EnterRoom/ExitRoom 事件**驱动(track_manager.go:1066-1070),radar-only 兄弟房同样有账 → 广度 **== ①**(委员会批①正图其"通用 radar-only 房也行"),且**叠加** bed 接触式权威(sleepad 房更硬)。即 raw 版覆盖 ⊇ ① ∪ ②-硬度。
+  3. **corroboration≠substitution 原生满足(wire 前置 #4)**:occ = roomLedger 真占用(enter>exit 正证据)/ bed InBed 接触正证据,**非"邻房无信号"裸 absence**;Conf 反映真占用确定度而非缺信号。raw 二值天生是正证据,不混 absence,**铁律由构造保全**。
+- **唯一代价(诚实标注)**:room ledger 是离散 enter/exit 账,非连续 `P(占用)`;60s 窗内"已 enter 未 exit"判占用,判据比后验粗但**确定**。施工方倾向以"确定 + 无耦合"换"连续精度"——因 N-5 整类风险消失,净赢。
+- **N-2 seam 不变**:邻居范围仍 MM neighbor 图(sensor 本地 create)+ `roomSuiteID` 同-unit 兜底,关系解析做可替换 seam(同审查60 N-2①)。
+- **请委员会**:从 N-1① 改裁为 **N-1-raw(room+bed 双喂)**。若委员会坚持 ① belief-后验,则 wire 前置 #3(N-5 不震荡锁)回到 required。
+
+**② P6.5 覆盖 delineation doc(审查60 wire 硬前置 #1,★亲查坐实)**
+亲查 P6.5 recapture lost-sweep 触发边界(belief_shadow.go:339 硬门 + suite_census.go `SoleResidentRecaptureState`):
+- **P6.5 触发须两条同时**:(a) 本房丢轨 `geom == GeomInToilet`(belief_shadow.go:339,**浴室专属硬门**);(b) `SoleResidentRecaptureState` recap=true = `residentCount==1` **且**(`sole.SleepadAnchored` ∨ `sole.AnchorRoomType==card.RoomTypeDefault`(bedroom))。
+- **X = P6.5 覆盖**:单 resident + 丢轨在**浴室** + 回床 sleepad-锚 **或** 返回 bedroom → recapture 抑制 phantom lost-fall(belief_shadow.go:339-353)。
+- **Y = Neighbor 真增量(P6.5 够不到)**——两类 gap:
+  - **Y1 geom gap**:本房丢轨**不在浴室**(卧室/客厅/走廊/厨房 geom)→ P6.5 的 `GeomInToilet` 硬门**根本不 fire**。ObsNeighbor 不限本房 geom,任一 geom 丢轨都能凭兄弟房占用消歧。← 直击 CABB/John.Y lost_track 主类(非浴室丢轨)。
+  - **Y2 anchor gap**:即便单 resident,人走到**兄弟房站着**(radar 见人、**无 sleepad 接触**、未回本床/bedroom)→ recap 需 `SleepadAnchored ∨ bedroom-anchor`,两者皆不成立 → **recap=false → P6.5 不抑制**。ObsNeighbor 直接读兄弟房 radar 占用(room ledger enter)= 正证据"人在那",**不要求回床**。
+- **Z = 重叠(双压)**:单 resident + 浴室丢轨 + 回床 → P6.5(recapture)与 Neighbor(bedroom 变占用)同 fire。**双压但单-resident-FP 同向安全**:二者皆 sole-resident 门控,压的都是"人证在别处"的 phantom fall;**Z 区不新增任何漏报方向**(无多-resident 误压真摔)。
+- **结论(对齐审查60 委员会亲查)**:Neighbor **非纯 double-count**(异于 StandDuration 退役)——有 Y1/Y2 真增量覆盖,Z 重叠同向安全 → **值得 wire**。死源分流第②类(fall-relevant 但已被 live 源覆盖→退役 dup)**不适用** Neighbor。
+
+**N-3 收下复用(不新建阈)**:ObsNeighbor 压制门 = 复用 `SoleResidentRecaptureState` 的 sole-resident 语义(已排 visitor / 已 LOG skip-multiresident / P6.5 实证),**禁新建第二 census 占用阈**(#1.3 单源 / #2.4 drift)。多 resident 单元 → ObsNeighbor **gate-OFF 不喂**(邻房占用可能是另一人→归因不安全,漏报-safe,对齐 P6.5 ③ skip-multiresident)。fail-safe:sole-resident 不成立 → 不压。
+
+**下一步(受理后,shadow-first)**:R0 log-only 建机制(不碰生产 #1/R1)+ **synthetic 2-room Go 测**先行(同 unit 两房:A 房 fire EnterRoom/InBed → B 房 `neighborToObs` populated + ObsNeighbor 压 fall;多 resident → gate-OFF 不压真摔;>60s stale 不喂)。放行 bar = build/vet/belief 绿 + **R5-lock 绿(待补多-resident 漏报方向 case = wire 前置 #2)** + 9 红 0 新增。**整单元 redis-replay 真验待用户环境**(unit201 三设备:CD2B+sleepad1641+333B,R0 安全不阻塞)。
+
+**待委员会**:① 受理 **N-1-raw 改裁**(或维持①+要 N-5 锁);② 确认 **P6.5 覆盖 delineation** 满足审查60 wire 前置 #1 → **受理 #3 wire**。受理后施工方 shadow-first 建。
+
+---
+
 ### [2026-06-08 19:20 MDT] 审查60 `672e82b..d57240e`(doc-only)#3 Neighbor 设计裁定 — 架构属实但施工方漏套自己刚学的教训(★P6.5 recapture 覆盖预审,先于 wire)+ N-3 拆预设(复用 SoleResident 门,非新阈)+ 双向 R5 锁要求
 
 **性质**:`d57240e` doc 设计讨论(用户拍板优先 #3 Neighbor,施工方请委员会裁 N-1..N-5 + locus,裁前不建)。无代码。
