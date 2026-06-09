@@ -54,6 +54,23 @@
 
 
 
+### [2026-06-08 22:20 MDT] P7.3 落地(委员会执行)— reason 路由:fall 成因由"把 SFallen 拉最高的 fall-ward obs 节点"主导决定(lost/silent/pose_lying),取代散落 reason 函数
+
+**性质**:接 P7.2,impl_plan §6 P7.3 reason 路由(读出可解释性)。纯 shadow 读出(R0),自验 R6。
+
+**做了什么**:
+- **新 `belief/fall_reason.go`**:`DominantFallObs(obs)` 遍历 fresh obs 取 `rawLikelihood[SFallen]` 最高者(LR>1 才算 fall-ward;R5 校准约定 1.0 中性)= 后验主导节点。`reasonFor(kind)` 映射:**ObsNoDetect→lost**(走动消失=lost-fall,≈gate-list `lost_track`)/ **ObsDwellStill→silent**(dwell 久静,≈`bathroom_still`/`bedroom_person_silent`)/ **ObsPose→pose_lying**(开阔地倒姿)/ 其它→unknown。`FallReasonFor(obs)→(reason, 主导 obs, LR)`。
+- **shadow 读出(R0)**:belief_shadow_fall 加 `p7_3_reason`/`p7_3_dominant_obs`/`p7_3_dominant_lr`(confirm tick 算,vs gate-list reason 对账 P9)。
+- **设计取舍**:reason 由**真实似然主导**派生(非路径硬编码),原理化对账;压制源(Neighbor/Bed LR<1)与中性(ZBand 不写 SFallen)天然不入选。human-bed 豁免归 **P7.4**(veto 在 τ\* 前,非 reason 类)。
+
+**测试**(fall_reason_test.go):reasonFor 纯映射 / 三类端到端(pose_fallen→pose_lying、dwell_still→silent、no_detect→lost,均先验 LR>1 防退化)/ DominantFallObs 取最高+忽略压制·中性·stale / 全压制→unknown。
+
+**放行 bar**:build/vet 净 + belief 绿(P7.1-7.3 共 10 测)+ roomengine **9 红 0 新增** + #1.6 净 + gofmt。**铁律守**:R0 shadow log-only / R1 不碰 alarm / R5(reason 读出不改发射,且压制源不入 fall-ward 主导)/ R7 reason 标签常量。
+
+**P7 剩**:P7.4 human-bed 豁免接 τ\* veto(Conf≥99 前置短路)/ P7.5 ghost/bed 并入(建议保节点内,不过度统一)。
+
+---
+
 ### [2026-06-08 22:00 MDT] P7.2 落地(委员会执行)— τ\* 随 context(zone+risk-time)分档:浴室/夜间 C_FN↑ → τ\* 降 → 更敏感;base(日间非浴室)等价 P7.1 工作点
 
 **性质**:接 P7.1,把散落 RiskLevel 多档阈收敛到**单一代价比旋钮随 context**(impl_plan §6 P7.2)。纯 shadow 读出(R0),不接 alarm。自验 R6。

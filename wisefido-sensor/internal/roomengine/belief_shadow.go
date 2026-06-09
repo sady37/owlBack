@@ -23,8 +23,9 @@ const beliefShadowEnabled = true
 const beliefShadowLostTTLMs = 60_000 // track 超此无帧 = 丢失（对齐 trackLostAnchorMs）
 
 // P6.1b-D(审查㉛ Opt-1)小卫生间 provisional/分级窗:
-//   设备富(unit 有其它设备)→ 30min cancel 窗(覆盖立项 np=0 +335s),窗到未佐证升级。
-//   设备贫(浴室独苗,无跨设备 cancel 可能)→ 短窗早决断压制(省真摔无谓延迟,resource-scaled v3)。
+//
+//	设备富(unit 有其它设备)→ 30min cancel 窗(覆盖立项 np=0 +335s),窗到未佐证升级。
+//	设备贫(浴室独苗,无跨设备 cancel 可能)→ 短窗早决断压制(省真摔无谓延迟,resource-scaled v3)。
 const (
 	beliefProvisionalRichWindowMs = 30 * 60 * 1000 // 设备富:30min cancel 窗
 	beliefProvisionalPoorWindowMs = 120 * 1000     // 设备贫:2min 早决断(无 cancel 可能)
@@ -60,10 +61,10 @@ type beliefShadowTLayer struct {
 }
 
 type beliefShadow struct {
-	b           *belief.Belief
-	decider     belief.Decider
-	tracks      map[int]*beliefShadowTrack
-	fired       bool                         // 已 log 过本次 confirm（防 confirm 持续期重复 log）
+	b            *belief.Belief
+	decider      belief.Decider
+	tracks       map[int]*beliefShadowTrack
+	fired        bool                        // 已 log 过本次 confirm（防 confirm 持续期重复 log）
 	tlayer       map[int]*beliefShadowTLayer // DBN P1 Track 层
 	deviceSpeed  map[string]*deviceSpeedStat // P2.1：per-device 学习走速封顶（device→room 稳定，跨 track 累积）
 	lastLostGeom belief.Geom                 // #3：最近一次丢失点 geom（fall log 辨床/桶区误报用）
@@ -214,9 +215,9 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				zap.String("room_id", roomID),
 				zap.Int("track_id", b.TrackID),
 				zap.Int64("ts_ms", nowMs),
-				zap.Int64("p3_4_recapture_ms", nowMs-st.lastSeenMs),   // 丢失多久后返回(cd2b≈5.85min)
-				zap.Bool("p3_4_would_cancel", true),                   // production 会硬 cancel pending lost-fall
-				zap.Bool("p3_4_self_rescue_candidate", true),          // → shadow 标低 severity 非抹掉
+				zap.Int64("p3_4_recapture_ms", nowMs-st.lastSeenMs), // 丢失多久后返回(cd2b≈5.85min)
+				zap.Bool("p3_4_would_cancel", true),                 // production 会硬 cancel pending lost-fall
+				zap.Bool("p3_4_self_rescue_candidate", true),        // → shadow 标低 severity 非抹掉
 				zap.String("last_geom", st.geom.String()),
 			)
 		}
@@ -406,7 +407,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				zap.String("room_id", roomID),
 				zap.Int("track_id", tid),
 				zap.Int64("ts_ms", nowMs),
-				zap.Float64("p6_1a_Ri", realnessP),       // P(real);低=ghost 消失,不抬
+				zap.Float64("p6_1a_Ri", realnessP),        // P(real);低=ghost 消失,不抬
 				zap.Float64("p6_1a_door_exit", doorExitP), // P(door-exit);高=门区可达走出,不抬
 				zap.Bool("p6_1a_nodetect_gated", true),
 				zap.String("last_geom", st.geom.String()),
@@ -464,7 +465,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				zap.String("argmax_tstate", argT.String()),
 				zap.Float64("argmax_p", argP),
 				zap.String("last_geom", tl.geom.String()),
-				zap.Int("exit_dist_cm", exitDist),       // P2 诊断：丢失点离最近门距离
+				zap.Int("exit_dist_cm", exitDist),        // P2 诊断：丢失点离最近门距离
 				zap.Float64("approach_v_cms", approachV), // A：实测朝门定向逼近速度（0=未逼近/测不出）
 				zap.Float64("reach_cap_cms", reachCap),   // P2.1：本设备学习封顶（学习未足=全局 60）
 				zap.Float64("reach_e", reachE),           // 可达退场分 e=f_dist·f_reach（0=不抑制）
@@ -534,6 +535,9 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	confirmed := sh.decider.Update(v, nowMs) == belief.DecisionFall
 	if confirmed && !sh.fired {
 		argS, argP := v.Max()
+		// P7.3 reason 路由：由把 SFallen 拉最高的 fall-ward obs 节点决定成因（lost/silent/pose_lying），
+		// 取代散落 reason 函数；shadow-first R0 只读出（vs gate-list reason 对账 P9）。
+		p7Reason, p7Dom, p7LR := belief.FallReasonFor(obs)
 		e.logger.Info("belief_shadow_fall", // 仅 log，无 alarm
 			zap.String("room_id", roomID),
 			zap.Int64("ts_ms", nowMs),
@@ -545,6 +549,8 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			zap.Float64("p7_1_tau_confirm", belief.TauConfirm.Tau()),
 			zap.Bool("p7_2_bathroom", tauCtx.Bathroom), zap.Bool("p7_2_night", tauCtx.Night), // P7.2：context
 			zap.String("p7_2_tau_decision", tauCtxDec.String()), zap.Float64("p7_2_tau", tauCtxHit),
+			zap.String("p7_3_reason", p7Reason.String()), // P7.3：主导节点成因
+			zap.String("p7_3_dominant_obs", p7Dom.String()), zap.Float64("p7_3_dominant_lr", p7LR),
 		)
 	}
 	sh.fired = confirmed
