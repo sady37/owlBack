@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`72a8724`(委员会 R6 收判据改正证据〔ghost∨bed,非 P<阈〕+ lost-not-evidence=安全螺丝落地;⚠ 抓 bed-veto 精度漏洞:#2〔床边真摔+身子靠床 sleepad 在〕会被 bed 证据误否破 95%,#2 没 layout 跑不了也不在 vetoCases→bed-veto 在 #2 验过前不可信,须收紧「确凿在床」非「床传感器触发」。详见 `doc/feedback_p3.md`)
+- **last-audited**:`5a21cc9`(委员会 R6 收双轴+正向恢复+escalate-not-veto 安全螺丝;**bed-veto #2 委员会自纠**:用户指出 bed belief 有意不对称〔跌床偏 LeftBed + any-OR-LeftBed→占用降→fall 浮出〕,委员会亲查代码确认→**收回「#2 必然误否」方向**,#2 按设计不被否决;#2 仍值得跑确认 leaning-vital 冲突下不对称仍解 LeftBed〔降为确认型非阻塞〕。详见 `doc/feedback_p3.md`)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---

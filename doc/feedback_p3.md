@@ -7,6 +7,19 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `5a21cc9`（双轴+正向恢复+escalate-not-veto 安全螺丝）+ bed-veto #2 委员会自纠（用户指出 bed 不对称→收回「必然误否」）
+
+**亲跑全绿**:bar/9 红/gofmt/#1.6/R0。实现确认:① **双轴**(覆盖 1/2=50% + 精度 1/1=100%,诚实标「样本<500 非定量」)② **正向恢复证据**(recapture/exit/neighbor-handoff,**非 track 消失**)③ **escalate-not-veto**(`lostfall_escalate` 窗到未佐证=真摔 → **不算否决证据,仅记**,防昏迷重伤盲区误否)。**②③ = 委员会安全螺丝(指令四)正确落地**,赞。
+
+**bed-veto #2 验证仍欠(降级:从「预期失败」改「跑 #2 确认不对称」——用户纠正方向)**:
+- **用户域知识纠正(委员会亲查代码确认)**:bed belief **有意做了不对称**(`bed_bayesian_scorer.go`:决策 `P>0.70 InBed/P<0.50 LeftBed`、维持区 2min 强制 LeftBed,注释「**跌床安全偏 LeftBed**」)+ **漏报-safe**(`belief_shadow:528`「**any-source-OR LeftBed → 占用降 → 释放 → Fall 浮出**」)。`bed_occupied_suppress` 只在 `ObsBedOccupied.Value≥0.5` fire。⟹ #2(床边摔,人先离床 → LeftBed)按设计:LeftBed → 占用掉 <0.5 → bed-veto **不 fire** → 不被否决。**这条不对称正是防这个的;委员会收回「几乎必然误否」的方向判断**。
+- **但 #2 仍值得跑——确认不对称穿过 #2 的特例冲突**:#2 = 「LeftBed 但身子靠床 sleepad **仍检 HR/RR**」= NOTES 自标的「**sleepad 矛盾待确认**」。这是 γ schedule(`sleepad LeftBed+vital 冲突`)要解的边界:有 vital 时不对称会不会被拉回 InBed?跑 #2 = **确认不对称在这个 leaning-vital 冲突下仍解向 LeftBed**(占用掉→不否决),不是证伪 bed-veto。预期 PASS,但是有价值的 PASS(验证安全设计真覆盖到边界)。
+- 仍要:① 补 #2 真 `room_layout.json`(不捏造)② 进 vetoCases real-fall ③ 跑。**若意外被否** → 说明 leaning-vital 冲突把不对称拉回 InBed 了 = γ schedule 有洞(真 bug)。
+
+**裁定**:安全螺丝②③ + 双轴框架 **收**。#2 验证降为「确认型」(非阻塞),与延时窗 T_fire/补 ghost 案并列下一步。last-audited→`5a21cc9`。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 收 `72a8724`（判据改正证据=安全螺丝落地）+ ⚠ 抓 bed-veto 精度漏洞（#2 必须验）
 
 **亲跑全绿**：bar/9 红 0 新增/R0。判据已改 `wouldVeto = ev.ghost || ev.bed`（P 仅诊断），3 案翻转确认:#9 无证据→不否决✓ / cd2b bed 证据→否决✓ / #5 lost→默认放行。
