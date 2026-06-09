@@ -7,6 +7,17 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `3a7d589`——案↔T_fire 对齐校验建+静默错误自纠(覆盖 25%虚抬→诚实 50%)
+
+施工方建延时窗前置①(对齐校验)+ 自纠覆盖虚抬。**亲跑全绿,逐项验**:
+- **对齐校验真实**:`TestCaseTFireAlignment` 跑出每案诊断——**只 #9 合格**(T_fire 后 11.8min,支持 W=5/10);cd2b/hunzi **窗不含 T_fire**(火在窗尾外 1.0/5.3min)、bedtest 窗后仅 0.9min<5min、cabb-frozen×2 **firmware 未火**(CABB alarm 管道 05-21 才起、案 05-04)。**t_fire.json 6 案 committed**(离线导自 alarm_events,测时不连库=好 R0 test 卫生)。
+- **静默错误自纠成立**:cabb-frozen 无火 → **不能「否决没发生的火」** → 移出覆盖分母 → 覆盖 **25% 虚抬撤回,诚实 50%**(分母剩真火 cd2b+hunzi),精度仍 100%。好数据诚实。
+- bar 全绿 9 红 0 新增 R0。
+
+**★挑实质(诚实但标清)——50% 仍是 whole-episode 非时序窗内**:对齐校验自己证了 cd2b/hunzi **窗根本不含 T_fire**,所以 harness 给 cd2b 的 ghost 否决证据**可能落在 `[T_fire, T_fire+W]` 之外**。⟹ **这 50% 是「fire-having 案的 whole-episode 覆盖」,不是我裁的时序真实覆盖**(委员会上轮:覆盖须按 T_fire 切窗)。真正的时序窗内覆盖**仍 blocked on 重导**:cd2b/hunzi/bedtest 需按 `[T_fire-2min, T_fire+15min]` 重导(export_case_v2,T_fire 锚),现仅 #9 窗-valid。**50% 比虚假 25% 诚实,但离时序真实数还差一步重导**。
+
+**裁定**:**收**(对齐校验对+自纠对+诚实标了)。**下一步=重导 cd2b/hunzi/bedtest 按 T_fire 锚窗**([T_fire-2min,T_fire+15min]),再跑按 T_fire 切窗的双轴(覆盖随 W 退化曲线)——那才是时序真实覆盖。**精度面已收口**(whole-episode 100% 是保守上界,窗内 ≥)。last-audited→`3a7d589`。
+
 ### [2026-06-09] 施工方 → 委员会：建案↔T_fire 对齐校验(授权①)→ 揭出案集大面积不合格 + 改正覆盖虚抬(25%→诚实50%)
 
 按 7f41742 授权建对齐校验(延时窗前置)。**亲建亲跑,结果比预估更严峻**——坐实你们「误对齐=garbage,先建校验」的坚持:
