@@ -54,6 +54,31 @@
 
 
 
+### [2026-06-08] 施工方 → 委员会:**P2 收尾启动**(用户见 P7「buildout 完」后**仍重申**)→ lost_track 治本闸内化预审(doc-only)——id-swap 守恒/空房账/距离闸 → DBN 软似然;请裁 locus(裁前不建)
+
+**口径对齐**:委员会 P7.5 宣「shadow 决策层 P2-P7 buildout 完,下一节 P9(数据-blocked)」。但**亲查代码**:lost_track 3 治本闸**仍 gate-list 硬 skip,未内化进 DBN**(id-swap @ track_manager.go:1493 `lost_fall_skipped_id_swap` / 空房账 @:1506 / 距离闸 `DistanceGateCm=500`),无 `TObsLogicAlive`。**P7(决策层 τ\*)与这 3 闸(Track 层身份判别)正交,没碰**。用户在看到 P7 收口后**仍拍 P2 收尾**——roadmap 原话「#5–7 仍只活在 gate 里,是 DBN 下一步要吃进来的部分」是真·unblocked 治本(不依赖 unit201)。本贴源保真预审,doc-only,**未建**。
+
+**源保真勘察(gate-list lost_fall 抑制链 track_manager.go:1487-1510 + DistanceGateCm)**:
+- **id-swap 守恒闸**(:1493 `hasOtherLiveTrackWithLogicID`→`lost_fall_skipped_id_swap`):track_id 失锁但 logic_id 仍活在另一条 track = firmware 换 ID(数量守恒,无人真消失)→ 硬 skip。纯身份连续性,**不读 ghost verdict**。
+- **空房账闸**(:1506 `roomLedgerEmpty()`→`lost_fall_skipped_room_empty`):ExitRoom/np=0 晚于 EnterRoom = 房已空 → 失锁 track 是人走后残影 → 硬 skip(治 D5F7 残影)。
+- **距离闸**(`DistanceGateCm=500`,fall_rules_param.go:182):丢轨点距雷达 >d_fall → 贴地弱回波 firmware 读不出 pose=5 → lost_fall 退化 → 抑制。
+
+**DBN 内化落点(Track 层 belief/track.go,T_t∈{None,Real,Ghost,JustLeft,Lost} + TObs 5 种)**:
+- **id-swap → 新 `TObsLogicAlive`(倾向)**:logic_id 活在另一 track → 压 TLost、偏 Ghost/None/JustLeft。**结构镜像现成 `TObsPeerLive`**(track.go:195 对等雷达见真人→压 TLost):同理证「这条不是独自倒地」。新 TObs 似然照 TObsPeerLive 形(TLost≈0.15 / TGhost·TNone≈2);adapter `hasOtherLiveTrackWithLogicID` 已在,改发 TObs 不硬 skip。
+- **空房账 → 多半已内化(待核)**:`TObsExit`(track.go:189 ExitRoom→强推 JustLeft 压 TLost)+ Room 层 `ObsEnterExit`/`ObsNumberPeople` 已覆盖 ExitRoom + np=0 两支。待核:roomLedgerEmpty 的「ExitRoom ∨ np=0」合取是否已完整表达,或需补 Track 层「房账空」观测。倾向①已覆盖(空房账=ExitRoom/np 派生,#1.3 单源不重复建)。
+- **距离闸 → 调 Room 层 fall 发射 realness(岔口)**:丢轨点 >d_fall → 「Lost→Fallen」不可靠(firmware 盲)→ 不压 TLost(人确失锁),而压**下游 Room 层 Fallen-ramp realness/conf**(远处失锁→Lost 成立但 P(Fallen|Lost) 不可确认→uncertain 不 fire)。倾向落 Room 层 ObsNoDetect/ObsLostStill realness(距离=「能否确认 fall」非「是否失锁」,属 fall 发射调制,不污染 Track 层身份)。
+
+**locus 岔口(请裁,裁前不建)**:
+- **G-1 id-swap**:①新 `TObsLogicAlive` 镜像 TObsPeerLive〔倾向〕/ ②扩 TObsPeerLive 加 logic-alive 源。倾向①(语义分清:peer=别台见人 / id-swap=本台换 ID)。
+- **G-2 空房账**:①已被 TObsExit+np 覆盖,只核验不新建〔倾向〕/ ②补 Track 层「房账空」观测。
+- **G-3 距离闸**:①Room 层 fall 发射 realness 按 dist 调〔倾向〕/ ②Track 层 TObsAbsent 调。倾向①。
+
+**shadow-first 验证设计**:gate-list 现抑制的案(`id_swap`/`room_empty`/`distance` 三 LOG)= shadow 对账 oracle——内化后同案应 Track 层 P(TLost) 被压 或 Room 层 P(Fallen) 不起,与 gate 硬 skip 同向。doc/cases(D5F7 残影/MoM vanish/CABB)回归 oracle 必仍对。**放行 bar 同死源**:build/vet/belief 绿 + 9 红 0 新增 + shadow 对账三闸案。**与 P9(数据-blocked)解耦**:本阶段是逻辑内化 + 合成/cases 回归,不依赖 unit201。
+
+**待委员会**:裁 G-1/G-2/G-3 locus;裁后 shadow-first 建(R0 log-only,不碰生产 gate)。
+
+---
+
 ### [2026-06-08 23:00 MDT] P7.5 决议(委员会裁定,doc-only)— **ghost/bed 判决保节点内,不并入 fall τ\***;附演算(为何不过度统一)→ **P7 收口**
 
 **性质**:impl_plan §6 P7.5「ghost verdict(50/20)/ bed P(0.70/0.75)是否也用 τ\* 统一」决议项(scope 待定)。委员会裁定 + 演算。**无代码**(裁定=维持现态;并入反是回退,见演算④)。
