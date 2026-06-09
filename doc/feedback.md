@@ -54,6 +54,20 @@
 
 
 
+### [2026-06-08] 施工方 → 委员会:收审查63 验收 + 审查64 撤回 N-7 → wire-loop 核心**记录收口**;生产-gate 验证 **blocked on test data**(无 unit201 数据)→ 向下推进=doc-first 出验证 spec + ★逮 harness gap(bReplay 单房→Neighbor 无法真验,须扩整单元)
+
+**性质**:doc-only,无代码(裁前不建 harness 扩展)。收两条委员会裁(审查63 验收 wire / 审查64 撤回 N-7),按用户「先记录,向下推进」:① 记录暂停点 ② 出可 turnkey 的验证 spec ③ 逮 harness 前置 gap。
+
+**① 收口确认**:#3 Neighbor wire shadow-first 已验收(审查63 R6 全绿 + 3 建中条件真交),死源 **5/5 全处置**,wire-loop 核心完成。N-7 已撤回(审查64:soft 似然非 hard 抑制,headcount 硬门净负,降级为 recall 噪声 caveat 不改设计)。**施工方侧无 pending 代码动作**。
+
+**② 生产-gate 验证 blocked on test data**:3 前置(#5 整单元 redis-replay / N-6 终验过压 / DBN recall 真摔集)**全需 unit201 整单元数据**(CD2B+1641+333B),当前无 → 验证暂停。出执行 spec [doc/neighbor_verification_spec.md](neighbor_verification_spec.md):V1 Neighbor populated / V2 stale_corr / **V3 N-6 无过压(damp==0.7 非 0.49)** / V4 R5 多-resident gate-OFF / V5 回归绿 + recall 真摔集 0 误压(扣 N-7 visitor 噪声)。数据到即逐项跑。
+
+**③ ★逮 harness 前置 gap(向下推进的实质发现)**:现有 replay 载体 B `bReplay`(belief_b_replay_test.go:99)**只 RegisterRoom 单房**(:106)→ `neighborHandoff` 在 `e.rooms` 找不到兄弟房 → **ObsNeighbor 单房 replay 永不 fire**;`allObsKinds` 审计(:214 含 Neighbor)在单房必判「未 populate」=**结构使然非死管**。⟹ **Neighbor 真验须先扩 harness 为整单元**(multi-room 同 suite + roomSuiteID + suiteCensus seed + per-device 路由 + 跨房 ts 合并喂),正是委员会「redis-replay 须整单元」的代码前置。`bReplayUnit` 设计见 spec §0。
+
+**待委员会/用户**:① 委员会复核验证 spec(V1–V5 + recall + N-7 噪声扣偏)+ `bReplayUnit` 整单元 harness 设计;② 用户备 unit201 整单元数据导出(含「人从一房走到邻房 + 另房 lost-track」段 + 真摔对照段)。数据到 → 实现 harness + 逐跑。**当前 loop 静默暂停于此**(blocked on data,非 blocked on 设计)。
+
+---
+
 ### [2026-06-08 20:10 MDT] 审查64(用户纠 + 委员会自纠,doc-only,last-audited 不动)**撤回审查63 的 N-7** — 把 soft Bayesian 证据误当 hard 抑制器,误提的 headcount==1 硬门会在有 visitor 的单元废掉整特性=净负
 
 **性质**:用户纠审查63 N-7(「错,本来就是二义性场景,用 60s 时间窗口只是用来排除的,有了这个信息,胜率更高」)。委员会自纠(审查58 委员会自纠先例)。无代码,last-audited 维持 `88870d2`,不 bump。
