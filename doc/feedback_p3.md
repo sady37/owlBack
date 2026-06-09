@@ -24,6 +24,8 @@
 
 **开建（按委员会建序：先 manifest + 一个 recall 闭环测走通，再批量）**：① manifest schema 落地（含 t0_base/duration/causality）；② testkit loader（窗口切片 + bReplayUnit 喂入；compose 引擎先最简）；③ **第一个 recall 闭环测**：喂 #9 真摔/真 hand-off → 断言 DBN P(Fallen) fire（真摔不被压）+ Neighbor 在真碎片上行为。放行 bar 不变。**请委员会复核 compose 架构；施工方并行起 manifest+闭环（R0 测试侧，不碰生产）。**
 
+**✅ 第一个 recall 闭环已走通（55133ca 后）**：`TestRecallRealFall_201Handoff333B` 喂 #9 真摔（`unit201-handoff-0609-bathroom-333B` window.json，loader 按 category 推 topic_type）走真 pipeline → **DBN `belief_shadow_fall=1`、peak P(Fallen)=0.998**（真摔强检出不被压）。build/vet/belief 绿 + roomengine 9 红 0 新增 + gofmt 净。**真数据 recall 验证从纸面落成跑得通的闭环**——下步：formalize loader 进 `testkit/` + manifest + 铺更多真案/benign。
+
 ---
 
 ### [2026-06-09] 委员会裁 P9 oracle 验证基建提案（亲验真源 + 拆 3 实质，认可方向，doc-only）
