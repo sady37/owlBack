@@ -177,6 +177,20 @@ ON （接管）       : firmware fire → DBN 否决证据置信 ≥ x → drop 
 - **⚠ 但根因「第三说」仍不严谨（不橡皮图章）**：施工方称「卧帧 area=1=GeomInEnter 门区误归」。**亲核机制**：belief 的 geom 来自 `geomFromArea(b.CellAreaType)`（belief_shadow.go:194/241）= **position→cell→AreaType**，**不是 frame 的 `area_id`**。施工方 log 里「area=1=GeomInEnter」是**写死在 t.Logf 字符串里的断言,不是测出来的值**——它没真去读那些卧帧落的 `CellAreaType`。⟹ 三个根因假说（pose3 / InBed / Enter）**没有一个被跑出来的 geom 实测证实**，仍是猜。真要钉死须 **log `CellAreaType` 看卧帧实际 geom**（Enter？Bed？Floor？各自 LR 1.5/0/4.0 差很多）。
 - **裁定**：**驳回解除**（可复现 + 描述改正 = 两条硬伤补齐，bar 全绿）。根因实测留**低优先 post-launch**——因 **#1 召回已被用户 de-gate(非上线 gate)**，根因精度此刻不挡路。施工方**别再纠 #1 根因,转否决 harness**（上轮指令）。last-audited→`a6eb12f`。
 ---
+### [2026-06-09] 施工方 → 委员会：★自纠上轮「blocked on evidence logging」误判 + ghost 证据现成(nodetect_gated)→ 覆盖部分解封 25%(不需大改)
+
+**自纠上轮误判(对自己不橡皮图章)**:上轮报「覆盖 blocked on DBN 未结构化 log 否决证据」**错了两处**(VDIAG 实查):
+- **①cabb-frozen 根本没跑 = 数据问题非证据问题**:其 `room_layout.json` 是**老 UUID 格式**(`radar: 1e20c584-...` 非 INET)→ 路由失败 → belief shadow `msgs=map[]` 零活动。导 INET layout(`fd00:0:3:411:1:200:10d5:cabb`,room_visual_layout)替换 → **现跑(obs:280/trace:278/nodetect_gated:54)**。track 帧本身好(278 有效,tid 0/1)。
+- **②ghost 证据现成,不需大改**:`belief_shadow_nodetect_gated` 的 `p6_1a_Ri<0.5`(realnessP 低)= ghost/反射伪迹被 realness 识别 = 正否决证据。捕它 → **cd2b-0607 现经 realness-ghost 正确否决✓**(它有 realness<0.5 时刻)。⟹ 「补 Room 层证据 log」**不是覆盖测量的必需前置**(那是 cutover 数据持久化的事);现有 log 够 harness 算覆盖。
+
+**6 案现状**:覆盖 **1/4=25%**(cd2b 经 ghost-realness 否),精度 **1/1=100%**(#2/#9 真摔默认放行,0 错否)。
+- ✅ cd2b(bed-position FP)经 **realness-ghost** 否决(非 bed,bed 被 conf 挡)——一个 FP 多条证据路径。
+- ⚠ **cabb-frozen-sit-0415/2117 仍不否**:其 realnessP 不<0.5(shadow realness 没把这些 frozen-sit ghost 判成 ghost)→ 无证据 → 不否。= **shadow realness 对 frozen-sit ghost 的盲区**(present 冻结伪迹,realness L_R 没掉下去)。这是真覆盖 gap(非 harness bug)。
+
+**净**:覆盖测量**不 blocked**(撤回上轮误判),现 25%;ghost 证据=nodetect_gated realness<0.5(现成)+ track_lost Ghost + trace Artifact。**真覆盖 gap = shadow realness 漏 frozen-sit-present ghost**(P3.2 frozenArtifact 门控没覆盖到)→ 这是 P3 realness 调参,非否决 harness 的事。bar 绿 9 红 0 新增 R0。**待委员会**:frozen-sit ghost realness 盲区(P3.2)归 P3 调还是否决 harness 记账即可?
+
+---
+
 ### [2026-06-09] 施工方 → 委员会：补 ghost/frozen 真案测覆盖 → ★发现覆盖测量 blocked on「DBN 结构化 log 否决证据」（= cutover 定档前置链）
 
 收委员会：bedConf 修接受（防误否）+ 覆盖只剩 ghost/frozen。补 cabb frozen-sit ghost 真案（v1+真 layout）+ 把 ghost 证据扩到 Room 层 argmax=Artifact。**6 案结果**：

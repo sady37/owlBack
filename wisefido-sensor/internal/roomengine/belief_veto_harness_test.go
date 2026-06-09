@@ -240,6 +240,15 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 		frames = feedTxtCase(t, vc.dir, vc.dayUTC, radarAddr, vc.sleepad, feedDev)
 	}
 	ev := vetoEvidence{frames: frames}
+	if os.Getenv("VDIAG") != "" { // 只读诊断:dump 本案所有 belief_shadow_* 消息分布 + ghost 相关字段
+		mc := map[string]int{}
+		for _, le := range logs.All() {
+			if strings.HasPrefix(le.Message, "belief_shadow_") {
+				mc[le.Message]++
+			}
+		}
+		t.Logf("VDIAG[%s] msgs=%v", vc.dir, mc)
+	}
 	for _, le := range logs.All() {
 		switch le.Message {
 		case "belief_shadow_trace":
@@ -254,6 +263,13 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 			if s, _ := le.ContextMap()["argmax_tstate"].(string); s == "Ghost" {
 				ev.ghost = true // lost track → Ghost verdict = 正否决证据
 				ev.argmax = "TGhost"
+			}
+		case "belief_shadow_nodetect_gated":
+			// P6.1a:realnessP<0.5 = ghost 消失(镜面/反射/冻结伪迹被 realness 识别)= 正否决证据。
+			// door-exit(p6_1a_door_exit>0.5)是离场≈recovery,归 recovery 不归 ghost。
+			if ri, ok := le.ContextMap()["p6_1a_Ri"].(float64); ok && ri < 0.5 {
+				ev.ghost = true
+				ev.argmax = "realness-ghost"
 			}
 		case "belief_shadow_bed_occupied_suppress":
 			ev.bed = true
