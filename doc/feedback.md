@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`e546d96`(下次从此 commit 起算 delta)
+- **last-audited**:`7d82d4c`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,22 @@
 
 
 
+
+### [2026-06-08 21:10 MDT] 审查66 `e546d96..7d82d4c`(+委员会执行 B)整单元 bReplayUnit 落地 — 验收施工方 `7d82d4c`(收敛实现 V1+V4 全-pipeline R6 真绿)+ 委员会**合并去重**补 V2/V3 → spec **V1-V4 全绿**(逻辑保真);recall 仍 blocked on 真数据
+
+**性质**:用户拍 B(审查65 sequencing「现在就建 bReplayUnit」)→ 委员会执行建 harness。期间施工方 **独立收敛** 推 `7d82d4c`(`belief_neighbor_pipeline_test.go`,同思路全-pipeline:借真 cabb layout + 合成 in-FOV 帧,本房丢轨真涌现 + 兄弟房 EnterRoom 真 handleEventMessage)。两份近乎逐行同构(连 suite/addr 常量值都同)= **强信号:机制正确**(两独立实现自洽)。
+
+**✅ R6 亲验施工方 `7d82d4c`(不信声明)**:`TestNeighborFullPipelineFires`(sole→fire)+ `TestNeighborFullPipelineMultiResidentGateOff`(multi→gate-OFF)两 case 亲跑**真绿**;借的 `hunzi-cabb-lost-0601-2247-FP` layout 存在;roomengine **9 红 0 新增**。施工方踩坑台账(canonical INET addr / track_id 0-8 / filtered 帧只 NoTargetTick)与委员会自建时**完全一致**(互证)。
+
+**✅ 委员会合并去重(#1.2/#1.3 单源)**:不推第二份重复 harness。删委员会自建的 `belief_neighbor_replay_test.go`,以施工方 `nbpRun` 为基**重构 + 补全**:① `nbpRun` 返完整 `[]bShadowLog`(原仅返 handoff 计数)+ 参数化兄弟房事件 `[]nbpEvt`;② 补 **V2 stale_corr**(durable 留驻 enter 早于丢轨 200s → handoff=0 + `belief_shadow_neighbor_stale_corr`=1,no-silent-caps);③ 补 **V3 N-6 单合并** 两段(a bed-only→src=bed 证 bed 经真路径注册;b room+bed 双占用→handoff 恰 1 次 src=room,OR-合并非双似然);④ 清事件字面量 → `alarm.EnterRoom/InBed`(#1.1)。
+
+**✅ spec V1-V4 全绿(整单元真路径,逻辑/接线保真)**:V1 fire / V2 stale_corr / V3 单合并(两段)/ V4 gate-OFF。`go build/vet` 净 + belief 绿 + roomengine **9 红 0 新增** + #1.6 净(无禁忌词/无事件字面量)。spec `doc/neighbor_verification_spec.md` §0/§1/§4 同步更新(harness-gap→已修,V1-V4→已绿)。
+
+**诚实边界(不夸大)**:这是**合成整单元**逻辑保真,**非 unit201 真 replay**。N-6 单合并的**权威**保证仍是结构性(neighborHandoff 返单条 + 消费侧 append 单条),V3 真路径佐证「双占用→单次 fire」;`damp==0.7 非 0.49` 量化检 + **recall 真摔召回**(铁律:recall 从未验证)**仍 blocked on unit201 真数据**(合成证不了召回)。
+
+**裁定**:验收 `7d82d4c` + 委员会合并补全 → **spec V1-V4 落地全绿**。死源 5/5 全处置不变。**生产-gate 唯一剩项 = recall 真摔集(unit201 真数据,待用户)**;harness 已 turnkey(真数据到换喂 record 即逐跑 recall + N-6 量化)。**铁律 R0/R1/R5/R7 守**(R0 log-only 不碰 alarm)。
+
+---
 
 ### [2026-06-08 20:30 MDT] 审查65 `88870d2..e546d96`(doc-only)复核施工方验证 spec + harness-gap — **gap 亲验属实 + spec 接受**;★挑 sequencing:bReplayUnit 是 R0 测试基建可**现在就建**(合成 multi-room fixture 验),别把可建的 harness 也 block on data
 

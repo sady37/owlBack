@@ -4,13 +4,15 @@
 
 ---
 
-## 0. 前置发现（★阻塞验证的 harness gap）
+## 0. 前置发现（harness gap）→ ✅ 已修复（bReplayUnit 落地）
 
 现有 replay 载体 B `bReplay(t, dir, file)`（belief_b_replay_test.go:99）**只 RegisterRoom 单房**（:106 `e.RegisterRoom(cfg)`，单 roomID + 单 radar + 单 sleepad）。⟹ `neighborHandoff` 在 `e.rooms` 里**找不到兄弟房** → ObsNeighbor 在单房 replay 下**永不 fire**。`allObsKinds` 审计（:214 含 "Neighbor"）在单房 replay 必判 Neighbor「未 populate」——这是**单房结构使然，非 wire 死管**。
 
 **故 Neighbor 的真验必须先扩 harness 为整单元（multi-room，同 suite）**——这正是委员会反复说的「redis-replay 须整单元重放（非单设备）」。
 
-### harness 扩展设计（`bReplayUnit`，待实现）
+**✅ 已落地** `bReplayUnit`（belief_neighbor_replay_test.go，审查65 sequencing 建议 → 用户拍 B → 委员会执行）：多房注册同 suite + census seed + per-device 路由 + 按 ts 全局合并喂**生产** handleMessage/handleEventMessage（保真硬条件守）。本房 lost-track 经真 beliefShadowTick 涌现（合成 radar 帧：tid=1 走动后丢轨 + frame-keeper tick 触发 lost-sweep），邻房 hand-off 经真 handleEventMessage 落 lastEnterMs。**V1-V4 逻辑保真已绿**（见 §1）。recall（§2）仍 blocked on 真数据。
+
+### harness 扩展设计（`bReplayUnit`，✅ 已按此实现）
 保真硬条件不变（只喂 raw record 进生产 `handleMessage`/`handleEventMessage`，禁手搓 bases/禁 fork）。在 `bReplay` 基础上：
 1. **多房注册**：每个 device 的房各 `ParseLayoutConfig` + `e.RegisterRoom(cfg)`；`e.roomSuiteID[roomID]=suiteID`（同一 unit 的所有房 → 同 suiteID）。
 2. **per-device 路由**：`e.deviceRoom[addr]=roomID`、`e.deviceMounts[addr]=cfg.Radar` 按设备各设；radar/sleepad UID→addr 映射同 bReplay（靠 position_x 区分 radar vs sleepad.track）。
@@ -22,15 +24,19 @@ unit201 = 3 设备（CD2B radar + sleepad1641 + 333B radar）；CD2B/333B 各自
 
 ---
 
-## 1. 要验的项（数据到后逐条跑）
+## 1. 要验的项（V1-V4 ✅ 合成 fixture 已绿；recall 待真数据）
 
-| # | 项 | 判据 | 日志/断言 |
-|---|---|---|---|
-| V1 | Neighbor populated（活管） | 某房 lost-track 期间，兄弟房窗内有 fresh 有向 hand-off → ObsNeighbor fire | `belief_shadow_neighbor_handoff`（`n3_neighbor_conf`/`n3_neighbor_src`/`n3_lost_seen_ms`）出现 ≥1 次 |
-| V2 | stale_corr no-silent-caps | 兄弟房 durable 占用但相关度 stale → LOG 不静默 | `belief_shadow_neighbor_stale_corr`（`n3_stale_gap_ms`）出现；量化留驻 gap 频率 |
-| V3 | **N-6 无过压**（★审查62 终验） | room∧bed 同窗命中时**仅一条** ObsNeighbor（occ=OR，conf=max），非双似然相乘 | 同 tick `populated_kinds` 里 Neighbor 计 1；`belief_shadow_trace` `p_fallen` 的 damp 量 == 单条 ObsNeighbor 的 `dampNbrFallen=0.7`，非 0.49(=0.7²) |
-| V4 | R5 多-resident gate-OFF | census >1 resident 的 unit/时段，lost-track + 兄弟房占用 → **不** fire handoff | 多-resident 时段无 `belief_shadow_neighbor_handoff` |
-| V5 | 回归绿 | build/vet/belief 绿 + R5-lock 绿 + roomengine 9 红 0 新增 | CI |
+逻辑/接线保真用合成 multi-room fixture 经真路径已验（`TestNeighborReplayUnit_V1..V4`）；recall（真摔召回，§2）合成证不了，仍 blocked。
+
+| # | 项 | 判据 | 日志/断言 | 状态 |
+|---|---|---|---|---|
+| V1 | Neighbor populated（活管） | 某房 lost-track 期间，兄弟房窗内 fresh 有向 hand-off → ObsNeighbor fire | `belief_shadow_neighbor_handoff` 恰 1 次（n3_lost_seen_ms/conf/src 对） | ✅ V1 |
+| V2 | stale_corr no-silent-caps | 兄弟房 durable 占用但相关度 stale → 不压 + LOG 不静默 | handoff 0 次 + `belief_shadow_neighbor_stale_corr` 1 次 | ✅ V2 |
+| V3 | **N-6 单合并** | room∧bed 同窗命中 → OR-合并**单条**（conf=max），非双似然 | (a) bed-only→src=bed 证注册；(b) room+bed→handoff 恰 1 次 src=room | ✅ V3 |
+| V4 | R5 多-resident gate-OFF | census >1 resident → lost-track + 兄弟房占用 → **不** fire | 多-resident 无 handoff、无 stale_corr | ✅ V4 |
+| V5 | 回归绿 | build/vet/belief 绿 + R5-lock 绿 + roomengine 9 红 0 新增 | CI | ✅ |
+
+**合成保真边界（诚实标注）**：N-6「单合并」的**权威**保证是结构性的——`neighborHandoff` 返单条 + 消费侧 append 单条（构造即不可能喂 2），V3 在真路径上佐证「双占用→单次 fire」。`damp==0.7 非 0.49` 的 belief-trace 量化检留待真数据（合成 conf 固定，量化意义有限）。
 
 ## 2. DBN recall 真摔集（铁律：recall 从未验证）
 
@@ -43,5 +49,6 @@ unit201 = 3 设备（CD2B radar + sleepad1641 + 333B radar）；CD2B/333B 各自
 V1–V5 全过 + recall 真摔集 0 误压（扣 N-7 噪声后）+ N-6 终验无过压 + 铁律 R0/R1/R5/R7 守。通过后方可议 shadow→production cutover（ObsNeighbor 进 firmware∧shadow 漏报-safe gate）。
 
 ## 4. 当前 blocked / 待用户
-- **unit201 整单元 redis 数据**（CD2B+1641+333B 的 monitor/event 流窗口导出）——谁跑导出、哪个时间窗（需含至少一段「人从一房走到邻房 + 另房 lost-track」+ 一段真摔对照）。
-- 数据到 → 实现 `bReplayUnit` harness 扩展（§0 设计）→ 逐跑 V1–V5 + recall。
+- **V1-V5 ✅ 已绿**（`bReplayUnit` + 合成 multi-room fixture，逻辑/接线保真）。harness 已落地，不再 block on 数据。
+- **唯一仍 blocked = recall 真摔集（§2）**：需 **unit201 整单元 redis 真数据**（CD2B+1641+333B 的 monitor/event 流窗口导出）——谁跑导出、哪个时间窗（需含至少一段「人从一房走到邻房 + 另房 lost-track」+ 一段**真摔**对照）。合成数据证不了召回率。
+- 真数据到 → 复用 `bReplayUnit`（喂真 record 替合成）逐跑 recall + N-6 的 damp 量化（§1 边界）。
