@@ -54,6 +54,27 @@
 
 
 
+### [2026-06-08] 施工方 → 委员会:执行 SD-A 勘察时**当场逮回自己漏判** → ObsStandDuration 的 fall 信号已被 live 的 ObsDwellStill 覆盖,SD-A=double-count(撞用来驳 SD-B 的同一铁律)→ 改提 SD-RETIRE,请委员会重裁(裁前不建,未写 SD-A 代码)
+
+**自纠(我 21533be 预审漏了一条 live 源)**:着手 SD-A(从 track 静止源 emit ObsStandDuration)勘察 `radarFrameAdapter` 时发现——它**已 emit `ObsDwellStill`**(belief_adapter:53,`Geom=g` 即 toilet,`Value=nowMs-StillBoxRunStart` **无界**,Fresh=tsFresh),**live**(B 审计 8/8 案含 bathroom 都 populated)。而:
+- `ObsDwellStill` GeomInToilet → `SFallen: 1+(d/dwellScaleToiletSec)²`(P4.1 生存 ramp)。
+- `ObsStandDuration` GeomInToilet → `SFallen: 1+gainStandFall·min(d,8min)`(legacy,其自注"v2 由 HSMM 替代")。
+- **两者同从"toilet 静止时长"这一条物理证据抬 SFallen**。ObsDwellStill 是 P4.1"平滑取代硬悬崖"的现代替代且**已 live、已无界覆盖 8min+**;ObsStandDuration 是被它取代的 legacy 公式。
+
+**∴ wire SD-A = double-count**:同一"人在卫生间静止"证据会**两条 SFallen 源各更新一次**(DwellStill 生存 ramp + StandDuration 线性)→ 正撞委员会**驳 SD-B 时援引的"派生/同源禁双计"铁律**。我预审时只查了 ObsStandDuration 自己的 emit(roomAdapter dead),漏查"同语义是否已有 live 源",失误,认领。
+
+**附带:审查57 req1 的"StillBoxSec cap 太低够不到 8min"实为 moot**——`nowMs-StillBoxRunStart` **本就无界**(track_manager:3271"持续 still 时 StillBoxRunStart 不变",仅跳出 box 才清零),DwellStill 正用它;30s 是 box **几何**窗非 run 时长 cap。故"无界源"诉求 DwellStill 已满足。
+
+**重裁岔口(请委员会裁,裁前不建)**:
+- **SD-A(按审查57 wire)**:仅当 StandDuration 覆盖 DwellStill 漏的 toilet-still-fall 案才值得——但**同证据同 SFallen 方向,DwellStill 已 live**,wire=double-count。不取。
+- **SD-RETIRE(新,倾向)**:退役 ObsStandDuration(= live ObsDwellStill 的 legacy 重复源,同 SleepStage 模式)——**toilet-still-fall 覆盖不变**(DwellStill 留守)+ **整删 dead roomAdapter**(#1.2)。死源#5 由"wire"转"retire dup"。
+  - **精炼 reframe**:死源分流不止"fall-relevant?",而是"fall-relevant **且其 fall 信号未被 live 源覆盖**?未覆盖→wire;**已被 live 源覆盖→退役重复源**(防同源双计)。StandDuration fall-relevant 但已被 DwellStill 覆盖 → 退役。
+- **若嫌 toilet-still-fall 灵敏度/gap 鲁棒不足**(审查57 req2 分钟口径 / req3 容 track-gap 的合理关切):应**调单一源 DwellStill**(其 scale/StillBoxRunStart 容 gap),**非加第二源 StandDuration 双计**。此为后续 P4 调参项,非本死源 wire。
+
+**倾向 SD-RETIRE**。**裁前不建**:未写 SD-A 代码。**待委员会**:重裁 SD-A/SD-RETIRE(+ 若 RETIRE 则 ObsStandDuration 全清 likelihood/enum/calibration/roomAdapter,同 SleepStage SS-B 净度)。**余 #3 Neighbor**(跨房,redis-replay 整单元,待用户)= 真·最后一个死源 wire。
+
+---
+
 ### [2026-06-08 18:04 MDT] 审查57 `b16bb99..21533be`(doc-only)StandDuration 预审 → 裁 SD-A + 3 实质实现要求(无界源/分钟单位/track-gap)+ roomAdapter 整删
 
 **性质**:`21533be` doc(StandDuration 源保真 + SD-A/SD-B)。无代码。
