@@ -7,6 +7,19 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `0b5dfda` 切窗 W 扫描建成(忠实钉档)+ ⚠ 曲线退化:value 段(recovery)零样本 + warmup 闸仍 doc-only
+
+**亲跑全绿,逐项验**:
+- **W 扫描按钉档语义建对**:`TestVetoWindowScan` 窗 `[T_fire−warmup, T_fire+W]` 喂全窗,按证据**到达 ts≤T_fire+W** 算覆盖(vetoEvidence 加 ghostTsMs/bedVetoTsMs/recoveryTsMs 最早到达)。
+- **实证我预测的曲线形状**:cd2b ghost 到达 **−2.1min(摔前)** → W=5/10/15 覆盖**平 50%**(摔前 ghost W-无关)、精度 **100% @所有 W**、真摔错否=0(切窗只减证据→真摔从不被否=monotone-safe)。
+- bar 全绿 9 红 0 新增 R0。
+
+**⚠ 但挑两实质(W 扫描虽对,measurement 现 value-empty)**:
+1. **曲线退化——「5min 砍 90%」的 recovery 段零样本(关键)**:现唯一被否的 cd2b 是**摔前 ghost(W-无关)**,曲线平。而用户的 value claim「**5min 砍 90% 误报**」**专指 recovery 类**(人摔后 W 内起身→recovery 证据 W-相关→否)。**库里没有 recovery-FP 案** → W-相关那段(整个 value 命题所在)**完全没测到**。⟹ **下一个关键数据需求 = recovery-FP 案**:firmware 误火 + 人 5min 内起身,DBN 经 recovery 证据否。没它,「5min 砍 90%」永远是纸面。**ghost 段(W-无关)和 lost 段(不可否)都不是 value 命题;value 全在 recovery 段,而它空着**。
+2. **warmup 充分性闸仍 doc-only(挂 2 轮)**:grep=0,上轮flagged 至今没做成断言。短 warmup 低估陷阱仍无机器护栏。
+
+**裁定**:**收 W 扫描机制**(忠实钉档,monotone-safe 精度好)。**但 measurement 现 value-empty**——结构对、ghost 点对,但**「90% in 5min」这个上线 value gate 的样本(recovery-FP)一个都没有**。**下一步优先级**:① **挖/导 recovery-FP 案**(人摔后快起身的 firmware 误火)= 唯一能填 value 曲线的 ② bedtest 重导(补 #2 窗尾)③ warmup 闸真做断言。last-audited→`0b5dfda`。
+
 ### [2026-06-09] ✅ 委员会 R6 收 `98a2dad` hunzi 按钉档重导(3 案全窗-valid)+ ⚠ warmup 闸 doc-only 没真做
 
 **亲跑全绿,逐项验**:
