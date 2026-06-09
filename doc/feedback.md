@@ -54,6 +54,39 @@
 
 
 
+### [2026-06-08] 施工方 → 委员会:执行审查58 裁 SD-RETIRE → ObsStandDuration 全清退役 + roomAdapter 整删落地(#1.2)+ 死源审计收官(3 wire + 2 retire,余 #3 Neighbor user-blocked)
+
+**收下改裁 + 委员会自纠**(SD-A 会 double-count,审查57 漏查 live 覆盖)。按裁 SD-RETIRE **全清**(8 文件改动,#1.2 同 SleepStage 净度):
+- `belief/observation.go`:删 enum `ObsStandDuration` + obsKindLabel `"StandDuration"`(iota 左移,内存 shadow 无持久 int 依赖)。
+- `belief/likelihood.go`:删 `case ObsStandDuration` + **孤儿 `clampCap`**(仅该 case 用,#1.2 一并清)。
+- `belief/calibration.go`:删 `standFallBase`/`gainStandFall`/`standCapMin` + 注释。
+- `belief_adapter.go`:**整删 `roomAdapter`**(np/EnterExit dead-dup + StandDuration emit)+ **孤儿 `beliefEventWindowMs`**(仅 roomAdapter 用,一并清)。
+- `belief_adapter_test.go`:删 `TestAbsenceNotNegativeEnterExit`(roomAdapter 自测)+ 孤儿 `card` import。
+- `belief/r5_calibration_lock_test.go`:删抬升锁的 2 条 ObsStandDuration case + doc 引用。
+- `belief_b_replay_test.go`:删 `allObsKinds` 的 `"StandDuration"`。
+
+**absence≠负向(原则#3)不变量保全说明**:删的 `TestAbsenceNotNegativeEnterExit` 测的是 **roomAdapter 的 snapshot-emit 守卫**(凭 RoomState.LastExitTs 新鲜度决定是否发 ObsEnterExit,故需防 stale 误发)。**live 路径 `radarEventToObs` 是事件驱动**(仅 EnterRoom/ExitRoom 离散事件触发,**结构上无 absence 可发**——无事件即不调用)→ 不变量**由构造保全**,snapshot-守卫测试随 dead roomAdapter 退役,非裸删 redline 覆盖。
+
+**放行前置全绿**:
+- `go build ./...` + `go vet` 干净;**残留 ObsStandDuration/roomAdapter/clampCap/standFall*/beliefEventWindowMs grep 空**。
+- belief 包**全绿**;**R5-lock 去 StandDuration 行仍绿**;**9 红 0 新增**。
+- **B 源保真审计**:`StandDuration` 已从「未populate」消失 → 剩 `未populate=[BedOccupied〔data-driven,无床数据案窗〕 / Neighbor]`。
+- #1.6 自查:改动文件无 dead-plumbing 标记。
+
+**★ 死源审计收官**:源-保真审计的"5 个待 wire"经**两道过滤(fall-relevance + live-coverage)**收敛为 **3 wire + 2 retire**:
+| 死源 | 分流 | 状态 |
+|---|---|---|
+| #1 BedOccupied | fall-relevant 未覆盖 → wire | ✅(P5-rework) |
+| #2 NumberPeople | fall-relevant 未覆盖 → wire | ✅ |
+| #4 SleepStage | 非 fall-relevant → retire | ✅(SS-B) |
+| #5 StandDuration | fall-relevant 但已被 live DwellStill 覆盖 → retire dup | ✅(本次) |
+| #3 Neighbor | fall-relevant 未覆盖 → wire | ⬜ **user-blocked**(跨房需 redis-replay 整单元) |
++ R5-lock 机械化总闸 ✅。**B 审计 未populate 仅剩 BedOccupied(data-driven)+ Neighbor(真·最后一个 wire)**。
+
+**待委员会**:复核 SD-RETIRE 退役。**#3 Neighbor + recall 案 + redis-replay 整单元待用户**——死源 wire 路径上**唯一剩余项均阻于用户输入**(谁跑整单元 redis-replay)。新节点暂停(㊻)。
+
+---
+
 ### [2026-06-08 18:18 MDT] 审查58 `21533be..301151a`(doc-only)SD double-count 自纠属实 → 改裁 SD-RETIRE + 委员会自纠审查57 + 精炼死源分流
 
 **性质**:`301151a` doc(SD-A 勘察逮回 double-count → 改提 SD-RETIRE)。无代码(SD-A 未建)。

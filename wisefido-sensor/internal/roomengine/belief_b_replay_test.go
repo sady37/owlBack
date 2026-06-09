@@ -211,7 +211,7 @@ func bFindWindowFile(t *testing.T, dir string) string {
 // allObsKinds — source-fidelity 审计的全 obs 全集(belief 引擎认的源;对账"真路径 populate 了哪些")。
 var allObsKinds = []string{
 	"Pose", "VitalPresent", "BedOccupied", "EnterExit", "NumberPeople",
-	"StandDuration", "TrackPresent", "Neighbor", "NoDetect", "ReachableExit", "ZBand", "DwellStill",
+	"TrackPresent", "Neighbor", "NoDetect", "ReachableExit", "ZBand", "DwellStill",
 }
 
 // TestBSourceFidelityAudit — 系统性 source-fidelity 审计(审查㊺ 当前最高价值):8 案逐 obs 对账。

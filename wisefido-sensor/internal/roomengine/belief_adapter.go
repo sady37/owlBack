@@ -20,7 +20,6 @@ const (
 	beliefSleepadTTLMs    = 35_000  // sleepad vital 窗（对齐 bed scorer vitalWindowMs）
 	beliefStillBoxStaleMs = 120_000 // 长冻 radar track → 命门 stale（治本 John.Y 9h）
 	beliefEnterMarginCm   = 30      // 离门 ≤30cm 判 Enter 区（对齐 ExitDistMinCm）
-	beliefEventWindowMs   = 5_000   // room transition ts 在此窗内才当一次 Enter/Exit 观测
 
 	// P3.1 shadow realness 三探测器阈(委员会审查⑦:独立于生产 Verdict;室内-老人 shadow 占位,P9.6 待 oracle)。
 	// **生产闸 SuspectSpeedCm/ImpossibleSpeedCm 一律不动**(R0)。超阈→近确定 ghost(P(瞬移|real elderly)≈0)。
@@ -456,26 +455,6 @@ func bedAdapter(b card.BedState, nowMs int64) []belief.Observation {
 	}
 }
 
-// roomAdapter room 聚合状态 → []Observation。
-// 铁律：AloneContinuousMin/RiskLevel 等派生信号禁入（feedback_no_dynamic_threshold_modulation）。
-func roomAdapter(r card.RoomState, roomType int, nowMs int64) []belief.Observation {
-	out := []belief.Observation{
-		{Source: "room", Kind: belief.ObsNumberPeople, Value: float64(r.TotalPeople), Conf: 0.8, Ts: r.TotalPeopleTs, Fresh: true, Geom: belief.GeomUnknown},
-	}
-	standGeom := belief.GeomUnknown
-	if roomType == card.RoomTypeBathroom {
-		standGeom = belief.GeomInToilet
-	}
-	out = append(out, belief.Observation{Source: "room", Kind: belief.ObsStandDuration, Value: float64(r.StandingContinuousMin), Conf: 0.7, Ts: nowMs, Fresh: true, Geom: standGeom})
-
-	// room transition（最近 5s 内的 0↔N 翻转当一次 Enter/Exit 观测）
-	if r.LastExitTs > 0 && nowMs-r.LastExitTs <= beliefEventWindowMs {
-		out = append(out, belief.Observation{Source: "room", Kind: belief.ObsEnterExit, Value: -1, Conf: 0.7, Ts: r.LastExitTs, Fresh: true, Geom: belief.GeomInEnter})
-	} else if r.LastEnterTs > 0 && nowMs-r.LastEnterTs <= beliefEventWindowMs {
-		out = append(out, belief.Observation{Source: "room", Kind: belief.ObsEnterExit, Value: +1, Conf: 0.7, Ts: r.LastEnterTs, Fresh: true, Geom: belief.GeomInEnter})
-	}
-	return out
-}
 
 // neighborToObs §5.5.2 弱耦合：邻居 room 占用信念 → 本房 ObsNeighbor。
 // occ = 邻居 P(占用) [0,1]；conf = 邻居 belief 确定度。9h 治本近似：sleepad InBed 当 occ。

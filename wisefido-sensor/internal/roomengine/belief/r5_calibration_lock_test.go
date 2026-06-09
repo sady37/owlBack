@@ -13,7 +13,7 @@ import (
 //
 //	┌── pose/z(R5 铁律核心) ── ObsPose*(全 pose×全 geom)/ObsZBand → SFallen-LR ≥ 1(只正向,永不 <1)
 //	├── 中性                ── ObsNumberPeople                      → SFallen-LR = 1.0
-//	├── 抬升                ── ObsDwellStill/ObsStandDuration/ObsNoDetect → SFallen-LR ≥ 1
+//	├── 抬升                ── ObsDwellStill/ObsNoDetect → SFallen-LR ≥ 1
 //	└── 可靠压制源(豁免,设计许可 <1) ── 见 permittedFallSuppressors:各源 source 依据 + 本测试
 //	                            正向断言"满证据时确 <1"(证其仍是 DBN 合法压制通道,被误中性化也红)
 //
@@ -60,15 +60,13 @@ func TestR5LockNumberPeopleNeutral(t *testing.T) {
 	}
 }
 
-// TestR5LockLiftSourcesNeverSuppressFall — 抬升类(dwell/久站/no-detect)对 fall 只抬不压:SFallen-LR ≥ 1。
+// TestR5LockLiftSourcesNeverSuppressFall — 抬升类(dwell/no-detect)对 fall 只抬不压:SFallen-LR ≥ 1。
 // 红 = 谁把抬升源的 SFallen 调 <1(把"久驻/消失"算成 fall 的反证,语义颠倒)。
 func TestR5LockLiftSourcesNeverSuppressFall(t *testing.T) {
 	cases := []Observation{
 		{Kind: ObsDwellStill, Value: 600, Conf: 1, Fresh: true, Geom: GeomInToilet},
 		{Kind: ObsDwellStill, Value: 600, Conf: 1, Fresh: true, Geom: GeomOpenFloor, ToleranceFactor: 1.0},
 		{Kind: ObsDwellStill, Value: 600, Conf: 1, Fresh: true, Geom: GeomInBed}, // rest → lk(nil) → 1.0
-		{Kind: ObsStandDuration, Value: 8, Conf: 1, Fresh: true, Geom: GeomInToilet},
-		{Kind: ObsStandDuration, Value: 8, Conf: 1, Fresh: true, Geom: GeomOpenFloor}, // 非 toilet → lk(nil) → 1.0
 		{Kind: ObsNoDetect, Value: 0, Conf: 1, Fresh: true, Geom: GeomOpenFloor, RealnessP: 1, DoorExitP: 0},
 		{Kind: ObsNoDetect, Value: 0, Conf: 1, Fresh: true, Geom: GeomOpenFloor, RealnessP: 1, DoorExitP: 1}, // door-exit 仍留 floor ≥1
 		{Kind: ObsNoDetect, Value: 0, Conf: 1, Fresh: true, Geom: GeomOpenFloor, RealnessP: 0, DoorExitP: 0}, // ghost 消失 → 中性 1.0

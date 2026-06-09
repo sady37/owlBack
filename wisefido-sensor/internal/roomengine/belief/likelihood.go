@@ -91,12 +91,6 @@ func rawLikelihood(o Observation) Vector {
 			})
 		}
 		return lk(map[State]float64{SEmpty: lrNpOccEmpty}) // 有人
-	case ObsStandDuration:
-		// bathroom 内久站静止 → still-fall 嫌疑（弱）。v2 由 HSMM 状态时长替代。
-		if o.Geom == GeomInToilet && o.Value > 0 {
-			return lk(map[State]float64{SFallen: standFallBase + gainStandFall*clampCap(o.Value, standCapMin)})
-		}
-		return lk(nil)
 	case ObsTrackPresent:
 		// Value = ghost-ness [0,1]（GhostPenalty/Verdict 合成）。高 → Artifact。
 		g := clamp01(o.Value)
@@ -214,16 +208,6 @@ func clamp01(x float64) float64 {
 	}
 	if x > 1 {
 		return 1
-	}
-	return x
-}
-
-func clampCap(x, cap float64) float64 {
-	if x > cap {
-		return cap
-	}
-	if x < 0 {
-		return 0
 	}
 	return x
 }

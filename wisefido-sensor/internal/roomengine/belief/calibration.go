@@ -44,11 +44,6 @@ const (
 	lrNp0Fallen    = 1.0 // 中性:真倒地证据须仍能竞争
 	lrNpOccEmpty   = 0.3 // np>0 压 Empty
 
-	// ── ObsStandDuration(bathroom 久站→still-fall 弱嫌疑;v2 由 HSMM 替代)──
-	standFallBase = 1.0 // 1 + gainStandFall·min(d,standCapMin)
-	gainStandFall = 0.4
-	standCapMin   = 8.0
-
 	// ── ObsTrackPresent(ghost-ness g∈[0,1]→Artifact)──
 	gainGhostArtifact  = 6.0 // 1+6g
 	dampGhostStandWalk = 0.5 // 1−0.5g

@@ -11,7 +11,6 @@ const (
 	ObsBedOccupied                    // bed 贝叶斯 P(InBed)，嵌套 belief 子证据
 	ObsEnterExit                      // EnterRoom=+1 / ExitRoom=-1
 	ObsNumberPeople                   // 房间人数 0-8
-	ObsStandDuration                  // 连续站立分钟（bathroom still-fall 时长门，v2 由 HSMM 替代）
 	ObsTrackPresent                   // track Verdict/GhostPenalty 合成 ghost-ness [0,1]
 	ObsNeighbor                       // §5.5.2 弱耦合：邻居 room P(占用) [0,1]
 	ObsTimeContext                    // 夜/昼 + 房型，调 prior 非硬观测
@@ -23,7 +22,7 @@ const (
 
 var obsKindLabel = [...]string{
 	"Pose", "VitalPresent", "BedOccupied", "EnterExit", "NumberPeople",
-	"StandDuration", "TrackPresent", "Neighbor", "TimeContext", "NoDetect", "ReachableExit", "ZBand", "DwellStill",
+	"TrackPresent", "Neighbor", "TimeContext", "NoDetect", "ReachableExit", "ZBand", "DwellStill",
 }
 
 // String ObsKind 标签（source-fidelity 审计 / observability）。
