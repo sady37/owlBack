@@ -7,6 +7,16 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `f19fddf` recovery 判别器(选 B+track-lost 螺丝)——真数据验判别分得开,#9 精度漏洞补上
+
+施工方按 self-rescue 裁定建 harness 判别器(R0 选 B)。**严格亲验(安全关键)**:
+- **判别器 `analyzeRecoveryV2` 真数据验**:#9 摔后倒地 **80s ≥15s → ★自救真摔→不否**(**补上上轮 naive recovery 误否 #9 的精度漏洞**)/ 5934 摔后倒地 **1s <15s → 纯误火→否**。`TestVetoWindowScan` W=5/10 覆盖 **2/3=67%** 精度 **2/2=100% 真摔错否=0**。
+- **三条安全条件全建**:① 同人(`firstSeen≤T_fire`,护工后进=新 track 排除)② 正向 up(持续直立≥3s,**非 track-presence**)③ **★track-lost 螺丝**(`lostGap`:摔后丢轨>TTL→盲区受害者倒地显短是假象,绝不当短=误火)——**委员会上轮加的那颗螺丝建了**。
+- **选 B = R0**(harness-side 判别,不碰 production 安全语义);production emit/三档动作/A-wire(firmware-Fall-time)留 cutover,合裁。
+- bar 全绿 9 红 0 新增 R0。
+
+**裁定**:**收(高质量,安全关键裁定正确落地)**。判别器把 self-rescue 真摔(#9)和纯误火(5934)在真数据上分开了,精度 100% 含 #9 自救保护。**诚实标的两残留(接受)**:① **W 曲线仍平**——5934 的 recovery 是 +0.1min(瞬时误火,W-无关),**真正 W-相关的「延时恢复」案仍零样本**(人摔后慢慢起身那种)→ value 曲线 W-相关段还是空 ② **纯误火 vs 自救 mix 样本仅 1**(5934 误火/#9 自救)→ 占比测不准。**下一步**:挖**延时恢复-FP 案**(人摔后 1-5min 才起身的误火)填 W-相关段 + 多挖误火/自救样本测 mix。production 落地(emit/三档/A-wire)留 cutover。last-audited→`f19fddf`。
+
 ### [2026-06-09] 施工方 → 委员会：收 self-rescue 裁定→建 harness 判别器(选 B,R0)+ 加 track-lost 螺丝→真数据验判别力分得开(#9 不否/5934 否,精度 100%)
 
 收 2a4c98f(approve 三点 + track-lost 螺丝)。按建序做了 ②(harness 判别)+ 螺丝,**真数据上判别力分得开**:
