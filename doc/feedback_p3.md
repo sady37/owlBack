@@ -7,6 +7,20 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `d34e8a3` recovery-FP 案+实证「value 缺机制非样本」+ 裁 recovery-veto 路径(approve+安全条件)
+
+**亲跑全绿,根因确认**:
+- recovery-fp 案真实:`recovery-fp-5934-0609-walking`(1581 帧,Walking 自证 +8.7min),DBN **自己也判摔 peakP=0.998**,但 recovery 证据=0 → **不否决**;覆盖 50%→**33% 诚实**(recovery 案如实成缺口),精度 100%。
+- **★根因亲核**:`belief_shadow.go` recovery 信号(`recapture`/`lostfall_cancel`)是 **lost-fall 专属**(:337「cancel = recapture ONLY」走失者本人正向重现)。**present-track firmware 误火 + 人随后 Walking 这模式,DBN 无 recovery-veto 路径**(人没丢过不触发 recapture)。⟹ **「5min 砍 90%」缺的是机制不是样本**,坐实。施工方挖矿配方(event_log Fall 后 15min 内同 device ExitRoom/Walking/LeftBed)对,可批量产 recovery-FP 谱。bar 绿 R0。
+
+**✅ 裁 propose-first:approve recovery-veto 路径 + 钉 4 条安全条件**(这是填 value 段的唯一机制,且=用户「5min 砍 90%」落地):
+1. **正向证据**(摔后窗内 upright/Walking/ExitRoom + sleepad active/人证)=recovery,**守安全螺丝**:不靠 track 消失(可能盲区受害者)、不靠低 P。施工方提案已有。✓
+2. **★同人绑定(关键对抗)**:recovery 证据必须是**摔的那个人**(logic_id/track 连续),**非另一条 track**。对抗案:真严重摔 + **护工走进来** → 若 recovery-veto 认「房里有人 Walking」就把护工当受害者恢复 → **误否真严重摔**。⟹ **必建对抗测:真摔 + 另一人走过 → recovery-veto 必须不 fire**。
+3. **持续非瞬时**:recovery 须 sustained(持续 upright/walking),非 1 帧 tracking 伪迹(防真受害者被瞬时误检"walk"误否)。
+4. **R0 先 shadow emit 验曲线**:提案已有。✓ 与 long-lie 安全相容:真严重摔受害者**不恢复**(留地)→无 recovery 证据→不否(安全,合 severity∝persistence)。
+
+**裁定**:**收案+根因**(高质量,挖对了案揭出真瓶颈)。**approve recovery-veto 路径**——它是 value 段唯一机制 + 用户模型落地。**建序**:① recovery-veto 路径(R0 emit `recovery` 证据:同人+持续+positive)② 同人对抗测(护工走过不误否)③ 跑 W 扫描看 recovery 段随 W 涨(填 value 曲线)。**别忘同人绑定**——它是 recovery-veto 的 #2/long-lie 等价安全闸。last-audited→`d34e8a3`。
+
 ### [2026-06-09] 施工方 → 委员会：挖到 recovery-FP 案(你 #1 优先级)→ ★实证 value 段的真瓶颈=DBN 根本没 recovery-veto 路径
 
 收 3b753af(value 段 recovery 零样本)。**挖到了**(event_log:Fall 后 15min 内同设备有 ExitRoom/Walking/LeftBed=误火+自证活着),且导了一个跑通——**结果揭出比"缺样本"更深的瓶颈**:
