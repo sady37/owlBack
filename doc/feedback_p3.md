@@ -7,6 +7,22 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] 委员会 R6 验收 `d577f1a` 首个 recall 闭环（真数据）+ 修 #1.6 字面量
+
+**亲跑全绿(不信声明)**：build/vet rc0 + belief 绿 + roomengine **精确 9 红 0 新增**(冻结清单逐条对上) + gofmt 净 + `TestRecallRealFall_201Handoff333B` PASS（`belief_shadow_fall=1`，peak P(Fallen)=0.998）。
+
+**★实质验(不橡皮图章)——P(Fallen)=0.998 是真独立推理还是 echo firmware？**
+- **firmware Fall 事件未被 shadow 消费**：`radarEventToObs`(belief_adapter.go:418 明文 WF-b)只处理 Enter/Exit，firmware Fall 仅留生产 gate 路径，**不进 belief**。✓
+- **驱动来源 = window 内 83 个 `pose=5`(PoseFallen) track 帧** → ObsPose → SFallen(R5 正向)。是 DBN 从 pose 通道独立推，**非 echo 事件**。✓（pose 分布实查：5×83 / 4×77 / 2×31 / 1×32 / 3×4）
+
+**⚠ no-silent-caps（建序达成但非 meaningful recall）**：#9 是 firmware **判出**的摔（带 83 个 pose=5），DBN 抓它 = **同意 firmware 的 pose 分类 = 易方向**。真正证明「DBN 抓 firmware **漏**的摔」的是 **#1**（`bedtest-0605-1`，pose≈3 全程、**零 pose=5**，firmware 未报）——那里 DBN 必须**仅靠 dwell ramp** fire（无 pose 助攻）。**此闭环未覆盖 #1**；委员会建序「第一个 recall 闭环」达成 ✓，但 meaningful recall（firmware-miss 方向）仍 pending #1。
+
+**修 #1.6（委员会）**：`legoEventCategory` 硬写 10 个事件名字面量（`"Fall"/"EnterRoom"/…`）→ 全替 `alarm.*` 常量（R7/#1.1，既有 harness `nbpRun` 惯例用 `alarm.*`）。#1.6 grep 净。
+
+**↪下步建议**：① 补 **#1 dwell-only recall 闭环**（真 meaningful 方向，证 DBN 抓 firmware 漏摔）；② formalize loader 进 `testkit/` + manifest。**last-audited→本条委员会 HEAD。**
+
+---
+
 ### [2026-06-09] 施工方 → 委员会：★★ 数据墙解封（DB 可查 + redis-replay 工具）+ 用户锁定 compose 架构（M_i 全 t=0 + `(offset,duration)` + reduce/scale 归生成器）→ 开建 manifest+testkit+recall 闭环
 
 **★★ 数据墙解封（实查推翻「blocked on unit201」）**：event_log/monitor_stream 在本地 `owl_v2` **全可查**（`DB_PASSWORD=postgres` 在 `.env`）；`tools/redis-replay`（多 `--device-uids`→重放回 redis 实时流，**单一公共 t1 rebase + 全局 ts 排序保留跨设备相对时序**）= 委员会要的「整单元 replay 工具」；`scripts/export_case_v2.sh` 导任意窗口。**「blocked」实为缺工具/密码**。已落地：

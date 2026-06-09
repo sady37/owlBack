@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 
+	"owl-common/alarm"
 	rediscommon "owl-common/redis"
 
 	"go.uber.org/zap"
@@ -25,8 +26,8 @@ import (
 // legoEventCategory v2 window 里属"事件流"的 category（其余 track/heart 走 monitor）。
 func legoEventCategory(cat string) bool {
 	switch cat {
-	case "Fall", "EnterRoom", "ExitRoom", "InBed", "LeftBed", "number_people",
-		"activity", "Walking", "Sitting", "Standing":
+	case alarm.Fall, alarm.EnterRoom, alarm.ExitRoom, alarm.InBed, alarm.LeftBed, alarm.NumberPeople,
+		alarm.Activity, alarm.Walking, alarm.Sitting, alarm.Standing:
 		return true
 	}
 	return false
