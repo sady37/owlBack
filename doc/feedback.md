@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`4a77924`(下次从此 commit 起算 delta;含委员会执行的 P7.1-P7.4,指针推至委员会 HEAD)
+- **last-audited**:`4a77924`(下次从此 commit 起算 delta;P7.5 决议 doc-only 不动代码,指针不变)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,26 @@
 
 
 
+
+### [2026-06-08 23:00 MDT] P7.5 决议(委员会裁定,doc-only)— **ghost/bed 判决保节点内,不并入 fall τ\***;附演算(为何不过度统一)→ **P7 收口**
+
+**性质**:impl_plan §6 P7.5「ghost verdict(50/20)/ bed P(0.70/0.75)是否也用 τ\* 统一」决议项(scope 待定)。委员会裁定 + 演算。**无代码**(裁定=维持现态;并入反是回退,见演算④)。
+
+**亲验现态(不信 impl_plan 旧表,核当前代码)**:impl_plan 引的硬阈是 **gate-list 旧态**;在 DBN/shadow 这两个量**早已是连续节点信念,非硬阈**:
+- **ghost**:shadow 用**独立连续 realness**(P3.1,审查⑦「不复用生产 GhostPenalty/Verdict」)→ `belief_adapter.go:209 shadowTrackGhostness` + `realnessStep` log-odds → `TObsPresent.Ghostness`(belief_shadow:184)喂 **Track 层 T_t 信念**。gate-list 的 50/20 verdict DBN 节点层不用。
+- **bed**:`BedOccupancyState`(track_manager.go 贝叶斯 Markov,`BedConfidence` 90/70/30 分档,非 0.70/0.75 硬阈)→ `bedAdapter` → `ObsBedOccupied`(belief_shadow:481)压 SFallen。
+
+**演算(为何 ghost/bed 不并入 fall τ\*)**:
+- **① 层次**:DBN 因子化三层 —— Track 层 `T_t`(ghost realness)/ 证据层 `ObsBedOccupied`(bed 占用)/ Room 层 `P(Fallen)` 读出(τ\*)。ghost/bed = **证据形成(evidence-formation)**;τ\* = **决策读出(decision-readout)**。并入 = 把证据层塌进读出层。
+- **② 代价结构**:`τ\*=C_FP/(C_FP+C_FN)` 是 **fall ALARM 的代价比**(actionable:派护理 vs 漏真摔)。ghost/bed **非 actionable alarm**,是中间信念,无 fall-alarm 代价结构。它们的误差经证据传播进 `P(Fallen)`,代价在 fall τ\* 处**统一加权一次**。在 ghost/bed 节点再设 τ\* 式代价门 = **双重加权**(同一证据被代价加权两次)。
+- **③ 可解释性**:节点信念保「是否判 ghost / 床是否占」可**独立读出**于「fall 是否发」,守白盒可审计(proposal 目标「全程白盒、可回放、可审计」)。并入丢 per-node observability。
+- **④ 拆预设(反方驳)**:反方=「单旋钮处处统一→校准故事一致」。**驳**:三个旋钮量**不同事**——ghost(realness 分类:对 ghost FP/FN)/ bed(占用后验:对 occupancy 准确率)/ fall(alarm 代价:对 C_FP/C_FN)。单一 τ\* 不能同时是三个**不同决策问题(不同 ground-truth + 不同代价结构)**的对阈;强统一 = 误校准其二。且现态已是连续节点信念,"统一成一个硬 τ\*" 反而是**向硬阈回退**。
+
+**裁定**:**P7.5 = ghost/bed 保节点内判决**;fall 读出层(P7.1-7.4:τ\*/context/reason/human-bed veto)只统一 **fall 的 τ\***。**P7 收口**(P7.1 τ\* keystone → P7.2 context → P7.3 reason → P7.4 human-bed veto → P7.5 边界裁定)。
+
+**P7 之后(roadmap)**:DAG 关键路径 P2→{P3,P4}→**P7✅**→**P9**。下一节 **P9 oracle 验收**(go/no-go 数学闸:真摔 P_fallen>τ\* / FP<τ\*,margin 报告)——**与 Neighbor recall 同 blocked on unit201 真数据**(合成证不了 go/no-go)。shadow 决策层(P2-P7)至此 buildout 完;余 = P9 真机定量验收(待数据)。
+
+---
 
 ### [2026-06-08 22:40 MDT] P7.4 落地(委员会执行)— human-bed 豁免接 τ\* veto:Conf≥99 人工床 fall = 躺床 normal use → decision 层前置短路读出(R0)
 
