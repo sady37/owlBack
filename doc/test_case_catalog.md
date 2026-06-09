@@ -41,11 +41,14 @@
 - **真摔（recall oracle）**：#1(漏报·最硬)、#2(fw判出)、#9(recovered+hand-off)、#10、#11、#12 ＝ 6 例
 - **假fall（precision oracle）**：#3(沙发矮坐)、#4(edge/距离闸)、#5(lost)、#7(在床)、#8(bathroom_enter+穿越)、#13(ghost) ＝ 6 例
 - **★跨房真 hand-off（Neighbor recall 黄金）**：#9（201 bathroom fall→走进 201 bedroom）= 真实「人从一房到另一房」，**不是拼接、是真因果**——若导出含 bathroom(333B)+bedroom(CD2B) 两 device 窗口，即 Tier-2 级真验素材
-- **无报警正常背景**（待抽）：⚠ 用户点的「101 bedroom enter/left bed·room、hunzi sleepad 上床、HR/RR」需指定**从哪些无报警窗口抽**（这些案例的 fixture 窗口里凡未触警的 enter/left/InBed/HR-RR 片段都可切作 benign 积木）
+- **无报警正常背景**（待抽，★委员会实质2 修正 ground-truth）：用户点的「101 bedroom enter/left bed·room、hunzi sleepad 上床、HR/RR」可抽，**但「无报警」不等于「确认正常」**——本系统存在的理由就是生产会**漏摔**（#1 即真摔+firmware 漏），一段无报警可能藏未报真摔。故：
+  - **enter/left room·bed 事件 + HR/RR**：本就不产报警 → 「无报警」对 label **零信息**；其可信来自**受控/标注**，可作 benign 事件积木（room-ledger/bed-state/vital 纹理）。
+  - **「这段没摔」当 fall negative control（断言 DBN 不该 fire）**：**必须正向确认**（住户自述/视频/受控实验），不是「碰巧没报」。无法正向确认的段 → manifest 标 `groundtruth: unverified-benign`，**只当背景纹理不当 negative control**（否则藏真摔→惩罚 DBN 正确 fire = 反 R5）。
 
 ## 四、待用户/委员会
 1. ⚠ 厘清：#1 vs #6 是否同案（MDT/UTC）；#4/#10 fixture 时间对不上；0977/0978 device 性质。
 2. ⚠ 补全各 unit 完整 device roster（101 有无 bathroom radar；201 sleepad；hunzi/Ton 其余）。
 3. **#3(Ton)、#9(201 0609) 无 fixture → 待导出**（#9 尤其值——真 hand-off）。
 4. **无报警正常片段**：指定提取源窗口（101/hunzi 的哪些 fixture 的哪段）。
-5. 委员会受理后：写 manifest schema + test_record.txt→bRecord 转换器 + 切片工具（裁前不建）。
+5. **委员会已裁（feedback_p3.md）**：① 方向认可；② **乐高格式 = 生产 StreamMessage 原字段名**（`device_addr/device_type/topic_type/category/timestamp/dataValue`），不另造 bRecord；③ **manifest 落 `doc/cases/legos/`（索引指向真源不复制，#1.3）+ loader/切片器落 `testkit/`**；④ manifest schema = `id/class/labels/source_fixture/window/device_type/duration/groundtruth(verified-fall|verified-FP|verified-benign|unverified-benign)/causality(real-contiguous|synthetic-composite)`；⑤ **建序：先 manifest + 一个真碎片 Tier-1 recall 闭环测（喂真摔→断言 P(Fallen) fire 没被压 Vacant）走通，再批量铺**。
+6. **本目录将转写为 `doc/cases/legos/` 的 manifest**（受理已具备，按上 schema）；当前文件作人读种子台账。
