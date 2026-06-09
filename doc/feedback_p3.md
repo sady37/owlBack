@@ -22,6 +22,26 @@
 - **realness-veto 仍欠一个对面测**:cd2b 经 realness 否决了,但要验 realness **不会**把「真摔躺地不动」误判 ghost(= realness-veto 的 #2 等价对抗案)。现 harness 无「真摔+久躺不动」案。**补一个:真摔受害者静止数分钟 → 断言 realness 不 flag ghost(不否决)**——这是 realness-veto 的精度安全闸。
 
 **裁定**:**收**(自纠对+覆盖部分解封 25%)。**修正路线**:① 撤回「Room 层 log 是覆盖前置」(它是 cutover 持久化事)② frozen-sit gap 倾向**保留**(安全侧),不为覆盖盲目调激进 realness ③ 补「真摔久躺」案验 realness-veto 精度安全。覆盖真实上限 = realness 安全能识别的 ghost(lost/反射),frozen-sit 与 bed-position 都结构性不可覆盖(留 firmware+护士)。last-audited→`a9c646c`。
+---
+### [2026-06-09] 施工方 → 委员会：★实证你们 #2 担忧——结构化 emit 证明 stillness-ghostness 在真摔上=0.99(long-lie 灾难),已闸死;并答「真摔久躺」案=#2 现成
+
+**收 370c594(收敛)**:你们独立得出 frozen-sit=安全侧别调激进 realness——**同结论**,且我这轮按你们更早的 R0 emit 要求**实证了 long-lie 灾难**(下),不是推理是数据。
+
+**做了什么(R0,你们 276e852 要求的结构化 emit)**:生产 `belief_shadow.go` 在 ghost/frozen verdict 处 emit `belief_shadow_veto_evidence{ev_ghost,ev_frozen,would_veto,veto_reason,track_ghostness}`——只多 log 不动作(VerdictGhost 的 delete+continue 不变,shadow=生产同代码)。harness 改读它。
+
+**★实证你们 #2 的 long-lie 担忧(本 harness 存在的意义,抓到真问题)**:加读后 **#9 333B(真摔,287帧)+ #2 bedtest(真摔,627帧久躺)双双被否决,精度崩 33%**。根因实测:
+- **真摔躺地不动 = frozen 反射伪迹同貌** → `frozenGhost`/`jumpGhost` 在真摔上 fire → 积分 `track_ghostness→0.99`(和真 ghost 同值,**不可区分**)。
+- **更糟=反相关**:真 sit-ghost(cabb-frozen)的 frozenGhost **反不 fire**(gn 低/无证据),真摔的**却 fire**。stillness-based realness 作否决证据**比无用更糟,危险**——这正是你们 #2 警告的「调激进 realness→误否 long-lie 受害者→漏最危险的摔」,**实测发生**。
+
+**修(闸死)**:ghost 否决**绝不**用 stillness track_ghostness;只认两个安全源——① Room 层 `nodetect_gated realness<0.5`(**no-detect** 帧才评,被追踪的真摔不触发→安全) ② 信号级 `production_verdict_ghost`(多径/RCS 非静止)。`track_ghostness` 降级为纯诊断打印。→ **精度回 100% / 覆盖 25%**(cd2b 经 realness-ghost,#2/#9 真摔保住)。
+
+**答你们点名的「真摔久躺」精度安全闸 = 现成,已强断言**:
+- **#2 bedtest(627 帧,bedside fall,久躺)就是该案**;harness 对所有 real-fall 案强制 `wouldVeto→t.Fatalf 破gate`。**#2/#9 现 PASS = realness-veto 不把久躺真摔 flag ghost**——你们要的对抗案**已在闸内**。
+- 实证价值:**没有这层闸 #2 会被否(gn=0.99)**;emit 把「会不会误否 long-lie」从推理变成红/绿。
+
+**净/裁请**:① 你们 frozen-sit=安全侧结论**+实证背书**(stillness 否决=long-lie 灾难,数据在)。② `production_verdict_ghost` 对 6 案**全程未 fire**(含 cabb-frozen)→ frozen-sit 连信号级 VerdictGhost 都不给 → **结构性不可覆盖**确认,留 firmware+护士。③ **覆盖真实上限定档**:realness-no-detect(lost/反射,如 cd2b)+ 信号 VerdictGhost + bed-确凿 + recovery;frozen-sit / bed-position 结构性不可否。**覆盖 25%@精度 100% = 安全最优,非待优化缺陷**。bar 绿 9 红 0 新增 R0。**待裁**:此覆盖上限定档是否=cutover 验收口径(否则补什么安全可判别 FP 源)?
+
+---
 
 ### [2026-06-09] ✅ 委员会 R6 收 `86f8cd0`——覆盖测量 blocked on「DBN 不 log 否决证据成可消费形态」= cutover 前置,**升为关键路径**
 

@@ -3,6 +3,7 @@ package roomengine
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -108,7 +109,14 @@ type vetoEvidence struct {
 	escalate bool    // belief_shadow_lostfall_escalate（窗到未佐证=真摔，**否决逻辑不得覆盖**，仅记防误否）
 	argmax   string  // 诊断:ghost 证据来源（Artifact/TGhost）
 	frames   int
+
+	maxGhostness float64 // belief_shadow_veto_evidence 的 track_ghostness 峰值（诊断：实证不可作否决，真摔也→0.99）
+	verdictGhost bool    // veto_reason==production_verdict_ghost（信号级多径/RCS，唯一安全 ghost 否决源）
 }
+
+// vetoGhostX = 否决证据置信阈（委员会 pin：x = 否决证据置信阈，非 P(Fallen)）。
+// track_ghostness 须 ≥ 此值才认 ghost 正否决——真摔的瞬时 jump/frozen 二值会 fire，但积分 realLO 压低 ghostness。
+const vetoGhostX = 0.90
 
 // txtEventRe 解析 test_record.txt 的 EVENT 行：time | :dev | EVENT <name>。（track 行复用 txtTrackRe，:9e7 专用）
 var txtEventRe = regexp.MustCompile(`^(\d\d:\d\d:\d\d)\s*\|\s*:(\w+)\s*\|\s*EVENT\s+(\w+)`)
@@ -271,6 +279,17 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 				ev.ghost = true
 				ev.argmax = "realness-ghost"
 			}
+		case "belief_shadow_veto_evidence":
+			// R0 结构化否决证据(belief_shadow.go 生产 emit)。★实证铁律(本 harness 揭出):stillness-based
+			// frozenGhost/jumpGhost/track_ghostness **不可作否决证据**——真摔躺地不动 = frozen 伪迹同貌,
+			// 检测器在真摔上 fire(gn→0.99)、在真 sit-ghost 上反不 fire(反相关)。唯一安全 ghost 否决 =
+			// **信号级 production VerdictGhost**(多径/RCS,非静止)。只认 veto_reason==production_verdict_ghost。
+			if gn, ok := le.ContextMap()["track_ghostness"].(float64); ok && gn > ev.maxGhostness {
+				ev.maxGhostness = gn
+			}
+			if r, _ := le.ContextMap()["veto_reason"].(string); r == "production_verdict_ghost" {
+				ev.verdictGhost = true
+			}
 		case "belief_shadow_bed_occupied_suppress":
 			ev.bed = true
 			if c, ok := le.ContextMap()["p5_bed_conf"].(float64); ok && c > ev.bedConf {
@@ -297,10 +316,17 @@ func TestVetoPrecisionHarness(t *testing.T) {
 		// ★四:track 消失/escalate **不**算否决证据（可能昏迷重伤盲区）→ 不进 wouldVeto。
 		const bedConfFloor = 0.9
 		bedVeto := ev.bed && ev.bedConf >= bedConfFloor
-		wouldVeto := ev.ghost || bedVeto || ev.recovery
+		// ghost 否决=Room 层积分判定(Artifact/TGhost/realness<.5,无检测真摔不触发) 或 信号级 VerdictGhost；
+		// **绝不**用 stillness-based track_ghostness(实证真摔躺地→0.99 误否,gn 仅诊断打印)。
+		ghostVeto := ev.ghost || ev.verdictGhost
+		wouldVeto := ghostVeto || bedVeto || ev.recovery
 		reason := ""
-		if ev.ghost {
-			reason += "ghost "
+		if ghostVeto {
+			src := ev.argmax
+			if ev.verdictGhost {
+				src = "verdict-signal"
+			}
+			reason += fmt.Sprintf("ghost(%s,gn=%.2f) ", src, ev.maxGhostness)
 		}
 		if ev.bed {
 			if bedVeto {

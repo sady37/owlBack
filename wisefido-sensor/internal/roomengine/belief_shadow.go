@@ -204,6 +204,29 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		}
 		tl.loggedLo = false // 重新检出 → 允许后续再次 Lost 时重新 log
 
+		// R0 结构化否决证据(委员会 276e852 升关键路径):ghost/frozen verdict 此前只喂 belief、不 log 成
+		// 可消费形态(VerdictGhost 静默 delete+continue / frozenGhost 仅进 realLO)→ harness 测不到覆盖。
+		// 仅多 log 不动作(下方 delete/continue 不变,shadow=生产同代码)。schema=harness vetoEvidence。
+		if jumpGhost || frozenGhost || b.Verdict == VerdictGhost {
+			reason := "shadow_realness_jump"
+			if frozenGhost {
+				reason = "shadow_realness_frozen"
+			}
+			if b.Verdict == VerdictGhost {
+				reason = "production_verdict_ghost"
+			}
+			e.logger.Info("belief_shadow_veto_evidence",
+				zap.String("room_id", roomID),
+				zap.Int("track_id", b.TrackID),
+				zap.Int64("ts_ms", nowMs),
+				zap.Bool("ev_ghost", true),
+				zap.Bool("ev_frozen", frozenGhost),
+				zap.Bool("would_veto", true),
+				zap.String("veto_reason", reason),
+				zap.Float64("track_ghostness", tlGhostness),
+			)
+		}
+
 		if b.Verdict == VerdictGhost {
 			// 沿用 production ghost 检测；且把已注册 track 移出追踪：
 			// real→ghost→消失 的镜面反射不得触发 lost-while-moving（ghost 闪灭 ≠ 倒地）。
