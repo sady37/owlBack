@@ -366,6 +366,18 @@ func TestVetoPrecisionHarness(t *testing.T) {
 			correct = "未否决(无正证据放行;漏覆盖,非 gate)"
 		}
 		t.Logf("[%s] %s  帧=%d  peakP=%.3f bedConf=%.2f 正证据=%s  would-veto=%v  %s", vc.truth, vc.dir, ev.frames, ev.peak, ev.bedConf, reason, wouldVeto, correct)
+
+		// ★realness-veto 精度安全闸（委员会 370c594 点名「真摔久躺→断言 realness 不 flag ghost」）：
+		// 真摔（尤其 #2 bedtest 627 帧久躺）的 stillness 信号 maxGhostness **可高**（=long-lie 危险真实存在,
+		// frozen 检测器同貌触发）——但安全 ghost 源（realness-no-detect / Room argmax / 信号 VerdictGhost）
+		// **绝不**得 flag。二者分离 = 安全闸守住：危险可见但不误否。比聚合 wouldVeto 更精准定位失效属性。
+		if vc.truth == "real-fall" {
+			if ev.ghost || ev.verdictGhost {
+				t.Errorf("★long-lie 安全闸破:真摔 %s(%d帧,maxGhostness=%.2f)被**安全** ghost 源误判(argmax=%s,verdictGhost=%v)——realness-veto 误杀久躺真受害者", vc.dir, ev.frames, ev.maxGhostness, ev.argmax, ev.verdictGhost)
+			} else if ev.maxGhostness >= vetoGhostX {
+				t.Logf("  ↳ long-lie 安全闸✓:%s stillness maxGhostness=%.2f≥x(危险信号真实存在)但安全源未 flag→不误否", vc.dir, ev.maxGhostness)
+			}
+		}
 	}
 	cov, prec := 0.0, 1.0
 	if totalFP > 0 {

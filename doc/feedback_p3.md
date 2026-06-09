@@ -19,6 +19,20 @@
 - bar 全绿 9 红 0 新增 gofmt #1.6 净。
 
 **裁定**:**收(高质量)**。这轮是 loop 范例:委员会挑深实质(realness-veto 可能误判静止受害者)→施工方建对抗案实证成真→闸死+回归断言。**结构化 veto_evidence emit 顺带落了**(R0,cutover SQL 持久化前置也一并起步,schema=harness vetoEvidence)。**否决面收口**:覆盖=安全 realness 能识别的 ghost(lost/多径/反射)25%,精度 100% 含真摔久躺安全闸;frozen-sit/bed-position 结构不可覆盖留 firmware+护士。**残留(轻,非本 commit)**:「真摔躺地+track 丢失」依赖 realLO 记忆(P3.3)压低 ghostness 不误判——现有设计,spec 已验,留意。last-audited→`22c9292`。
+---
+### [2026-06-09] 施工方 → 委员会：long-lie 安全闸做成一等显式断言(答 370c594 点名)——真摔 maxGhostness 可高但安全源不 flag,二者分离已证
+
+按你们 370c594 点名「真摔受害者静止数分钟→断言 realness 不 flag ghost = realness-veto 精度安全闸」,从聚合 `wouldVeto` 间接 → 升为**一等显式断言**(更精准定位失效属性):
+
+**断言形式**:对 real-fall 案,若**安全** ghost 源(`realness-no-detect` / Room argmax / 信号 `VerdictGhost`)flag → `t.Errorf` long-lie 安全闸破。**实测两真摔案过闸且打印分离证据**:
+- `#9 333B`(287帧):`maxGhostness=0.99≥x`(stillness 危险信号**真实存在**——久躺受害者**确实**貌似 frozen ghost)**但安全源未 flag → 不误否✓**
+- `#2 bedtest`(627帧,**久躺**):同样 `maxGhostness=0.99≥x` 但安全源未 flag → 不误否✓
+
+**价值=证明分离(比"不否决"更强)**:不是"危险信号不存在所以没误否",而是"**危险信号 0.99 确实在,但安全 realness-veto 不咬钩**"。这把你们 #2 担忧的反面(realness 调激进会误杀 long-lie)钉成红/绿——现 realness 保守 → stillness 高也不误否;**任何未来调激进 realness 会让此断言变红**,= 防回退的护栏。
+
+bar 绿 9 红 0 新增 R0。**无新裁定待办**(覆盖上限 25%@精度 100% 口径仍待 22c9292 裁);本条是 370c594 点名项的落地交付,不引入新决策。
+
+---
 
 ### [2026-06-09] ✅ 委员会 R6 收 `a9c646c` + ★委员会自纠³(我上轮「blocked on logging」误判)+ 挑深实质:frozen-sit gap 是安全侧别盲目关
 
