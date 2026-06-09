@@ -34,6 +34,25 @@ func noDetectObs() Observation {
 	return Observation{Kind: ObsNoDetect, Conf: 1, Fresh: true, Geom: GeomOpenFloor, RealnessP: 0.9, DoorExitP: 0.0}
 }
 
+// TestNoDetectRealnessNeutralizes — P2 距离闸用的全压杠杆:RealnessP=0 → no-detect fall lift **完全中性化**
+// (factor=1)。距离闸把"远距弱回波"映射成 effRealnessP=0 → 远距 no-detect 不抬 fall。
+// （★对照:DoorExitP=1 不全中性化——有意留 floor「门口真摔仍浮出」,故距离闸不走 door-exit 通道。）
+func TestNoDetectRealnessNeutralizes(t *testing.T) {
+	lift := rawLikelihood(Observation{Kind: ObsNoDetect, Conf: 1, Fresh: true, Geom: GeomOpenFloor, RealnessP: 0.9, DoorExitP: 0.0})[SFallen]
+	if lift <= 1.0 {
+		t.Fatalf("RealnessP=0.9 应抬 fall(LR>1),得 %.3f", lift)
+	}
+	neutral := rawLikelihood(Observation{Kind: ObsNoDetect, Conf: 1, Fresh: true, Geom: GeomOpenFloor, RealnessP: 0.0, DoorExitP: 0.0})[SFallen]
+	if neutral > 1.0+1e-9 {
+		t.Fatalf("RealnessP=0(距离闸全压)应中性化 fall lift(factor=1),得 %.3f", neutral)
+	}
+	// door-exit 有 floor:DoorExitP=1 仍 >1（不全否决），证距离闸不可复用此通道。
+	doorFloor := rawLikelihood(Observation{Kind: ObsNoDetect, Conf: 1, Fresh: true, Geom: GeomOpenFloor, RealnessP: 0.9, DoorExitP: 1.0})[SFallen]
+	if doorFloor <= 1.0+1e-9 {
+		t.Fatalf("door-exit 应留 floor(LR>1,门口真摔仍浮出),得 %.3f", doorFloor)
+	}
+}
+
 // TestFallReasonForEachPath — 各主导 obs → 对应 reason（端到端，经 rawLikelihood 真算）。
 func TestFallReasonForEachPath(t *testing.T) {
 	cases := []struct {

@@ -54,6 +54,27 @@
 
 
 
+### [2026-06-08 23:30 MDT] P2 收尾 piece1(委员会执行)+ 收敛验收施工方预审 `630e4e4` — 距离闸内化(gate→DBN G-3):丢轨点距雷达 > d_fall → no-detect 完全中性化(shadow R0);裁 G-1/G-2/G-3 locus
+
+**性质**:P7 收口后按 DAG 推进 P2 收尾(lost_track 治本闸吃进 DBN)。委员会建 piece1(距离闸)期间施工方**独立收敛**推 `630e4e4`(doc-only 预审,识别同 3 闸 + 多识别**空房账**闸,请裁 locus)。**第三次收敛**:施工方 **G-3 倾向①「Room 层 fall 发射 realness 按 dist 调,落 ObsNoDetect」= 我 piece1 已建的**(effRealnessP=0 在 Room 层 ObsNoDetect)——locus + 机制双对。
+
+**✅ 委员会裁施工方 3 岔口 locus**(亲查 track.go 证倾向):
+- **G-1 id-swap → ①新 `TObsLogicAlive` 镜像 `TObsPeerLive`(准)**:语义分清 peer(别台见人)vs id-swap(本台换 ID);Track 层身份判别,压 TLost。**piece2 建**。
+- **G-2 空房账 → ①只核验不新建(准,#1.3)**:roomLedgerEmpty=「ExitRoom ∨ np=0」派生,已被 `TObsExit`+Room 层 `ObsEnterExit`/`ObsNumberPeople` 覆盖,**禁重复建第二源**;piece2 仅核验合取是否完整表达(缺则补,全覆盖则记账了事)。
+- **G-3 距离闸 → ①Room 层 fall 发射 realness 按 dist 调(准)= 本 commit 已建**。距离=「能否确认 fall」非「是否失锁」→ 落 Room 层 ObsNoDetect realness、不污染 Track 层身份(与施工方倾向①一致)。
+
+**piece1 做了什么(G-3)**:
+- **stash d_fall**:beliefShadowTrack 加 `lastRawDistCm`;present 帧趁 track 活时算 `distInt(ts.LastRawH, ts.LastRawV, 0, 0)`(雷达 raw 本地系原点平面距)。
+- **lostFarFromRadar**:复用 gate `DistanceGateCm` 常量(R7 单源)。lost-sweep:远距 → `effRealnessP=0` → no-detect fall factor `1+gain·ri·(1−K·dx)` 因 ri=0 **完全中性化(=1)**。读出 `p2_dist_suppress`/`p2_lost_dist_cm`。
+
+**★挑实质(测试驱动设计纠正)**:初版想复用 no-detect 的 **door-exit 抑制通道**,`TestNoDetectRealnessNeutralizes` 暴露 **door-exit 有意留 floor**(`noDetDoorSuppressK<1`,审查㉓「门口真摔仍浮出」)→ DoorExitP=1 只压 1.216 **不中性化**。语义辨析:door-exit=「可能离开也可能摔」(留 floor 对);**距离闸=传感器物理盲区「零 fall 信息」(须全压)** → 走 `realnessP=0` 不走 door-exit。**硬闸 vs 软门 floor 语义不可混**(gate→DBN 内化的实质点）。
+
+**测试**:`TestLostFarFromRadar`(500 边界)+ `TestNoDetectRealnessNeutralizes`(ri=0 全压 / ri=0.9 抬 / door-exit floor 反证)。**放行 bar**:build/vet 净 + belief 绿 + roomengine **9 红 0 新增** + #1.6 净 + gofmt。**铁律守**:R0 / R1 / R5(压「无 fall 信息」非负向否决真摔)/ R7 复用 DistanceGateCm。
+
+**P2 收尾剩 piece2**:G-1 建 `TObsLogicAlive`(Track 层)+ G-2 核验空房账已覆盖(不新建)。shadow 对账 oracle=gate 现抑制的 `id_swap`/`room_empty`/`distance` 三 LOG 案(与 P9 数据-blocked 解耦)。
+
+---
+
 ### [2026-06-08] 施工方 → 委员会:**P2 收尾启动**(用户见 P7「buildout 完」后**仍重申**)→ lost_track 治本闸内化预审(doc-only)——id-swap 守恒/空房账/距离闸 → DBN 软似然;请裁 locus(裁前不建)
 
 **口径对齐**:委员会 P7.5 宣「shadow 决策层 P2-P7 buildout 完,下一节 P9(数据-blocked)」。但**亲查代码**:lost_track 3 治本闸**仍 gate-list 硬 skip,未内化进 DBN**(id-swap @ track_manager.go:1493 `lost_fall_skipped_id_swap` / 空房账 @:1506 / 距离闸 `DistanceGateCm=500`),无 `TObsLogicAlive`。**P7(决策层 τ\*)与这 3 闸(Track 层身份判别)正交,没碰**。用户在看到 P7 收口后**仍拍 P2 收尾**——roadmap 原话「#5–7 仍只活在 gate 里,是 DBN 下一步要吃进来的部分」是真·unblocked 治本(不依赖 unit201)。本贴源保真预审,doc-only,**未建**。

@@ -36,6 +36,7 @@ type beliefShadowTrack struct {
 	stillBoxAgeMs    int64 // 最后一帧时的 still-box 时长（消失前是否走动的依据）
 	geom             belief.Geom
 	lastX, lastY     int     // 最后一帧位置 → 算丢失点离门距离 d（P2 reachable-exit）
+	lastRawDistCm    int     // P2 距离闸：最后一帧距雷达（raw 本地系原点）平面距 → 超 d_fall=贴地弱回波区
 	approachSpeedCmS float64 // A：丢失前朝门定向逼近速度（在 track 仍活时算好 stash，丢失后 ts 可能已销毁）
 	lostAnchor       int64
 	// P6.1b-D provisional 状态机(小卫生间分支,跨 tick):
@@ -72,6 +73,14 @@ type beliefShadow struct {
 
 // tLostLogThresh Track 层 P(TLost) 超此即 log（对照 gate-list lost_track 报警）。
 const tLostLogThresh = 0.5
+
+// lostFarFromRadar P2 距离闸：丢轨点距雷达（raw 本地系原点）平面距 > d_fall（DistanceGateCm，≈500cm）
+// → 贴地/躺姿弱回波区，跌倒有效检测半径远小于人员检测半径；该处"消失"是结构性盲猜非 fall 证据。
+// 复用 gate 同一常量（R7 单源）；gate=0 关闭。
+func lostFarFromRadar(rawDistCm int) bool {
+	g := FallRulesParam.Lost.DistanceGateCm
+	return g > 0 && rawDistCm > g
+}
 
 func (e *Engine) beliefShadowFor(roomID string) *beliefShadow {
 	sh := e.beliefShadows[roomID]
@@ -225,6 +234,9 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		st.lostAnchor = 0
 		st.geom = geomFromArea(b.CellAreaType)
 		st.lastX, st.lastY = b.X, b.Y
+		if ts != nil { // P2 距离闸：stash 距雷达 raw 平面距（丢失后 ts 可能销毁，趁活时算）
+			st.lastRawDistCm = distInt(ts.LastRawH, ts.LastRawV, 0, 0)
+		}
 		// P2.1：track 仍活时学本设备走速 → 个性化封顶。A：算好朝门定向逼近（丢失后 ts 可能已销毁）。
 		ds := sh.deviceSpeed[b.DeviceAddr]
 		if ds == nil {
@@ -400,15 +412,26 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			exitDist = grid.NearestEntryDist(st.lastX, st.lastY)
 			doorExitP = reachableExitScore(exitDist, st.approachSpeedCmS)
 		}
+		// P2 距离闸内化（gate→DBN）：丢轨点距雷达 > d_fall → 贴地/躺姿弱回波区，firmware 物理读不出地面态，
+		// "消失" 零 fall 信息（结构性盲猜，非 fall 证据）→ no-detect **完全中性化**（effRealnessP=0 → factor→1）。
+		// ★不走 door-exit 通道：door-exit 有意留 floor（noDetDoorSuppressK<1，「门口真摔仍浮出」），是"可能离开也
+		// 可能摔"；距离闸是传感器盲区"零信息"，须全压 → 走 realnessP=0。复用 gate DistanceGateCm 常量（R7）。
+		effRealnessP := realnessP
+		distSuppress := 0.0
+		if lostFarFromRadar(st.lastRawDistCm) {
+			effRealnessP = 0
+			distSuppress = 1.0
+		}
 		// P2：门区不再硬 continue；改软门——no-detect(R_i+door-exit 门控抬 Fallen) 与 reachable-exit(压 Fallen) 同 tick 对冲。
-		obs = append(obs, noDetectObs(st.geom, realnessP, doorExitP, nowMs))
-		if realnessP < 0.5 || doorExitP > 0.5 { // P6.1a 门控生效(ghost消失/门区可达走出)→ 弱抬/不抬 Fallen
-			e.logger.Info("belief_shadow_nodetect_gated", // observability:量 no-detect 被 R_i/door-exit 压的频率
+		obs = append(obs, noDetectObs(st.geom, effRealnessP, doorExitP, nowMs))
+		if realnessP < 0.5 || doorExitP > 0.5 || distSuppress > 0 { // 门控生效(ghost消失/门区可达走出/远距弱回波)→ 弱抬/不抬
+			e.logger.Info("belief_shadow_nodetect_gated", // observability:量 no-detect 被 R_i/door-exit/dist 压的频率
 				zap.String("room_id", roomID),
 				zap.Int("track_id", tid),
 				zap.Int64("ts_ms", nowMs),
-				zap.Float64("p6_1a_Ri", realnessP),        // P(real);低=ghost 消失,不抬
-				zap.Float64("p6_1a_door_exit", doorExitP), // P(door-exit);高=门区可达走出,不抬
+				zap.Float64("p6_1a_Ri", realnessP),                                                          // P(real track);低=ghost 消失,不抬（原始,非 dist-eff）
+				zap.Float64("p6_1a_door_exit", doorExitP),                                                   // P(door-exit);高=门区可达走出,不抬
+				zap.Float64("p2_dist_suppress", distSuppress), zap.Int("p2_lost_dist_cm", st.lastRawDistCm), // P2 距离闸:1=远距全压
 				zap.Bool("p6_1a_nodetect_gated", true),
 				zap.String("last_geom", st.geom.String()),
 			)
