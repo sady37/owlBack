@@ -308,6 +308,12 @@ func TestVetoPrecisionHarness(t *testing.T) {
 	var vetos, correctVetos, wrongVetos int
 	var totalFP, fpVetoed, totalReal int // 双轴(be229fd 五):覆盖=fpVetoed/totalFP / 精度=correctVetos/vetos
 	for _, vc := range vetoCases {
+		// ★对齐校验前置(no silent caps):false-alarm 若 firmware **未火**(t_fire_ms=null)→ 根本无告警可否决,
+		// **不是覆盖候选**,排除出分母(否则虚抬覆盖)。cabb-frozen ×2(CABB 05-04 早于 alarm 管道 05-21)即此类。
+		if a, ok := loadTFire(t, vc.dir); ok && vc.truth == "false-alarm" && a.TFireMs == nil {
+			t.Logf("[排除] %s firmware 未火→非否决候选,移出覆盖分母(%s)", vc.dir, a.Note)
+			continue
+		}
 		ev := runDBNVeto(t, vc)
 		// ★委员会实质1:否决须**正证据**；中 P 无证据→**默认放行**。P 仅诊断。
 		// ★bed-veto 精度漏洞(委员会 gate-critical):bed 单独**不够**——#2 床边真摔靠床→radar InBed(conf 0.6)
@@ -394,5 +400,137 @@ func TestVetoPrecisionHarness(t *testing.T) {
 	//   才能精确 [T_fire, T_fire+5min] 窗 + 早退；当前为整案证据（近似），窗长参数化/早退下增量。
 	if wrongVetos > 0 {
 		t.Fatalf("★精度破 gate：%d 例错误否决真摔——must=0", wrongVetos)
+	}
+}
+
+// tFireArtifact = 每案 committed t_fire.json（firmware 开火时刻，离线从 alarm_events 导，**测时不连库**，
+// 守铁律 sensor 不连库 + #1 教训 fixture 须自洽 committed）。t_fire_ms=null 表示 firmware 未火（非否决候选）。
+type tFireArtifact struct {
+	TFireMs  *int64 `json:"t_fire_ms"`
+	TFireUTC string `json:"t_fire_utc"`
+	Note     string `json:"note"`
+}
+
+func loadTFire(t *testing.T, dir string) (tFireArtifact, bool) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(casesDir, dir, "t_fire.json"))
+	if err != nil {
+		return tFireArtifact{}, false
+	}
+	var a tFireArtifact
+	if err := json.Unmarshal(raw, &a); err != nil {
+		t.Fatalf("解析 t_fire.json %s: %v", dir, err)
+	}
+	return a, true
+}
+
+// caseTimeSpanMs 复用各格式 loader 提取本案数据时段 [min,max]（epoch ms）。窗须含 T_fire 且窗后 ≥ maxW 才合格。
+func caseTimeSpanMs(t *testing.T, vc vetoCase) (int64, int64, int) {
+	t.Helper()
+	var ts []int64
+	switch vc.format {
+	case "v2":
+		for _, r := range legoLoadWindow(t, vc.dir) {
+			ts = append(ts, r.Timestamp)
+		}
+	case "v1":
+		for _, r := range bLoadRecords(t, vc.dir, bFindWindowFile(t, vc.dir)) {
+			ts = append(ts, r.Timestamp)
+		}
+	case "raw":
+		for _, r := range loadRawDump(t, vc.dir) {
+			if v, ok := parseDumpTs(r.Ts); ok {
+				ts = append(ts, v)
+			}
+		}
+	case "txt":
+		f, err := os.Open(filepath.Join(casesDir, vc.dir, "test_record.txt"))
+		if err != nil {
+			return 0, 0, 0
+		}
+		defer f.Close()
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			m := txtTrackRe.FindStringSubmatch(sc.Text())
+			if m == nil {
+				continue
+			}
+			if tt, err := time.Parse("2006-01-02 15:04:05", vc.dayUTC+" "+m[1]); err == nil {
+				ts = append(ts, tt.UTC().UnixMilli())
+			}
+		}
+	}
+	if len(ts) == 0 {
+		return 0, 0, 0
+	}
+	mn, mx := ts[0], ts[0]
+	for _, v := range ts {
+		if v < mn {
+			mn = v
+		}
+		if v > mx {
+			mx = v
+		}
+	}
+	return mn, mx, len(ts)
+}
+
+// TestCaseTFireAlignment — 延时窗前置（委员会授权①）：校验每案窗能否支撑 [T_fire, T_fire+W] 切窗测覆盖。
+// 误对齐 = garbage 测量（cd2b 目录名 0607-0127 vs alarm_events Fall 07:29:29 类陷阱）。诊断型：报真实对齐
+// 状态，钉死「哪些案现成可切窗 / 哪些需重导 / 哪些根本非否决候选」。强断言唯一已知合格案 #9 不退化。
+func TestCaseTFireAlignment(t *testing.T) {
+	const baseWMin = 5 // 用户拍基准延时窗;扫 5/10/15。窗后须 ≥ 该 W 才支撑此 W 切窗。
+	scan := []int{5, 10, 15}
+	suitBaseW := func(vc vetoCase) (float64, bool) { // 返回窗后 min + 是否含 T_fire
+		a, ok := loadTFire(t, vc.dir)
+		if !ok || a.TFireMs == nil {
+			return 0, false
+		}
+		mn, mx, n := caseTimeSpanMs(t, vc)
+		if n == 0 || *a.TFireMs < mn || *a.TFireMs > mx {
+			return 0, false
+		}
+		return float64(mx-*a.TFireMs) / 60000, true
+	}
+	good := 0
+	for _, vc := range vetoCases {
+		a, ok := loadTFire(t, vc.dir)
+		if !ok {
+			t.Logf("[%s] (无 t_fire.json,跳过对齐校验)", vc.dir)
+			continue
+		}
+		if a.TFireMs == nil {
+			t.Logf("[%s] %s = **非否决候选**(firmware 未火)→ 移出覆盖分母。%s", vc.truth, vc.dir, a.Note)
+			continue
+		}
+		mn, mx, n := caseTimeSpanMs(t, vc)
+		if n == 0 {
+			t.Logf("[%s] %s 数据 0 帧 → 无法对齐", vc.truth, vc.dir)
+			continue
+		}
+		tf := *a.TFireMs
+		postMin := float64(mx-tf) / 60000
+		var verdict string
+		switch {
+		case tf < mn || tf > mx:
+			verdict = fmt.Sprintf("✗窗不含T_fire(窗尾后%.1fmin)→需重导[T_fire-2min,T_fire+15min]", float64(tf-mx)/60000)
+		case postMin < float64(baseWMin):
+			verdict = fmt.Sprintf("△窗含T_fire但窗后仅%.1fmin<基准%dmin→需重导补尾", postMin, baseWMin)
+		default:
+			var ws []string
+			for _, w := range scan {
+				if postMin >= float64(w) {
+					ws = append(ws, fmt.Sprintf("%d", w))
+				}
+			}
+			verdict = fmt.Sprintf("✓合格(窗后%.1fmin,支持 W=%s min)", postMin, strings.Join(ws, "/"))
+			good++
+		}
+		t.Logf("[%s] %s  T_fire=%s  窗后=%.1fmin  %s", vc.truth, vc.dir, a.TFireUTC, postMin, verdict)
+	}
+	t.Logf("=== 对齐校验：%d 案现成可切基准 %dmin 窗(其余需重导或非候选) ===", good, baseWMin)
+	// 强断言：已知合格锚 #9 必须支撑基准 W=5min——对齐器自身的 oracle（否则 caseTimeSpanMs/t_fire 坏）。
+	if post, ok := suitBaseW(vetoCases[0]); !ok || post < float64(baseWMin) {
+		t.Fatalf("★对齐器自校验破:#9 333B 应支撑基准 %dmin 窗(窗含 T_fire+窗后≥%dmin)却判不合格(ok=%v post=%.1f) → caseTimeSpanMs/t_fire 坏", baseWMin, baseWMin, ok, post)
 	}
 }
