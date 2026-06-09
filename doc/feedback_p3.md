@@ -7,6 +7,25 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] 施工方 → 委员会：★★ 数据墙解封（DB 可查 + redis-replay 工具）+ 用户锁定 compose 架构（M_i 全 t=0 + `(offset,duration)` + reduce/scale 归生成器）→ 开建 manifest+testkit+recall 闭环
+
+**★★ 数据墙解封（实查推翻「blocked on unit201」）**：event_log/monitor_stream 在本地 `owl_v2` **全可查**（`DB_PASSWORD=postgres` 在 `.env`）；`tools/redis-replay`（多 `--device-uids`→重放回 redis 实时流，**单一公共 t1 rebase + 全局 ts 排序保留跨设备相对时序**）= 委员会要的「整单元 replay 工具」；`scripts/export_case_v2.sh` 导任意窗口。**「blocked」实为缺工具/密码**。已落地：
+- **#9 黄金真 hand-off 导出**（`unit201-handoff-0609-{bathroom-333B,bedroom-CD2B}`）：333B `Fall 07:16:11/07:17:32→ExitRoom 07:17:50` ‖ CD2B `EnterRoom 07:17:46`，两房差 ~4s = **真因果跨房**（非拼接）。
+- **benign 挖掘跑通**：用户配方（sleepad 床事件锚 ±15min、同 /88 room 全 device 有 event、无 Fall）→ **410 合格窗**（101 bedroom dev=3 最富）；可复现 SQL 入 `test_case_catalog.md`。
+
+**★ 用户锁定 compose 架构（AI 生成器 ↔ 重放引擎，三层职责切分）**：
+- **乐高块 M_i**：真碎片，**全 t=0 归一**（块内最早 ts=0；多设备块内跨设备相对间隔原样保留）；manifest 记 `t0_base/自然duration/causality`。
+- **AI 模拟生成器（上层智能）**：选块 + 给每块 `(offset d, duration)`；**reduce(丢帧)/scale(拉伸)/copy-insert(插帧) 贴合 duration = 生成器负责**，产贴好的帧交引擎。
+- **重放引擎 testkit（dumb）**：`replayComposite([(M_i_frames, offset_i, duration_i)])` → 各块放 offset 起、按全局时刻 merge → rebase to now → 喂 bReplayUnit/redis。引擎**不决定缩/扩**。
+- 例：`M_5(d=0,T=600s 背景底料)` + `M_2(d=30,T=120s 注入事件)` 叠在同一全局轴。
+- `causality`：`real-contiguous` 块默认 d=0/duration=自然（不动内部，如 #9）；`synthetic-composite` 由生成器自由 `(offset,duration)` 多块拼。
+
+**与委员会前裁一致**：块格式=生产 StreamMessage 原字段名（committee 实质1）；index-not-copy（manifest 指真源/窗口坐标，benign 按需挖不复制 410 份）；落点 manifest→`doc/cases/legos/` + loader/引擎→`testkit/`。compose 层（offset/duration/fit）是 loader 侧增量。
+
+**开建（按委员会建序：先 manifest + 一个 recall 闭环测走通，再批量）**：① manifest schema 落地（含 t0_base/duration/causality）；② testkit loader（窗口切片 + bReplayUnit 喂入；compose 引擎先最简）；③ **第一个 recall 闭环测**：喂 #9 真摔/真 hand-off → 断言 DBN P(Fallen) fire（真摔不被压）+ Neighbor 在真碎片上行为。放行 bar 不变。**请委员会复核 compose 架构；施工方并行起 manifest+闭环（R0 测试侧，不碰生产）。**
+
+---
+
 ### [2026-06-09] 委员会裁 P9 oracle 验证基建提案（亲验真源 + 拆 3 实质，认可方向，doc-only）
 
 **亲验(不信声明)**：① `nbpRun`/bReplayUnit 确已建（belief_neighbor_pipeline_test.go:40），但**无 `bRecord` 类型**——harness 内联 `mk()` 构造的是**生产 StreamMessage**，字段 = `device_addr / device_type / topic_type / category / timestamp / dataValue`，**不是**提案写的 `device_uid/ts/topic/category/data_value`。② 真源齐：`doc/cases/` 下 75 JSON window + 7 `test_record.txt`，taxonomy 表所列（cabb-fall / bedtest / d523-lost / d5f7 / cabb-frozen…）全部对得上真目录。
