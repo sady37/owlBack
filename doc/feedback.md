@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`b16bb99`(下次从此 commit 起算 delta)
+- **last-audited**:`21533be`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,28 @@
 
 
 
+
+### [2026-06-08 18:04 MDT] 审查57 `b16bb99..21533be`(doc-only)StandDuration 预审 → 裁 SD-A + 3 实质实现要求(无界源/分钟单位/track-gap)+ roomAdapter 整删
+
+**性质**:`21533be` doc(StandDuration 源保真 + SD-A/SD-B)。无代码。
+
+**亲验属实**:
+- ✅ `roomAdapter` 真 dead(调用点仅 belief_adapter_test,生产 0)+ **dead-dup np/EnterExit emit**(#1.3 雷,若误调=双 np)。
+- ✅ double-count 铁律(observation.go:4 派生信号禁入)坐实 → SD-B 灌 risk-derived StandingContinuousMin **撞铁律**。
+- ✅ track 有原始静止源。
+
+**裁 SD-A(原始轨道静止源,roomengine-native)**:决定性 = **避 double-count 铁律**(SD-B 喂 risk-derived 进 belief 违"派生禁入");兼 native 无跨引擎边 + 杀 dead roomAdapter + 灭 #1.3 雷。**驳 SD-B**(撞铁律 + 跨引擎 + #1.3 倒置)。
+
+**⚠️ 委员会补 3 个 SD-A 实现要求(施工方"StillBoxSec"框架会踩坑)**:
+1. **原始源用无界 `StillSince`-派生**(`(nowMs-StillSince)/1000`,toilet geom),**非 30s-rolling `StillBoxSec`**——StillBoxSec 是 30s 滚动方框,**cap 太低,够不到 8min still-fall**;StillSince-派生才无界。
+2. **单位转分钟**:似然 `standCapMin=8.0` 是 **8 分钟**(老人难静站>8min),`clampCap(o.Value,8)` 吃**分钟**;raw 是**秒** → **须 /60 转分钟**,否则差 60×、still-fall 阈值全错。(旧 roomAdapter 喂 `StandingContinuousMin` 已分钟,对齐时勿丢这转换。)
+3. **track-gap 鲁棒(漏报方向)**:8min still-fall 期间 track 若短暂丢失/重捕 → 若 StillSince 重置 → 静止时长归零 → SFallen 抬不起 → **still-fall 漏报**。SD-A 须让静止时长**容短 track-gap**(不因瞬断全清),否则 still-fall recall 受损。
+
+**roomAdapter 处置 = 整删(#1.2)**:np/EnterExit 是 dead-dup(活路径已在),StandDuration 移至 StillSince-原始源 → 整个 roomAdapter + 其自测删净。
+
+**裁决**:SD-A 批准 + 3 实现要求(无界 StillSince 源 / 转分钟 / 容 track-gap)+ roomAdapter 整删(#1.2)。放行前置:ObsStandDuration 在 toilet still-fall 案 populated(单位分钟正确)+ R5-lock StandDuration≥1 仍绿 + 9 红 0 新增 + roomAdapter grep=0。**余 #3 Neighbor**(跨房,redis-replay 整单元,待用户)= 最后一个死源 wire。recall 案 + redis-replay 待用户。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:收审查56 PASS✅ + 死源#5 StandDuration 源保真预审(doc-only)→ 岔口 SD-A 轨道 StillBox 原始源〔倾向〕/ SD-B 跨引擎 zoneengine 派生 + 必清 dead roomAdapter,请委员会裁
 
