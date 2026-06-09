@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`6cb9b21`(下次从此 commit 起算 delta;含委员会执行的 P7.1,指针推至委员会 HEAD)
+- **last-audited**:`6cb9b21`(下次从此 commit 起算 delta;含委员会执行的 P7.1/P7.2,指针推至委员会 HEAD,见下方 bump)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,24 @@
 
 
 
+
+### [2026-06-08 22:00 MDT] P7.2 落地(委员会执行)— τ\* 随 context(zone+risk-time)分档:浴室/夜间 C_FN↑ → τ\* 降 → 更敏感;base(日间非浴室)等价 P7.1 工作点
+
+**性质**:接 P7.1,把散落 RiskLevel 多档阈收敛到**单一代价比旋钮随 context**(impl_plan §6 P7.2)。纯 shadow 读出(R0),不接 alarm。自验 R6。
+
+**做了什么**:
+- **`belief/decision_tau.go` 加 context 层**:`TauContext{Bathroom, Night}` → `cFNMult()` 风险加权 C_FN(浴室 ×1.5 / 夜间 ×1.5,**叠乘**)→ `TauConfirmFor/TauSuspectFor(ctx)` + `DecideTauCtx`。τ\*=C_FP/(C_FP+C_FN×mult):mult↑ → τ\*↓ → 更敏感。**代价假设(委员会可审,终值待 P9)**:浴室=滑倒高发+关门难发现;夜间=无人在旁+长时间无人发现 → 漏报代价高。
+- **base 等价**:日间非浴室 mult=1 → τ\*=0.55/0.30 = P7.1 工作点(等价复现,DecideTau=DecideTauCtx(base))。
+- **档位**:base 0.55 / 浴室∨夜 0.449 / 浴室∧夜 0.352(confirm);suspect 同比降。
+- **shadow 读出(R0)**:belief_shadow_trace + fall 加 `p7_2_bathroom`/`p7_2_night`/`p7_2_tau_decision`/`p7_2_tau`(context τ\*);context 取 `e.roomType[roomID]==Bathroom` + `IsNightTime(nowMs, tm.timezone)`(RLock 内抓,nil-tz→UTC 安全降级)。p7_1 base 保留作对账基线。
+
+**测试**(decision_tau_test.go +3):base context 等价 P7.1 / 风险单调(both<bath/night<base + 叠乘 2.25 验) / 切档敏感度(P=0.45 在 base=suspect、浴室∧夜=confirm)。
+
+**放行 bar**:build/vet 净 + belief 绿(P7.1+P7.2 共 7 测)+ roomengine **9 红 0 新增** + #1.6 净(新文件无禁忌词;`兜底` 命中是 belief_shadow:283 既有 neighbor 注释非本次引入)。**铁律守**:R0 shadow log-only / R1 不碰 alarm(Decider 仍 base thFire,context τ\* 仅读出未接判决——live Decider 接 context-τ\* 留后续,避免 mid-增量改 shadow fire 行为)/ R5 不涉 / R7 mult 常量带来源 + 待 P9 标定。
+
+**P7 剩**:P7.3 reason 路由 / P7.4 human-bed 豁免接 τ\* veto / P7.5 ghost/bed 并入(建议保节点内)。
+
+---
 
 ### [2026-06-08 21:40 MDT] P7.1 落地(委员会执行,用户拍「进入下一步」=P7 统一判定阈)— fall 后验 → 单一代价比 τ\* 读出(shadow-first R0);θ_fire 魔数 0.55 单源化为 `TauConfirm.Tau()`;suspect/confirm 两工作点
 

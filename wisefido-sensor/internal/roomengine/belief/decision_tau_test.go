@@ -53,6 +53,44 @@ func TestDecideTauThreeBands(t *testing.T) {
 	}
 }
 
+// TestTauContextBaseEquivalence — P7.2 base context(日间非浴室)= P7.1 工作点等价复现。
+func TestTauContextBaseEquivalence(t *testing.T) {
+	base := TauContext{}
+	if d := TauConfirmFor(base).Tau() - TauConfirm.Tau(); math.Abs(d) > 1e-9 {
+		t.Fatalf("base confirm τ* 应 = P7.1 TauConfirm(%.4f),得 %.4f", TauConfirm.Tau(), TauConfirmFor(base).Tau())
+	}
+	if d := TauSuspectFor(base).Tau() - TauSuspect.Tau(); math.Abs(d) > 1e-9 {
+		t.Fatalf("base suspect τ* 应 = P7.1 TauSuspect(%.4f),得 %.4f", TauSuspect.Tau(), TauSuspectFor(base).Tau())
+	}
+}
+
+// TestTauContextRiskLowersTau — P7.2 方向:浴室/夜间 C_FN↑ → τ*↓ → 更敏感;叠乘最高风险 τ* 最低。
+func TestTauContextRiskLowersTau(t *testing.T) {
+	base := TauConfirmFor(TauContext{}).Tau()
+	bath := TauConfirmFor(TauContext{Bathroom: true}).Tau()
+	night := TauConfirmFor(TauContext{Night: true}).Tau()
+	both := TauConfirmFor(TauContext{Bathroom: true, Night: true}).Tau()
+	if !(both < bath && both < night && bath < base && night < base) {
+		t.Fatalf("τ* 风险单调错:base=%.3f bath=%.3f night=%.3f both=%.3f(期望 both<bath/night<base)", base, bath, night, both)
+	}
+	// 叠乘:both 的 C_FN 乘子 = bathroom×night = 1.5×1.5=2.25。
+	wantBoth := TauConfirm.CFP / (TauConfirm.CFP + TauConfirm.CFN*bathroomCFNMult*nightCFNMult)
+	if d := both - wantBoth; math.Abs(d) > 1e-9 {
+		t.Fatalf("both τ* 应 = CFP/(CFP+CFN×2.25)=%.4f,得 %.4f", wantBoth, both)
+	}
+}
+
+// TestDecideTauCtxSensitivity — 同一 P(Fallen) 在高风险 context 下达 confirm,base 下仅 suspect(更敏感)。
+func TestDecideTauCtxSensitivity(t *testing.T) {
+	p := 0.45 // base: suspect(0.30<0.45≤0.55);浴室+夜:confirm(0.45>0.352)
+	if dec, _ := DecideTauCtx(p, TauContext{}); dec != TauSuspectLevel {
+		t.Fatalf("base context P=%.2f 期望 suspect,得 %v", p, dec)
+	}
+	if dec, _ := DecideTauCtx(p, TauContext{Bathroom: true, Night: true}); dec != TauConfirmLevel {
+		t.Fatalf("浴室+夜 context P=%.2f 期望 confirm(τ* 降至更敏感),得 %v", p, dec)
+	}
+}
+
 // TestDeciderUnchangedByTauRefactor — P7.1 不改 Decider 行为:thFire 仍 0.55,确认窗 confirmMs 仍生效。
 func TestDeciderUnchangedByTauRefactor(t *testing.T) {
 	var d Decider

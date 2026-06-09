@@ -2,6 +2,7 @@ package roomengine
 
 import (
 	"owl-common/alarm"
+	"owl-common/card"
 	"owl-common/observation"
 	"wisefido-sensor/internal/roomengine/belief"
 
@@ -128,6 +129,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	e.mu.RLock()
 	tm := e.rooms[roomID]
 	grid := e.grids[roomID]
+	roomType := e.roomType[roomID]
 	e.mu.RUnlock()
 	if tm == nil {
 		return
@@ -516,14 +518,19 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	// 委员会㊸ B-2:数值进生产 observability 非 test 钩子;为人在环逐案查提供"关键 P 值清 log"。
 	argTraceS, argTraceP := v.Max()
 	pFallen := v.P(belief.SFallen)
-	// P7.1 代价比 τ* 读出（shadow-first R0：只 log 不接 alarm；suspect/confirm 两工作点 vs gate-list 对账）。
+	// P7.1 base 代价比 τ* 读出 + P7.2 context-dependent τ*（zone+risk-time → C_FN 加权 → τ* 随风险降）。
+	// shadow-first R0：只 log 不接 alarm；suspect/confirm 两工作点 vs gate-list 对账（P9 oracle 用）。
 	tauDec, tauHit := belief.DecideTau(pFallen)
+	tauCtx := belief.TauContext{Bathroom: roomType == card.RoomTypeBathroom, Night: IsNightTime(nowMs, tm.timezone)}
+	tauCtxDec, tauCtxHit := belief.DecideTauCtx(pFallen, tauCtx)
 	e.logger.Debug("belief_shadow_trace",
 		zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),
 		zap.Float64("p_fallen", pFallen),
 		zap.String("argmax_state", argTraceS.String()), zap.Float64("argmax_p", argTraceP),
 		zap.String("last_lost_geom", sh.lastLostGeom.String()),
-		zap.String("p7_1_tau_decision", tauDec.String()), zap.Float64("p7_1_tau", tauHit))
+		zap.String("p7_1_tau_decision", tauDec.String()), zap.Float64("p7_1_tau", tauHit),
+		zap.Bool("p7_2_bathroom", tauCtx.Bathroom), zap.Bool("p7_2_night", tauCtx.Night),
+		zap.String("p7_2_tau_decision", tauCtxDec.String()), zap.Float64("p7_2_tau", tauCtxHit))
 	confirmed := sh.decider.Update(v, nowMs) == belief.DecisionFall
 	if confirmed && !sh.fired {
 		argS, argP := v.Max()
@@ -534,8 +541,10 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			zap.String("argmax_state", argS.String()),
 			zap.Float64("argmax_p", argP),
 			zap.String("last_lost_geom", sh.lastLostGeom.String()), // #3：InBed/InToilet=床/桶区误确认嫌疑
-			zap.String("p7_1_tau_decision", tauDec.String()),       // P7.1：confirm 工作点（τ*=0.55，等价历史 θ_fire）
+			zap.String("p7_1_tau_decision", tauDec.String()),       // P7.1：base confirm（τ*=0.55，等价历史 θ_fire）
 			zap.Float64("p7_1_tau_confirm", belief.TauConfirm.Tau()),
+			zap.Bool("p7_2_bathroom", tauCtx.Bathroom), zap.Bool("p7_2_night", tauCtx.Night), // P7.2：context
+			zap.String("p7_2_tau_decision", tauCtxDec.String()), zap.Float64("p7_2_tau", tauCtxHit),
 		)
 	}
 	sh.fired = confirmed

@@ -39,13 +39,58 @@ func (d TauDecision) String() string {
 	}
 }
 
-// DecideTau 读出当前 P(Fallen) 落哪个工作点 + 命中的阈值（confirm 优先）。
+// DecideTau 读出当前 P(Fallen) 落哪个工作点 + 命中的阈值（confirm 优先，base context）。
 func DecideTau(pFallen float64) (TauDecision, float64) {
-	if pFallen > TauConfirm.Tau() {
-		return TauConfirmLevel, TauConfirm.Tau()
+	return DecideTauCtx(pFallen, TauContext{})
+}
+
+// ── P7.2 context-dependent τ*（散落 RiskLevel 多档阈 → 单一代价比旋钮随 context） ──
+//
+// 漏报代价 C_FN 随风险升 → τ* 降 → 更敏感。代价假设（委员会可审，终值待 P9 标定）：
+//   - 浴室：滑倒高发 + 关门独处难被发现 → 漏一次代价高。
+//   - 夜间：无人在旁 + 可能长时间无人发现 → 漏一次代价高。
+// 两者叠乘（既浴室又夜间 = 最高风险 → τ* 最低）。base（日间非浴室）= P7.1 工作点（0.55/0.30）等价复现。
+const (
+	bathroomCFNMult = 1.5
+	nightCFNMult    = 1.5
+)
+
+// TauContext 决策上下文：zone（是否浴室）+ risk-time（是否夜间）。
+type TauContext struct {
+	Bathroom bool
+	Night    bool
+}
+
+// cFNMult 漏报代价 C_FN 的风险加权（base=1）。
+func (c TauContext) cFNMult() float64 {
+	m := 1.0
+	if c.Bathroom {
+		m *= bathroomCFNMult
 	}
-	if pFallen > TauSuspect.Tau() {
-		return TauSuspectLevel, TauSuspect.Tau()
+	if c.Night {
+		m *= nightCFNMult
 	}
-	return TauNone, TauSuspect.Tau()
+	return m
+}
+
+// withCtx 把 base 工作点的 C_FN 按 context 风险加权（C_FP 不动 → τ* 降）。
+func (c CostRatio) withCtx(ctx TauContext) CostRatio {
+	return CostRatio{CFP: c.CFP, CFN: c.CFN * ctx.cFNMult()}
+}
+
+// TauConfirmFor / TauSuspectFor context-adjusted 工作点。
+func TauConfirmFor(ctx TauContext) CostRatio { return TauConfirm.withCtx(ctx) }
+func TauSuspectFor(ctx TauContext) CostRatio { return TauSuspect.withCtx(ctx) }
+
+// DecideTauCtx context-dependent 三档读出（confirm 优先）。
+func DecideTauCtx(pFallen float64, ctx TauContext) (TauDecision, float64) {
+	confirm := TauConfirmFor(ctx).Tau()
+	suspect := TauSuspectFor(ctx).Tau()
+	if pFallen > confirm {
+		return TauConfirmLevel, confirm
+	}
+	if pFallen > suspect {
+		return TauSuspectLevel, suspect
+	}
+	return TauNone, suspect
 }
