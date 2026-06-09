@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`272a48e`(下次从此 commit 起算 delta;含委员会执行的 P4.1/P4.3 dwell 生存函数+夜尾)
+- **last-audited**:`e74a6ed`(委员会 R6 验收 `d577f1a` 首个 recall 闭环+修 #1.6 字面量;详见 `doc/feedback_p3.md`。`272a48e`→`d577f1a` 间皆 doc/data 提交)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
