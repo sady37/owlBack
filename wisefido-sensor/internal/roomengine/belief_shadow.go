@@ -420,22 +420,32 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		// "消失" 零 fall 信息（结构性盲猜，非 fall 证据）→ no-detect **完全中性化**（effRealnessP=0 → factor→1）。
 		// ★不走 door-exit 通道：door-exit 有意留 floor（noDetDoorSuppressK<1，「门口真摔仍浮出」），是"可能离开也
 		// 可能摔"；距离闸是传感器盲区"零信息"，须全压 → 走 realnessP=0。复用 gate DistanceGateCm 常量（R7）。
+		// G-2 空房账内化（gate→DBN，委员会自纠：原 G-2① 误判"已覆盖"）：roomLedgerEmpty（最近 ExitRoom 晚于
+		// EnterRoom = 房已空，铁律只信 ExitRoom 不信 np=0）→ 此刻失锁 track 是"人走后残影"（冻住的镜面反射）→
+		// no-detect 不抬 fall（治 D5F7 残影 ExitRoom 后才消失漏 cancel）。durable 状态读单源 roomLedgerEmpty(#1.3)，
+		// 全压（同距离闸：ExitRoom 是确实离开的空间证据，残影零 fall 信息）。
 		effRealnessP := realnessP
-		distSuppress := 0.0
+		distSuppress, roomEmptySuppress := 0.0, 0.0
 		if lostFarFromRadar(st.lastRawDistCm) {
-			effRealnessP = 0
 			distSuppress = 1.0
+		}
+		if tm.RoomLedgerEmpty() {
+			roomEmptySuppress = 1.0
+		}
+		if distSuppress > 0 || roomEmptySuppress > 0 {
+			effRealnessP = 0 // 距离盲区 ∨ 房已空 → no-detect 完全中性化（factor→1）
 		}
 		// P2：门区不再硬 continue；改软门——no-detect(R_i+door-exit 门控抬 Fallen) 与 reachable-exit(压 Fallen) 同 tick 对冲。
 		obs = append(obs, noDetectObs(st.geom, effRealnessP, doorExitP, nowMs))
-		if realnessP < 0.5 || doorExitP > 0.5 || distSuppress > 0 { // 门控生效(ghost消失/门区可达走出/远距弱回波)→ 弱抬/不抬
-			e.logger.Info("belief_shadow_nodetect_gated", // observability:量 no-detect 被 R_i/door-exit/dist 压的频率
+		if realnessP < 0.5 || doorExitP > 0.5 || distSuppress > 0 || roomEmptySuppress > 0 { // 门控生效→ 弱抬/不抬
+			e.logger.Info("belief_shadow_nodetect_gated", // observability:量 no-detect 被 R_i/door-exit/dist/room-empty 压的频率
 				zap.String("room_id", roomID),
 				zap.Int("track_id", tid),
 				zap.Int64("ts_ms", nowMs),
 				zap.Float64("p6_1a_Ri", realnessP),                                                          // P(real track);低=ghost 消失,不抬（原始,非 dist-eff）
 				zap.Float64("p6_1a_door_exit", doorExitP),                                                   // P(door-exit);高=门区可达走出,不抬
 				zap.Float64("p2_dist_suppress", distSuppress), zap.Int("p2_lost_dist_cm", st.lastRawDistCm), // P2 距离闸:1=远距全压
+				zap.Float64("p2_room_empty_suppress", roomEmptySuppress), // G-2 空房账:1=房空残影全压
 				zap.Bool("p6_1a_nodetect_gated", true),
 				zap.String("last_geom", st.geom.String()),
 			)
@@ -467,6 +477,11 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		// 另一条 live track = firmware 换 ID，无人真消失 → 喂 TObsLogicAlive 压 TLost（与生产 gate 硬 skip 同向）。
 		if tm.HasOtherLiveTrackWithLogicID(tl.logicID, tid) {
 			tobs = append(tobs, belief.TObservation{Kind: belief.TObsLogicAlive, Conf: 0.9, Ts: nowMs, Fresh: true})
+		}
+		// G-2 空房账 durable（Track 层一致：TObsExit 原仅 event 瞬时会衰减；房账空是 durable 状态 → 失锁期每 tick
+		// 按 roomLedgerEmpty 重申 TObsExit 压 TLost，与 Room 层 no-detect 全压同向）。读单源 roomLedgerEmpty(#1.3)。
+		if tm.RoomLedgerEmpty() {
+			tobs = append(tobs, belief.TObservation{Kind: belief.TObsExit, Conf: 0.9, Ts: nowMs, Fresh: true})
 		}
 		// C3 共享算子：reachable-exit 同源喂 Track 层（近门 + 定向逼近 → 偏 JustLeft 压 Lost）。
 		// ghost track 在 Room 层被 delete（sh.tracks 无），A_T 自走 Ghost→None，无需此观测。

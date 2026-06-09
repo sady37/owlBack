@@ -509,6 +509,13 @@ func (tm *TrackManager) roomLedgerEmpty() bool {
 	return tm.lastExitMs > tm.lastEnterMs
 }
 
+// RoomLedgerEmpty 自锁版（beliefShadowTick 不持 tm.mu；读 lastExit/lastEnterMs 与 RecordRadarEvent 写并发须锁）。
+func (tm *TrackManager) RoomLedgerEmpty() bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return tm.roomLedgerEmpty()
+}
+
 // NeighborRoomEnterMs 跨房 hand-off：最近一次 EnterRoom 的 ts + 当前是否仍占用（未被 ExitRoom 翻掉）。
 // 自锁（与 RecordRadarEvent 写 lastEnterMs 持的 tm.mu 一致；仅 beliefShadowTick 跨房读，无重入）。
 func (tm *TrackManager) NeighborRoomEnterMs() (enterMs int64, occupied bool) {

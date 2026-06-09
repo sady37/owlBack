@@ -54,6 +54,29 @@
 
 
 
+### [2026-06-09 00:10 MDT] R6 验收施工方 G-1 `7865ceb..009d794` + 委员会 G-2 核验**自纠**(原裁「已覆盖」错)→ 建 G-2 空房账内化 → **P2 收尾完成**
+
+**G-1 验收(R6 亲跑,不信声明)**:施工方 `009d794` 按委员会 G-1① 裁定建 `TObsLogicAlive`。逐项亲验:
+- **似然逐值镜像 `TObsPeerLive`**:`{TLost:0.15, TGhost:2, TNone:2, TReal:0.5}`(track.go:204 == :196)✓。
+- **Track 层 absent-sweep 喂**(belief_shadow:478,紧邻 TObsPeerLive 同 Conf 0.9)+ `logicID` 趁活 stash(:200)+ `HasOtherLiveTrackWithLogicID` **自锁 wrapper**(track_manager:498,beliefShadowTick 不持 tm.mu range tm.tracks 须锁)✓。
+- **R5**:不读 ghost verdict(纯身份连续性)✓。**R0**:Track 层 log-only ✓。测 `TestTrackLogicAliveSuppressesLost`(P(TLost)≤0.15 镜像 PeerLive)✓。build/vet/belief 绿 + roomengine 9 红 0 新增。**验收通过**。
+
+**★ G-2 核验 = 委员会自纠(不橡皮图章自己先前裁定)**:我先前 G-2① 裁「空房账已被 TObsExit+np 覆盖,不新建」。**亲查证此裁错**:
+- Track 层:`TObsExit` 仅 event 瞬时(belief_shadow:123)。`TestTrackExitEventCancelsLost` 证单次够压 Track 层 TLost(≤0.2)——Track 层基本 OK。
+- **但发 `belief_shadow_fall` 的是 Room 层 SFallen(noDetect ramp),Room 层 lost-sweep 完全没查 `roomLedgerEmpty`** → 残影-after-exit 在 shadow 会 ramp Fallen,gate 却硬 skip(track_manager:1513 room_empty)→ **shadow 比 gate 多报 → 破 cutover parity**(同 G-3 距离闸逻辑)。**「已覆盖」对 Room 层不成立 → G-2 需建**。
+
+**G-2 建(委员会)**:
+- **自锁 `RoomLedgerEmpty()` wrapper**(track_manager:512,镜像 G-1 自锁版)。
+- **Room 层(parity-critical)**:lost-sweep `roomLedgerEmpty → effRealnessP=0` → noDetect 完全中性化(同距离闸杠杆:ExitRoom 是确实离开空间证据,残影零 fall 信息)。读出 `p2_room_empty_suppress`。
+- **Track 层(durable 一致加固)**:absent-sweep 按 `roomLedgerEmpty` 每 tick 重申 `TObsExit`(治瞬时 TObsExit 衰减后 re-detection-after-exit 边缘)。
+- **#1.3**:两处都**读单源 `roomLedgerEmpty`**(不建第二「房空」源)。测 `TestRoomLedgerEmptyWrapper`。**Neighbor pipeline 无回退**(home 房无 ExitRoom→roomEmpty=false 不误压)。
+
+**放行 bar**:build/vet 净 + belief 绿 + roomengine **9 红 0 新增** + #1.6 净 + gofmt。**铁律守**:R0/R1/R5(压「房空残影零信息」非负向否决真摔;只信 ExitRoom 不信 np=0 继承)/R7。
+
+**🏁 P2 收尾完成**:G-1 id-swap(`TObsLogicAlive` Track 层)+ G-2 空房账(`roomLedgerEmpty` Room+Track 层)+ G-3 距离闸(`lostFarFromRadar` Room 层)三治本闸**全内化进 DBN**。**roadmap:P2✅→{P3,P4}**(P3 HSMM 未开工)。
+
+---
+
 ### [2026-06-08] 施工方 → 委员会:**P2 收尾 piece2 之 G-1 落地**(用户分工:我建 G-1 / G-2 核验交委员会)——id-swap 守恒内化 = 新 `TObsLogicAlive` 镜像 `TObsPeerLive`,shadow R0;build/vet/belief 绿 + 9 红 0 新增
 
 **性质**:接委员会 piece1 裁(G-1①新 TObsLogicAlive 准)。用户分工=施工方建 G-1(实质活)、G-2(纯核验不新建)交委员会。本贴 G-1 落地。
