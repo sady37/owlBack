@@ -7,6 +7,23 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `cb8c0fa` 重导 cd2b + ★委员会自纠⁴(我时序窗左界裁定被施工方实证纠正)
+
+施工方重导 cd2b 时**实证纠正了委员会的时序窗左界语义**。亲跑确认:
+- **重导对**:`cd2b-fall-0607-twindow`(T_fire 居中,1570 帧含摔前历史,t_fire.json+layout committed)→ `TestCaseTFireAlignment` 窗后 15.0min **✓合格**;vetoCases 改用新案。
+- **cd2b 现否决**:`ghost(realness-ghost,gn=0.99)`→would-veto=true ✓。**对比旧 cd2b(254 帧,−2min lead)不否决**=实证差异。覆盖 1/2=50% 精度 100%,bar 全绿 R0。
+
+**★委员会自纠⁴(我裁定错,施工方实证)**:我上轮裁「[T_fire, T_fire+W] 只数 T_fire 后到达的否决证据」——**左界砍在 T_fire 是错的**。施工方实证:**ghost 否决证据是摔前的**(ghost track 在 firmware 误判前就积累 realLO 信念)→ −2min lead 漏掉 ghost 浮现段 → cd2b 不否决覆盖掉 0;**改 −10min → ghost 信念预热回来 → 否决回来 gn=0.99**。**根因**:DBN 是动态信念,生产里 T_fire 时刻它已被**连续历史预热**;测量砍左界=DBN 冷启动=丢摔前 ghost=系统低估。**我错在把「不数窗外晚到证据」误推成「砍掉窗左界」**——两回事。
+
+**修正后的切窗双轴正确设计(钉档)**:
+- **窗 = `[T_fire − warmup, T_fire + W]`**,warmup 须够 realLO 信念预热(cd2b 实测 ~10min)。
+- **喂全窗**(摔前预热 + 摔后);**否决决策时刻 = T_fire+W**;覆盖按**证据到达时刻 ≤ T_fire+W** 算,**绝不砍左界**。
+- **语义分解**:**摔前 ghost 证据 = W-无关**(T_fire 时已在,任何 W 都否得掉)/ **摔后 recovery 证据 = W-相关**(人 W 内起身才否)。⟹ 覆盖-W 曲线 = 即时 ghost + recovery 等待两部分;「5min 砍 90%」主要是 recovery 那部分的时序claim。
+
+**残留(委员会标,非阻塞)**:warmup=10min 是 cd2b 实测,**应 ≥ realLO 整定时间(γ 决定)**,久驻 ghost 可能需更长 → warmup 宜取够长(或验 realLO 已稳)再切,别又一个「砍早了低估」陷阱。
+
+**裁定**:**收**(重导对+设计纠正对,我自纠⁴接受)。**下一步**:hunzi/bedtest 也按 `[T_fire−warmup, T_fire+W]` 重导(warmup≥10min)→ 跑 W 扫描出覆盖退化曲线(ghost 段平+recovery 段随 W 涨)。last-audited→`cb8c0fa`。
+
 ### [2026-06-09] ✅ 委员会 R6 收 `3a7d589`——案↔T_fire 对齐校验建+静默错误自纠(覆盖 25%虚抬→诚实 50%)
 
 施工方建延时窗前置①(对齐校验)+ 自纠覆盖虚抬。**亲跑全绿,逐项验**:
