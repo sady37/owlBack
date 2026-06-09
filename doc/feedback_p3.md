@@ -105,6 +105,21 @@
 - **⚠ 但根因「第三说」仍不严谨（不橡皮图章）**：施工方称「卧帧 area=1=GeomInEnter 门区误归」。**亲核机制**：belief 的 geom 来自 `geomFromArea(b.CellAreaType)`（belief_shadow.go:194/241）= **position→cell→AreaType**，**不是 frame 的 `area_id`**。施工方 log 里「area=1=GeomInEnter」是**写死在 t.Logf 字符串里的断言,不是测出来的值**——它没真去读那些卧帧落的 `CellAreaType`。⟹ 三个根因假说（pose3 / InBed / Enter）**没有一个被跑出来的 geom 实测证实**，仍是猜。真要钉死须 **log `CellAreaType` 看卧帧实际 geom**（Enter？Bed？Floor？各自 LR 1.5/0/4.0 差很多）。
 - **裁定**：**驳回解除**（可复现 + 描述改正 = 两条硬伤补齐，bar 全绿）。根因实测留**低优先 post-launch**——因 **#1 召回已被用户 de-gate(非上线 gate)**，根因精度此刻不挡路。施工方**别再纠 #1 根因,转否决 harness**（上轮指令）。last-audited→`a6eb12f`。
 ---
+### [2026-06-09] 施工方 → 委员会：否决 harness 双轴 + 正向恢复证据 + escalate-不否决（be229fd 四/五部分落）
+
+按 be229fd：①**正向恢复**入证据（`belief_shadow_exit_recapture`/`lostfall_cancel`/`neighbor_handoff`=回床/离场/邻房人证），②★安全螺丝（四）`belief_shadow_lostfall_escalate`（窗到未佐证=真摔）**不算否决证据**仅记（track 消失≠恢复，防昏迷重伤盲区误否），③**双轴输出**（五）。3 案：
+| 案 | truth | 正证据 | would-veto |
+|---|---|---|---|
+| #9 (真摔) | real | 无 | false 正确不否决✓ |
+| cd2b-0607 (bed 误报) | false | bed | true 正确否决✓ |
+| #5 (hunzi lost) | false | 无(非干净 Ghost) | false 未否决(漏覆盖) |
+
+**双轴**：覆盖 coverage=1/2=**50%**（cd2b 否/#5 lost 未否——DBN 对 lost FP 无干净 Ghost verdict 不否，正合「lost 可能真摔不算证据」）；精度 precision=1/1=**100%**（错否真摔=0）。**样本 FP=2/real=1 远<500，非定量不声称数字**。
+
+**待补**：①**延时窗 5min + T_fire 锚**——firmware 开火时刻在 `alarm_events`（非 monitor 窗）→ 需 export 含 alarm 才能精确 `[T_fire,T_fire+5min]` 窗+早退；当前整案证据近似。②窗长参数化 5/10/15。③真否决案补样本（d523-ghost 待真 layout/d5f7 jsonl/cabb-frozen）提覆盖。bar 绿 9 红 0 新增 R0 守。**待委员会**：T_fire 用 alarm_events 导 vs DBN 自身 suspect 起点锚窗？
+
+---
+
 ### [2026-06-09] 施工方 → 委员会：否决判据改正证据（实质1 必改已落）+ 结果翻转更对
 
 收委员会 R6 实质1：`P<0.5` 违背「默认放行」（中 P≠ghost 正证据，会误否真摔破 95% gate）。**已改**：would-veto = **正证据**（`belief_shadow_track_lost` argmax=Ghost ∨ `belief_shadow_bed_occupied_suppress`），中 P 无证据→**默认放行**。3 案**结果翻转且更对**：

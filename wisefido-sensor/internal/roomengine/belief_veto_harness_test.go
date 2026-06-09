@@ -89,11 +89,14 @@ var vetoCases = []vetoCase{
 }
 
 // vetoEvidence 一案跑完 DBN 后采集的**正否决证据**（委员会实质1：否决须正证据，非 P<阈）。
+// ★安全螺丝（be229fd 四）：恢复只认**正向**证据；track 消失/lostfall_escalate **绝不**算否决（可能昏迷重伤盲区）。
 type vetoEvidence struct {
-	peak   float64 // peak P(Fallen)（仅诊断，不作判据）
-	ghost  bool    // belief_shadow_track_lost argmax=Ghost（镜面/反射伪迹，definitively 非摔）
-	bed    bool    // belief_shadow_bed_occupied_suppress（接触式床占用，非地板摔）
-	frames int
+	peak     float64 // peak P(Fallen)（仅诊断，不作判据）
+	ghost    bool    // belief_shadow_track_lost argmax=Ghost（镜面/反射伪迹，definitively 非摔）
+	bed      bool    // belief_shadow_bed_occupied_suppress（接触式床占用，非地板摔）
+	recovery bool    // 正向恢复：recapture(回床/离场)/neighbor-handoff(人证在邻房)——非 track 消失
+	escalate bool    // belief_shadow_lostfall_escalate（窗到未佐证=真摔，**否决逻辑不得覆盖**，仅记防误否）
+	frames   int
 }
 
 // runDBNVeto 喂一案真数据走真 pipeline → 采集 peak P + 正否决证据（R0 只读）。
@@ -169,6 +172,10 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 			}
 		case "belief_shadow_bed_occupied_suppress":
 			ev.bed = true // 接触式床占用 = 正否决证据（在床非地板摔）
+		case "belief_shadow_exit_recapture", "belief_shadow_lostfall_cancel", "belief_shadow_neighbor_handoff":
+			ev.recovery = true // 正向恢复（sole-resident recapture/回床/邻房 hand-off）= 正否决证据
+		case "belief_shadow_lostfall_escalate":
+			ev.escalate = true // 窗到未佐证=真摔；**否决逻辑不得覆盖**（track 消失≠恢复，可能昏迷重伤）
 		}
 	}
 	return ev
@@ -176,46 +183,64 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 
 func TestVetoPrecisionHarness(t *testing.T) {
 	var vetos, correctVetos, wrongVetos int
+	var totalFP, fpVetoed, totalReal int // 双轴(be229fd 五):覆盖=fpVetoed/totalFP / 精度=correctVetos/vetos
 	for _, vc := range vetoCases {
 		ev := runDBNVeto(t, vc)
-		// ★委员会实质1:否决须**正证据**（ghost/bed），不确定→**默认放行**。P 仅诊断不作判据。
-		wouldVeto := ev.ghost || ev.bed
+		// ★委员会实质1:否决须**正证据**（ghost/bed/正向恢复），中 P 无证据→**默认放行**。P 仅诊断。
+		// ★四:track 消失/escalate **不**算否决证据（可能昏迷重伤盲区）→ 不进 wouldVeto。
+		wouldVeto := ev.ghost || ev.bed || ev.recovery
 		reason := ""
-		if ev.ghost {
-			reason += "ghost "
-		}
-		if ev.bed {
-			reason += "bed "
+		for _, e := range []struct {
+			b bool
+			s string
+		}{{ev.ghost, "ghost "}, {ev.bed, "bed "}, {ev.recovery, "recovery "}} {
+			if e.b {
+				reason += e.s
+			}
 		}
 		if reason == "" {
 			reason = "(无正证据→默认放行)"
 		}
+		if ev.escalate {
+			reason += "[escalate:窗到未佐证=真摔,不否]"
+		}
 		correct := ""
+		if vc.truth == "false-alarm" {
+			totalFP++
+		} else {
+			totalReal++
+		}
 		if wouldVeto {
 			vetos++
 			if vc.truth == "false-alarm" {
 				correctVetos++
+				fpVetoed++
 				correct = "正确否决✓"
 			} else {
 				wrongVetos++
-				correct = "★错误否决(否掉真摔)✗"
+				correct = "★错误否决(否掉真摔)✗ 破gate"
 			}
+		} else if vc.truth == "real-fall" {
+			correct = "正确不否决✓(默认放行,真摔保留)"
 		} else {
-			if vc.truth == "real-fall" {
-				correct = "正确不否决✓(默认放行,真摔保留)"
-			} else {
-				correct = "未否决(无正证据放行;false-alarm 漏否决,非 gate)"
-			}
+			correct = "未否决(无正证据放行;漏覆盖,非 gate)"
 		}
-		t.Logf("[%s] %s  帧=%d  peak P=%.3f(诊断)  正证据=%s  would-veto=%v  %s", vc.truth, vc.dir, ev.frames, ev.peak, reason, wouldVeto, correct)
+		t.Logf("[%s] %s  帧=%d  peakP=%.3f(诊断)  正证据=%s  would-veto=%v  %s", vc.truth, vc.dir, ev.frames, ev.peak, reason, wouldVeto, correct)
 	}
-	prec := 1.0
+	cov, prec := 0.0, 1.0
+	if totalFP > 0 {
+		cov = float64(fpVetoed) / float64(totalFP)
+	}
 	if vetos > 0 {
 		prec = float64(correctVetos) / float64(vetos)
 	}
-	t.Logf("=== 否决精度 = 正确否决 %d / 全部否决 %d = %.1f%%（gate≥95%%；样本 %d 远<500,骨架闭环非定量）",
-		correctVetos, vetos, prec*100, len(vetoCases))
+	t.Logf("=== 双轴(be229fd 五) ===")
+	t.Logf("覆盖 coverage = 误报否掉 %d/%d = %.0f%%（期望≈90%%，须真否决案够样本）", fpVetoed, totalFP, cov*100)
+	t.Logf("精度 precision = 正确否决 %d/全部否决 %d = %.0f%%（gate≥95%%；真摔错否 %d 须=0）", correctVetos, vetos, prec*100, wrongVetos)
+	t.Logf("⚠ 样本 FP=%d real=%d 远<500 → 闭环结构非定量，不声称数字（be229fd 五）", totalFP, totalReal)
+	// ★延时窗 5min + T_fire 锚点待补：firmware 开火时刻在 alarm_events（非 monitor 窗），需 export 含 alarm
+	//   才能精确 [T_fire, T_fire+5min] 窗 + 早退；当前为整案证据（近似），窗长参数化/早退下增量。
 	if wrongVetos > 0 {
-		t.Logf("⚠ 有 %d 例错误否决(否掉真摔)——上线前须查", wrongVetos)
+		t.Fatalf("★精度破 gate：%d 例错误否决真摔——must=0", wrongVetos)
 	}
 }
