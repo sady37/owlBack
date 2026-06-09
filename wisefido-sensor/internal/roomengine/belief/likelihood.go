@@ -28,32 +28,11 @@ func rawLikelihood(o Observation) Vector {
 			return lk(nil)
 		}
 	case ObsDwellStill:
-		// dwell 生存函数 ramp S_vol(d|zone)=exp(−(d/scale)²) → fallLR=1+(d/scale)²(封顶),**平滑取代硬悬崖**。
-		// geom-条件 scale(本 switch 一处,Value 恒 raw still 秒):
-		//   • toilet/shower(P4.1 裁决⑮ B):Z_cell-无关,scale=dwellScaleToiletSec。
-		//   • 开阔地(P4.4 裁决⑱ B2):**前置 Z_cell tolerance gate**,scale=dwellScaleOpenSec×tol —— 被容忍久站
-		//     的 cell 尾拉长→久站真人不报;tol 走 cell 几何/历史(R3 只读),**Z 只正向 R5**,不用 z 反向压。
-		//   • rest/bed/enter/unknown:久驻正常,不报(unknown 无 cell→无 tolerance 依据,保守不报防裸 ramp FP)。
-		if o.Value <= 0 {
-			return lk(nil)
-		}
-		var scale float64
-		switch o.Geom {
-		case GeomInToilet:
-			scale = dwellScaleToiletSec
-		case GeomOpenFloor:
-			tol := o.ToleranceFactor
-			if tol < 1.0 {
-				tol = 1.0 // 默认/未设=1.0(无容忍证据→不放宽)
-			}
-			scale = dwellScaleOpenSec * tol
-		default:
-			return lk(nil) // bed/enter/unknown → rest 或无依据,不报
-		}
-		r := o.Value / scale
-		fallLR := 1 + r*r
-		if fallLR > dwellFallCap {
-			fallLR = dwellFallCap
+		// dwell 生存函数 ramp（P4.1：−ln S_vol(d|zone)+1）单源走 survival.go fallLRFromDwell（per-zone 尾 +
+		// 开阔地 cell tolerance 拉长尾 + P4.3 夜间短尾）。toilet 15min/open 8min×tol；bed/enter/unknown 不报。
+		fallLR := fallLRFromDwell(o.Value, o.ToleranceFactor, o.Geom, o.Night)
+		if fallLR <= 1.0 {
+			return lk(nil) // 中性（不在尾表 / dwell≤0）
 		}
 		return lk(map[State]float64{SFallen: fallLR})
 	case ObsVitalPresent:

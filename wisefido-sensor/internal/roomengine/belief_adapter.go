@@ -61,13 +61,13 @@ const (
 	beliefReachSpeedCapCmS = 60 // P2.1 学习未足时的全局兜底封顶
 	// P2.1：per-device 学习封顶。雷达自测本住户走速（非 PHI/非 age），个性化"可达天花板"——
 	// 独居老人步态慢 → 封顶自然低 → 绝不给"他本可走出去"虚高信用 → 不漏报。
-	beliefSpeedSampleWinMs   = 2_000 // 采样窗：DisplacementWithinMs(2s) 当一次走速观测
-	beliefSpeedMoveMinCmS    = 15    // 低于此 = 站立/抖动，不采样（只学走动段）
-	beliefSpeedEwmaAlpha     = 0.05  // EWMA 平滑（抗单帧量化噪声）
-	beliefSpeedMinSamples    = 30    // 学习样本不足 → 用全局兜底（短 fixture 自然走兜底，不扰 oracle）
-	beliefSpeedCapFactor     = 1.5   // 封顶 = 1.5×EWMA 走速（mean→ceiling 余量）
-	beliefSpeedCapFloorCmS   = 30    // 封顶下限（防学得过低误压真退场）
-	beliefSpeedCapCeilCmS    = 150   // 封顶上限（生理：挡噪声伪造超人速度）
+	beliefSpeedSampleWinMs = 2_000 // 采样窗：DisplacementWithinMs(2s) 当一次走速观测
+	beliefSpeedMoveMinCmS  = 15    // 低于此 = 站立/抖动，不采样（只学走动段）
+	beliefSpeedEwmaAlpha   = 0.05  // EWMA 平滑（抗单帧量化噪声）
+	beliefSpeedMinSamples  = 30    // 学习样本不足 → 用全局兜底（短 fixture 自然走兜底，不扰 oracle）
+	beliefSpeedCapFactor   = 1.5   // 封顶 = 1.5×EWMA 走速（mean→ceiling 余量）
+	beliefSpeedCapFloorCmS = 30    // 封顶下限（防学得过低误压真退场）
+	beliefSpeedCapCeilCmS  = 150   // 封顶上限（生理：挡噪声伪造超人速度）
 
 	beliefNumberPeopleTTLMs = 70_000 // 审查51:number_people event 新鲜窗(firmware 分钟级 push,>1min stale 不喂 ObsNumberPeople)
 )
@@ -137,7 +137,7 @@ func geomConfFromGrid(g *RoomGrid, x, y int) float64 {
 // radarFrameAdapter 一帧 radar track → []Observation（pose / 运动学 / vital / track-present）。
 // 命门：长冻 track 的 pose/kinematics/vital 置 Fresh=false（Conf=0 不更新），即便 LastObservedMs 仍新
 // （firmware 冻结期持续 1Hz 推同帧）。ghost-ness 不受冻结影响（verdict 仍有效）。
-func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowMs int64) []belief.Observation {
+func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowMs int64, night bool) []belief.Observation {
 	x, y, z := 0, 0, 0
 	if t.PositionX != nil {
 		x = *t.PositionX
@@ -188,8 +188,8 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 
 	out := []belief.Observation{
 		{Source: t.LogicID, Kind: belief.ObsPose, Value: float64(t.Pose), Conf: poseConf, Ts: nowMs, Fresh: motionFresh, Geom: g, GeomConf: gc},
-		{Source: t.LogicID, Kind: belief.ObsZBand, Value: float64(z), Conf: 0.7, Ts: nowMs, Fresh: motionFresh, Geom: g}, // P2.3 z 高度档 posture(不进 fall,R5)
-		{Source: t.LogicID, Kind: belief.ObsDwellStill, Value: dwellSec, Conf: 0.7, Ts: nowMs, Fresh: tsFresh, Geom: g, ToleranceFactor: dwellTol}, // P4.1+P4.4 dwell 生存 ramp(开阔地带 tol gate)
+		{Source: t.LogicID, Kind: belief.ObsZBand, Value: float64(z), Conf: 0.7, Ts: nowMs, Fresh: motionFresh, Geom: g},                                         // P2.3 z 高度档 posture(不进 fall,R5)
+		{Source: t.LogicID, Kind: belief.ObsDwellStill, Value: dwellSec, Conf: 0.7, Ts: nowMs, Fresh: tsFresh, Geom: g, ToleranceFactor: dwellTol, Night: night}, // P4.1+P4.4 dwell 生存 ramp(开阔地带 tol gate)+P4.3 夜尾
 		{Source: t.LogicID, Kind: belief.ObsVitalPresent, Value: vitalVal, Conf: 0.6, Ts: nowMs, Fresh: motionFresh, Geom: g},
 		{Source: t.LogicID, Kind: belief.ObsTrackPresent, Value: ghost, Conf: 0.8, Ts: nowMs, Fresh: tsFresh, Geom: g},
 	}
@@ -225,8 +225,9 @@ func shadowTrackGhostness(ts *TrackState, frameJumpCmS float64) float64 {
 // shadowFrozenArtifact — P3.2 冻结伪迹复合签名门控(委员会 review③):判 ghost = A∧(B≥2)。
 // 补 P3.1 跳变检测漏的**静止反射体**模式。**门控形非裸佐证**:真人远角久站(B③④⑤可全中但缺 A)→不判,
 // 防补漏报反引 FP。realness 用 XY/几何/cell(只读)+ pose/z **方差/锁死**(非 pose/z 值喂 fall,R5)。
-//   A 近必要(二者居一):跳变出生(隐含速度超室内天花板,track-swap)∨ cell=AreaDeny(常驻反射已学,§9 只读)。
-//   B 佐证(≥2):③ pose/z 锁死(连续帧恒定,生理无变)④ 钉死小区(30s box 散布小)⑤ 距门远(非门口驻留)。
+//
+//	A 近必要(二者居一):跳变出生(隐含速度超室内天花板,track-swap)∨ cell=AreaDeny(常驻反射已学,§9 只读)。
+//	B 佐证(≥2):③ pose/z 锁死(连续帧恒定,生理无变)④ 钉死小区(30s box 散布小)⑤ 距门远(非门口驻留)。
 func shadowFrozenArtifact(ts *TrackState, poseZLock int, grid *RoomGrid, x, y int, areaType AreaType, nowMs int64) bool {
 	if ts == nil {
 		return false
@@ -454,7 +455,6 @@ func bedAdapter(b card.BedState, nowMs int64) []belief.Observation {
 		{Source: "bed", Kind: belief.ObsBedOccupied, Value: bedVal, Conf: float64(b.BedConfidence) / 100, Ts: b.BedStatusTs, Fresh: b.BedConfidence > 0, Geom: belief.GeomInBed},
 	}
 }
-
 
 // neighborToObs §5.5.2 弱耦合：邻居 room 占用信念 → 本房 ObsNeighbor。
 // occ = 邻居 P(占用) [0,1]；conf = 邻居 belief 确定度。9h 治本近似：sleepad InBed 当 occ。

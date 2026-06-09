@@ -6,18 +6,18 @@ package belief
 type ObsKind int
 
 const (
-	ObsPose            ObsKind = iota // radar Track.Pose 枚举
-	ObsVitalPresent                   // HR>0 ∨ RR>0
-	ObsBedOccupied                    // bed 贝叶斯 P(InBed)，嵌套 belief 子证据
-	ObsEnterExit                      // EnterRoom=+1 / ExitRoom=-1
-	ObsNumberPeople                   // 房间人数 0-8
-	ObsTrackPresent                   // track Verdict/GhostPenalty 合成 ghost-ness [0,1]
-	ObsNeighbor                       // §5.5.2 弱耦合：邻居 room P(占用) [0,1]
-	ObsTimeContext                    // 夜/昼 + 房型，调 prior 非硬观测
-	ObsNoDetect                       // P(no-detect|s)：本 tick 看了没测到（前置=消失前60s在走动）。状态条件似然=可检测态压低/可合理消失态保留；时长→P3，非斜坡
-	ObsReachableExit                  // 丢失点可达退场证据 e=f_dist·f_reach [0,1]（P2 软门：近门+单帧可达→偏 Left 压 Fallen）
-	ObsZBand                          // P2.3 z 高度档(Value=z cm)：z>80→stand / 30–80→sit / <30→噪声无信息。只喂 posture,**绝不写 SFallen**(R5)
-	ObsDwellStill                     // P4.1 dwell 生存函数(Value=still 秒,Geom=zone)：-lnS_vol(d|zone) 平滑 ramp 取代"still≥阈即报"硬悬崖
+	ObsPose          ObsKind = iota // radar Track.Pose 枚举
+	ObsVitalPresent                 // HR>0 ∨ RR>0
+	ObsBedOccupied                  // bed 贝叶斯 P(InBed)，嵌套 belief 子证据
+	ObsEnterExit                    // EnterRoom=+1 / ExitRoom=-1
+	ObsNumberPeople                 // 房间人数 0-8
+	ObsTrackPresent                 // track Verdict/GhostPenalty 合成 ghost-ness [0,1]
+	ObsNeighbor                     // §5.5.2 弱耦合：邻居 room P(占用) [0,1]
+	ObsTimeContext                  // 夜/昼 + 房型，调 prior 非硬观测
+	ObsNoDetect                     // P(no-detect|s)：本 tick 看了没测到（前置=消失前60s在走动）。状态条件似然=可检测态压低/可合理消失态保留；时长→P3，非斜坡
+	ObsReachableExit                // 丢失点可达退场证据 e=f_dist·f_reach [0,1]（P2 软门：近门+单帧可达→偏 Left 压 Fallen）
+	ObsZBand                        // P2.3 z 高度档(Value=z cm)：z>80→stand / 30–80→sit / <30→噪声无信息。只喂 posture,**绝不写 SFallen**(R5)
+	ObsDwellStill                   // P4.1 dwell 生存函数(Value=still 秒,Geom=zone)：-lnS_vol(d|zone) 平滑 ramp 取代"still≥阈即报"硬悬崖
 )
 
 var obsKindLabel = [...]string{
@@ -72,12 +72,15 @@ type Observation struct {
 	// 仅 ObsDwellStill 开阔地消费：dwell 生存尾 scale*=tol（被容忍久站的 cell 尾更长→久站真人不报）。
 	// 0 或未设=1.0（向后兼容，非 dwell 观测留零值即可）。语义=容忍越高尾越长，Value 恒 raw（不缩放）。
 	ToleranceFactor float64
+	// Night P4.3 风险时段标志（仅 ObsDwellStill 消费）：夜间 dwell 生存尾缩短→更快 ramp（久静夜间更可疑）。
+	// adapter 由 IsNightTime(nowMs, room timezone) 填。0/未设=昼。
+	Night bool
 	// RealnessP/DoorExitP P6.1a 门控输入（仅 ObsNoDetect 消费；plumbing 同 B2 显式字段，公式留 likelihood）。
 	// RealnessP=P(R_i=real)∈[0,1]（adapter 由 shadow realness σ(LO) 填）；DoorExitP=P(door-exit)∈[0,1]
 	// （reachableExitScore 填）。ObsNoDetect 抬 Fallen 因子 = 1+gain·RealnessP·(1−DoorExitP):
 	// ghost 消失(RealnessP→0)或门区可达走出(DoorExitP→1)→ 因子→1 中性(不裸 absence 抬 fall)。0=未设。
-	RealnessP  float64
-	DoorExitP  float64
+	RealnessP float64
+	DoorExitP float64
 }
 
 // effConf 有效置信度：stale 观测当缺失。

@@ -219,7 +219,7 @@ func replay(t *testing.T, recs []fxRecord, grid *RoomGrid, mount radarutils.Rada
 				}})
 
 				tr := observation.Track{LogicID: "L", Pose: pose, PoseConfidence: conf, PositionX: &x, PositionY: &y, PositionZ: &z}
-				obs = append(obs, radarFrameAdapter(tr, k.st, grid, now)...)
+				obs = append(obs, radarFrameAdapter(tr, k.st, grid, now, false)...)
 			}
 
 		case alarm.EnterRoom, alarm.ExitRoom:

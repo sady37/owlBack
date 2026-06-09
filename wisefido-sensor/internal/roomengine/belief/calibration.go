@@ -5,7 +5,9 @@ package belief
 // 对照 signal_map §2 发射表 + belief_dbn_impl_plan §1 P2 / §8 P9.6 占位标定清单。
 //
 // 命名:lr* = 似然乘子(>1 抬该态 / <1 压该态 / =1 中性);gain* = 随证据强度 p∈[0,1] 线性的斜率;
-//       damp* = 1−k·p 形压制的斜率 k;z*Cm = 高度阈值 cm;stand* = 久站时长项。
+//
+//	damp* = 1−k·p 形压制的斜率 k;z*Cm = 高度阈值 cm;stand* = 久站时长项。
+//
 // **shadow 期占位值**(待 P9 oracle 定终值)见 §8 P9.6;勿在 shadow 期拍脑袋抬权。
 const (
 	// ── ObsZBand(P2.3 z 三档 posture;A类round-z3 / 原则#2;只喂 posture,绝不写 SFallen / R5)──
@@ -84,6 +86,8 @@ const (
 	dwellScaleToiletSec = 900.0 // toilet/shower 15min(对齐生产 ToiletShowerSec)
 	dwellScaleOpenSec   = 480.0 // 开阔地 8min(对齐生产 StillTimeoutSec 量级;P4.4,P9.6 待 oracle)
 	dwellFallCap        = 2.5   // fallLR 封顶(温和;真 dwell-fall 靠 Decider 窗累积)
+	dwellShape          = 2.0   // P4.1 生存尾形状(Weibull k;沿用现行 k=2;P9 待样本收紧尾形)
+	dwellNightTailMult  = 0.7   // P4.3 风险时段夜间短尾(scale×此=更快 ramp;久静夜间更可疑;P9 待标定)
 
 	// ── poseLikelihood(P2.2:对 fall 只正向;SStandWalk/SSit/SBedLying 是 posture 区分非 fall 压制)──
 	lrPoseWalkStandWalk  = 6.0

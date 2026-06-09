@@ -149,6 +149,8 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	defer e.beliefShadowMu.Unlock()
 	sh := e.beliefShadowFor(roomID)
 
+	night := IsNightTime(nowMs, tm.timezone) // P4.3 风险时段:夜间 dwell 生存尾缩短(久静更可疑)
+
 	var obs []belief.Observation
 	cur := make(map[int]struct{}, len(bases))
 	curTL := make(map[int]struct{}, len(bases))
@@ -214,7 +216,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		tr := observation.Track{BedStatus: observation.BedStatusUnchanged, Pose: b.Pose, PositionX: &x, PositionY: &y, PositionZ: &z}
 		ts := tm.tracks[b.TrackID]
 		if ts != nil {
-			obs = append(obs, radarFrameAdapter(tr, ts, grid, nowMs)...)
+			obs = append(obs, radarFrameAdapter(tr, ts, grid, nowMs, night)...)
 		}
 		st := sh.tracks[b.TrackID]
 		if st == nil {
@@ -569,7 +571,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	// P7.1 base 代价比 τ* 读出 + P7.2 context-dependent τ*（zone+risk-time → C_FN 加权 → τ* 随风险降）。
 	// shadow-first R0：只 log 不接 alarm；suspect/confirm 两工作点 vs gate-list 对账（P9 oracle 用）。
 	tauDec, tauHit := belief.DecideTau(pFallen)
-	tauCtx := belief.TauContext{Bathroom: roomType == card.RoomTypeBathroom, Night: IsNightTime(nowMs, tm.timezone)}
+	tauCtx := belief.TauContext{Bathroom: roomType == card.RoomTypeBathroom, Night: night}
 	tauCtxDec, tauCtxHit := belief.DecideTauCtx(pFallen, tauCtx)
 	e.logger.Debug("belief_shadow_trace",
 		zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),

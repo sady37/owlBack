@@ -32,7 +32,7 @@ func TestAdapterStillBoxTrackKillsMotionObs(t *testing.T) {
 		Verdict:        VerdictReal,
 	}
 	tr := observation.Track{LogicID: "L1", Pose: observation.PoseStanding, PositionX: ptr(-390), PositionY: ptr(30), PositionZ: ptr(30)}
-	obs := radarFrameAdapter(tr, ts, nil, now)
+	obs := radarFrameAdapter(tr, ts, nil, now, false)
 
 	pose, _ := findObs(obs, belief.ObsPose)
 	if pose.Fresh {
@@ -49,7 +49,7 @@ func TestAdapterFreshTrackPassesPose(t *testing.T) {
 	now := int64(10_000_000)
 	ts := &TrackState{LastObservedMs: now - 500, StillBoxRunStart: 0, LastZ: 160, Verdict: VerdictReal}
 	tr := observation.Track{LogicID: "L1", Pose: observation.PoseWalking, PositionX: ptr(100), PositionY: ptr(100), PositionZ: ptr(160), PoseConfidence: 80}
-	obs := radarFrameAdapter(tr, ts, nil, now)
+	obs := radarFrameAdapter(tr, ts, nil, now, false)
 	pose, ok := findObs(obs, belief.ObsPose)
 	if !ok || !pose.Fresh || pose.Value != float64(observation.PoseWalking) || pose.Conf != 0.8 {
 		t.Fatalf("fresh walking pose 透传错: %+v", pose)
@@ -84,7 +84,7 @@ func TestAdapterGenuineFallFires(t *testing.T) {
 		now += 1000
 		ts := &TrackState{LastObservedMs: now, LastZ: z, Verdict: VerdictReal}
 		tr := observation.Track{LogicID: "L1", Pose: observation.PoseWalking, PositionX: ptr(50), PositionY: ptr(50), PositionZ: ptr(z), PoseConfidence: 80}
-		be.Step(now, radarFrameAdapter(tr, ts, nil, now))
+		be.Step(now, radarFrameAdapter(tr, ts, nil, now, false))
 	}
 	// 跌倒帧 + 持续躺地。断言**不变量**:持续 pose-fallen 在窗内必确认 —— 不锁帧数。
 	// 删 Δz(P2.1)/ firmware 降权(P2.4)后单帧冲击退场,genuine-fall 由正向 pose 多帧累积;
@@ -92,7 +92,7 @@ func TestAdapterGenuineFallFires(t *testing.T) {
 	now += 1000
 	ts := &TrackState{LastObservedMs: now, LastZ: 20, Verdict: VerdictReal}
 	tr := observation.Track{LogicID: "L1", Pose: observation.PoseFallen, PositionX: ptr(50), PositionY: ptr(50), PositionZ: ptr(20), PoseConfidence: 80}
-	frame := radarFrameAdapter(tr, ts, nil, now)
+	frame := radarFrameAdapter(tr, ts, nil, now, false)
 	be.Step(now, frame) // WF-b:firmware Fall 不进 shadow;genuine-fall 由 PoseFallen@OpenFloor 独立抬升确认
 
 	fired := be.Decide() == belief.DecisionFall
@@ -100,7 +100,7 @@ func TestAdapterGenuineFallFires(t *testing.T) {
 		now += 1000
 		tsN := &TrackState{LastObservedMs: now, LastZ: 20, Verdict: VerdictReal}
 		trN := observation.Track{LogicID: "L1", Pose: observation.PoseFallen, PositionX: ptr(50), PositionY: ptr(50), PositionZ: ptr(20), PoseConfidence: 80}
-		be.Step(now, radarFrameAdapter(trN, tsN, nil, now))
+		be.Step(now, radarFrameAdapter(trN, tsN, nil, now, false))
 		fired = be.Decide() == belief.DecisionFall
 	}
 	if !fired {
@@ -118,7 +118,7 @@ func TestAdapterJohnY9hNoFalseFire(t *testing.T) {
 		now += 1000
 		ts := &TrackState{LastObservedMs: now, LastZ: 160, Verdict: VerdictReal}
 		tr := observation.Track{LogicID: "L1", Pose: observation.PoseWalking, PositionX: ptr(-380), PositionY: ptr(30), PositionZ: ptr(160), PoseConfidence: 80}
-		be.Step(now, radarFrameAdapter(tr, ts, nil, now))
+		be.Step(now, radarFrameAdapter(tr, ts, nil, now, false))
 	}
 	stillStart := now
 	// 长时间静止 9h 量级：D523 持续推同帧（LastObservedMs 一直新）但 StillBoxRunStart 不动 → adapter 判 stale。
@@ -129,7 +129,7 @@ func TestAdapterJohnY9hNoFalseFire(t *testing.T) {
 		now += 540_000
 		ts := &TrackState{LastObservedMs: now - 1_000, StillBoxRunStart: stillStart, LastZ: 30, Verdict: VerdictReal}
 		tr := observation.Track{LogicID: "L1", Pose: observation.PoseStanding, PositionX: ptr(-390), PositionY: ptr(30), PositionZ: ptr(30)}
-		frame := radarFrameAdapter(tr, ts, nil, now)
+		frame := radarFrameAdapter(tr, ts, nil, now, false)
 		neighbor := neighborToObs(0.9, 0.85, now) // sleepad 在 09E7 床区报 InBed
 		be.Step(now, append(frame, neighbor))
 	}
@@ -158,7 +158,7 @@ func TestMoMLostTrackVanishNoFire(t *testing.T) {
 		now += 1000
 		ts := &TrackState{LastObservedMs: now, StillBoxRunStart: 0, LastZ: 160, Verdict: VerdictReal}
 		tr := observation.Track{LogicID: "L", Pose: observation.PoseWalking, PositionX: ptr(20), PositionY: ptr(130), PositionZ: ptr(160), PoseConfidence: 80}
-		be.Step(now, radarFrameAdapter(tr, ts, nil, now))
+		be.Step(now, radarFrameAdapter(tr, ts, nil, now, false))
 	}
 	// track 消失：此后无帧（adapter 不被调用），仅时间推进 5min（=gate-list 误报窗）
 	for i := 0; i < 30; i++ {
@@ -349,7 +349,7 @@ func TestP4OpenFloorDwellToleranceGate(t *testing.T) {
 			now += cadenceMs
 			ts := &TrackState{LastObservedMs: now, StillBoxRunStart: now - dwellMs, LastZ: 30, Verdict: VerdictReal}
 			tr := observation.Track{LogicID: "L1", Pose: observation.PoseStanding, PositionX: ptr(px), PositionY: ptr(py), PositionZ: ptr(30)}
-			be.Step(now, radarFrameAdapter(tr, ts, grid, now))
+			be.Step(now, radarFrameAdapter(tr, ts, grid, now, false))
 			if be.Decide() == belief.DecisionFall {
 				fired = true
 			}
@@ -394,7 +394,7 @@ func TestP4ToiletDwellFires(t *testing.T) {
 		now += 2_000
 		ts := &TrackState{LastObservedMs: now, StillBoxRunStart: now - dwellMs, LastZ: 30, Verdict: VerdictReal}
 		tr := observation.Track{LogicID: "L1", Pose: observation.PoseStanding, PositionX: ptr(50), PositionY: ptr(200), PositionZ: ptr(30)}
-		be.Step(now, radarFrameAdapter(tr, ts, g, now))
+		be.Step(now, radarFrameAdapter(tr, ts, g, now, false))
 		if be.Decide() == belief.DecisionFall {
 			fired = true
 		}
