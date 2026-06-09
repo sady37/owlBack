@@ -7,6 +7,22 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `72a8724`（判据改正证据=安全螺丝落地）+ ⚠ 抓 bed-veto 精度漏洞（#2 必须验）
+
+**亲跑全绿**：bar/9 红 0 新增/R0。判据已改 `wouldVeto = ev.ghost || ev.bed`（P 仅诊断），3 案翻转确认:#9 无证据→不否决✓ / cd2b bed 证据→否决✓ / #5 lost→默认放行。
+
+**✅ lost-not-evidence = 委员会安全螺丝的正确落地**:施工方洞见「**TLost 不计否决证据(ambiguous 可能真摔),只 Ghost/frozen/bed**」——这正是指令四「track 消失≠否决(雷达盲区可能昏迷重伤者)」。#5 从上轮「正确否决」翻成「默认放行」=**更安全更对**(lost-track FP 否不掉是安全代价,不是 bug)。**Ghost(present 反射伪迹,可证非人)vs Lost(absent,不可证)** 的区分钉得准。
+
+**⚠⚠ 关键精度漏洞——bed-occupancy 否决证据从未对 `#2` 验,而 #2 正是会破它的案**:
+- bed-veto 现 vetoes cd2b(床上误报,对)。**但同一个 `belief_shadow_bed_occupied_suppress` 证据会不会也否掉带床占用的真摔?**
+- **#2 = `bedtest-0605-2-bedside-fall-fw-detect` = 「床边跌倒,身子仍依靠床边→sleepad 仍检 HR/RR」= 床占用为真的真摔**。它几乎必然触发 bed_occupied_suppress → **被 bed-veto 误否** = **错误否掉真摔破 95% gate**。#2 的 NOTES 自己都标「sleepad 矛盾待确认」。
+- 现状:**#2 没 `room_layout.json` 跑不了,也不在 vetoCases**。harness 唯一的 real-fall 精度案是 #9(无床占用→trivially 不被 bed-veto),**根本没测 bed-veto 对真摔的安全性**。
+- **裁定:bed-occupancy 作否决证据,在 #2 验过前不可信**。要求:① 补 #2 真 `room_layout.json`(不捏造)② #2 进 vetoCases 作 real-fall ③ 确认 #2 **不被否决**。若 #2 被否 → **bed-occupancy 单独不够**,须收紧成「**确凿在床**」:`human-bed veto P7.4(Conf≥99)` 或 sleepad **连续居中** in-bed,**区别于 #2 的「靠床边」partial**(靠床 ≠ 在床睡)。「床传感器触发」会被靠床的真摔受害者触发,「确凿在床」不会。
+
+**裁定**:**判据改正证据 + lost 安全螺丝 = 收**(好进展)。**但 bed-veto 必须先过 #2 才算安全**——这是 cd2b 那个 veto 的代价对面。last-audited→`72a8724`。**下一步**:补 #2 验 bed-veto 精度 + 实质2 延时窗 + 统一 loader 补 ghost 案。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 验收 `86528c5`（首个有意义否决 #5 P=0.002）+ 答施工方两问
 
 **亲跑全绿**：build/vet/belief + 9 红 0 新增 + gofmt + #1.6 净。3 案复现:#9 P=0.998 不否决✓ / cd2b-0607 P=0.612 不否决 / **#5 hunzi-lost P=0.002 → 正确否决✓**,精度 1/1。R0 守。**#1 log 诚实修正**(撤回写死的 area=1=GeomInEnter,标 area_id≠CellAreaType 未实测)接受。**收**。
