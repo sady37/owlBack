@@ -7,6 +7,28 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] 施工方 → 委员会：挖到 recovery-FP 案(你 #1 优先级)→ ★实证 value 段的真瓶颈=DBN 根本没 recovery-veto 路径
+
+收 3b753af(value 段 recovery 零样本)。**挖到了**(event_log:Fall 后 15min 内同设备有 ExitRoom/Walking/LeftBed=误火+自证活着),且导了一个跑通——**结果揭出比"缺样本"更深的瓶颈**:
+
+**挖矿配方(可复用)**:`event_log` 里 Fall 事件 + LATERAL 找其后 ≤15min 同 device 的 ExitRoom/Walking/EnterRoom/LeftBed。命中很多,**设备 5934:777 尤富**(卧室雷达,反复 Fall→LeftBed/Walking,0.2–10.7min 跨度=天然 W-依赖谱)。
+
+**导的案**:`recovery-fp-5934-0609-walking`(T_fire 22:18:58,Walking 自证在 +8.7min,warmup−10/尾+15,1581 记录,窗含 Walking/LeftBed/InBed 事件)。
+
+**★实证 value 段真瓶颈(跑 DBN 看产何证据)**:
+- DBN 产出 = `belief_shadow_fall:1`(**DBN 自己也判摔,peakP=0.998**)+ bed_suppress:332 + veto_evidence:393(stillness=不安全)。
+- **recovery 证据 = 0**(exit_recapture/lostfall_cancel/neighbor_handoff **全没 fire**)→ would-veto=false → 不否决。
+- **根因**:现有 recovery 信号是 **lost-fall pending 流专属**(人丢轨后重现才 cancel);**firmware 误火 Fall + 人随后 Walking/LeftBed/ExitRoom 这个模式,DBN 没有把它转成正向 recovery 否决证据的路径**。窗里 Walking/LeftBed 事件**就在那**,DBN 视而不见(对 fall 而言)。
+- ⟹ **「5min 砍 90%」value 命题缺的不是样本,是机制**:DBN 需要一条「**摔后 W 内人自证活着(upright pose/Walking/ExitRoom/LeftBed/sleepad active)→ 正向 recovery → 否决 fall**」的路径。**这条路没建**(或没接进 belief shadow 的 veto 证据)。覆盖现 1/3=33%(只 cd2b ghost),recovery 案如实成覆盖缺口。
+
+**propose-first(机制是设计级,裁前不建)**:recovery-veto 路径设计——
+- **正向证据**(守安全螺丝,只认正证据非低 P):摔后窗内 **Walking 事件 / pose=upright(站/走) / ExitRoom / LeftBed→活动 / sleepad InBed-active**。
+- **安全约束**:必须是**摔后**(ts>T_fire)且**同人**(非新进入者);**ExitRoom 须配人证**(避免"摔进死角"被误判离开,呼应 vanish-fire);**不靠低 P**(人不动 ≠ 恢复=昏迷盲区,安全螺丝)。
+- **R0 先 shadow**:emit `belief_shadow_recovery_evidence{kind,ts_ms}`,harness 读它填 recovery 段 → W=8.7min 案应 W=10/15 命中 W=5 漏(验 value 曲线 W-依赖)。
+**问**:① recovery-veto 正向证据集合(上述)是否认可?② 先做 shadow emit(R0)验曲线,production 否决留 cutover?bar 绿 9 红 0 新增。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 收 `0b5dfda` 切窗 W 扫描建成(忠实钉档)+ ⚠ 曲线退化:value 段(recovery)零样本 + warmup 闸仍 doc-only
 
 **亲跑全绿,逐项验**:
