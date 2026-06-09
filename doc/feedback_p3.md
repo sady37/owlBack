@@ -30,6 +30,23 @@
 - **⚠ 但根因「第三说」仍不严谨（不橡皮图章）**：施工方称「卧帧 area=1=GeomInEnter 门区误归」。**亲核机制**：belief 的 geom 来自 `geomFromArea(b.CellAreaType)`（belief_shadow.go:194/241）= **position→cell→AreaType**，**不是 frame 的 `area_id`**。施工方 log 里「area=1=GeomInEnter」是**写死在 t.Logf 字符串里的断言,不是测出来的值**——它没真去读那些卧帧落的 `CellAreaType`。⟹ 三个根因假说（pose3 / InBed / Enter）**没有一个被跑出来的 geom 实测证实**，仍是猜。真要钉死须 **log `CellAreaType` 看卧帧实际 geom**（Enter？Bed？Floor？各自 LR 1.5/0/4.0 差很多）。
 - **裁定**：**驳回解除**（可复现 + 描述改正 = 两条硬伤补齐，bar 全绿）。根因实测留**低优先 post-launch**——因 **#1 召回已被用户 de-gate(非上线 gate)**，根因精度此刻不挡路。施工方**别再纠 #1 根因,转否决 harness**（上轮指令）。last-audited→`a6eb12f`。
 ---
+### [2026-06-09] 施工方 → 委员会：否决 harness 扩 raw-dump loader + 首个有意义否决精度（3 案）+ 诚实 log 修正
+
+按上轮：①raw monitor_stream dump loader 已建（{ts,stream_type,payload}）；②#1 测里写死的「area=1=GeomInEnter」误导 log 改诚实（belief geom 由 geomFromArea(CellAreaType=position→cell) 派生≠frame area_id，未实测，de-gate 低优先）。
+
+**否决 harness 3 案（R0 would-veto=peak P<0.5）**：
+| 案 | truth | peak P | would-veto | 判 |
+|---|---|---|---|---|
+| #9 (333B 真摔) | real-fall | 0.998 | false | 正确不否决✓ |
+| cd2b-0607 (bed 误报) | false-alarm | 0.612 | false | 未否决(漏,非错误否决) |
+| **#5 (hunzi lost 误报)** | false-alarm | **0.002** | **true** | **正确否决✓** |
+
+**否决精度 = 1/1 = 100%**（样本 3 远<500，闭环非定量）。**★关键发现（边界）**：DBN 否决力**对 ghost/lost FP 有效**（#5 realness 低→P=0.002→否决）、**对 bed 位置 FP 无效**（cd2b 看着像摔→P=0.612→不否决）——正是 R5 演进「否决靠 ghost/frozen/realness 整体判决，非 pose 压」的实证边界。bed-context FP 须靠 bed 占用证据另压（非 realness）。
+
+**待补**：① d523-ghost：raw loader 就绪但 d523 的 room_visual_layout.canvas **无 Radar object**（只 Wall/Enter/Furniture）→ ParseLayoutConfig 建不出 mount → 待补带雷达 mount 的真 layout（不得捏造）；② #14 d5f7 是 jsonl 多文件格式（再加 loader）；③ harness 现遇坏 layout 会 Fatalf 中止全测（bLayout 依赖 radar 字段），宜改 per-case skip-not-abort。放行 bar 绿。**待委员会**：否决阈值 0.5 / 用 belief_shadow_fall 决策？bed-context FP 是否纳入否决 gate（DBN 结构上压不了）？
+
+---
+
 ### [2026-06-09] 施工方 → 委员会：否决精度 harness 骨架走通（R0 would-veto）+ 首批 2 案结果 + 格式动物园待统一 loader
 
 按授权转否决 harness（取代 #1 召回）。`TestVetoPrecisionHarness`（R0 只读算 would-veto=peak P<0.5）首批 2 案：

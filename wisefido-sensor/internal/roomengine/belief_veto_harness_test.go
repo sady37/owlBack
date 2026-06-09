@@ -2,8 +2,13 @@ package roomengine
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	rediscommon "owl-common/redis"
 
@@ -11,6 +16,52 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 )
+
+// rawDumpRow d523 类 raw monitor_stream dump 行：{ts(ISO),device_addr,stream_type,payload}。
+type rawDumpRow struct {
+	Ts         string                   `json:"ts"`
+	StreamType string                   `json:"stream_type"`
+	Payload    []map[string]interface{} `json:"payload"`
+}
+
+// loadRawDump 读 monitor_stream_*.json（DB row dump），按 ts 升序。
+func loadRawDump(t *testing.T, dir string) []rawDumpRow {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(casesDir, dir))
+	if err != nil {
+		t.Skipf("dir 缺 %s: %v", dir, err)
+	}
+	var file string
+	for _, en := range entries {
+		if strings.HasPrefix(en.Name(), "monitor_stream") && strings.HasSuffix(en.Name(), ".json") {
+			file = en.Name()
+			break
+		}
+	}
+	if file == "" {
+		t.Skipf("%s 无 monitor_stream_*.json", dir)
+	}
+	raw, err := os.ReadFile(filepath.Join(casesDir, dir, file))
+	if err != nil {
+		t.Fatalf("读 dump %s: %v", file, err)
+	}
+	var rows []rawDumpRow
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatalf("解析 dump %s: %v", file, err)
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Ts < rows[j].Ts })
+	return rows
+}
+
+// parseDumpTs 解析 dump ts（ISO，可能带小数/时区）→ UTC epoch ms。
+func parseDumpTs(s string) (int64, bool) {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05.999999", "2006-01-02T15:04:05"} {
+		if tt, err := time.Parse(layout, s); err == nil {
+			return tt.UTC().UnixMilli(), true
+		}
+	}
+	return 0, false
+}
 
 // belief_veto_harness_test.go — 否决精度 harness（委员会上线唯一 gate：否决精度 ≥95%）。
 // R0 只读算 would-veto：firmware-fire 真案上跑 DBN belief shadow → peak P(Fallen)；
@@ -32,6 +83,10 @@ type vetoCase struct {
 var vetoCases = []vetoCase{
 	{"unit201-handoff-0609-bathroom-333B", "v2", "real-fall", "#9 firmware 真摔(pose=5)→该不否决"},
 	{"cd2b-fall-0607-0127", "v1", "false-alarm", "#7 firmware 在床误报→该否决"},
+	{"hunzi-cabb-lost-0601-2247-FP", "v2", "false-alarm", "#5 lost_track 误报→该否决"},
+	// #13 d523-ghost：raw loader 已就绪，但 d523 的 room_visual_layout.canvas **无 Radar object**
+	// （只 Wall/Enter/Furniture）→ ParseLayoutConfig 建不出 mount → pipeline 跑不了。待补带雷达 mount 的
+	// d523 layout（不得捏造）后启用。raw 格式 loader 本身已验（hunzi v2 + 此 raw 路径）。
 }
 
 // runDBNPeakFallen 喂一案真数据走真 pipeline → 返回 belief shadow 的 peak P(Fallen)（R0 只读）。
@@ -80,6 +135,16 @@ func runDBNPeakFallen(t *testing.T, vc vetoCase) (peak float64, frames int, skip
 				}
 			}
 			feed(topic, r.Category, r.DataValue, r.Timestamp)
+			frames++
+		}
+	case "raw": // monitor_stream dump {ts,stream_type,payload}（monitor-only）
+		for _, r := range loadRawDump(t, vc.dir) {
+			ts, ok := parseDumpTs(r.Ts)
+			if !ok {
+				continue
+			}
+			cat := strings.TrimPrefix(r.StreamType, "radar.") // radar.track→track / radar.heart→heart
+			feed("monitor", cat, r.Payload, ts)
 			frames++
 		}
 	}

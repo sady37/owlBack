@@ -22,8 +22,9 @@ import (
 // 委员会授权（#9 firmware 判出=易方向补不了真 recall）。room_layout.json 从 owl_v2 room_visual_layout 导（真，已提交）。
 //
 // ★真 pose 分布（亲查 txt，改正初稿失实「pose≈3 全程」）：pose=4 走 241 / **pose=6 卧 128** / pose=3 坐 119 / pose=1 36。
-// ★卧姿帧 area=1（**126/128 在 GeomInEnter 门区**，非床区 area=2）——床边摔被雷达**误归 Enter 区**；poseLying@Enter
-// 走 likelihood default 档（modest LR + SBedLying 竞争），又与 241 走动帧混杂 → 信号冲淡。诊断型（no-silent-caps）：
+// ★卧姿帧 frame area_id=1（126/128）——但 belief geom 由 geomFromArea(CellAreaType) 派生，CellAreaType 来自
+// position→cell（非 frame area_id），本测**未实测**卧帧落哪 geom（委员会锐点：勿把 frame area_id 当 belief geom）。
+// 真根因（Enter？Bed？Floor？各 poseLying-LR 差很大）须 log CellAreaType 钉死，已 de-gate 低优先。诊断型（no-silent-caps）：
 // 报真实可复现 peak，不硬断言 fire——结果（DBN 抓不抓得到、为何）本身是发现。
 //
 // txt→生产 StreamMessage 转换器：解析 test_record.txt 的 radar track 行。
@@ -88,7 +89,7 @@ func TestRecallRealFall_FirmwareMissed_Bedtest1(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("#1 firmware-漏真摔(pose分布 walk241/卧128/sit119;卧帧area=1=GeomInEnter门区)：喂 %d 帧 → belief_shadow_fall=%d  peak P(Fallen)=%.3f  末态=%.3f", rows, fired, peak, lastP)
+	t.Logf("#1 firmware-漏真摔(真 pose 分布 walk241/卧128/sit119;★卧帧 frame area_id=1，但 belief geom 由 position→cell 的 CellAreaType 派生≠frame area_id，本测未实测落哪 geom，根因待 log CellAreaType)：喂 %d 帧 → belief_shadow_fall=%d  peak P(Fallen)=%.3f  末态=%.3f", rows, fired, peak, lastP)
 	if rows == 0 {
 		t.Fatalf("txt 解析 0 帧 → 转换器/正则失效")
 	}
