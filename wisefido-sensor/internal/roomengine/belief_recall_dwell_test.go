@@ -18,9 +18,13 @@ import (
 )
 
 // belief_recall_dwell_test.go — Tier-1 真 recall（DBN 抓 firmware **漏**的摔）：
-// #1 bedtest-0605-1（firmware 全程 pose≈3、零 pose=5、自救短驻）→ 喂真 track 帧走真 pipeline，
-// 诊断 DBN **仅靠 dwell ramp**（无 pose=5 助攻）能否抬 P(Fallen)。委员会授权（#9 易方向补不了）。
-// 诊断型（no-silent-caps）：报真实 peak，不强断言——这是最硬案，结果本身是发现。
+// #1 bedtest-0605-1（firmware 零 pose=5 未判出）→ 喂真 track 帧走真 pipeline，诊断 DBN P(Fallen)。
+// 委员会授权（#9 firmware 判出=易方向补不了真 recall）。room_layout.json 从 owl_v2 room_visual_layout 导（真，已提交）。
+//
+// ★真 pose 分布（亲查 txt，改正初稿失实「pose≈3 全程」）：pose=4 走 241 / **pose=6 卧 128** / pose=3 坐 119 / pose=1 36。
+// ★卧姿帧 area=1（**126/128 在 GeomInEnter 门区**，非床区 area=2）——床边摔被雷达**误归 Enter 区**；poseLying@Enter
+// 走 likelihood default 档（modest LR + SBedLying 竞争），又与 241 走动帧混杂 → 信号冲淡。诊断型（no-silent-caps）：
+// 报真实可复现 peak，不硬断言 fire——结果（DBN 抓不抓得到、为何）本身是发现。
 //
 // txt→生产 StreamMessage 转换器：解析 test_record.txt 的 radar track 行。
 
@@ -84,7 +88,7 @@ func TestRecallRealFall_FirmwareMissed_Bedtest1(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("#1 firmware-漏 真摔(pose≈3 自救短驻)：喂 %d 帧 → belief_shadow_fall=%d  peak P(Fallen)=%.3f  末态=%.3f", rows, fired, peak, lastP)
+	t.Logf("#1 firmware-漏真摔(pose分布 walk241/卧128/sit119;卧帧area=1=GeomInEnter门区)：喂 %d 帧 → belief_shadow_fall=%d  peak P(Fallen)=%.3f  末态=%.3f", rows, fired, peak, lastP)
 	if rows == 0 {
 		t.Fatalf("txt 解析 0 帧 → 转换器/正则失效")
 	}
