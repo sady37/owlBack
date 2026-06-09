@@ -54,6 +54,26 @@
 
 
 
+### [2026-06-08] 施工方 → 委员会:收审查56 PASS✅ + 死源#5 StandDuration 源保真预审(doc-only)→ 岔口 SD-A 轨道 StillBox 原始源〔倾向〕/ SD-B 跨引擎 zoneengine 派生 + 必清 dead roomAdapter,请委员会裁
+
+**收审查56 PASS✅**(SleepStage 全清干净)。承"下一步 #5 StandDuration locus 预审",源保真勘察(只读,**未建**):
+
+**源保真发现(死源#5,牵出一坨 dead+#1.3 隐患)**:
+- ObsStandDuration 似然(likelihood:94)= `GeomInToilet && Value>0 → SFallen: 1+gainStandFall·min(d,8)` = **SFallen 抬升源(fall-relevant ✅,bathroom still-fall)**。
+- 但其**唯一 emit** = `roomAdapter`(belief_adapter:461),而 `roomAdapter` **生产 tick 从不调用**——`grep` 全部调用点 = **仅 `belief_adapter_test.go`**(它自己的测试)。= **#1.2 dead 生产函数,被自身测试续命**。B 审计 8/8 案 StandDuration 未populate 坐实。
+- **更糟**:`roomAdapter` 还含**两条 dead-dup emit**——ObsNumberPeople(`r.TotalPeople`,活路径=我 wire 的 `tm.CurrentNumberPeople`)+ ObsEnterExit(活路径=radarEventToObs)。若哪天误调用 roomAdapter→**两条 np emit = #1.3 双 latch drift**。整个 roomAdapter = 死代码 + 潜在 #1.3 雷。
+- **权威 standing-min 在 zoneengine**:`StandingContinuousMin` 由 zoneengine/stream_publisher 算(TargetState per-device + RoomState),且是**risk-derived 聚合**(喂 EvaluateRoomRiskLevel/RiskLevel)。roomengine tick 无路径读它;且 observation.go 铁律"派生信号(RiskLevel/AloneContinuousMin)禁入 belief——双重计数",StandingContinuousMin 走 risk 派生链,**直灌 belief 有 double-count 嫌疑**。
+- **但 raw 站立静止时长 roomengine 自有**:track StillBox(`ts.StillBoxRunStart`/`StillSince`),tick 经 radarFrameAdapter 已持有 per-track ts+cell geom → 可判"toilet geom 内静止 N 秒"= **原始物理观测**(契合 belief"只吃原始物理观测")。
+
+**岔口(locus,请委员会裁,不擅建)**:
+- **SD-A(轨道 StillBox 原始源,roomengine-native,倾向)**:tick 从 track StillBox 算 bathroom 站立静止秒(active track 在 toilet geom + StillBoxSec)emit ObsStandDuration;**删 dead roomAdapter + 其测试**(#1.2,np/EnterExit 是 dead-dup,StandDuration 移新路径)。**优**:①原始源非派生(避 double-count 铁律)②roomengine-native 无跨引擎边③杀死代码 + 灭 #1.3 雷④单源。**劣**:still-box 语义 ≠ zoneengine StandingContinuousMin 精确口径(但似然只要"bathroom 站立静止多久",still-box 正是该信号的 track 级原值)。
+- **SD-B(跨引擎读 zoneengine StandingContinuousMin)**:zoneengine→roomengine latch 喂 StandingContinuousMin,**strip roomAdapter 只留 ObsStandDuration**(删 np/EnterExit dead-dup)。**劣**:①跨引擎边②StandingContinuousMin 是 risk-derived 聚合→**触"派生禁入 belief"铁律 double-count 嫌疑**③#1.3(standing-min 单源=zoneengine,roomengine 回读=消费投影,近 SS-2 倒置)。
+- **必清(两 locus 通用)**:`roomAdapter` 是 dead 生产代码 + dead-dup np/EnterExit,无论选哪个都须 #1.2 删/strip(SD-A 整删,SD-B strip 到只剩 StandDuration)。
+
+**倾向 SD-A**:决定性理由 = **原始源避 double-count 铁律**(SD-B 灌 risk-derived StandingContinuousMin 进 belief 撞"派生禁入");兼 roomengine-native + 杀 dead roomAdapter + 灭 #1.3 雷。**裁前不建**:locus 未裁不写代码。**待委员会**:裁 SD-A/SD-B + bless roomAdapter 处置(整删 vs strip)。**余**:#3 Neighbor(跨房需 redis-replay 整单元,待用户)。
+
+---
+
 ### [2026-06-08 17:57 MDT] 审查56 `908b5f7..b16bb99` ObsSleepStage 退役(SS-B,#1.2)【干净 PASS ✅】
 
 **R6 亲跑**:**全清干净**——`grep ObsSleepStage/lrSleepRestless/lrSleepLying` belief/roomengine = **空**;diff 删 emit(belief_adapter -8)+ likelihood case(-7)+ enum(observation -3)+ calibration lrSleep*(-4)+ r5-lock 引用 + B-replay 引用各 -1。**无 no-op stub 残留**(#1.2 彻底)。build/vet/belief 绿、**9 红 0 新增**。睡眠分期仅留独立 SleepStageConsumer/card 域(其正确归属,未碰)。
