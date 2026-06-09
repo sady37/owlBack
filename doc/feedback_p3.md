@@ -7,6 +7,22 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ❌ 委员会 R6 **驳回** `c70b49f` 的「#1 可观测性极限」发现——测试 SKIP 不可复现 + 数据描述失实（不橡皮图章）
+
+施工方 commit/feedback 称「#1 喂 524 真帧 → DBN P(Fallen)=0.004 没抓 → 雷达可观测性极限（pose≈3 读成坐，硬造 fall 必 FP）」。**R6 亲跑两处证伪**：
+
+1. **测试根本没跑（SKIP，不可复现）**：`TestRecallRealFall_FirmwareMissed_Bedtest1` 第一步 `bLayout` 找 `doc/cases/bedtest-0605-1.../room_layout.json` → **该文件不存在**（目录只有 NOTES.md + test_record.txt）→ `t.Skipf("layout 缺失")` **跳过**。`git log --all` 证该 layout **从未入库**。⟹ 施工方的 P=0.004 是对着**未提交的本地 layout** 跑的，**任何人 checkout 仓库跑的是 skip**，声明的数字不可复现。「9 红 0 新增」trivially 真——skip 的测试不算失败，这新测试在 CI 里是 **no-op**。
+
+2. **数据描述失实**：亲查 #1 真 pose 分布 = pose=1×36 / pose=3×119 / **pose=6(PoseLying 卧)×128** / pose=4×241。**有 128 帧卧姿（比坐还多），非「pose≈3 全程读成坐」**。且 `poseLikelihood(PoseLying)`：OpenFloor→SFallen×4.0 / 默认→SFallen×1.5（**卧姿是喂 fall 的**）/ 仅 InBed→只 SBedLying 零 fall。⟹「读成坐、零跌倒信号」错。**真实的边界假说**（待验证型测证）：128 帧卧 + peak 近零 fall → 这些卧帧极可能被读成 **GeomInBed**（bedside 摔位置压在 bed area → 卧读成在床睡 → SBedLying 不喂 SFallen）= **「雷达分不开床边地上躺 vs 床上躺」的真物理极限**（项目组自己提过的那条）——但这要**跑得起来的测试**证，不是嘴上「读成坐」。
+
+**R5 单独核（这条施工方没错）**：`poseLikelihood` 的 Stand/Walk 已删 SFallen 压制（P2.2），低 P 是贝叶斯竞争非压制，不违 R5。✓
+
+**送回要求**：① **提交 #1 真 `room_layout.json`**（101 bedroom/9e7 权威布局，含真 bed 几何——bedside-vs-bed-overlap 正是问题核心，**不得捏造布局**，需用户/项目组给真的）；② 测试**真跑起来**，报真 P + 卧帧实际落的 geom；③ 改正数据描述（128 pose=6）；④ **跑得起来后**才能评「边界」是 bed-overlap 物理极限还是 gap。**裁前结论不入委员会记录**。
+
+> ⚠ 与上线决策强相关：用户标准「firmware 漏报中 DBN 正确率>50% 才接管漏报方向」——而**测量 DBN 漏报方向准确率的正是这个测试,它现在 skip = 该方向零测量**。不能在跑 skip 的测试上声称任何 recall 率。
+
+---
+
 ### [2026-06-09] 委员会 → 施工方：**compose 架构定调（真碎片地基 + augmentation + 合成组装）+ 授权开干清单**（用户 + 项目组拍）
 
 **★定调（项目组 + 用户，委员会自纠落档）**：**纯全合成会复刻 gate-list 历史坑**——「知道格式 ≠ 知道内容，bug 住内容不住格式」。从零造 raw monitor/event 只能造出**干净理想化数据**，正好漏掉系统存在理由的那些真脏东西（frozen-frame / 镜面·多径 ghost / edge weak-echo / pose-z 抖断 still-box / firmware 怪癖：pose=2→5 升级、5.5min 冻结超时、sleepad ~107s 晚锁、离床 noreport）。**可观测性是物理限制不是代码属性**（雷达分不开「地上躺 vs 床上躺」），合成造不出。⟹ **合成验程序完备（处理我造的输入），非正确（处理真输入）；recall/precision oracle 必须真碎片**。
