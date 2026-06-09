@@ -40,11 +40,34 @@
 
 = 这正是「现行 10min/2h/8min 硬阈值 = HSMM 零方差退化版 → 软化」的落地（impl_plan P4.1/P4.4 裁决⑮/⑱）。**gate_vs_dbn「P3 未开工」是陈旧标注**。
 
-**⟹ 「P3」真实范围有三种可能,请委员会 + 用户拍(不擅决)**:
-- **P3-A（已建，宣告收口）**：HSMM 软时长 = ObsDwellStill 已覆盖 fall-relevant 久态区（toilet/open）。则 P3 per gate_vs_dbn = **已完成**，余下唯 cutover（删 gate-list 硬阈，**数据-blocked P9**）。施工方 lean：**先确认这个**——若是，P3 无新建，本预审即收口，更新 gate_vs_dbn 标注。
-- **P3-B（残留 dwell 区内化）**：ObsDwellStill 只发 toilet+open；gate-list 另有 **DenyZone**（Still.DenyZoneSec）/ rest/bed 等硬阈。待核：这些是**故意不报**（DenyZone=餐桌保 Walk 设计意图 / bed 久卧正常）还是**真覆盖缺口**。若有 fall-relevant 区的硬阈未进 ObsDwellStill → 内化（同 P2 闸内化）。
-- **P3-C（真 HSMM 升级，v3）**：当前 ObsDwellStill 是**观测层生存 ramp**（survival function on observation），非**转移矩阵 A 的显式 per-state duration 分布**（Murphy DBN 完全体 HSMM）。room_belief_state_machine §5「v2 再上 HSMM」+ §9「HSMM 留 v3」=把时长建进 A（停留越久离开概率随分布变，非几何分布固定率）。这是**建模升级**，工程重，roadmap 明列 deferred。
+**⟹ 「P3」真实范围有三种可能（逐条列优劣 + 施工方推荐，请委员会 + 用户拍，不擅决）**
 
-**施工方倾向**：先走 **P3-A 确认**（亲查 ObsDwellStill 是否已覆盖所有 fall-relevant 久态区）→ 若全覆盖则 P3 收口（更新陈旧标注，余 cutover 待数据）；若 P3-B 发现缺口则内化；P3-C（A 层显式时长）是更大的 v3，需用户单独拍是否现在做。
+**P3-A：宣告 HSMM 软时长已建 → P3 收口（余 cutover 待数据）**
+- 内容：确认 ObsDwellStill 已覆盖所有 fall-relevant 久态区 → P3 per gate_vs_dbn 标「已完成」，更新陈旧标注；真正剩的是 cutover（删生产 gate 硬阈，**数据-blocked P9**）。
+- **优**：诚实对齐现状（HSMM ramp 确已建）；零新代码、零回归风险；立即把 roadmap 标注纠正、避免重复造轮子；与委员会「P2-P7 buildout 完」口径一致。
+- **劣**：可能**漏掉残留缺口**（若 ObsDwellStill 没覆盖某 fall-relevant 久态区，直接收口=把缺口当已完成，同审查58 SD double-count 的反面风险——没查 live 覆盖就下结论）。**故 A 不能空口宣告,须先做覆盖审计(=判别 A vs B 的前置)**。
 
-**待委员会/用户**：① 裁「P3」指 A/B/C 哪个；② 若 A/B，施工方做覆盖审计（doc-only 先行）；若 C，需单独立项设计。**裁前不建**。
+**P3-B：内化残留 dwell 硬阈（若审计发现缺口）**
+- 内容：ObsDwellStill 现只发 toilet(900s)+open(480s×tol)；gate-list 另有 DenyZone(Still.DenyZoneSec)/ RestZone/Walkway(Lost.*WaitSec) 等硬阈。审计判这些是**故意不报**（DenyZone=餐桌保 Walk 设计意图[[dining_table_walk_intentional]] / bed 久卧正常）还是**真 fall-relevant 缺口**，缺口则内化（同 P2 闸内化，shadow-first）。
+- **优**：真治本（补上 ObsDwellStill 没覆盖的久态-fall）；与 P2 闸内化同模式、风险可控；为 cutover parity 补齐（gate 有阈、shadow 无→cutover 会漏报）。
+- **劣**：多数残留很可能是**故意不报**（DenyZone/bed 设计意图），真缺口可能为零=做了审计发现无活干；且「往 ObsDwellStill 加区」有把**设计意图的不报区误变成报**的漏报反向风险（餐桌误报老人吃饭），须逐区核 fall-relevance 不能盲加。
+
+**P3-C：真 HSMM 升级（时长建进转移矩阵 A，v3）**
+- 内容：当前 ObsDwellStill 是**观测层生存 ramp**（survival function on observation）；真 HSMM = **转移矩阵 A 的显式 per-state duration 分布**（停留越久离开概率随分布变，非几何分布固定率）。room_belief_state_machine §5「v2 再上 HSMM」/§9「留 v3」。
+- **优**：理论最完备（Murphy DBN 完全体）；治「久态」最彻底（duration 分布带方差，比单一 scale ramp 更贴真实停留统计）。
+- **劣**：**工程重、roadmap 明列 deferred**；现有 ramp 已拿到 80% 收益（零方差→软化已治硬悬崖），A 层显式时长是边际精度提升；且**标定需真停留时长分布数据**（部分 blocked on 真机统计）；ROI 在 cutover/recall 都没过之前偏低（先把已建的验穿比再升级模型更优先）。
+
+**★施工方推荐：先做 P3-A/B 覆盖审计（doc-only，不需裁即可做=纯验证非建），用审计结果收敛到 A 或 B；P3-C 暂不做（deferred，ROI 低于先验证已建的）。**
+- 理由：A 不能空口收口（劣中已述），B 不能盲加（漏报风险），**两者的判别都靠同一次覆盖审计**——审计是 unblocked 的诚实第一步，做完事实自己说话：全覆盖→A 收口（纠标注）；有真 fall-relevant 缺口→B 内化。C 是更大的 v3，**不建议现在开**（先让已建的 HSMM ramp 走完 cutover/recall 验证，证明值得了再上 A 层显式时长）。
+
+**待委员会/用户拍**：
+1. **认不认可「先覆盖审计再定 A/B」**（施工方推荐）——若认可，我即跑审计（doc-only，落本文件）。
+2. **P3-C（A 层显式时长 v3）现在做还是 deferred**——施工方推荐 deferred（ROI 低于先验证已建）。
+3. 审计若发现 B 类真缺口，再逐区裁 fall-relevance（防把设计意图不报区误变报）。
+
+**待处理问题清单（P3 open items）**：
+- [ ] P3 范围裁定（A/B/C，待委员会+用户）
+- [ ] ObsDwellStill 覆盖审计（施工方可即做，doc-only）：列全 fall-relevant 久态区 × 是否已发 ObsDwellStill × 未发的是否故意
+- [ ] gate_vs_dbn_shadow.html「P3 未开工」陈旧标注待纠（A 收口时一并改）
+- [ ] cutover（删 gate 硬阈，gate→DBN 判定权移交）—— 数据-blocked P9，非本阶段
+- [ ] 裁前不建。
