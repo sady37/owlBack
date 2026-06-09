@@ -54,6 +54,21 @@
 
 
 
+### [2026-06-08 22:40 MDT] P7.4 落地(委员会执行)— human-bed 豁免接 τ\* veto:Conf≥99 人工床 fall = 躺床 normal use → decision 层前置短路读出(R0)
+
+**性质**:接 P7.3,impl_plan §6 P7.4 human-bed 豁免接 τ\*。decision 层 veto(非发射层 P4.2 zone 软抑制)。纯 shadow 读出(R0),自验 R6。
+
+**做了什么**:
+- **复用 `fall_exempt.go` 既有 `isHumanBedAt`**(SourceHuman∧AreaBed∧Conf≥99;常量 `humanBedExemptMinConfidence=99` 切人工 layout vs radar 自学习 95,R7 不复写)。加 `humanBedVetoAt(grid, positions)` veto helper。
+- **shadow 读出(R0)**:confirm tick 收集 fall 位置(present track `bases[i].X/Y` ∪ lost 锚点 `st.lastX/lastY` 超 TTL),任一在 Conf≥99 人工床 → `p7_4_human_bed_veto`(+ `p7_4_min_conf`)。语义:生产会前置短路不进 τ\*;shadow 只读出 would-veto,**不改 sh.decider 发射**(R0)。
+- **补测试缺口**:`isHumanBedAt` 此前无测 → 新 fall_exempt_test.go 补 Conf≥99 veto / **Conf=95 自学习不误判** / 非床 / nil grid + humanBedVetoAt 多位置。
+
+**放行 bar**:build/vet 净 + belief 绿 + roomengine **9 红 0 新增**(新 +2 测 + 既有 exempt 测全绿)+ #1.6 净(「前置短路」是 impl_plan 对 decision-veto 的术语非 anti-pattern)+ gofmt。**铁律守**:R0 shadow log-only(veto 只读出不改发射)/ R1 不碰 alarm / R5 不涉 / R7 Conf≥99 常量复用 fall_exempt 不复写。
+
+**P7 剩**:仅 **P7.5 ghost/bed 并入(决议项)**——建议**保节点内判决**(ghost verdict 50/20、bed P 0.70/0.75 是节点内 τ,非 fall 读出层;过度统一伤可解释性)。P7.1-7.4 已把 fall 读出层(τ\*/context/reason/human-bed veto)统一,P7 主体完成。
+
+---
+
 ### [2026-06-08 22:20 MDT] P7.3 落地(委员会执行)— reason 路由:fall 成因由"把 SFallen 拉最高的 fall-ward obs 节点"主导决定(lost/silent/pose_lying),取代散落 reason 函数
 
 **性质**:接 P7.2,impl_plan §6 P7.3 reason 路由(读出可解释性)。纯 shadow 读出(R0),自验 R6。

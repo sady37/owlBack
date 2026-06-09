@@ -28,3 +28,14 @@ func isHumanBedAt(grid *RoomGrid, x, y int) bool {
 	b := cell.Belief[0]
 	return b.Source == SourceHuman && b.Type == AreaBed && b.Confidence >= humanBedExemptMinConfidence
 }
+
+// humanBedVetoAt P7.4 决策层 veto：任一 fall 位置（present track 或 lost 锚点）落在 Conf≥99 人工床
+// → fall 豁免（躺床 normal use 非跌倒，fall 后验前置短路、不进 τ* 判决）。belief_shadow 读出 would-veto（R0）。
+func humanBedVetoAt(grid *RoomGrid, positions [][2]int) bool {
+	for _, p := range positions {
+		if isHumanBedAt(grid, p[0], p[1]) {
+			return true
+		}
+	}
+	return false
+}

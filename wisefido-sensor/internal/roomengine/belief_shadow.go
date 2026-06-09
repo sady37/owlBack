@@ -538,6 +538,18 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		// P7.3 reason 路由：由把 SFallen 拉最高的 fall-ward obs 节点决定成因（lost/silent/pose_lying），
 		// 取代散落 reason 函数；shadow-first R0 只读出（vs gate-list reason 对账 P9）。
 		p7Reason, p7Dom, p7LR := belief.FallReasonFor(obs)
+		// P7.4 human-bed 豁免 veto（decision 层前置短路）：fall 位置（present track ∨ lost 锚点）在 Conf≥99
+		// 人工床 = 躺床 normal use 非跌倒 → 生产前置短路不进 τ* 判决。shadow-first R0：只读出 would-veto，不改发射。
+		var fallPos [][2]int
+		for i := range bases {
+			fallPos = append(fallPos, [2]int{bases[i].X, bases[i].Y})
+		}
+		for _, st := range sh.tracks {
+			if nowMs-st.lastSeenMs > beliefShadowLostTTLMs {
+				fallPos = append(fallPos, [2]int{st.lastX, st.lastY})
+			}
+		}
+		p7HumanBedVeto := humanBedVetoAt(grid, fallPos)
 		e.logger.Info("belief_shadow_fall", // 仅 log，无 alarm
 			zap.String("room_id", roomID),
 			zap.Int64("ts_ms", nowMs),
@@ -551,6 +563,8 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			zap.String("p7_2_tau_decision", tauCtxDec.String()), zap.Float64("p7_2_tau", tauCtxHit),
 			zap.String("p7_3_reason", p7Reason.String()), // P7.3：主导节点成因
 			zap.String("p7_3_dominant_obs", p7Dom.String()), zap.Float64("p7_3_dominant_lr", p7LR),
+			zap.Bool("p7_4_human_bed_veto", p7HumanBedVeto), // P7.4：Conf≥99 人工床 → 生产前置短路（R0 只读出）
+			zap.Int("p7_4_min_conf", humanBedExemptMinConfidence),
 		)
 	}
 	sh.fired = confirmed
