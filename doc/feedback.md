@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`d57240e`(下次从此 commit 起算 delta)
+- **last-audited**:`3c4f901`(下次从此 commit 起算 delta)
 - **已知红 baseline(冻结,审查参照)**:**当前 9 红** = 7 bathroom_fall + 2 bedroom_fall(`TestIsNightTime` 已于 `351b647` 修绿出列,10→9)。根因 `5aacad1`(still-box 50×50)+ `d867c62`(risk 窗)夹具滞后,**非 P 链引入**。每 P-task 须 **0 新增失败 vs 本列表**;P2/P4 重写对应逻辑时顺带转绿。
 
 ---
@@ -53,6 +53,41 @@
 
 
 
+
+### [2026-06-08 18:50 MDT] 审查61 `b48831b..3c4f901`(doc-only)施工方受理审查60 → 委员会**条件受理**:N-1-raw 改裁准 + P6.5 delineation 坐实(亲验代码)+ N-3 准;但 raw 版 pivot 有**两个未触及实质问题**(★双喂条件独立性 double-count / 60s 窗误期 durable 占用)→ 列 N-6 + 窗语义澄清为受理条件;#2/#5 仍 required
+
+**性质**:`3c4f901` doc-only(施工方接审查60,交两件前置 ① N-1-raw 改裁 ② P6.5 delineation,裁前不建)。**无代码 → R6 build-verify moot**,本条 = 设计裁定(同审查60)。冻结 9 红无需重跑(零代码变更)。
+
+**✅ R6 亲验施工方全部代码声明属实**(不信声明,逐 locus 核):
+- `e.rooms map[string]*TrackManager`(engine.go:158「roomID → TrackManager」)✅;跨房与 `beliefShadowFor` 同 `(e *Engine)` 路径,**零新管**属实。
+- `lastEnterMs/lastExitMs`(track_manager.go:131-132)+ `roomLedgerEmpty()=lastExitMs>lastEnterMs`(:502)✅,且注释自带铁律「**只信 ExitRoom,不信 np=0;count=0≠离开**(摔倒丢锁也 np=0,用 np=0 抑制会漏真摔)」= 与审查基准#3 absence≠负向**同构**,raw 占用账天生不混 absence。
+- radar `EnterRoom→占用 / ExitRoom→空`(:1066-1070,「np≥1 不计占用镜面虚增」)✅ → room ledger **radar 事件驱动非 sleepad-only**,施工方「破委员会驳②窄(广度==①)」成立:原 N-1② 是 raw-**sleepad**-InBed 窄;raw-**room-ledger** 是通用 radar 房,叠 bed 接触权威 → 覆盖 ⊇ ①。**N-1 从①belief-后验改裁为 N-1-raw(room+bed)= 准**。
+- `BedOccupancyState`(:880)= P5 bed Markov + any-source-OR LeftBed,BedConf 90 sleepad/30 radar/0 none ✅。
+
+**✅ P6.5 覆盖 delineation 坐实(审查60 ★硬前置#1 = 满足)** — 亲读 `SoleResidentRecaptureState`(suite_census.go):`recaptured = sole.SleepadAnchored || AnchorRoomType==RoomTypeDefault(bedroom)`,且 `residentCount!=1→false`(visitor 不计 Role==resident)。配 belief_shadow.go:339 `if st.geom==GeomInToilet` **浴室专属硬门**,施工方 X/Y1/Y2/Z 逐条对得上代码:
+- **Y1 geom gap 坐实**:非浴室丢轨不进 P6.5(硬门拦)→ Neighbor 不限本房 geom = 真增量(直击 CABB/John.Y 非浴室 lost_track 主类)。
+- **Y2 anchor gap 坐实**:兄弟房站着(radar 见、无 sleepad、未回床/bedroom)→ recap 谓词两条皆 false → P6.5 不抑制;Neighbor 读 room ledger enter 不要求回床 = 真增量。
+- **Z 同向安全坐实**:二者皆 sole-resident 门控,压的都是 phantom,Z 区无多-resident 误压真摔。
+- **结论**:Neighbor **非纯 double-count**,死源分流第②类(已被 live 覆盖→退役 dup)**不适用**。审查58/59「查 live 覆盖」教训这次施工方补做了。**死源台账 #3 Neighbor 定性 = wire(非退役)。**
+
+**✅ N-3 准**:`SoleResidentRecaptureState` 已排 visitor、多-resident 返 `recaptured=false`,复用即得 gate-OFF;多 resident → ObsNeighbor 不喂(归因不安全,漏报-safe,对齐 P6.5 ③ skip-multiresident)。**禁新建第二 census 阈**(#1.3 单源 / #2.4 drift)守。
+
+**★ 挑实质(不橡皮图章)— raw 版 pivot 两个施工方未触及的问题:**
+
+**N-6(新,★阻塞 recall 验 + 生产 gate):双喂 = 条件独立性 double-count。** 施工方「room state + bed state 两者都喂」:若 sole resident 在兄弟房 B 的床上,则 room-occ ∧ bed-occ **同真且描述同一底层事实(人在 B)**。施工方对 corroboration≠substitution 只论证了「是正证据非裸 absence」(对,但答的是另一问)——**未论证 room-occ 与 bed-occ 在 A-fall latent 下条件独立**。bed⊂room(在床⇒房占),两者强相关;作两条独立 ObsNeighbor 似然相乘 = **重复计数证据 → 过压 SFallen**。shadow(R0)下只污染 recall 验证;但终极生产 gate 目标下,过压 = **漏报真摔(最危险方向)**。
+- **受理条件**:每兄弟房**至多一条** ObsNeighbor 占用 obs,occupancy = room-ledger-occ **OR** bed-occ,confidence = **max**(bed 在则更硬)——保「bed 加权威」之利,守条件独立。「双喂」**必须实现为单-合并-obs,非双-似然相乘**。
+
+**窗语义澄清(★阻塞):60s 窗不得误期 durable 占用。** room ledger 占用是 **durable 事实**(lastEnter>lastExit),非 60s-fresh 事件。Resident 10min 前进 B 留驻(无新事件)→ lastEnterMs 旧但人确在 B = **最强抑制案**(sole resident 全程在 B → A 丢轨是 phantom)。若 60s 窗按「只信 60s 内 ledger」会**丢弃这最强证据 → Neighbor 在留驻主案(常见案)上变 no-op**。方向:误期 → 不抑制 → 留 phantom lost-fall,生产侧漏报-safe **但 defeats 本特性目的(precision)**。
+- **受理条件**:60s 窗只 gate **A 侧丢轨-消歧的时近性**(A 丢轨须时近一次可信 A→B transition),**永不 expire B 的 durable 占用账**。
+
+**裁定:条件受理 #3 wire（shadow-first 可即建,不阻塞)。** locus + N-1-raw + N-3 + P6.5 delineation 全准 → 施工方可建 R0 log-only + synthetic 2-room 测。**但下列为硬条件,分两 gate 卡:**
+- **建中即须满足**(否则 recall 验不可信):N-6 单-合并-obs;60s 窗只 gate A 侧不期 B 占用;wire 前置 #2 **双向 R5 多-resident 漏报方向 case**(审查60 列,施工方仍 defer 未交,R5-lock 测须含)。
+- **生产 gate 前须满足**(R0 不阻塞,长期):#5 整单元 redis-replay 真验(unit201 三设备 CD2B+1641+333B);N-6 终验过压不发生;DBN recall 于真摔验证集(铁律:DBN recall 从未验证,只测 precision)。
+- **放行 bar 不变**:build/vet/belief 绿 + R5-lock 绿(含多-resident 漏报 case)+ roomengine 9 红 0 新增。
+
+**铁律守**:R0 shadow-first log-only 永不 fire / R1 不碰 alarm / R5 pose-z 对 fall 只正向(本设计压制走 reliable=room-ledger/bed 接触占用,非 pose/z,#5 基准)/ R7 常量带来源。
+
+---
 
 ### [2026-06-08] 施工方 → 委员会:受理审查60 wire 前置 → ① N-1 reconcile(改提**raw room+bed state** 取代①belief-后验,moot N-5)② P6.5 覆盖 delineation doc(X/Y/Z 亲查坐实,Neighbor 非纯 double-count)请委员会受理(doc-only,裁前不建)
 
