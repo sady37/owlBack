@@ -64,13 +64,12 @@ func parseDumpTs(s string) (int64, bool) {
 }
 
 // belief_veto_harness_test.go — 否决精度 harness（委员会上线唯一 gate：否决精度 ≥95%）。
-// R0 只读算 would-veto：firmware-fire 真案上跑 DBN belief shadow → peak P(Fallen)；
-//   would-veto = P < vetoThreshold（DBN 判「非真摔」→ 否决 firmware fire）。
-//   正确否决 = would-veto ∧ ground-truth=false-alarm；错误否决 = would-veto ∧ ground-truth=real-fall。
-//   否决精度 = 正确否决 / 全部否决 ≥ 95%（需 500+ 样本，本骨架先走通闭环）。
-// 不碰生产开火（R0）；#9 P=0.998「正确不否决」是 gate 要的正数据点（委员会收回「易方向无意义」）。
-
-const vetoThreshold = 0.5 // DBN P(Fallen) < 此 → would-veto（firmware fire 被 DBN 判为误报）
+// R0 只读：firmware-fire 真案上跑 DBN belief shadow，采集**正否决证据**算 would-veto。
+//   ★委员会实质1：would-veto **须正证据**（ghost verdict / frozen / bed-occupancy），**不是 P<阈**——
+//     「DBN 对 fall 没信心(中 P)」≠「有 ghost 正证据」；中 P 无证据 → **默认放行**（防误否真摔破 95% gate）。
+//   正确否决 = would-veto ∧ false-alarm；错误否决 = would-veto ∧ real-fall（破 gate）。
+//   否决精度 = 正确否决 / 全部否决 ≥ 95%（需 500+ 样本；本骨架样本<5，闭环非定量，不声称数字）。
+// 不碰生产开火（R0）。**实质2 待补**：延时窗 5min（窗内无证据→放行 / 早退）+ 双轴（覆盖+精度）+ 窗长参数化。
 
 type vetoCase struct {
 	dir    string
@@ -89,8 +88,16 @@ var vetoCases = []vetoCase{
 	// d523 layout（不得捏造）后启用。raw 格式 loader 本身已验（hunzi v2 + 此 raw 路径）。
 }
 
-// runDBNPeakFallen 喂一案真数据走真 pipeline → 返回 belief shadow 的 peak P(Fallen)（R0 只读）。
-func runDBNPeakFallen(t *testing.T, vc vetoCase) (peak float64, frames int, skipped bool) {
+// vetoEvidence 一案跑完 DBN 后采集的**正否决证据**（委员会实质1：否决须正证据，非 P<阈）。
+type vetoEvidence struct {
+	peak   float64 // peak P(Fallen)（仅诊断，不作判据）
+	ghost  bool    // belief_shadow_track_lost argmax=Ghost（镜面/反射伪迹，definitively 非摔）
+	bed    bool    // belief_shadow_bed_occupied_suppress（接触式床占用，非地板摔）
+	frames int
+}
+
+// runDBNVeto 喂一案真数据走真 pipeline → 采集 peak P + 正否决证据（R0 只读）。
+func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 	t.Helper()
 	cfg, radarAddr, roomID := bLayout(t, vc.dir)
 	core, logs := observer.New(zapcore.DebugLevel)
@@ -114,6 +121,7 @@ func runDBNPeakFallen(t *testing.T, vc vetoCase) (peak float64, frames int, skip
 		}
 	}
 
+	frames := 0
 	switch vc.format {
 	case "v2": // {category,device_uid,timestamp,data_value} 无 topic_type → 按 category 推
 		for _, r := range legoLoadWindow(t, vc.dir) {
@@ -148,21 +156,40 @@ func runDBNPeakFallen(t *testing.T, vc vetoCase) (peak float64, frames int, skip
 			frames++
 		}
 	}
+	ev := vetoEvidence{frames: frames}
 	for _, le := range logs.All() {
-		if le.Message == "belief_shadow_trace" {
-			if v, ok := le.ContextMap()["p_fallen"].(float64); ok && v > peak {
-				peak = v
+		switch le.Message {
+		case "belief_shadow_trace":
+			if v, ok := le.ContextMap()["p_fallen"].(float64); ok && v > ev.peak {
+				ev.peak = v
 			}
+		case "belief_shadow_track_lost":
+			if s, _ := le.ContextMap()["argmax_tstate"].(string); s == "Ghost" {
+				ev.ghost = true // 镜面/反射 ghost verdict = 正否决证据
+			}
+		case "belief_shadow_bed_occupied_suppress":
+			ev.bed = true // 接触式床占用 = 正否决证据（在床非地板摔）
 		}
 	}
-	return peak, frames, false
+	return ev
 }
 
 func TestVetoPrecisionHarness(t *testing.T) {
 	var vetos, correctVetos, wrongVetos int
 	for _, vc := range vetoCases {
-		peak, frames, _ := runDBNPeakFallen(t, vc)
-		wouldVeto := peak < vetoThreshold
+		ev := runDBNVeto(t, vc)
+		// ★委员会实质1:否决须**正证据**（ghost/bed），不确定→**默认放行**。P 仅诊断不作判据。
+		wouldVeto := ev.ghost || ev.bed
+		reason := ""
+		if ev.ghost {
+			reason += "ghost "
+		}
+		if ev.bed {
+			reason += "bed "
+		}
+		if reason == "" {
+			reason = "(无正证据→默认放行)"
+		}
 		correct := ""
 		if wouldVeto {
 			vetos++
@@ -175,12 +202,12 @@ func TestVetoPrecisionHarness(t *testing.T) {
 			}
 		} else {
 			if vc.truth == "real-fall" {
-				correct = "正确不否决✓(同意firmware真摔)"
+				correct = "正确不否决✓(默认放行,真摔保留)"
 			} else {
-				correct = "未否决(漏否决false-alarm,非gate但记)"
+				correct = "未否决(无正证据放行;false-alarm 漏否决,非 gate)"
 			}
 		}
-		t.Logf("[%s] %s  帧=%d peak P=%.3f  would-veto=%v  %s", vc.truth, vc.dir, frames, peak, wouldVeto, correct)
+		t.Logf("[%s] %s  帧=%d  peak P=%.3f(诊断)  正证据=%s  would-veto=%v  %s", vc.truth, vc.dir, ev.frames, ev.peak, reason, wouldVeto, correct)
 	}
 	prec := 1.0
 	if vetos > 0 {

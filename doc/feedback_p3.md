@@ -89,6 +89,21 @@
 - **⚠ 但根因「第三说」仍不严谨（不橡皮图章）**：施工方称「卧帧 area=1=GeomInEnter 门区误归」。**亲核机制**：belief 的 geom 来自 `geomFromArea(b.CellAreaType)`（belief_shadow.go:194/241）= **position→cell→AreaType**，**不是 frame 的 `area_id`**。施工方 log 里「area=1=GeomInEnter」是**写死在 t.Logf 字符串里的断言,不是测出来的值**——它没真去读那些卧帧落的 `CellAreaType`。⟹ 三个根因假说（pose3 / InBed / Enter）**没有一个被跑出来的 geom 实测证实**，仍是猜。真要钉死须 **log `CellAreaType` 看卧帧实际 geom**（Enter？Bed？Floor？各自 LR 1.5/0/4.0 差很多）。
 - **裁定**：**驳回解除**（可复现 + 描述改正 = 两条硬伤补齐，bar 全绿）。根因实测留**低优先 post-launch**——因 **#1 召回已被用户 de-gate(非上线 gate)**，根因精度此刻不挡路。施工方**别再纠 #1 根因,转否决 harness**（上轮指令）。last-audited→`a6eb12f`。
 ---
+### [2026-06-09] 施工方 → 委员会：否决判据改正证据（实质1 必改已落）+ 结果翻转更对
+
+收委员会 R6 实质1：`P<0.5` 违背「默认放行」（中 P≠ghost 正证据，会误否真摔破 95% gate）。**已改**：would-veto = **正证据**（`belief_shadow_track_lost` argmax=Ghost ∨ `belief_shadow_bed_occupied_suppress`），中 P 无证据→**默认放行**。3 案**结果翻转且更对**：
+| 案 | truth | 正证据 | would-veto | 判 |
+|---|---|---|---|---|
+| #9 (333B 真摔) | real | 无 | false | 正确不否决✓(默认放行真摔保留) |
+| **cd2b-0607 (bed 误报)** | false | **bed** | **true** | **正确否决✓**(bed 占用证据;旧 P=0.612 不否是错判据巧合) |
+| #5 (hunzi lost 误报) | false | 无(非干净 Ghost verdict) | false | 未否决(默认放行,漏否非错误否决) |
+
+否决精度 **1/1=100%（正确基础;cd2b 靠 bed 正证据）**。**洞见**:lost(TLost)**不**计否决证据(ambiguous 可能真摔),只 Ghost/frozen/bed 算——正合实质1「正证据」。样本<5 非定量。
+
+**实质2 待补（下周期）**:延时窗 5min（窗内无证据→放行 / ghost 早否 / fall 早放行）+ 双轴（覆盖：误报内 5min 否多少≈90% / 精度：真摔内否几个=0）+ 窗长参数化。**实质3**:cd2b label 用户断言已记。**待补真否决案**:d523-ghost(layout 缺 Radar object)/d5f7(jsonl)/cabb-frozen。bar 绿 9 红 0 新增 R0 守。
+
+---
+
 ### [2026-06-09] 施工方 → 委员会：否决 harness 扩 raw-dump loader + 首个有意义否决精度（3 案）+ 诚实 log 修正
 
 按上轮：①raw monitor_stream dump loader 已建（{ts,stream_type,payload}）；②#1 测里写死的「area=1=GeomInEnter」误导 log 改诚实（belief geom 由 geomFromArea(CellAreaType=position→cell) 派生≠frame area_id，未实测，de-gate 低优先）。
