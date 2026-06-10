@@ -21,6 +21,20 @@
 
 ---
 
+### [2026-06-09] ✅ 委员会 R6 收 `5599edc`+`25db34a`+`15a4151` P1②发射换源+2真人单测+P1③ fall×P(Real)——前置兑现 + R5 结构核验 + ★记 endgame 删 gate-list 唯一阻塞
+
+**亲跑验**(不信声明):build/vet rc=0；belief 包 ok；roomengine **精确 9 红 0 新增**(BathroomFall×7+BedroomFall×2)；veto/cutover harness 全 PASS(`TestDBNFireSwitch`/`TestVetoPrecisionHarness`/`TestVetoWindowScan`/`TestCaseTFireAlignment`/`TestHumanBedVetoAt`)。**2 真人案实测兑现委员会上轮钉死要求**:`TestCoExistGhostCoupling` 三案——**a)孤立 P(Ghost)=0.0000**(long-lie 安全)/ **b)2真人(ρ=0.9 无对称→Ghostness=0.15)P(Ghost)=0.0055 P(Real)=0.9862→都 Real**(② 对称判别防 ① 把互为高-ρ-partner 的 2 真人都误判 ghost)/ **c)1真+1ghost(ρ=0.9+对称 Ghostness=0.9)P(Ghost)=0.9491**(识别)。① over-flag 风险由 ② 实证堵住。
+
+**实质改动核实**:`belief_shadow.go:beliefShadowTick` 把 `TObsPresent.Ghostness` 主源从单 track `tlGhostness`(realnessStep 出的 frozen/jump ghostness)换成 **co-existence 对称** `b.Verdict==VerdictGhost?0.9:0.15`;`realLO`/`tlGhostness` **降级仅诊断日志**,不再驱动 belief Ghost 发射。治"真人静止 bystander 被单 track frozen 误判 ghost"。
+
+**铁律**:R0(发射换源只改 shadow belief,DBN_FIRE 默认 OFF,production 不变)✓ / R1(仅 belief_shadow.go,未碰 alarm)✓ / R5(改 ghost 轴,pose-z 对 fall 正向不变)✓ / R7(0.15/0.9 标定常量已自标"临时待 calibration LR",`VerdictGhost` 用常量)✓。
+
+**★实质挑刺 + 台账(非橡皮图章)**:P1② 的 Ghostness 主源 = `b.Verdict==VerdictGhost`，即 **gate-list 的 ghost 判定结果**。利好:ρ 耦合给它叠了"必须≥2 track 共存"的安全(比 raw VerdictGhost 严)。**结构后果**:**endgame 删 gate-list(`bathroom_ghost.go`)被这条依赖结构性阻塞**——belief 仍读 `b.Verdict`,谁 `git rm` gate-list 谁让 Ghostness 永久塌到 0.15(2 真人/真 ghost 不分)。施工方 commit 已自陈("endgame 换 DBN 自己对称不依赖 gate-list Verdict")。**委员会认账并钉死:这是当前唯一剩的「删 gate-list」阻塞依赖。删 gate-list 前必须先建 DBN 自有对称计算(复用 `checkMirrorSymmetry` 几何当 feature 直接喂 Ghostness,绕开 `b.Verdict`),否则塌发射**。本轮**不阻塞**(仍 shadow R0,接受 interim bootstrap)。本提交属 co-existence ghost 线非 Neighbor 线,V1-V5 不直接适用。
+
+**P1③(`15a4151`)fall 证据 ×P(Real) — R5 重心,结构核验(非信声明)**:`belief_shadow.go:261` 把 `radarFrameAdapter` 产的 fall 证据(ObsDwellStill/Pose)`o.Conf *= pReal`(`pReal=tl.tb.Vector().P(TReal)`)。**R5 核验**:`Conf` 是观测置信权重,降它把 likelihood 推向**中性(uniform/LR→1)**而非 fall-抑制器——SFallen-LR 从 ≥1 侧趋近 1,**永不反转 <1**。即 ghost 假 still-fall 被**中性化**(不抬 SFallen),真摔证据**不被压低**。实测兑现:`TestFallEvidenceWeightedByReal` real(Conf0.9)P(SFallen)=0.9716 / ghost(Conf0.1)=0.0589;**harness 真摔 #9 peakP=0.998**(孤立 pReal≈1 无折扣照常 ramp)、bedtest-2 bedside 0.758、精度 100% **真摔错否=0**。**R5 守**(对 fall 只正向,LR≥1)。残留风险:`pReal` 经 P1② 发射**传递依赖 gate-list `b.Verdict`**,gate-list 误判真-共存-faller 为 ghost 会折扣真摔证据——但**孤立 faller pReal≈1 安全**、shadow R0 only、**同根依赖非新**(P1②/③共用 b.Verdict 根),endgame DBN 自有对称一并解。
+
+**裁定**:**收 `5599edc`+`25db34a`+`15a4151`**(P1②③ 前置兑现,bar 绿 9 红 0 新增,R0/R1/R5/R7 守,2 真人堵 ① over-flag,fall 加权 R5 结构守 LR≥1)。P1 进度 ①②③✓,剩 **P1④**(DecideTauCtx C_FN 吃 human-presence)。**台账钉死**:P1②③ 的 Ghostness/pReal 共同 bootstrap 自 gate-list `b.Verdict` = **删 gate-list(`bathroom_ghost.go`)唯一阻塞根依赖**,删前须建 DBN 自有对称(复用 `checkMirrorSymmetry` 几何当 feature 绕开 `b.Verdict`)。**下一步**:接 veto 现条件具备但仍 bootstrap b.Verdict,或先建 DBN 自有对称(优)。last-audited→`15a4151`。
+
 ### [2026-06-09] ✅ 委员会 R6 收 `014019f` P1①(转移耦合)——孤立安全涌现✓ + 重申 ②-先于-veto-切换防 2 真人 over-flag
 
 **亲跑验**:`TestCoExistGhostCoupling`:**孤立 ρ=0→P(Ghost)=0.0000 / 共存 ρ=0.9→P(Ghost)=0.9546**——long-lie 孤立安全**从转移矩阵涌现**(prior 0×高 likelihood=0),我裁定要的实证到位。bar 全绿(build/vet/belief/9 红)。**R0 守**:`StepCoupled`(track.go)改 shadow belief,`belief_shadow:205` 喂 ρ,production 不变(DBN_FIRE 默认 OFF)。**ρ=max 已实现**(`dbnCoExistRho` 取峰),合裁。
