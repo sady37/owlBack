@@ -200,10 +200,13 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		tl.lastX, tl.lastY, tl.lastPosTs = b.X, b.Y, nowMs
 		tl.lastPose, tl.lastZ = b.Pose, b.Z
 		tlGeom := geomFromArea(b.CellAreaType)
-		tl.tb.Step(nowMs, []belief.TObservation{{
+		// ★P1①(co-existence 耦合):进 Ghost 的转移 ×ρ,ρ=房内其它 track 的 P(Real) 峰。孤立 track ρ=0 →
+		// P(Ghost)→0(即使 Ghostness 高也救不回)→ long-lie 真受害者结构性安全。ghost=反射必有共存 Real partner。
+		rho := dbnCoExistRho(sh, b.TrackID)
+		tl.tb.StepCoupled(nowMs, []belief.TObservation{{
 			Kind: belief.TObsPresent, Ghostness: tlGhostness, Geom: tlGeom,
 			Conf: 0.9, Ts: nowMs, Fresh: true,
-		}})
+		}}, rho)
 		tl.lastSeen = nowMs
 		tl.geom = tlGeom
 		tl.device = b.DeviceAddr
@@ -677,6 +680,21 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		}
 	}
 	sh.fired = confirmed
+}
+
+// dbnCoExistRho P1①:共存 Real 信念 ρ=房内**其它** track 的 P(TReal) 峰(选 max,委员会待定 vs 软 OR)。
+// ghost=真人反射 → 必有共存 Real partner 才可能;孤立(无其它 Real track)ρ=0 → 转移进 Ghost 倾向=0。
+func dbnCoExistRho(sh *beliefShadow, selfTid int) float64 {
+	rho := 0.0
+	for tid, tl := range sh.tlayer {
+		if tid == selfTid || tl.tb == nil {
+			continue
+		}
+		if p := tl.tb.Vector().P(belief.TReal); p > rho {
+			rho = p
+		}
+	}
+	return rho
 }
 
 // dbnFallerBase cutover:取摔者位置作 alarm payload。present 取 z 最低(最倒地);否则 lost 用最近 tlayer 锚点。

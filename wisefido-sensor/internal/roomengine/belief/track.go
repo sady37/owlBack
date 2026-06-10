@@ -293,6 +293,45 @@ func (tb *TrackBelief) Step(nowMs int64, obs []TObservation) {
 	}
 }
 
+// PredictCoupled cutover P1①(co-existence 耦合,委员会 d48e0da 规格):进/留 Ghost 的转移倾向 ×ρ,
+// ρ=共存 Real 信念(房内其它 track 的 P(Real) 峰)。**孤立 track ρ=0 → →Ghost 倾向=0 → P(Ghost)→0**,
+// 即使单 track Ghostness 发射强也救不回(prior 0 × likelihood = 0)→ long-lie 真受害者**结构性安全**,
+// 无需任何 "1 track 不否" 规则。ghost=真人反射必有共存 partner,数学上长在转移矩阵里。
+func (tb *TrackBelief) PredictCoupled(rho float64) {
+	if rho < 0 {
+		rho = 0
+	} else if rho > 1 {
+		rho = 1
+	}
+	var next TVector
+	for j := 0; j < numTStates; j++ {
+		s := 0.0
+		for i := 0; i < numTStates; i++ {
+			a := tb.a[i][j]
+			if TState(j) == TGhost {
+				a *= rho // 进 Ghost 倾向 ×ρ(孤立 ρ=0 → 0)
+			}
+			s += a * tb.b[i]
+		}
+		next[j] = s
+	}
+	next.normalize()
+	tb.b = next
+}
+
+// StepCoupled cutover P1①:同 Step 但转移走 PredictCoupled(rho)。belief_shadow 每 track 喂 ρ=max 其它 P(Real)。
+func (tb *TrackBelief) StepCoupled(nowMs int64, obs []TObservation, rho float64) {
+	if tb.lastTs > 0 && nowMs > tb.lastTs {
+		tb.PredictCoupled(rho)
+	}
+	for _, o := range obs {
+		tb.Observe(o)
+	}
+	if nowMs > tb.lastTs {
+		tb.lastTs = nowMs
+	}
+}
+
 func rowNormalizedT(p [numTStates][numTStates]float64) [numTStates][numTStates]float64 {
 	var a [numTStates][numTStates]float64
 	for i := 0; i < numTStates; i++ {

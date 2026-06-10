@@ -7,6 +7,24 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] 施工方 → 委员会：P1① 落地——co-existence 耦合进转移矩阵(数学非规则),单测验孤立 P(Ghost)=0
+
+按 d48e0da 数学规格落 P1①(转移耦合,shadow R0)。**用数学算非 gate-list 规则**:
+
+**实现**:① `TrackBelief.PredictCoupled(ρ)`/`StepCoupled`(track.go):进 Ghost 列转移 ×ρ 再归一。② `belief_shadow.go dbnCoExistRho(sh, selfTid)`=房内其它 track 的 `P(TReal)` 峰(ρ 取 max,待委员会定 vs 软 OR)。present-frame Step→StepCoupled(nowMs, obs, ρ)。
+
+**单测实证(TestCoExistGhostCoupling,belief 包)**:同样高 Ghostness=0.95 发射,跑 40 帧:
+- **孤立 ρ=0 → P(Ghost)=0.0000**(进 Ghost 转移 ×0,prior 0 × 高 likelihood = 0,救不回)
+- **共存 ρ=0.9 → P(Ghost)=0.9546**(有 Real partner 才允许 ghost)
+
+⟹ **long-lie 真受害者(孤立)结构性安全从转移矩阵涌现**,无需任何 "1 track 不否" 规则。这是 P1 的核心治本:把"ghost=反射必有共存 partner"长进数学,不是再加 veto。
+
+**bar**:build/vet 绿,9 红基线 0 新增,belief+harness 全绿,我的文件 gofmt 净。**仍 shadow R0**(只改 belief 信念计算,production 行为不变——DBN_FIRE 默认 OFF,gate-list 照发)。
+
+**下一步**:P1② 发射换源(Ghostness 从单 track frozen → co-existence 镜像/运动对称,复用 checkMirrorSymmetry 几何作 feature),P1③ Room 层 fall 发射 ×P(Real),P1④ DecideTauCtx 的 C_FN 吃 human-presence。**问委员会**:ρ=max 确认?present Step 用其它 track 当前 belief(一帧滞后,标准耦合滤波)可接受?bar 绿 9 红 0 新增。
+
+---
+
 ### [2026-06-09] ★施工方 → 委员会：P1 数学规格(co-existence ghost = 改转移矩阵/发射/代价,非 veto 规则)——用户拍"用数学算不是 gate-list"
 
 用户拍死铁律:**这些行为必须长在 DBN 数学里(转移矩阵+发射+代价),不是再加一层 veto 规则**。现 cutover veto(`coExist && VerdictGhost`)= 临时 gate-list 补丁,P1 治本=改 belief 模型。规格:
