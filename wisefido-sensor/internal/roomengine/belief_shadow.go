@@ -2,6 +2,7 @@ package roomengine
 
 import (
 	"context"
+	"math"
 	"os"
 
 	"owl-common/alarm"
@@ -188,6 +189,13 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	var obs []belief.Observation
 	cur := make(map[int]struct{}, len(bases))
 	curTL := make(map[int]struct{}, len(bases))
+	// ★P1-final:循环前快照各 track 上帧位置(tlayer.lastX 循环中会被更新→避 ordering 坑),算 motion 对称的运动向量。
+	prevPos := make(map[int][2]int, len(sh.tlayer))
+	for tid, tl := range sh.tlayer {
+		if tl.lastPosTs > 0 {
+			prevPos[tid] = [2]int{tl.lastX, tl.lastY}
+		}
+	}
 	for i := range bases {
 		b := &bases[i]
 
@@ -244,12 +252,12 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			tl.uprightSince, tl.fallenSince = 0, 0
 		}
 		tlGeom := geomFromArea(b.CellAreaType)
-		// ★P1②(发射换源):Ghostness 主源 = **co-existence 对称**(b.Verdict=gate-list 镜像/运动对称结果,
-		// 正常处理时算好,lock-free)。**单 track frozenGhost/jumpGhost 不再驱动 Ghost 发射**(realLO 仅留日志)——
-		// 治"真人静止 bystander 被单 track frozen 误判 ghost"(委员会细化1:≥2 真人)。endgame 换 DBN 自己的对称计算。
-		// 标定 0.9/0.15 临时(待委员会:symmetry hit→Ghostness 走 calibration.go LR?)。
+		// ★P1②/P1-final(发射换源):Ghostness 主源 = **co-existence 对称**。**单 track frozenGhost/jumpGhost
+		// 不再驱动 Ghost 发射**(realLO 仅留日志)——治"真人静止 bystander 被单 track frozen 误判 ghost"(委员会细化1)。
+		// P1-final:DBN **自有 motion 对称**(lock-free,bases+prevPos 算紧贴+同向)绕开 gate-list b.Verdict;
+		// 静态 mirror 对称(反射面几何)仍暂靠 b.Verdict 兜(留下增量,需 interference plumbing)。
 		ghostness := 0.15
-		if b.Verdict == VerdictGhost {
+		if dbnMotionSymmetryGhost(b, bases, prevPos) || b.Verdict == VerdictGhost {
 			ghostness = 0.9
 		}
 		// ★P1①(co-existence 耦合):进 Ghost 的转移 ×ρ,ρ=房内其它 track 的 P(Real) 峰。孤立 track ρ=0 →
@@ -808,6 +816,53 @@ func (e *Engine) recordBeliefShadowFirmwareFall(roomID string, tMs int64) {
 		sh.recoveryGenuineFall = false
 		sh.recoveryEmitted = false
 	}
+}
+
+// dbnMotionSymmetryGhost P1-final:DBN **自有** motion 对称 ghost(lock-free,绕开 gate-list b.Verdict)。
+// self 与某共存 **VerdictReal + 在动** track 紧贴(<100cm)+ 同向运动(cos>0.866) = 多径反射跟随真人 → ghost。
+// 复刻 tm.checkMotionSymmetry 但用 bases(安全快照)+prevPos(循环前上帧位置),不碰 tm 锁。需 self 也在动(静止
+// 走 mirror 路,本函数只 motion;静态 mirror 对称留下增量需 interference 几何)。
+func dbnMotionSymmetryGhost(self *TrackStatusBase, bases []TrackStatusBase, prevPos map[int][2]int) bool {
+	const (
+		coexistDistMaxCm = 100
+		minDispSqCm      = 100 // 单 track 最小位移²(<10cm=静止 noise)
+		cosThreshold     = 0.866
+	)
+	if !self.MoveActive {
+		return false
+	}
+	pS, okS := prevPos[self.TrackID]
+	if !okS {
+		return false
+	}
+	dxS, dyS := self.X-pS[0], self.Y-pS[1]
+	if dxS*dxS+dyS*dyS < minDispSqCm {
+		return false
+	}
+	for i := range bases {
+		p := &bases[i]
+		if p.TrackID == self.TrackID || p.Verdict != VerdictReal || !p.MoveActive {
+			continue
+		}
+		if distInt(self.X, self.Y, p.X, p.Y) > coexistDistMaxCm {
+			continue
+		}
+		pp, okP := prevPos[p.TrackID]
+		if !okP {
+			continue
+		}
+		dxP, dyP := p.X-pp[0], p.Y-pp[1]
+		magSq := float64(dxP*dxP + dyP*dyP)
+		if magSq < float64(minDispSqCm) {
+			continue
+		}
+		dot := float64(dxS*dxP + dyS*dyP)
+		mags := math.Sqrt(float64(dxS*dxS+dyS*dyS)) * math.Sqrt(magSq)
+		if mags > 0 && dot/mags > cosThreshold {
+			return true // 紧贴 + 同向 = motion 对称 ghost(DBN 自算,不依赖 gate-list)
+		}
+	}
+	return false
 }
 
 // dbnCoExistRho P1①:共存 Real 信念 ρ=房内**其它** track 的 P(TReal) 峰(选 max,委员会待定 vs 软 OR)。

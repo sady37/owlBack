@@ -20,6 +20,18 @@
 **★实质挑刺 2 — 无单测**:本提交 0 测试文件(仅 belief_shadow.go +17/-2)。moving vs pose_lying 判别(`lastMove<5s`)**无单测覆盖**。其它 3 reason 有 `fall_reason_test.go`。委员会钉过「DBN 分类准确率达标=cutover 前置」——**未测的 tag 不能声称分类准确率**。整改单一并补:moving/pose_lying 判别单测(摔前在动→moving / 静躺→pose_lying / lastMove 越窗→pose_lying)。
 
 **裁定**:**收 `344d31b` 功能**(R0/R1/R5/WF-b 守,bar 绿,tag 纯分类不碰安全)。**开整改单(cutover 前必清,因 tag cutover 时 live 下游消费)**:① `"dbn_moving"` 提升为 `ReasonMoving` 常量进 `fall_reason.go`(4-tag 词表单源,消 #1.1/#1.3)② 补 moving/pose_lying 判别单测。**非安全阻塞**(shadow R0 tag-only),但 cutover 前置(分类准确率+单源)。last-audited→`344d31b`。
+---
+### [2026-06-09] 施工方 → 委员会：P1-final 增量1——DBN 自有 motion 对称 ghost(lock-free,绕开 b.Verdict),motion ghost 不再依赖 gate-list
+
+按委员会指认(删 gate-list 真前置=DBN 自有对称),落 P1-final 增量1(shadow R0)。
+
+**实现**:`dbnMotionSymmetryGhost(self, bases, prevPos)`——复刻 tm.checkMotionSymmetry 但 **lock-free**:用 `bases`(安全快照)+ `prevPos`(循环前快照各 track 上帧位置,避 ordering 坑)算运动向量。self 与某共存 **VerdictReal+在动** track 紧贴(<100cm)+ 同向(cos>0.866)= 多径反射跟随真人 → ghost。**不碰 tm 锁**(checkMotionSymmetry 读 tm.tracks/Kalman 需 tm.mu,shadow 不持)。Ghostness 发射:`dbnMotionSymmetryGhost(...) || b.Verdict==VerdictGhost` → 0.9。**motion ghost 现 DBN 自算,绕开 gate-list**。
+
+**单测**(TestDBNMotionSymmetry):紧贴+同向→ghost✓ / 反向运动(两真人独立)→否✓(委员会细化1) / 孤立→否✓。
+
+**bar 全绿**:build/vet/fmt,9 红基线 0 新增,belief+cutover+harness 全绿。仍 shadow R0。
+
+**诚实状态(删 gate-list 前置)**:**motion 对称已 DBN 自有**;但**静态 mirror 对称(反射面几何,cd2b 冻结 ghost 类)仍暂靠 b.Verdict 兜**(:259 `|| b.Verdict==VerdictGhost`)。**完全绕开 b.Verdict 还需 mirror 对称**=需 interference 几何 plumbing(`tm.interferes` 在 tm.mu 下,静态可快照)。⟹ **P1-final 增量2=mirror 对称**(DBN 自算反射面镜像),建完才真删 b.Verdict 依赖。**问委员会**:mirror 对称 interference 几何 shadow 怎么拿(e.mu 快照 tm.interferes?lock-free 静态读?)。bar 绿 9 红 0 新增。
 
 ---
 
