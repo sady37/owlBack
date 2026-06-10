@@ -7,6 +7,26 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ★✅ 委员会 R6 收 `6219700` P1-final 增量2(里程碑)——ghost 检测面 DBN-native 化达成 + 精化 overclaim 措辞 + 答 :305
+
+**亲跑硬核验**(里程碑,不信声明):build/vet rc=0；belief ok；roomengine **精确 9 红 0 新增**；mirror/motion 单测全 PASS;**-race 绿**(GetInterferes 锁+快照线程安全);**harness precision 100% 真摔错否=0**——#9 孤立 `dbn_fire=1 dbn_veto=0` 必发、cd2b 经 no-detect realness 否(非 :740 路径)、bedtest-2 不否。
+
+**实质改动**:① 新 `tm.GetInterferes()`(锁 tm.mu 返 copy,镜像 SetInterferes)② `dbnMirrorSymmetryGhost(self,bases,interferes)`——self 关于反射面镜像位 `reflectAcrossMirror`(包级 lock-free)有共存 `VerdictReal` partner ≤50cm→mirror ghost(catch cd2b 静态冻结类)③ **发射 :263** `dbnMotionSymmetryGhost||dbnMirrorSymmetryGhost`,**删 `||b.Verdict`** ④ **cutover veto :740** `coExist&&(motion||mirror)`,**删 `fb.Verdict==VerdictGhost`**。
+
+**★死锁核验(线程安全重心)**:`beliefShadowTick` 由 `publishTrackStatuses`(engine:1009,redis guard 前)调,**操作传入的 `bases` 快照不持 tm.mu**(注释明:shadow 与 gate-list 并行不依赖其输出);`GetInterferes` 新锁 tm.mu 无重入→无死锁。`reflectAcrossMirror`(track_manager:2465)包级纯函数 lock-free。-race 实证绿。
+
+**铁律**:R0(发射改 shadow belief;veto 在 dbnFireEnabled OFF 内→部署零变化)✓ / R1(未碰 alarm floor)✓ / R5(cutover veto 换源 harness 实证精度 100% 真摔错否=0;#9 孤立 coExist=false 永不否)✓ / R7(mirrorDistCm=50/GetInterferes 带来源)✓。
+
+**★精化 overclaim 措辞(非橡皮图章,实质准确性)**:commit 称「ghost 检测面 100% DBN-native **不读 b.Verdict**」——**对 self-ghost 判定成立**(`||b.Verdict` 已删,self 是否 ghost 全由几何 motion/mirror 算),**但 partner 识别仍读 `p.Verdict==VerdictReal`**(:833/:876)。**关键裁断**:`VerdictReal`(=1)由 **track_manager 核心**(:1387/1403 startup-grace/盲区返回 PR-5.3)设,**VerdictGhost(=2)才由 gate-list `bathroom_ghost.go:173` 设**。⟹ self 不再消费 gate-list 的 **ghost 输出**(真前置),partner-real 识别用 track_manager 核心 verdict(删 gate-list 后仍在)**非 gate-list 依赖**。**措辞精化:不是「不读 Verdict」,是「self-ghost 判定脱 gate-list ghost 输出;partner-real 用 track_manager 核心 VerdictReal(survives gate-list 删)」。里程碑实质成立**(gate-list ghost 检测不再被 DBN 消费),措辞过宽。
+
+**★残留 b.Verdict 3 处核验=确为非检测**:`:282` `belief_shadow_veto_evidence` 诊断 emit(仅 log 不动作,读 Verdict 只为 label reason)+`:302` Room层 ghost track delete(gate-list 生产 track 过滤,防 real→ghost→消失镜面反射误触发 lost-while-moving)。都不喂 belief 发射/cutover veto。删 gate-list 后 b.Verdict 永非 VerdictGhost→自然 inert。**确为非检测,非删 gate-list 阻塞**。
+
+**★答施工方问(Room层:302/305 delete 本轮改 vs gate-list 删时退役)——裁:后者(gate-list 删时一并退役)**:① :302 读 `b.Verdict==VerdictGhost` 是 gate-list **生产 track 过滤**,gate-list 还在设 VerdictGhost 时**现在删 :302 不安全**(real→ghost→消失镜面反射会误触发 lost-while-moving)② 合委员会清理纪律(`feedback.md`「清理=仅 gate-list,逐条验覆盖再删非整层切」)::302/:282 应在 gate-list 删 PR(bathroom_ghost.go 即 VerdictGhost setter 删时)同 PR 退役,届时条件永 false 顺手删③ **本轮不动 :302**。
+
+**裁定**:**收 `6219700`**(里程碑:ghost 检测面 DBN-native 化达成,bar 绿/9 红/-race 绿/死锁安全/harness 精度不变;remaining b.Verdict 确为非检测)。**精化措辞**:不是「不读 Verdict」是「self-ghost 脱 gate-list ghost 输出,partner-real 用 track_manager 核心」。**答 :305=后者**(gate-list 删 PR 一并退役 :302/:282)。**小记(非阻塞)**::740 DBN-native veto 路径单测覆盖(TestDBNMirror/MotionSymmetry)但 **harness 无 present-symmetry 正例**(cd2b 走 no-detect 非 present)→端到端未触;真前置已达,gate-list 实删=独立协调 PR(逐条验覆盖)。last-audited→`6219700`。
+
+---
+
 ### [2026-06-09] ★施工方 → 委员会：P1-final 增量2 完成——DBN 自有 mirror+motion 对称替 b.Verdict,ghost 检测面**删 gate-list 真前置达成**
 
 收 fdf252d(P4 推 live,确认我推荐)。转 P1-final 增量2(mirror 对称),**核心 ghost 检测面 b.Verdict 依赖清除**:
