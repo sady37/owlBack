@@ -42,6 +42,9 @@ const recoveryGenuineFallenMs = 15_000
 // recoveryUprightSustainMs P2:摔者持续直立须达此才认正向恢复(防 1 帧 tracking 伪迹把真受害者误判 walk)。
 const recoveryUprightSustainMs = 3_000
 
+// movingFallRecentMs P3 moving_fall:摔前此窗内有 MoveActive = 移动中倒地(dbn_moving),否则开阔地静躺(dbn_pose_lying)。
+const movingFallRecentMs = 5_000
+
 // P6.1b-D(审查㉛ Opt-1)小卫生间 provisional/分级窗:
 //
 //	设备富(unit 有其它设备)→ 30min cancel 窗(覆盖立项 np=0 +335s),窗到未佐证升级。
@@ -85,6 +88,7 @@ type beliefShadowTLayer struct {
 	uprightSince int64 // 连续直立(Stand/Move)起始 ms(0=非直立);firmware 火后同人持续直立=recovery
 	fallenSince  int64 // 连续倒地(Lie/Fallen/SitGround)起始 ms;火后持续倒地≥阈=自救真摔禁 recovery
 	firstSeenMs  int64 // 首现 ms(护工后进=新 track firstSeen>T_fire→排除,同人绑定)
+	lastMoveMs   int64 // P3 moving_fall:最后一次 MoveActive 时刻(摔前在动 → 移动中倒地=moving 非开阔静躺)
 }
 
 type beliefShadow struct {
@@ -221,6 +225,9 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		tl.realLO, tlGhostness = realnessStep(tl.realLO, dtSec, b.MoveActive, jumpGhost, frozenGhost)
 		tl.lastX, tl.lastY, tl.lastPosTs = b.X, b.Y, nowMs
 		tl.lastPose, tl.lastZ = b.Pose, b.Z
+		if b.MoveActive {
+			tl.lastMoveMs = nowMs // P3 moving_fall:记最后在动时刻(摔前在动→移动中倒地)
+		}
 		// P2 recovery-veto:维护 upright(Stand/Move)/fallen(Lie/SitGround)连续段(条件③持续非瞬时)。
 		switch RadarPoseToCore(b.Pose) {
 		case CorePoseStand, CorePoseMove:
@@ -728,18 +735,26 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				e.logger.Info("belief_dbn_veto_risk", zap.String("room_id", roomID),
 					zap.Float64("p_fallen", pFallen), zap.Float64("tau_ctx", tauCtxHit), zap.Bool("others_present", tauCtx.OthersPresent))
 			case ok:
+				// P3 moving_fall tag:pose_lying 主导 + 摔者摔前在动(lastMove 近)= 移动中突变倒地 → dbn_moving;
+				// 否则开阔地静躺=dbn_pose_lying。复用 MoveActive(lock-free)。DBN 输出全 4-tag(silent/lost/moving/pose_lying)。
+				reasonTag := "dbn_" + p7Reason.String()
+				if p7Reason == belief.ReasonPoseLying {
+					if tlf := sh.tlayer[fb.TrackID]; tlf != nil && tlf.lastMoveMs > 0 && nowMs-tlf.lastMoveMs < movingFallRecentMs {
+						reasonTag = "dbn_moving"
+					}
+				}
 				e.PublishAIAlarm(context.Background(), AIPayload{
 					DeviceAddr: fb.DeviceAddr, RoomID: roomID,
 					Track: observation.Track{
 						BedStatus: observation.BedStatusUnchanged, TrackID: fb.TrackID, Pose: fb.Pose,
 						PositionX: intPtr(fb.RawH), PositionY: intPtr(fb.RawV), PositionZ: intPtr(fb.RawZ),
 					},
-					Reason:     "dbn_" + p7Reason.String(), // 分类 tag:dbn_lost/dbn_silent/dbn_pose_lying
+					Reason:     reasonTag, // 分类 tag:dbn_lost/dbn_silent/dbn_moving/dbn_pose_lying
 					Evidence:   map[string]interface{}{"p_fallen": pFallen, "dominant_obs": p7Dom.String(), "bathroom": tauCtx.Bathroom},
 					IncidentMs: nowMs,
 				}, alarm.Fall, nowMs)
 				e.logger.Info("belief_dbn_fire", zap.String("room_id", roomID), // R0 在此结束:DBN 真发告警
-					zap.String("reason", "dbn_"+p7Reason.String()), zap.Float64("p_fallen", pFallen), zap.Int("track_id", fb.TrackID))
+					zap.String("reason", reasonTag), zap.Float64("p_fallen", pFallen), zap.Int("track_id", fb.TrackID))
 			}
 		}
 	}

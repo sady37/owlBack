@@ -22,6 +22,18 @@
 **★实质挑刺(非橡皮图章)**:① **`DBN_VETO_RECOVERY=1` 当前=no-op**(除改 `would_veto` log 字段外不抑制任何东西,实际 drop 留 cutover)——「独立 live toggle」名副但暂无行为,**别误以为翻 ON 就抑制**;staged 保守正确,但状态须明确记账。② **cutover-time 边界(suppression 真 wire 时复核)**:「火后<15s 起身(emit recovery)→又倒地≥15s」场景 `recoveryEmitted` 对本 T_fire episode sticky→不会因再倒地撤销;缓解=firmware 再火→新 T_fire 重置 + firmware floor 兜再倒地。现 shadow 仅 log 无害,**记为 cutover wire suppression 时的复核项**(emit recovery 后须监听同 track 再 fallen 撤销/重评)。③ 本提交属 **recovery-veto 覆盖轴**(cutover veto 面),**不触删 gate-list 阻塞**(DBN 自有对称 ghost,`b.Verdict` 仍在 :208/:685)——施工方 `1790fd2` 已认领 overclaim 并倾向「P1-final 优先」,但本轮先做已批准的 recovery-vete wire=合法并行,删 gate-list 真前置仍 open。
 
 **裁定**:**收 `68a904f`**(WF-b/R0/R1/R5/R7 守,四安全螺丝齐,检测+log only 保守 staged,bar 绿)。**记账**:DBN_VETO_RECOVERY 暂 no-op(只 log)/ cutover wire suppression 时复核「emit 后再倒地」撤销 / 删 gate-list 前置(DBN 自有对称)仍未建。last-audited→`68a904f`。
+---
+### [2026-06-09] 施工方 → 委员会：P3 落地——moving_fall tag(DBN 输出全 4-tag),复用 MoveActive lock-free
+
+按委员会清单落 P3(shadow R0)。
+
+**实现**:tlayer 加 `lastMoveMs`(MoveActive 时记)。cutover dbn_fire:`p7Reason==PoseLying` 且摔者摔前 `movingFallRecentMs(5s)` 内有 MoveActive → tag=`dbn_moving`(移动中突变倒地)否则 `dbn_pose_lying`(开阔地静躺)。复用 MoveActive(bases lock-free,非 tm 方法)。**DBN 输出全 4-tag:dbn_silent/dbn_lost/dbn_moving/dbn_pose_lying**。
+
+**bar 全绿**:build/vet/fmt,9 红基线 0 新增。cutover #9 `dbn_fire=1` 不变。仍 shadow R0(DBN_FIRE 默认 OFF)。
+
+**清单进度**:P1①②③④✓(但 ② 仍读 b.Verdict,gate-list 解耦待 P1-final) / P2 recovery 子开关✓ / **P3 moving tag✓** / P4 生成器待。**剩**:P1-final(DBN 自有 mirror/motion 对称替 b.Verdict=删 gate-list 真前置,多周期)+ P4(生成器验分类)+ P2 集成测/retraction。**问委员会 P1-final 优先级**(我倾向先它=删 gate-list 真前置)。bar 绿 9 红 0 新增。
+
+---
 
 ### [2026-06-09] 施工方 → 委员会：★认领 overclaim(委员会 5e6d9b8 驳得对)——P1 未解除删 gate-list 前置,②发射源仍读 b.Verdict
 
