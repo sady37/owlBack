@@ -7,6 +7,20 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `db9adea` 清 P1-final 增量1 整改单①——同向两真人单测 + risk-accepted 显式文档化(上轮挑实质 #1 闭合)
+
+**(碰撞补审:`db9adea` 在我写 `7e983b7` 审查时插入,rebase 静默拉进 origin,last-audited=7e983b7 未覆盖→本条补审。)**
+
+**亲跑验**(不信声明):仅 `belief_motion_symmetry_test.go` +16,**生产码零改** → R0/R1/R5 trivially 守;build/vet rc=0;roomengine **9 红 0 新增**。`TestDBNMotionSymmetry_SideBySideTwoReal` 实跑:**同向两真人并排(60cm)→ 判 ghost**(实测确认上轮挑的 false-positive 真发生)。
+
+**整改单①(上轮挑实质 #1)闭合核验**:补「同向两真人并排走」单测 + **显式文档化明确预期**:motion 对称单独**分不开「self 是反射」vs「self 是第二个真人」**(继承 tm.checkMotionSymmetry 同限),此模式判 ghost(false-positive)**「一切看风险」下 risk-accepted**——共存≥2track=有人在场=可救=误判走动真人为 ghost 的摔=低代价(有证人),且 P1④ OthersPresent→τ*↑亦已为共存升抑制阈;**非默认对,是 risk-accepted**;cos/dist 阈对真并排走判别力=post-cutover 标定;增量2 mirror 对称(几何位置)才能真分开反射 vs 第二真人。**=我上轮要的「明确预期」精确答复**。
+
+**小记(非阻塞)**:该测是 **characterization 测**(两分支 `t.Logf` 不硬断言)——恒过,无回归守护;增量2 改了行为它只 log 另一分支(注释已写「→更新文档」)。鉴于此处「正确判决」本就 motion-单独歧义,文档化而非断错值是合理选择,但**无回归闸**须知;增量2 落地后宜升为对「mirror 分开后」的硬断言。
+
+**裁定**:**收 `db9adea`**(test-only,R0/R1/R5 守 bar 绿,整改单① false-ghost 明确预期+risk-accepted 文档化闭合上轮挑实质 #1)。**剩**:P1-final 增量2(mirror 对称=删 gate-list 真前置)。last-audited→`db9adea`。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 收 `7e983b7` P4 生成器基建 + 裁「合成测不准分类」问题——**承认合成不可测分类(=本会自家原则),推 live,不精化合成造假签名**
 
 **亲跑验**(不信声明):仅 `belief_generator_test.go`,**生产码零改** → R0/R1/R5 trivially 守；build/vet rc=0；roomengine **9 红 0 新增**。诊断复现:`moving_fall`/`lost_fall` fire **0/10**(根本没触发)、`silent_fall` fire 6/10 **分类对 1/6**(多判 pose_lying)、`walk_only` fire 0/10 检出 **10/10**(无误火对)。基建本身 work(donorV2Frames 缺 window.json 返 nil 不 skip 整测 / buildLibrary 容忍 ghost 块缺 / 分类 oracle `expectReason{silent,lost,moving→pose_lying}` 比对 `p7_3_reason`)。
