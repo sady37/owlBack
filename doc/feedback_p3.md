@@ -7,6 +7,22 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `129468a` ghost=co-existence(>=2 track)修复——long-lie 结构性堵死 + 裁 recovery-veto propose-first
+
+**用户纠正「ghost 没做好(须 >=2 track)」,施工方独立实现,与委员会收敛**。亲验:
+- **coExist 门**:`coExist := len(bases)>=2`,veto=`coExist && VerdictGhost`(belief_shadow:659-660)→ **孤立 1 track 永不被否**(ghost=真人反射必有共存 partner,孤立=无源=不可能 ghost=真人)。**#9 孤立仍 `dbn_fire=1 veto=0`**,bar 绿 9 红 0 新增。
+- **比 realLO→VerdictGhost 更彻底**:上轮只堵 realLO,VerdictGhost 仍可由单 track rule1 置位;coExist 门**从结构堵死所有单 track ghost-veto**→long-lie 真受害者(越不动越像 frozen)因孤立证明是真人,任何 ghost 路径都否不掉。引 gate-list `checkMirrorSymmetry` 条件#1=房间有另一 Real partner=正确 2-track,印证;DBN `shadowFrozenArtifact(单 ts)`=病根。**收(结构性正解)**。
+
+**★endgame 确认(施工方标,委员会附议)**:cutover veto 现读 gate-list 的 `VerdictGhost`(coExist 门后 >=2 安全)。但**退役 gate-list 后 VerdictGhost 源没了**→**DBN 需自己的 co-existence(>=2 track)ghost 检测**(重做 frozenGhost/realLO 单 track→co-existence,harness realness-ghost 同病一并重审)。**这是 cutover-complete(删 gate-list)的硬前置**。
+
+**★裁 recovery-veto propose-first(施工方:保守 cutover 只 ghost-veto 漏非 ghost FP,用户「误报太多=无用」→也开 recovery-veto)**:
+- **approve 开 recovery-veto**:它**漏报-safe by construction**(同人+正向 up+track-loss 螺丝+self-rescue≥15s+默认放行,本会话真数据验过 #9 自救保护/5934 误火否)→**开它永不漏真摔,只加 FP 抑制**(正治「误报太多」)。
+- **但需 firmware-Fall-time(T_fire)wire 进 production**(option A,之前留 cutover)+ **独立子开关 `DBN_VETO_RECOVERY`**(可单独 live toggle)。
+- **bed-veto 不开**(之前裁:低 conf 不安全/高 conf 零覆盖,净~0 安全覆盖)。
+- **建序**:① 首翻 ghost-veto only(coExist,最简最验)live 测真 FP mix ② wire T_fire+开 recovery-veto 子开关(漏报-safe,FP 高就开)③ 各 veto 独立子开关 live 调。**反正可逆,FP 太高就开 recovery 或翻回**。
+
+**裁定**:R6 收 coExist 修复;endgame=DBN 自己 co-existence ghost 检测(删 gate-list 前置);recovery-veto approve(漏报-safe)需 wire T_fire+子开关,bed 不开。last-audited→`129468a`。
+
 ### [2026-06-09] ✅✅✅ 委员会 R6 验收 `6d2d8da` cutover wire——R0→production 转折,5 条 envelope 全守,union 亲验通过
 
 **项目最大一步:DBN-fire wire 进生产 gate(首碰 alarm 路径)。按新 cutover bar 最严格亲验,5 条安全 envelope 逐条过**:
