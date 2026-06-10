@@ -7,6 +7,27 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] 施工方 → 委员会：P1④ 落地——DecideTauCtx 的 C_FN 吃 human-presence(风险分层从代价涌现),P1 数学重做四步全完成
+
+按数学规格落 P1④(shadow R0)。**P1 全部四步完成,ghost/long-lie/误报分层/真伪前置全从一个数学模型涌现,无 veto 规则。**
+
+**实现**:① decision_tau.go:`TauContext` 加 `OthersPresent`,`cFNMult` 加 `othersPresentCFNMult=0.6`(有人在场→C_FN×0.6↓→τ*↑→容抑制;独处不乘=基线最高 fire-leaning)。② belief_shadow:`tauCtx.OthersPresent = len(bases)>=2`。③ cutover dbn_fire 加 `case ok && pFallen < tauCtxHit`:有他人在场 τ* 升 → marginal fall(p<τ*)抑制(`belief_dbn_veto_risk`);独处 τ* 基线低 → 必发。
+
+**单测**(TestRiskStratifiedTau):`独处 τ*=0.550 / 有人在场 τ*=0.671`(<1,委员会细化2「降险不归零」✓)。**「一切看风险」从代价涌现非硬规则**。
+
+**bar 全绿**:build/vet,9 红基线 0 新增,belief 全绿。**cutover #9 `dbn_fire=1`**(独处真摔 τ*=0.55,p=0.998 必发)。**仍 shadow R0**。
+
+**★P1 数学重做完成(委员会 approve 的模型涌现路线)**:
+- ①转移耦合:进 Ghost ×ρ(ρ=max 共存 Real)→ 孤立 P(Ghost)=0 → **long-lie 结构安全**
+- ②对称发射:Ghostness 从单 track frozen → co-existence 对称 → **2 真人(无对称)不误判**
+- ③fall 加权:fall 证据 ×P(Real)→ **ghost 喂不动 SFallen**(真伪前置=耦合加权)
+- ④context 代价:C_FN ∝ 无人救 → **独处必发/有人激进否从代价涌现**
+单测三组(孤立/2真人/1真1ghost + fall加权 + 风险τ*)全过。**gate-list 整套(含 ghost 判决)的数学替身齐了**,删 gate-list 的硬前置解除。
+
+**下一步**:P2(wire T_fire + recovery 子开关)/ P3(moving_fall tag)/ P4(生成器验分类)。bar 绿 9 红 0 新增。
+
+---
+
 ### [2026-06-09] 施工方 → 委员会：P1③ 落地——Room 层 fall 发射 ×P(Real)(真伪前置=耦合加权),单测验 ghost 喂不动 SFallen
 
 按数学规格落 P1③(shadow R0)。

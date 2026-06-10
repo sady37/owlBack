@@ -49,16 +49,22 @@ func DecideTau(pFallen float64) (TauDecision, float64) {
 // 漏报代价 C_FN 随风险升 → τ* 降 → 更敏感。代价假设（委员会可审，终值待 P9 标定）：
 //   - 浴室：滑倒高发 + 关门独处难被发现 → 漏一次代价高。
 //   - 夜间：无人在旁 + 可能长时间无人发现 → 漏一次代价高。
+//
 // 两者叠乘（既浴室又夜间 = 最高风险 → τ* 最低）。base（日间非浴室）= P7.1 工作点（0.55/0.30）等价复现。
 const (
 	bathroomCFNMult = 1.5
 	nightCFNMult    = 1.5
+	// ★P1④(风险分层从代价涌现,委员会 d48e0da):「一切看风险」= 漏报代价 C_FN ∝ 无人救。独处=最高风险
+	// (摔了没人救=要命)= 基线 C_FN(fire-leaning);**有人在场**=可救=降险 → C_FN×此(<1)→ τ* 升 → 容抑制。
+	// 委员会细化2「降险但不归零」:>0(非 0,不无条件抑制)。独处必发/有人激进否**从代价涌现,非硬规则**。
+	othersPresentCFNMult = 0.6
 )
 
-// TauContext 决策上下文：zone（是否浴室）+ risk-time（是否夜间）。
+// TauContext 决策上下文：zone（是否浴室）+ risk-time（是否夜间）+ human-presence（是否有他人在场=可救）。
 type TauContext struct {
-	Bathroom bool
-	Night    bool
+	Bathroom      bool
+	Night         bool
+	OthersPresent bool // ★P1④:房内有他人(≥2 track)=可救=降险 → C_FN↓ → τ*↑ → 容抑制;独处=基线 fire-leaning
 }
 
 // cFNMult 漏报代价 C_FN 的风险加权（base=1）。
@@ -69,6 +75,9 @@ func (c TauContext) cFNMult() float64 {
 	}
 	if c.Night {
 		m *= nightCFNMult
+	}
+	if c.OthersPresent {
+		m *= othersPresentCFNMult // 有人在场降险:C_FN↓→τ*↑→容抑制(独处不乘=基线最高 fire-leaning)
 	}
 	return m
 }

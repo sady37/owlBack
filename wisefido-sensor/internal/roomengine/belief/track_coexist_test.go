@@ -36,3 +36,17 @@ func TestCoExistGhostCoupling(t *testing.T) {
 		t.Errorf("c 1真+1ghost(ρ高+对称)P(Ghost)=%.4f 应高——ghost 被识别", ghostG)
 	}
 }
+
+// TestRiskStratifiedTau — P1④(委员会 d48e0da):一切看风险 = C_FN ∝ 无人救,从代价涌现非硬规则。
+// 独处=最高风险=基线 fire-leaning;有他人在场=可救=降险 → C_FN↓ → τ*↑ → 容抑制(降险但不归零 τ*<1)。
+func TestRiskStratifiedTau(t *testing.T) {
+	alone := TauConfirm.withCtx(TauContext{OthersPresent: false}).Tau()
+	present := TauConfirm.withCtx(TauContext{OthersPresent: true}).Tau()
+	t.Logf("独处 τ*=%.3f / 有人在场 τ*=%.3f", alone, present)
+	if present <= alone {
+		t.Errorf("★有人在场 τ*=%.3f 应 > 独处 %.3f——降险→C_FN↓→τ*↑→容抑制(风险分层从代价涌现)", present, alone)
+	}
+	if present >= 1.0 {
+		t.Errorf("有人在场 τ*=%.3f 应 <1——委员会细化2:降险但不归零(非无条件抑制)", present)
+	}
+}

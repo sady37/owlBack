@@ -620,7 +620,13 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	// P7.1 base 代价比 τ* 读出 + P7.2 context-dependent τ*（zone+risk-time → C_FN 加权 → τ* 随风险降）。
 	// shadow-first R0：只 log 不接 alarm；suspect/confirm 两工作点 vs gate-list 对账（P9 oracle 用）。
 	tauDec, tauHit := belief.DecideTau(pFallen)
-	tauCtx := belief.TauContext{Bathroom: roomType == card.RoomTypeBathroom, Night: night}
+	// ★P1④:human-presence 入决策代价。房内 ≥2 present track = 有他人可救 = 降险 → C_FN↓ → τ*↑ → 容抑制;
+	// 独处(≤1)=基线最高 fire-leaning。「一切看风险」从代价涌现(非硬规则)。
+	tauCtx := belief.TauContext{
+		Bathroom:      roomType == card.RoomTypeBathroom,
+		Night:         night,
+		OthersPresent: len(bases) >= 2,
+	}
 	tauCtxDec, tauCtxHit := belief.DecideTauCtx(pFallen, tauCtx)
 	e.logger.Debug("belief_shadow_trace",
 		zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),
@@ -675,10 +681,16 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			// (gate-list 镜像/运动对称,触发即需另一 Real partner)才否。endgame:DBN 自己的 frozenGhost/realLO 是
 			// 单 track 病根,待重做成 co-existence(找 Real partner),不再依赖 gate-list VerdictGhost。
 			coExist := len(bases) >= 2 // 有共存的 partner(否则孤立 = real)
-			if ok && coExist && fb.Verdict == VerdictGhost {
+			switch {
+			case ok && coExist && fb.Verdict == VerdictGhost:
 				e.logger.Info("belief_dbn_veto_ghost", zap.String("room_id", roomID), // co-existence ghost 抑制
 					zap.Float64("p_fallen", pFallen), zap.String("p7_3_reason", p7Reason.String()), zap.Int("track_count", len(bases)))
-			} else if ok {
+			case ok && pFallen < tauCtxHit:
+				// ★P1④ 风险分层(从代价涌现):有他人在场 → C_FN↓ → τ*↑(tauCtxHit)。p_fallen<τ* 的 marginal fall 抑制。
+				// 独处 τ* 基线低 → p_fallen≥τ*(已 confirmed)→ 不触此 = **必发**。委员会细化2「降险不归零」:τ*>0 恒。
+				e.logger.Info("belief_dbn_veto_risk", zap.String("room_id", roomID),
+					zap.Float64("p_fallen", pFallen), zap.Float64("tau_ctx", tauCtxHit), zap.Bool("others_present", tauCtx.OthersPresent))
+			case ok:
 				e.PublishAIAlarm(context.Background(), AIPayload{
 					DeviceAddr: fb.DeviceAddr, RoomID: roomID,
 					Track: observation.Track{
