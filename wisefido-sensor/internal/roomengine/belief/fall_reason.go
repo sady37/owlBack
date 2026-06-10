@@ -11,9 +11,10 @@ const (
 	ReasonLost                        // NoDetect 主导：走动中消失=lost-fall（≈gate-list lost_track）
 	ReasonSilent                      // DwellStill 主导：dwell 久静=silent/still fall（≈bathroom_still/bedroom_person_silent）
 	ReasonPoseLying                   // Pose 主导：lying/fallen posture 抬 fall（开阔地倒姿）
+	ReasonMoving                      // P3：移动中突变倒地（摔前在动，Room 层按 motion context 赋值，非 obs 主导）
 )
 
-var fallReasonLabel = [...]string{"unknown", "lost", "silent", "pose_lying"}
+var fallReasonLabel = [...]string{"unknown", "lost", "silent", "pose_lying", "moving"}
 
 func (r FallReason) String() string {
 	if int(r) < 0 || int(r) >= len(fallReasonLabel) {

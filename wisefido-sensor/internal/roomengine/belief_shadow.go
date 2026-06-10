@@ -743,14 +743,14 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				e.logger.Info("belief_dbn_veto_risk", zap.String("room_id", roomID),
 					zap.Float64("p_fallen", pFallen), zap.Float64("tau_ctx", tauCtxHit), zap.Bool("others_present", tauCtx.OthersPresent))
 			case ok:
-				// P3 moving_fall tag:pose_lying 主导 + 摔者摔前在动(lastMove 近)= 移动中突变倒地 → dbn_moving;
-				// 否则开阔地静躺=dbn_pose_lying。复用 MoveActive(lock-free)。DBN 输出全 4-tag(silent/lost/moving/pose_lying)。
-				reasonTag := "dbn_" + p7Reason.String()
-				if p7Reason == belief.ReasonPoseLying {
-					if tlf := sh.tlayer[fb.TrackID]; tlf != nil && tlf.lastMoveMs > 0 && nowMs-tlf.lastMoveMs < movingFallRecentMs {
-						reasonTag = "dbn_moving"
-					}
+				// P3 moving_fall tag:pose_lying 主导 + 摔者摔前在动(lastMove 近)= 移动中突变倒地 → ReasonMoving;
+				// 否则开阔地静躺=ReasonPoseLying。Room 层按 motion context **赋值** reason(诚实分层),tag 统一 "dbn_"+
+				// reason.String()(词表单源 fall_reason.go,消 #1.1/#1.3 inline 字面量)。DBN 输出全 4-tag。
+				var lastMove int64
+				if tlf := sh.tlayer[fb.TrackID]; tlf != nil {
+					lastMove = tlf.lastMoveMs
 				}
+				reasonTag := "dbn_" + dbnMovingReason(p7Reason, lastMove, nowMs).String()
 				e.PublishAIAlarm(context.Background(), AIPayload{
 					DeviceAddr: fb.DeviceAddr, RoomID: roomID,
 					Track: observation.Track{
@@ -816,6 +816,15 @@ func (e *Engine) recordBeliefShadowFirmwareFall(roomID string, tMs int64) {
 		sh.recoveryGenuineFall = false
 		sh.recoveryEmitted = false
 	}
+}
+
+// dbnMovingReason P3:pose_lying 主导时,摔者摔前 movingFallRecentMs 内在动 → ReasonMoving(移动中突变倒地);
+// 否则保持(开阔地静躺=ReasonPoseLying / lost / silent 不变)。Room 层按 motion context 赋值,词表单源(fall_reason.go)。
+func dbnMovingReason(base belief.FallReason, lastMoveMs, nowMs int64) belief.FallReason {
+	if base == belief.ReasonPoseLying && lastMoveMs > 0 && nowMs-lastMoveMs < movingFallRecentMs {
+		return belief.ReasonMoving
+	}
+	return base
 }
 
 // dbnMotionSymmetryGhost P1-final:DBN **自有** motion 对称 ghost(lock-free,绕开 gate-list b.Verdict)。

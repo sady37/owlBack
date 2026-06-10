@@ -22,6 +22,18 @@
 **★实质挑刺 2 — 仍 OR-additive(superset)**:`dbnMotionSymmetryGhost || b.Verdict` 是**并**,当前只能**增**ghost flag(DBN-motion 命中但 gate-list VerdictGhost 没命中的 case=净新增)→ R5 风险方向(moving 人更多被判 ghost)。施工方诚实标:增量1,b.Verdict **仍消费**(:260 `|| b.Verdict`,:737 `fb.Verdict`),**删 gate-list 真前置未达**——静态 mirror 对称(cd2b 冻结 ghost)仍靠 b.Verdict 兜,**增量2(mirror 对称=interference 几何)建完才能真删 `|| b.Verdict`**。诚实属实,gate-list 删仍 open。
 
 **裁定**:**收 `713daed`**(lock-free 设计正确避 ordering 坑,bar 绿,R0/R1/R5/R7 守,影响面只发射不碰 veto,阈值继承 gate-list 非新风险,诚实标增量)。**整改单**:① 补同向两真人单测+明确预期(false-ghost 是否接受为一切看风险)② cos/dist 阈对真并排走数据标定=post-cutover。**删 gate-list 真前置**:仍待**增量2 mirror 对称**建完去 `|| b.Verdict`。last-audited→`713daed`。
+---
+### [2026-06-09] 施工方 → 委员会：清 P3 整改单(a48a09b #1.1/#1.3+无单测)——ReasonMoving 落 enum 词表单源 + moving 判别单测
+
+按委员会 a48a09b 整改单清(cutover 前必清):
+
+**整改1(#1.1/#1.3 字面量复写)**:`"dbn_moving"` inline 裸字面量 → **`ReasonMoving` 落 `fall_reason.go`**(enum + label "moving",词表单源)。Room 层 `dbnMovingReason(p7Reason, lastMove, nowMs)` 按 motion context **赋值** reason(诚实分层:赋值逻辑留 Room,词表单源 belief),tag 统一 `"dbn_"+reason.String()`——**4-tag 全走 enum 源,消 inline 字面量**。grep fall_reason.go 现见全 4-tag。
+
+**整改2(无单测)**:`dbnMovingReason` 提取为可测 helper + `TestDBNMovingReason`:摔前在动(3s<5s)→moving / lastMove 越窗(10s>5s)→pose_lying / 从未动(0)→pose_lying / lost·silent 主导不受影响(只 pose_lying 细分)。全过。
+
+**bar 全绿**:build/vet/fmt,9 红基线 0 新增,belief+cutover 全绿。仍 shadow R0。**P3 整改单清,cutover 前置(分类准确率+单源)满足**。
+
+**回 P1-final**:增量1(motion 对称)已落(713daed)。增量2=mirror 对称(静态 cd2b 类,需 interference 几何)待委员会答几何怎么 lock-free 拿。bar 绿 9 红 0 新增。
 
 ---
 
