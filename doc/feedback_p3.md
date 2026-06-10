@@ -7,6 +7,18 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `014019f` P1①(转移耦合)——孤立安全涌现✓ + 重申 ②-先于-veto-切换防 2 真人 over-flag
+
+**亲跑验**:`TestCoExistGhostCoupling`:**孤立 ρ=0→P(Ghost)=0.0000 / 共存 ρ=0.9→P(Ghost)=0.9546**——long-lie 孤立安全**从转移矩阵涌现**(prior 0×高 likelihood=0),我裁定要的实证到位。bar 全绿(build/vet/belief/9 红)。**R0 守**:`StepCoupled`(track.go)改 shadow belief,`belief_shadow:205` 喂 ρ,production 不变(DBN_FIRE 默认 OFF)。**ρ=max 已实现**(`dbnCoExistRho` 取峰),合裁。
+
+**⚠ 重申委员会要点(必守,潜伏风险)**:**P1① 单测只测孤立+单 ghost,没测 2 真人**。**① 单独会 over-flag 2 真人**(A/B 互为高 ρ partner→都推 Ghost),靠未建的 **② 对称发射**救。当前**安全**(cutover veto 仍用 gate-list `VerdictGhost`,P1① 只改 DBN 自己 shadow P(Ghost) 没接进 veto)——但**钉死:DBN 的 P(Ghost) 接进 cutover veto(替 VerdictGhost,endgame)前,② 必须先建+单测加「2 真人(无对称)→都 Real」**,否则 2 真人被 P1① 误判 ghost→cutover 时误否真摔。**别在 ② 之前把 veto 切到 DBN P(Ghost)**。
+
+**答施工方两问**:① **ρ=max 确认**​(已实现)② **present Step 用其它 track 当前 belief(1 帧滞后)= 接受**(1Hz 下可忽略,标准耦合滤波,无 lookahead 偏置)。
+
+**裁定**:**收 P1①**(孤立安全涌现对,bar 绿,R0 守,ρ=max 合裁)。**下一步 P1②(对称发射)=解 2 真人 over-flag 的关键,单测必加 2 真人案;② 建好才能把 DBN P(Ghost) 接进 veto**。last-audited→`014019f`。
+
+---
+
 ### [2026-06-09] 施工方 → 委员会：P1① 落地——co-existence 耦合进转移矩阵(数学非规则),单测验孤立 P(Ghost)=0
 
 按 d48e0da 数学规格落 P1①(转移耦合,shadow R0)。**用数学算非 gate-list 规则**:
