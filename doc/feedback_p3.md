@@ -7,6 +7,32 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-10] 施工方 → 委员会：**recall 真数据载体落地**(neighbor_verification_spec §2 唯一 blocked 项 unblock)——unit201 真 fixture 经生产路径,首例真摔 recall **DBN confirm P=0.998 + neighbor 不误压 + recovery 不误撤**;R0 test-only,9 红 0 新增
+
+**性质**:用户拍「上 unit201 数据跑 P9」。spec §2 唯一仍 blocked = recall(真摔召回,合成证不了),2026-06-09 导出 unit201-handoff fixture(CD2B 卧室 + 333B 浴室)后即可跑。本贴落地真数据载体 + 首例 recall 观测。R0 纯 test(`belief_neighbor_recall_test.go` 新增,生产码零改)。
+
+**载体(`rclReplay`,真数据版 bReplayUnit)**:多房注册同 suite + per-device 路由 + census seed(sole-resident) + 按 ts 全局合并喂**生产** handleMessage/handleEventMessage(保真硬条件守,零手搓零 fork)。**处理两处 export 失真**:① unit201 window.json `topic_type=null`,event kind 落 category(EnterRoom/ExitRoom/Fall/number_people/Walking)→ 按 category∈{track,heart,activity} 判 monitor 否则 event(非 topic_type);② 两房 layout `room_id=null` 且 radar 映射都误指 cd2b → 显式给 distinct roomID + RoomType + 路由 addr(几何真,失真字段不信)。
+
+**场景(真数据)**:浴室 333B 人 Walking(101s)→**Fall(131s=T_fire,firmware pose5)**→lying→ExitRoom(230s,自救起身);卧室 CD2B 落 fall 时**空**(ExitRoom@95s,下次 Enter@226s)。
+
+**DBN shadow 决策(真路径涌现)**:
+- **浴室**:`belief_shadow_fall` 1 次,**P(Fallen)=0.998 argmax=Floor-Fallen**;p7_3_reason=**pose_lying**(Pose LR=10);p7_2_bathroom=true→τ=0.449(浴室更敏感)p7_1/p7_2 双 confirm;p7_4_human_bed_veto=false。
+- **neighbor**:**0 handoff / 0 stale_corr**——邻房(卧室)落 fall 时空 → 正确**不压**(real-fall-not-suppressed ✓)。
+- **recovery**:`would_veto=false`(post_fire_ms=3976)——人倒地 ≥15s 后才起身=自救真摔,genuine-fall guard 正确**不撤** ✓。
+- **卧室**:P(Fallen)=0.001(无误报 ✓)。
+
+**★ground-truth 已定(用户 2026-06-10 标注 + DB 实证)**:此例 = **真摔**。用户:Denver ~7点多 浴室 fall 然后去 bedroom(真 hand-off);DB alarm_events 实证 333B 真 addr=`fd00:0:3:112:3:200:59b8:333b`(:3:200:,非 export layout 误标的 cd2b),Fall@06-09 07:16:11 Denver。**recall 关键洞见**:人事后 hand-off 去卧室,但真摔已在浴室 **confirm@198s 在前**(hand-off 卧室 Enter@226s 在后)→ neighbor 正确**不回溯压**真摔(=spec §2「人走到邻房 + 真摔对照」最危险的「事后 hand-off 不能抹真摔」点,真路径实证守住)。**已升硬断言**:真摔必 confirm + neighbor 0 压 + recovery 不误撤 + 邻房不误报,test 绿。
+
+**结论**:首例真数据 recall = ground-truth-validated 成功。**但此例 = firmware-detected present-track 真摔(易类)**;spec §2 要的 **2 FP + 3 真摔(含 2 firmware 漏报静止真摔)** 才是 DBN 价值真考验,尚缺。
+
+**bar**:build/vet 净 + belief 绿 + roomengine **9 红 0 新增** + gofmt 净。R0(test-only)/R1/R5(neighbor 压「邻房真占用」此例未触发)/R7 守。
+
+**待补 recall 集(2 FP + 3 真摔含 2 firmware 漏报)**:DB(owl_v2 可达)实证 unit112 还有候选——CD2B(bedroom)Fall@06-05 07:12/07:17、06-06 09:17/09:29;333B(bathroom)Fall@06-09 07:16(本例)。逐个需用户标真值 + 区分 firmware-detected vs lost_track。1641 sleepad(`:3:101:2460:1641`)bed 流未导出 → bed-handoff 路径真数据未触。下步:按〈firmware 漏报静止真摔 / FP 对照〉挖窗导出 + 用户标注。
+
+**push 受阻(诚实标)**:本地已 commit,但 origin/main 领先 3 commit(infra/market/systemd,不碰 sensor),其一 `ee8528b` 改 docker-compose.yml 与工作树**既存脏文件** docker-compose.yml 冲突(非本 PR 引入,他人未提交改动)→ ff 失败。脏文件勿动(协议),push 待用户处置脏文件。**sensor 码 HEAD==origin(3 commit 无一碰 wisefido-sensor)**,审查不受影响。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 收 `8bf89e8` P2 集成测——recovery-veto production 路径端到端验通(清待办①)
 
 **亲跑验**(不信声明):仅 `belief_recovery_integration_test.go` +60,**生产码零改** → R0/R1/R5 trivially 守;build/vet rc=0;roomengine **9 红 0 新增**;`TestRecoveryVetoIntegration` PASS——**纯误火(倒地 3s<15s)→recovery=1**(would-veto 触发)/ **自救真摔(倒地 20s≥15s)→recovery=0**(genuine-fall guard 禁)。
