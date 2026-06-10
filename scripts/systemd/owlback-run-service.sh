@@ -55,6 +55,12 @@ export CARD_POLLING_INTERVAL="${CARD_POLLING_INTERVAL:-86400}"
 export CARD_AGGREGATION_ENABLED="${CARD_AGGREGATION_ENABLED:-true}"
 export CARD_AGGREGATION_INTERVAL="${CARD_AGGREGATION_INTERVAL:-2}"
 
+# wisefido-sensor DBN cutover 开关（可逆，运维侧 .env 翻；默认 0=shadow，DBN 只 log 不 fire）。
+#   DBN_FIRE=1            → DBN 真发推断 fall（union firmware∨DBN，firmware 地板保留）；R0 在此结束。
+#   DBN_VETO_RECOVERY=1  → 启 recovery-veto 抑制纯误火（漏报-safe by construction；默认 0）。
+export DBN_FIRE="${DBN_FIRE:-0}"
+export DBN_VETO_RECOVERY="${DBN_VETO_RECOVERY:-0}"
+
 # go run 在子进程里跑编译产物，systemd 停服时易漏杀监听进程；构建到 .bin 后 exec 单进程。
 owlback_go_exec() {
   local dir="$1"
