@@ -234,6 +234,8 @@ Any deviation from that baseline can then be identified as an **early signal**.
 
 ## Six Longitudinal Trend Capabilities
 
+*These six measurement dimensions feed five Tier-S signature signals — recovery curve, frailty velocity, stability fingerprint, multi-signal resonance, and solo-living vitality — the derived indicators that form the analytic moat.*
+
 ### 1. Mobility Trend
 
 - Morning gait speed (the most sensitive frailty indicator)
