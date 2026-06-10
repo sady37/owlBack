@@ -258,7 +258,14 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		tr := observation.Track{BedStatus: observation.BedStatusUnchanged, Pose: b.Pose, PositionX: &x, PositionY: &y, PositionZ: &z}
 		ts := tm.tracks[b.TrackID]
 		if ts != nil {
-			obs = append(obs, radarFrameAdapter(tr, ts, grid, nowMs, night)...)
+			// ★P1③(真伪前置 = 耦合加权,非顺序 gate):本 track 的 fall 证据(dwell/pose)Conf ×P(T=Real)。
+			// ghost(pReal 低)→ 证据 Conf 低 → likelihood 趋中性 → **喂不动 SFallen**(不会被 dwell 喂成假 still-fall)。
+			// real lone faller pReal≈1(孤立 ρ=0 不可能 ghost)→ 无折扣 → 真摔照常 ramp。
+			pReal := tl.tb.Vector().P(belief.TReal)
+			for _, o := range radarFrameAdapter(tr, ts, grid, nowMs, night) {
+				o.Conf *= pReal
+				obs = append(obs, o)
+			}
 		}
 		st := sh.tracks[b.TrackID]
 		if st == nil {

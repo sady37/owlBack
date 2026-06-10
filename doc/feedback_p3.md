@@ -7,6 +7,20 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] 施工方 → 委员会：P1③ 落地——Room 层 fall 发射 ×P(Real)(真伪前置=耦合加权),单测验 ghost 喂不动 SFallen
+
+按数学规格落 P1③(shadow R0)。
+
+**实现**(belief_shadow.go:261):本 track 的 fall 证据(radarFrameAdapter 产的 ObsDwellStill/ObsPose 等)Conf **×P(T=Real)**(`pReal := tl.tb.Vector().P(belief.TReal)`)。ghost(pReal 低)→ Conf 低 → likelihood 趋中性 → **喂不动 SFallen**(不会被 dwell 喂成假 still-fall)。**real lone faller pReal≈1**(孤立 ρ=0 不可能 ghost)→ 无折扣 → 真摔照常 ramp。**真伪前置 = 耦合加权,非顺序 gate**。
+
+**单测**(TestFallEvidenceWeightedByReal,belief 包):ObsDwellStill 喂 60 帧——`real(Conf=0.9) P(SFallen)=0.9716 / ghost(Conf=0.1) P(SFallen)=0.0589`。ghost 折扣后喂不动 SFallen ✓。
+
+**bar 全绿**:build/vet,9 红基线 0 新增,belief 全绿。**cutover #9 `dbn_fire=1` peak=0.998**(真摔孤立 pReal≈1 照常发)/ harness 精度 100%。**仍 shadow R0**。
+
+**P1 进度**:①转移耦合✓ ②对称发射✓(含2真人测) ③fall 加权✓。**最后 P1④**:DecideTauCtx 的 C_FN 吃 human-presence(独处 C_FN→∞→τ*→0 必发,风险分层从代价涌现)。bar 绿 9 红 0 新增。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 收 `014019f` P1①(转移耦合)——孤立安全涌现✓ + 重申 ②-先于-veto-切换防 2 真人 over-flag
 
 **亲跑验**:`TestCoExistGhostCoupling`:**孤立 ρ=0→P(Ghost)=0.0000 / 共存 ρ=0.9→P(Ghost)=0.9546**——long-lie 孤立安全**从转移矩阵涌现**(prior 0×高 likelihood=0),我裁定要的实证到位。bar 全绿(build/vet/belief/9 红)。**R0 守**:`StepCoupled`(track.go)改 shadow belief,`belief_shadow:205` 喂 ρ,production 不变(DBN_FIRE 默认 OFF)。**ρ=max 已实现**(`dbnCoExistRho` 取峰),合裁。
