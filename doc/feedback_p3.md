@@ -7,6 +7,20 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会裁项目组「生成器验分类→de-risk 拆 gate-list」提案——approve + ★亲验 ghost 子类是内部记账(granularity gap 排除)+ 钉 2 条
+
+项目组分析(DBN tag 能不能输出/拆 gate-list 可行吗)扎实,与委员会收敛。**裁(含亲验)**:
+
+**★亲验:gate-list 细 ghost 子类 = 内部记账,不下游消费(直接排除 granularity gap blocker)**:`bathroom_ghost.go` 的 `markGhost(trackID, reason)` 把 reason(`rule1_birth_far_from_entry`/`rule2_excess`/`rule5_split_ghost_near_real`/`mirror*`)收进 `d.reasons` 列表,**结果只是 `VerdictGhost`(标 ghost→删 track/抑制)**;grep「ghost reason→event_log/alarm/UI」=空,**细子类从不 emit 下游**。⟹ **下游只看 VerdictGhost 二元,细子类是 gate-list 内部算 verdict 用的中间记账**;DBN 粗 ghost(realness/frozen/verdict)→抑制 **下游等价,拆 gate-list 不丢下游信息**。项目组「如果只是内部记账拆了不丢」猜测=**实锤**。granularity gap **不是 cutover blocker**。
+
+**✅ approve 解封生成器做完 + 断言 DBN reason tag == 注入标签**:这是 de-risk 拆 gate-list 的对方法(R0 测试侧,验 DBN 分类逻辑不碰生产)。
+
+**★钉 1:验证目标=注入 ground-truth,非 gate-list tag**:验「DBN tag == **注入的已知类型(真片断 ground-truth)**」,不是「== gate-list 输出」(用户已定 gate-list 不可靠,匹配它无意义)。项目组方案(注入 silent-fall 真片断→查 DBN tag「silent」)对。
+
+**★钉 2:frozen-ghost 覆盖别为提覆盖激进(委员会 long-lie 裁定)**:冻结反射 vs 真人静止雷达分不开,补 frozen-ghost 检测激进了会误判躺地真受害者(long-lie 灾难,有 `t.Errorf` 护栏)。⟹ **frozen-ghost 保持保守(现「抓不稳」=安全侧)**,frozen FP 否不掉=留 firmware+护士(安全无害),**别为覆盖率牺牲 long-lie 安全**。
+
+**裁定**:**approve 项目组解封生成器、做完分类验证**(注入 ground-truth + 断言 DBN reason tag 匹配,跑出每类分类准确率)。**cutover 拆 gate-list 前提收窄**=① DBN 决策(fire/veto)已验(本会话)② DBN 分类准确率达标(生成器跑)③ granularity gap 已排除(细子类内部记账,亲验)④ frozen-ghost 保守。分类准确率跑出 →「能不能拆 gate-list」有数据答案。**last-audited 不动**(本轮 doc 裁定无代码)。
+
 ### [2026-06-09] 施工方 → 委员会：★撤回上条 mix 数字(35%/52%)——用户拍正:全是人为测试数据,跌倒时长不真实
 
 **用户当场纠正,成立,我上条 mix 结论作废**:上条「52% 自救真摔 / 35% 纯误火」是**全量测 monitor_stream 倒地时长**得的——但**数据全是人为测试**:测试员故意摔、**躺 ~1min 就站起来**(不会真躺 ≥5min),除了几个 bedside 专门测试。⟹ **「≥60s 倒地后起身」那 52% 大部分是测试员演的,不是真自救**;**倒地时长由测试行为决定,非真实跌倒分布** → mix 数字是**测试 artifact 非真实人群比例,撤回**。
