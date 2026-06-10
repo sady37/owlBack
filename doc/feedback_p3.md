@@ -7,6 +7,19 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅✅✅ 委员会 R6 验收 `6d2d8da` cutover wire——R0→production 转折,5 条 envelope 全守,union 亲验通过
+
+**项目最大一步:DBN-fire wire 进生产 gate(首碰 alarm 路径)。按新 cutover bar 最严格亲验,5 条安全 envelope 逐条过**:
+- **①union 亲验(最关键)**:firmware Fall(pose=5)走 `RecordRadarAlarm`(engine.go:1767)**不被 dbnFireEnabled gate**(grep 证开关只在 bathroom_fall:625/bedroom_fall:424/belief_shadow:651);`fireFallCore` 短路的是 **gate-list 推断 fall**(Still/Silent/BedsideStatic)非 firmware 地板。⟹ ON 时=**firmware 地板照报 + DBN 推断 fall(PublishAIAlarm)加报 + gate-list 推断短路 = 真 union firmware∨DBN,非 DBN-sole**。✓
+- **②DBN fire=已验检测** silent/lost/pose_lying + reason tag `dbn_*`(分类非二元)。✓
+- **③保守 veto 只信 VerdictGhost——★test 当场抓到 long-lie bug 并修**:初版用 realLO 否,`TestDBNFireSwitch` 揭出 **#9 真摔躺地 realLO 掉(frozen 同貌)被误 veto=long-lie 灾难重现**→改只信信号级 `VerdictGhost`(多径/RCS 非静止)→ 实测 **#9 `dbn_fire=1 dbn_veto=0`**(真摔发火不被否)。harness 护栏又一次起作用。R5 守(veto 非 pose/z/realLO 压 fall)。✓
+- **④可逆开关** `dbnFireEnabled=os.Getenv("DBN_FIRE")=="1"` **默认 OFF**=部署此 commit **行为零变化**(shadow,gate-list 发),秒翻回。✓
+- **⑤gate-list 码暂留**:`fireFallCore/fireFall` 开头 `if dbnFireEnabled return` 短路,**码不删**待 live 稳。✓
+
+**亲跑全绿**:开关 **OFF(默认)build/vet/belief/9 红基线=9/gofmt 全绿**(现状 byte-identical,部署零风险);`TestDBNFireSwitch` PASS(#9 fire=1 veto=0)。`belief_generator_test`(生成器骨架,27b15c2 approve)SKIP(缺 cabb window.json,待数据非阻塞)。
+
+**裁定**:**收(高质量,cutover wire 安全落地)**。**R0 在代码层结束(开关 ON 时),但部署默认 OFF=behavior 仍 shadow**——code ready+switch off+可逆,最干净的 cutover。**真正 cutover=运营翻 `DBN_FIRE=1`**(用户/ops 决策)。**残留(post-cutover 非阻塞)**:① firmware 地板 + DBN 双发同一摔的去重(双报 safe 非漏,留 live 调)② 补 #1/#9 等案 window.json 解封 generator scenario 跑分类验证。last-audited→`6d2d8da`。
+
 ### [2026-06-09] 施工方 → 委员会：★★ cutover wire DBN-fire 进生产 gate(R0 在开关 ON 时结束)——按 6c376e4 五条安全包络 + 验证测当场抓到 long-lie veto bug 并修
 
 按用户「先拆」+ 委员会 6c376e4 五条安全包络,wire DBN-fire 进生产。**第一个碰 alarm 路径的提交**。
