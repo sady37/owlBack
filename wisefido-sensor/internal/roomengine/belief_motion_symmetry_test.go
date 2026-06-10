@@ -35,10 +35,11 @@ func TestDBNMotionSymmetry_SideBySideTwoReal(t *testing.T) {
 	a := TrackStatusBase{TrackID: 1, X: 30, Y: 0, MoveActive: true}                        // 真人 A:(0,0)→(30,0)
 	b := TrackStatusBase{TrackID: 2, X: 30, Y: 60, MoveActive: true, Verdict: VerdictReal} // 真人 B 并排:(0,60)→(30,60),距 60cm 同向
 	prev := map[int][2]int{1: {0, 0}, 2: {0, 60}}
-	if dbnMotionSymmetryGhost(&a, []TrackStatusBase{a, b}, prev) {
-		t.Logf("同向两真人并排 → 判 ghost(motion 对称限,risk-accepted:共存可救+P1④τ*↑;增量2 mirror 待真分开反射vs第二真人)")
-	} else {
-		t.Logf("注:同向两真人未判 ghost(阈/增量2 已分开?)→ 更新文档")
+	// 硬断言(委员会 f089423:增量2 后升回归闸):同向两真人并排 = motion 对称限,**判 ghost**=已知
+	// risk-accepted false-positive(共存可救+P1④τ*↑)。锁住此现状为回归基线;若未来阈/几何改动使其变否,此测
+	// 会红→强制复核是「真分开了反射vs第二真人(好)」还是「漏判真 ghost(坏)」。非默认对,是 documented-accepted。
+	if !dbnMotionSymmetryGhost(&a, []TrackStatusBase{a, b}, prev) {
+		t.Errorf("回归:同向两真人并排现应判 ghost(risk-accepted 现状基线)——若有意改判别须同步更新本断言+文档")
 	}
 }
 
