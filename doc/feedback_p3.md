@@ -7,6 +7,24 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `713daed` P1-final 增量1 DBN 自有 motion 对称 ghost(lock-free 绕开 b.Verdict 第一步)——挑实质:同向两真人 false-ghost + 仍 OR-additive
+
+**亲跑验**(不信声明):build/vet rc=0；belief ok；roomengine **精确 9 红 0 新增**；motion 单测+cutover+harness 全 PASS。`TestDBNMotionSymmetry`:紧贴同向→ghost / 反向两真人→否 / 孤立→否。
+
+**实质改动**:新 `dbnMotionSymmetryGhost(self, bases, prevPos)`——self `MoveActive`+位移≥10cm,与某共存 `VerdictReal+MoveActive` track 紧贴(`distInt<100cm`)+ 同向(`cos>0.866`)→ motion 对称多径反射→ghost。**lock-free**:循环前 `prevPos` 快照各 track 上帧位置(避 `tl.lastX` 循环中被更新的 ordering 坑),用 `bases` 安全快照不碰 `tm` 锁。发射 :260 改 `dbnMotionSymmetryGhost(...) || b.Verdict==VerdictGhost → 0.9`。
+
+**★影响面精确核验(非信声明)**:DBN motion ghost **只喂 Ghostness 发射(:260)→ P(Ghost)→ P1③ pReal 加权**;**cutover ghost-veto(:737)仍 `fb.Verdict==VerdictGhost`=纯 gate-list 不受本提交影响**。即 R5 面 = P1③ fall 证据折扣,非 cutover veto。
+
+**铁律**:R0(发射换源只改 shadow belief,DBN_FIRE OFF)✓ / R1(未碰 alarm)✓ / R5(下析)/ R7(`coexistDistMaxCm=100/minDispSqCm=100/cosThreshold=0.866` 本地 const 带注释,`distInt/VerdictReal/MoveActive` 既有)✓。
+
+**★实质挑刺 1 — 同向两真人 false-ghost(R5 方向,test 正例即风险场景)**:单测正例 self(0,0)→(30,0)、partner(50,0)→(80,0) 同向距 50cm → 判 ghost,**但这与「两真人并排同向走(<100cm,couple/resident+护工)」motion 上不可区分**——motion 对称单独**分不开「self 是反射」vs「self 是第二个真人」**。test 只覆盖**反向**两真人(→否),**未覆盖同向**两真人(=false-positive 真风险)。后果:真人 A 走动被判 motion-ghost→P(Ghost)↑→pReal↓→**若 A 摔则 fall 证据被 P1③ 折扣**。**安全边界(为何本轮不阻塞)**:① 阈值**复刻 `tm.checkMotionSymmetry`**(gate-list 生产既有逻辑,判别特性继承非新引入)② **仅喂发射不喂 veto**(:737 仍 gate-list)③ **moving-state 要求**:摔者倒地→`MoveActive` 转 false→motion-ghost 自动清(摔的瞬间 flag 消,虽累积 P(Ghost) 有衰减滞后)④ **co-existence=有 partner 在场=「一切看风险」可救**(误判共存真人的摔=低代价,有证人)⑤ shadow R0。**整改单**:补「同向两真人并排走」单测明确**预期判决**——若仍判 ghost,须**显式文档化**为「一切看风险下接受(共存可救)」非默认对;阈值(cos/dist)对真「并排走」数据的判别力=post-cutover 标定项。
+
+**★实质挑刺 2 — 仍 OR-additive(superset)**:`dbnMotionSymmetryGhost || b.Verdict` 是**并**,当前只能**增**ghost flag(DBN-motion 命中但 gate-list VerdictGhost 没命中的 case=净新增)→ R5 风险方向(moving 人更多被判 ghost)。施工方诚实标:增量1,b.Verdict **仍消费**(:260 `|| b.Verdict`,:737 `fb.Verdict`),**删 gate-list 真前置未达**——静态 mirror 对称(cd2b 冻结 ghost)仍靠 b.Verdict 兜,**增量2(mirror 对称=interference 几何)建完才能真删 `|| b.Verdict`**。诚实属实,gate-list 删仍 open。
+
+**裁定**:**收 `713daed`**(lock-free 设计正确避 ordering 坑,bar 绿,R0/R1/R5/R7 守,影响面只发射不碰 veto,阈值继承 gate-list 非新风险,诚实标增量)。**整改单**:① 补同向两真人单测+明确预期(false-ghost 是否接受为一切看风险)② cos/dist 阈对真并排走数据标定=post-cutover。**删 gate-list 真前置**:仍待**增量2 mirror 对称**建完去 `|| b.Verdict`。last-audited→`713daed`。
+
+---
+
 ### [2026-06-09] ⚠️✅ 委员会 R6 收 `344d31b` P3 moving_fall tag(功能收)——但开 #1.1/#1.3 整改单:`"dbn_moving"` inline 字面量 + 无单测
 
 **亲跑验**(不信声明):build/vet rc=0；belief ok；roomengine **精确 9 红 0 新增**;cutover #9 `dbn_fire=1` 不变(commit 称,且 tag 不改 fire)。
