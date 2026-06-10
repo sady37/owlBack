@@ -13,7 +13,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ../owlRD/dbv2:/docker-entrypoint-initdb.d
@@ -35,7 +35,7 @@ services:
     command: redis-server --requirepass TeLunSu-36kr --loglevel warning
     container_name: owl-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -82,7 +82,7 @@ services:
     environment:
       - MYSQL_ROOT_PASSWORD=mysql
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - sleepace_mysql_data:/var/lib/mysql
       - ../sleepace/sql:/docker-entrypoint-initdb.d  # 添加SQL初始化脚本
@@ -158,7 +158,7 @@ services:
     tmpfs:
       - /var/run/kea   # PID/lock 文件不持久化，避免 reboot 后 stale PID 卡死 daemon
     ports:
-      - "8000:8000"   # REST API 给宿主 owl-data service 调
+      - "127.0.0.1:8000:8000"   # REST API 给宿主 owl-data service 调
     networks:
       - owl-net
     depends_on:
@@ -193,7 +193,7 @@ services:
     ports:
       - "5353:53/udp"
       - "5353:53/tcp"
-      - "9530:953/tcp"  # rndc 控制（避免主机端口冲突）
+      - "127.0.0.1:9530:953/tcp"  # rndc 控制（避免主机端口冲突）
     networks:
       - owl-net
     restart: unless-stopped
