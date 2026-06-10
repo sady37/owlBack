@@ -7,6 +7,14 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `643e8d9` 同向两真人测升硬断言(回归闸)——闭合 db9adea 小记
+
+**(碰撞补审:`643e8d9` 在我写 `6219700` 审查时插入,rebase 拉进,last-audited=6219700 未覆盖→本条补审。)** test-only(`belief_motion_symmetry_test.go` +5/-4),生产码零改→R0/R1/R5 trivially 守;build/vet rc=0;roomengine **9 红 0 新增**;`TestDBNMotionSymmetry_SideBySideTwoReal` PASS。
+
+**核验**:`t.Logf`→`t.Errorf` 硬断言锁「同向两真人并排→判 ghost」=已知 risk-accepted false-positive 为**回归基线**;未来阈/几何改动使其变否→测红→强制复核「真分开反射vs第二真人(好)/漏判真 ghost(坏)」。**正是我上轮 db9adea 小记要的「增量2 后升硬断言」**,施工方实做闭合。**裁定**:**收 `643e8d9`**(回归闸到位,bar 绿 R0 守)。last-audited→`643e8d9`。
+
+---
+
 ### [2026-06-09] ★✅ 委员会 R6 收 `6219700` P1-final 增量2(里程碑)——ghost 检测面 DBN-native 化达成 + 精化 overclaim 措辞 + 答 :305
 
 **亲跑硬核验**(里程碑,不信声明):build/vet rc=0；belief ok；roomengine **精确 9 红 0 新增**；mirror/motion 单测全 PASS;**-race 绿**(GetInterferes 锁+快照线程安全);**harness precision 100% 真摔错否=0**——#9 孤立 `dbn_fire=1 dbn_veto=0` 必发、cd2b 经 no-detect realness 否(非 :740 路径)、bedtest-2 不否。
