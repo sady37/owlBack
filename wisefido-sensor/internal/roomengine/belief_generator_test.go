@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -31,9 +33,12 @@ type fragment struct {
 	frames []synthFrame
 }
 
-// donorV2Frames 读真实 v2 案的 track 帧（按 ts 升序,展开 data_value）。
+// donorV2Frames 读真实 v2 案的 track 帧（按 ts 升序,展开 data_value）。缺 window.json → 返 nil(不 skip 整测)。
 func donorV2Frames(t *testing.T, dir string) []synthFrame {
 	t.Helper()
+	if _, err := os.Stat(filepath.Join(casesDir, dir, "window.json")); err != nil {
+		return nil // 该 donor 非 v2(无 window.json)→ 跳过,不 skip 整测
+	}
 	var out []synthFrame
 	for _, r := range legoLoadWindow(t, dir) {
 		if r.Category != "track" {
@@ -145,16 +150,24 @@ func TestDBNGeneratorScenarios(t *testing.T) {
 	lib := buildLibrary(t)
 	for k, f := range lib {
 		t.Logf("乐高块 %s: %d 真实帧", k, len(f.frames))
-		if len(f.frames) == 0 {
-			t.Fatalf("乐高块 %s 空(donor 案缺该 pose run)→ 生成器无素材", k)
+	}
+	for _, need := range []string{"walk", "fallen"} { // fall 场景必需块;ghost 可缺(donor 是 v1 无 window.json)
+		if len(lib[need].frames) == 0 {
+			t.Fatalf("乐高块 %s 空(donor 缺该 pose run)→ 生成器无素材", need)
 		}
 	}
 	scenarios := []string{"moving_fall", "silent_fall", "lost_fall", "ghost", "walk_only"}
+	// P4 分类 oracle:注入类型 → 期望 DBN p7_3_reason(belief 层;moving 是 Room 层对 pose_lying 的细分,belief 给 pose_lying)。
+	expectReason := map[string]string{"silent_fall": "silent", "lost_fall": "lost", "moving_fall": "pose_lying"}
 	const perScenario = 10
 	cfg, radarAddr, roomID := bLayout(t, "unit201-handoff-0609-bathroom-333B") // bathroom 上下文
 	for _, sc := range scenarios {
+		if sc == "ghost" && len(lib["ghost"].frames) == 0 {
+			t.Logf("[ghost] 跳过(donor 是 v1 无 window.json,ghost 块缺;分类验证不需 ghost)")
+			continue
+		}
 		rng := rand.New(rand.NewSource(int64(len(sc)))) // 确定性种子(可复现),场景间变化
-		fired, correctDetect := 0, 0
+		fired, correctDetect, classCorrect, classTotal := 0, 0, 0, 0
 		for n := 0; n < perScenario; n++ {
 			frames, expectFire, _ := composeScenario(sc, lib, rng)
 			if len(frames) == 0 {
@@ -174,15 +187,27 @@ func TestDBNGeneratorScenarios(t *testing.T) {
 					"timestamp": strconv.FormatInt(baseTs+int64(i)*1000, 10), "dataValue": dv,
 				}})
 			}
-			didFire := logs.FilterMessage("belief_shadow_fall").Len() > 0
+			fallLogs := logs.FilterMessage("belief_shadow_fall")
+			didFire := fallLogs.Len() > 0
 			if didFire {
 				fired++
 			}
 			if didFire == expectFire {
 				correctDetect++
 			}
+			// P4 分类准确率(委员会 d48e0da):fire 案的 p7_3_reason == 注入类型?(只对 fall 场景)
+			if want, ok := expectReason[sc]; ok && didFire {
+				classTotal++
+				if r, _ := fallLogs.All()[0].ContextMap()["p7_3_reason"].(string); r == want {
+					classCorrect++
+				}
+			}
 		}
-		t.Logf("[%s] fire %d/%d  检出正确(matches oracle) %d/%d", sc, fired, perScenario, correctDetect, perScenario)
+		if _, isFall := expectReason[sc]; isFall {
+			t.Logf("[%s] fire %d/%d 检出对 %d/%d  ★分类(reason==注入) %d/%d", sc, fired, perScenario, correctDetect, perScenario, classCorrect, classTotal)
+		} else {
+			t.Logf("[%s] fire %d/%d 检出对 %d/%d", sc, fired, perScenario, correctDetect, perScenario)
+		}
 	}
 }
 

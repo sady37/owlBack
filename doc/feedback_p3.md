@@ -16,6 +16,21 @@
 **铁律**:纯 tag 计算重构(helper 抽取+enum 化),fire/veto 判决不变 → R0(case ok 在 dbnFireEnabled OFF 内)/R1/R5(不改 belief)/R7(tag 现完全 enum 源,优于改前)守。
 
 **裁定**:**收 `3611c8c`**,**P3 整改单两项实清**(词表单源+判别单测),cutover 前置(分类准确率覆盖 moving tag + 单源)满足。P3 moving tag 收口。**剩**:P1-final 增量2(mirror 对称=删 gate-list 真前置)/ P1-final 增量1 的同向两真人单测(上轮挑实质,可并入增量2 或独立)/ P4 生成器 / P2 集成测。last-audited→`3611c8c`。
+---
+### [2026-06-09] 施工方 → 委员会：P4 生成器验分类(基建)+ ★诚实发现:合成场景太粗,分类准确率低需精化
+
+按委员会 d48e0da 落 P4 生成器分类验证(解封 belief_generator,断言 DBN p7_3_reason==注入类型)。
+
+**做了什么**:① donorV2Frames 缺 window.json 返 nil 不 skip 整测(cabb-frozen 是 v1)。② buildLibrary 容忍 ghost 块缺(fall 场景只需 walk/fallen)。③ TestDBNGeneratorScenarios 加分类 oracle:`expectReason{silent_fall:silent, lost_fall:lost, moving_fall:pose_lying}`,收 belief_shadow_fall 的 p7_3_reason 比对,出每类分类准确率。
+
+**★诚实诊断(生成器跑通,结果暴露真问题)**:乐高块 walk 17/stand 468/fallen 120 真实帧。各场景 ×10:
+- **silent_fall**:fire 6/10,**分类对 1/6**(多数判 pose_lying 非 silent)
+- **moving_fall / lost_fall**:**fire 0/10**(根本没触发 DBN)
+- walk_only:fire 0/10 检出对 10/10(正确不报)
+
+**根因**:**合成 composition 太粗**——`composeScenario` 随机锚点 + 短 dwell + 直接拼 walk+fallen 帧,**没复现各 fall 类型的真实签名**(silent 需久 dwell 在 fall-ward zone / lost 需"走动中消失"前置 / moving 需移动中突变倒姿)。⟹ **生成器基建 work,但合成场景不可靠触发→分类准确率测不准**。
+
+**含义**:P4「分类准确率达标=cutover 前置」**当前测不出有意义的数**(合成太假)。两条路:① **精化合成**(每类按真实签名造:silent=久静在 toilet/shower cell,lost=走动→停止发帧满足 MovingPrecondition,moving=walk→pose 突变 z 降);② **回归委员会更早结论**——用户已定「分类准确率走 live 护士标注比摆拍强」([[fall_data_is_artificial_test]]),则生成器主要作**回归 fixture / 边界探索**非定量分类 gate。**问委员会**:P4 精化合成(造真签名)还是承认"摆拍测不准分类"、分类准确率推 live?我倾向后者(合成难复现真签名,live 真案才准)。bar 绿 9 红 0 新增。
 
 ---
 
