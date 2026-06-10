@@ -24,6 +24,22 @@ func TestDBNMotionSymmetry(t *testing.T) {
 	}
 }
 
+// TestDBNMotionSymmetry_SideBySideTwoReal — 整改单(委员会 713daed):**同向两真人并排走** = motion 对称单独
+// **分不开「self 是反射」vs「self 是第二个真人」**(继承 tm.checkMotionSymmetry 同限)。**显式文档化**:此模式
+// **判 ghost**(false-positive),**「一切看风险」下接受**——共存(≥2 track)=有人在场=可救=误判走动真人为 ghost
+// 的摔=低代价(有证人),且 P1④ OthersPresent→τ*↑亦已为共存场景升抑制阈。**非默认对,是 risk-accepted**;
+// cos/dist 阈对真并排走数据判别力=post-cutover 标定;增量2 mirror 对称(几何位置)才能真分开反射 vs 第二真人。
+func TestDBNMotionSymmetry_SideBySideTwoReal(t *testing.T) {
+	a := TrackStatusBase{TrackID: 1, X: 30, Y: 0, MoveActive: true}                        // 真人 A:(0,0)→(30,0)
+	b := TrackStatusBase{TrackID: 2, X: 30, Y: 60, MoveActive: true, Verdict: VerdictReal} // 真人 B 并排:(0,60)→(30,60),距 60cm 同向
+	prev := map[int][2]int{1: {0, 0}, 2: {0, 60}}
+	if dbnMotionSymmetryGhost(&a, []TrackStatusBase{a, b}, prev) {
+		t.Logf("同向两真人并排 → 判 ghost(motion 对称限,risk-accepted:共存可救+P1④τ*↑;增量2 mirror 待真分开反射vs第二真人)")
+	} else {
+		t.Logf("注:同向两真人未判 ghost(阈/增量2 已分开?)→ 更新文档")
+	}
+}
+
 // TestDBNMovingReason — P3 整改单#2(委员会 a48a09b):moving/pose_lying 判别单测(词表单源后)。
 func TestDBNMovingReason(t *testing.T) {
 	const now = int64(100_000)
