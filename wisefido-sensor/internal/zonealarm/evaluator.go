@@ -157,7 +157,6 @@ func (e *Evaluator) evalRoomLocked(ctx context.Context, r *Rule, cidr string, rs
 		Rule: r,
 		Event: FireEvent{
 			Key:      key,
-			Level:    r.Level,
 			AnchorTs: nowMs - int64(elapsedSec)*1000, // synthetic anchor for downstream
 			NowMs:    nowMs,
 			Snapshot: rs,
@@ -209,7 +208,6 @@ func (e *Evaluator) evalBedLocked(ctx context.Context, r *Rule, cidr string, bs 
 		Rule: r,
 		Event: FireEvent{
 			Key:      key,
-			Level:    r.Level,
 			AnchorTs: anchorTs,
 			NowMs:    nowMs,
 			Snapshot: bs,

@@ -62,7 +62,7 @@ type BedOccupancyChecker interface {
 // DeviceFailureEmitter (C device_failure publish): AlarmBackChannel.PublishAlarmFire 隐式满足；
 // nil 注入 = 不发 device_failure alarm（只 drop event，不上报）。primitive 参数避免反向 import。
 type DeviceFailureEmitter interface {
-	PublishAlarmFire(ctx context.Context, deviceAddr netip.Addr, subjectEntity, eventName, level string,
+	PublishAlarmFire(ctx context.Context, deviceAddr netip.Addr, subjectEntity, eventName string,
 		tsMs int64, triggerData map[string]interface{}) (string, error)
 }
 
@@ -292,7 +292,7 @@ func (c *SleepStageConsumer) emitOOBDeviceFailure(ctx context.Context, msg *redi
 	// alarm 出口 subject = msg.SubjectEntity (device_uid)：device_failure 是 alarm 类，按规约 subject =
 	// device_uid（cardagg alarm_router 走 device_addr LPM 找归属卡，subject 提供 device 身份标识）。
 	if _, err := c.failEmit.PublishAlarmFire(ctx, msg.DeviceAddr, msg.SubjectEntity,
-		alarm.AlarmTypeDeviceFailure, alarm.AlarmLevelErr, msg.Timestamp, triggerData); err != nil {
+		alarm.AlarmTypeDeviceFailure, msg.Timestamp, triggerData); err != nil {
 		c.logger.Warn("sleepstage OOB: publish device_failure failed",
 			zap.String("device_addr", msg.DeviceAddr.String()),
 			zap.Error(err))

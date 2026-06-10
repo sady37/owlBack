@@ -134,16 +134,12 @@ func (r *AlarmRouter) Handle(ctx context.Context, msg *owlredis.IoTStreamMessage
 
 	level, enabled := r.enable.Resolve(ctx, ac.TenantPref, resolvedAddr, eventName)
 
-	// platform-agent trust：sensor 已在 AlarmBackChannel.gate 源头按 spatial_config LPM 查
-	// alarm.cloud_config（per device /128 + alarmType）；未启用直接 drop，不会到达此处。
-	// 因此 cardagg 端不重复 gate，trust producer 自带 level + 直接放行。
-	// 详 owlBack/doc/platform_agent_addressing.md §6 + cardagg_sensor_split.md §2.3
-	// + sensor consumer/alarm_back_channel.go (gate 源)。
+	// platform-agent trust：sensor 已在 AlarmBackChannel.gate 源头按 device_config is_enabled gate，
+	// 未启用直接 drop（或改发 event），不会到达此处。故 cardagg 不重复 gate enablement，trust 放行。
+	// level 不取 producer：alarm_level 由 cardagg Resolve 从 device_config 单点决定（与 sleepace 直发同源）。
+	// 详 owlBack/doc/platform_agent_addressing.md §6 + cardagg_sensor_split.md §2.3。
 	if spatial.IsPlatformAgentAddr(msg.Producer) {
 		enabled = true
-		if lvl, ok := data["alarm_level"].(string); ok && lvl != "" {
-			level = lvl
-		}
 	}
 
 	// recovery 分支：解除 active，不落新 row
@@ -187,16 +183,9 @@ func (r *AlarmRouter) Handle(ctx context.Context, msg *owlredis.IoTStreamMessage
 	if !enabled {
 		return nil
 	}
-	// level 兜底：producer 未带 level（如 sensor 旧版本 / enablement 缓存 stale 返回空）时
-	// 用 Registry.DefaultLevel，与上方 deviceClassOnset 分支同款。绝不因 level 缺失静默丢 alarm。
+	// level 唯一来自 device_config（Resolve；生成时已填 default 作保底，无 Registry 兜底）。
+	// enabled 但 level 空 = 配置缺陷，留痕丢弃不静默（可观测性，非无声黑洞）。
 	if level == "" {
-		if def := alarm.LookupAlarm(eventName); def != nil {
-			level = def.DefaultLevel
-		}
-	}
-	if level == "" {
-		// 走到这里说明 eventName 不在 Registry（未知 alarm 类型）——真要丢也必须留痕，
-		// 不再无声 return nil（此前的可观测性黑洞：dropped alarm 在 cardagg 无任何日志）。
 		r.logger.Warn("alarm dropped: no resolvable level",
 			zap.String("event", eventName),
 			zap.String("device_addr", resolvedAddr),

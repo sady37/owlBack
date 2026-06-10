@@ -51,7 +51,7 @@ func (f *BackChannelAlarmFirer) Fire(ctx context.Context, e zonealarm.FireEvent)
 	if triggerTsMs == 0 {
 		triggerTsMs = e.NowMs
 	}
-	_, err := f.channel.PublishAlarmFire(ctx, devAddr, "", e.Key.AlarmType, e.Level, triggerTsMs,
+	_, err := f.channel.PublishAlarmFire(ctx, devAddr, "", e.Key.AlarmType, triggerTsMs,
 		buildTriggerData(e))
 	return err
 }

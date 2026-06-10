@@ -116,7 +116,7 @@ func (a *AlarmBackChannel) nextSeq(ctx context.Context) int64 {
 func (a *AlarmBackChannel) PublishAlarmFire(
 	ctx context.Context,
 	deviceAddr netip.Addr,
-	subjectEntity, eventName, level string,
+	subjectEntity, eventName string,
 	tsMs int64,
 	triggerData map[string]interface{},
 ) (string, error) {
@@ -126,7 +126,7 @@ func (a *AlarmBackChannel) PublishAlarmFire(
 	if !a.gate(ctx, deviceAddr, eventName) {
 		return "", nil // 未启用 → 静默丢弃
 	}
-	data := mergeTriggerData(eventName, EventStatusStart, level, triggerData)
+	data := mergeTriggerData(eventName, EventStatusStart, triggerData)
 	return a.publishAlarm(ctx, deviceAddr, subjectEntity, eventName, tsMs, data)
 }
 
@@ -166,22 +166,16 @@ func (a *AlarmBackChannel) publishAlarm(
 		rediscommon.StreamAlarm.MaxLen, rediscommon.StreamAlarm.RetentionSeconds)
 }
 
-// mergeTriggerData 将 envelope 必带字段（event_name / event_status / alarm_level）
-// 合并到 trigger data map，cardagg alarm_handler 读取时按 key 取值。
-//
-// duration_sec / upgrade_to / event_since_ms 三字段 PR1 时代为 PublishPendingArm sentinel 服务，
-// v2 zonealarm.Supervisor 内部维护 pending（不外发 sentinel）后这些字段无 producer → 一并删除。
-func mergeTriggerData(eventName, eventStatus, level string, extra map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{}, 3+len(extra))
+// mergeTriggerData 将 envelope 必带字段（event_name / event_status）合并到 trigger data map，
+// cardagg alarm_handler 读取时按 key 取值。alarm_level 不在此——由 cardagg 从 device_config 派生（Resolve）。
+func mergeTriggerData(eventName, eventStatus string, extra map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, 2+len(extra))
 	for k, v := range extra {
 		out[k] = v
 	}
 	out["event_name"] = eventName
 	if eventStatus != "" {
 		out["event_status"] = eventStatus
-	}
-	if level != "" {
-		out["alarm_level"] = level
 	}
 	return out
 }

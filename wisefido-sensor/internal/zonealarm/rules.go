@@ -111,7 +111,6 @@ func DefaultRules() []Rule {
 		// 1. Stay — bathroom 独居超阈 → fire（仅 1 人才算滞留）
 		{
 			AlarmType:         alarm.Stay,
-			Level:             alarm.AlarmLevelWarn,
 			AnchorStr:         "bathroom",
 			AnchorField:       AnchorAloneContinuousMin,
 			KeepCounting:      []Condition{{StateStr: "alone"}}, // Self=bathroom Alone
@@ -121,7 +120,6 @@ func DefaultRules() []Rule {
 		// 2. LeftBed — bed 离床 30min + 同 /80 unit 内 room 也得空（人回房算回床区域）
 		{
 			AlarmType:       alarm.LeftBed,
-			Level:           alarm.AlarmLevelWarn,
 			AnchorStr:       "bed",
 			AnchorField:     AnchorBedStatusTs,
 			KeepCounting: []Condition{
@@ -133,7 +131,6 @@ func DefaultRules() []Rule {
 		// 3. NightAbsence — room 空 30min + 21-7 时段 + bed 也得空
 		{
 			AlarmType:       alarm.NightAbsence,
-			Level:           alarm.AlarmLevelWarn,
 			AnchorStr:       "room",
 			AnchorField:     AnchorLastExitTs,
 			KeepCounting: []Condition{

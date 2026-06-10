@@ -270,13 +270,12 @@ type fakeFailCall struct {
 	deviceAddr    netip.Addr
 	subjectEntity string
 	eventName     string
-	level         string
 	tsMs          int64
 	triggerData   map[string]interface{}
 }
 
-func (f *fakeFailEmitter) PublishAlarmFire(ctx context.Context, deviceAddr netip.Addr, subjectEntity, eventName, level string, tsMs int64, triggerData map[string]interface{}) (string, error) {
-	f.calls = append(f.calls, fakeFailCall{deviceAddr, subjectEntity, eventName, level, tsMs, triggerData})
+func (f *fakeFailEmitter) PublishAlarmFire(ctx context.Context, deviceAddr netip.Addr, subjectEntity, eventName string, tsMs int64, triggerData map[string]interface{}) (string, error) {
+	f.calls = append(f.calls, fakeFailCall{deviceAddr, subjectEntity, eventName, tsMs, triggerData})
 	return "1-0", nil
 }
 
@@ -307,9 +306,6 @@ func TestHandleRaw_OOB_DropsAndEmitsDeviceFailure(t *testing.T) {
 	got := failEmit.calls[0]
 	if got.eventName != alarm.AlarmTypeDeviceFailure {
 		t.Errorf("eventName = %q, want DeviceFailure", got.eventName)
-	}
-	if got.level != alarm.AlarmLevelErr {
-		t.Errorf("level = %q, want Err", got.level)
 	}
 	if got.triggerData["reason"] != "sleepstage_out_of_bed" {
 		t.Errorf("triggerData.reason = %v, want sleepstage_out_of_bed", got.triggerData["reason"])

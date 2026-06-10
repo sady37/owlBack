@@ -16,7 +16,6 @@ rules:
   # 1. Stay — bathroom 独居超阈（仅 1 人才算滞留；caregiver 协助清零）
   # ============================================================
   - alarm_type: Stay
-    level: WARNING
     anchor: bathroom
     anchor_field: AloneContinuousMin
     keep_counting:
@@ -28,7 +27,6 @@ rules:
   # 2. LeftBed — 离床 30min + 同 /88 room 也得空（人回房算回床）
   # ============================================================
   - alarm_type: LeftBed
-    level: WARNING
     anchor: bed
     anchor_field: BedStatusTs
     keep_counting:
@@ -40,7 +38,6 @@ rules:
   # 3. NightAbsence — room 空 30min + 21-7 时段 + bed 也得空
   # ============================================================
   - alarm_type: NightAbsence
-    level: WARNING
     anchor: room
     anchor_field: LastExitTs
     keep_counting:

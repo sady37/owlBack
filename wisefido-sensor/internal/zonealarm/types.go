@@ -104,9 +104,6 @@ type Rule struct {
 	// AlarmType cardagg alarm_handler 接收 event_name；取自 owl-common/alarm 常量。
 	AlarmType string `yaml:"alarm_type"`
 
-	// Level cardagg PersistAlarmAndPublish 用的 alarm_level（"WARN" / "CRIT"）。
-	Level string `yaml:"level"`
-
 	// Anchor 锚定 entity 类型 — 决定 Tick 时遍历哪个 snapshot map。
 	AnchorStr string     `yaml:"anchor"` // "bed" / "room" / "bathroom"
 	Anchor    EntityKind `yaml:"-"`
@@ -160,7 +157,6 @@ type FireKey struct {
 // FireEvent fire 出口的载荷 — evaluator 触发 fire 时填，传给 AlarmFirer.Fire。
 type FireEvent struct {
 	Key       FireKey
-	Level     string
 	AnchorTs  int64 // 锚点 ts ms（计时起点）
 	NowMs     int64 // fire 时刻 ms
 	Snapshot  any   // 引用快照（*card.RoomState / *card.BedState；wiring 端按需做 device 路由）

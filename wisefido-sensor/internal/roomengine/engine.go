@@ -1220,14 +1220,8 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	if fields == nil {
 		fields = make(map[string]interface{})
 	}
-	// alarm 流必带 alarm_level：level 由 Registry.DefaultLevel 唯一定义（与 zonealarm
-	// alarm_back_channel.mergeTriggerData 同字段同源）。producer 自带 level 是 cardagg
-	// platform-agent trust 放行的前提——缺了会在 alarm_router 因 level=="" 静默丢弃。
-	if topicType == "alarm" {
-		if def := alarm.LookupAlarm(category); def != nil && def.DefaultLevel != "" {
-			fields["alarm_level"] = def.DefaultLevel
-		}
-	}
+	// alarm_level 不由 sensor 盖：由 cardagg 从 device_config 单点决定（alarm_router Resolve）。
+	// sensor 只在源头 gate is_enabled（发 alarm vs event）+ 时间型阈值，不碰 level。
 	// sensor-specific 业务扩展字段平铺
 	if p.Track.PositionX != nil {
 		fields[observation.FieldPositionX] = *p.Track.PositionX
