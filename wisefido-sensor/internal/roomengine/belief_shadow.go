@@ -195,16 +195,24 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		if tl.lastPosTs > 0 && nowMs > tl.lastPosTs {
 			dtSec = float64(nowMs-tl.lastPosTs) / 1000
 		}
-		var tlGhostness float64
+		var tlGhostness float64 // 单 track frozen ghostness:**仅留诊断日志**,P1② 后不再驱动 belief Ghost 发射
 		tl.realLO, tlGhostness = realnessStep(tl.realLO, dtSec, b.MoveActive, jumpGhost, frozenGhost)
 		tl.lastX, tl.lastY, tl.lastPosTs = b.X, b.Y, nowMs
 		tl.lastPose, tl.lastZ = b.Pose, b.Z
 		tlGeom := geomFromArea(b.CellAreaType)
+		// ★P1②(发射换源):Ghostness 主源 = **co-existence 对称**(b.Verdict=gate-list 镜像/运动对称结果,
+		// 正常处理时算好,lock-free)。**单 track frozenGhost/jumpGhost 不再驱动 Ghost 发射**(realLO 仅留日志)——
+		// 治"真人静止 bystander 被单 track frozen 误判 ghost"(委员会细化1:≥2 真人)。endgame 换 DBN 自己的对称计算。
+		// 标定 0.9/0.15 临时(待委员会:symmetry hit→Ghostness 走 calibration.go LR?)。
+		ghostness := 0.15
+		if b.Verdict == VerdictGhost {
+			ghostness = 0.9
+		}
 		// ★P1①(co-existence 耦合):进 Ghost 的转移 ×ρ,ρ=房内其它 track 的 P(Real) 峰。孤立 track ρ=0 →
 		// P(Ghost)→0(即使 Ghostness 高也救不回)→ long-lie 真受害者结构性安全。ghost=反射必有共存 Real partner。
 		rho := dbnCoExistRho(sh, b.TrackID)
 		tl.tb.StepCoupled(nowMs, []belief.TObservation{{
-			Kind: belief.TObsPresent, Ghostness: tlGhostness, Geom: tlGeom,
+			Kind: belief.TObsPresent, Ghostness: ghostness, Geom: tlGeom,
 			Conf: 0.9, Ts: nowMs, Fresh: true,
 		}}, rho)
 		tl.lastSeen = nowMs

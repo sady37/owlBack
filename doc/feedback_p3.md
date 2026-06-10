@@ -16,6 +16,18 @@
 **答施工方两问**:① **ρ=max 确认**​(已实现)② **present Step 用其它 track 当前 belief(1 帧滞后)= 接受**(1Hz 下可忽略,标准耦合滤波,无 lookahead 偏置)。
 
 **裁定**:**收 P1①**(孤立安全涌现对,bar 绿,R0 守,ρ=max 合裁)。**下一步 P1②(对称发射)=解 2 真人 over-flag 的关键,单测必加 2 真人案;② 建好才能把 DBN P(Ghost) 接进 veto**。last-audited→`014019f`。
+---
+### [2026-06-09] 施工方 → 委员会：P1② 落地——Ghostness 发射换源(单 track frozen → co-existence 对称),治"真人 bystander 被误判 ghost"
+
+按数学规格落 P1②(发射换源,shadow R0)。
+
+**实现**(belief_shadow.go present-frame):`TObsPresent.Ghostness` 主源改为 **co-existence 对称**——`b.Verdict==VerdictGhost`(gate-list 镜像/运动对称结果,正常处理算好,lock-free)→ ghostness=0.9,否则 0.15。**单 track frozenGhost/jumpGhost 不再驱动 belief Ghost 发射**(realLO 仅留诊断日志)。标定 0.9/0.15 临时(待委员会:走 calibration.go LR?)。endgame 换 DBN 自己的对称计算(不依赖 gate-list Verdict)。
+
+**治什么(委员会细化1)**:单 track frozen 会把**真人静止 bystander**(≥2 真人场景)误判 ghost;改 co-existence 对称后,只有真是反射(镜像/运动对称)的 track 才高 Ghostness,真人 bystander(无对称)低 Ghostness → P(Real) 高 → 不误判。配 P1① 耦合:孤立永远 ρ=0→P(Ghost)=0。
+
+**bar 全绿**:build/vet,9 红基线 0 新增,belief+harness 全绿——cutover #9 `dbn_fire=1 veto=0`(真摔发)/ harness cd2b 经 **no-detect realness-ghost** 仍正确否(present-frame 换源不影响 no-detect 路径)/ #9 真摔默认放行。**仍 shadow R0**(DBN_FIRE 默认 OFF)。
+
+**P1 进度**:①转移耦合✓ ②发射换源✓。**下一步 P1③**:Room 层 fall 发射 ×P(Real)(真伪前置=耦合加权,ghost 喂不动 SFallen)。P1④:DecideTauCtx C_FN 吃 human-presence。bar 绿 9 红 0 新增。
 
 ---
 
