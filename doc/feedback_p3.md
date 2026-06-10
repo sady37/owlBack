@@ -7,6 +7,31 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ★施工方 → 委员会：P1 数学规格(co-existence ghost = 改转移矩阵/发射/代价,非 veto 规则)——用户拍"用数学算不是 gate-list"
+
+用户拍死铁律:**这些行为必须长在 DBN 数学里(转移矩阵+发射+代价),不是再加一层 veto 规则**。现 cutover veto(`coExist && VerdictGhost`)= 临时 gate-list 补丁,P1 治本=改 belief 模型。规格:
+
+**现状(病根)**:Track 层 `transitionPropensityT[from][to]`(track.go:108,per-track 独立),Ghost 由 `TObsPresent.Ghostness∈[0,1]` 发射驱动,而 Ghostness 来自**单 track** frozenGhost/realLO → 孤立 frozen track P(Ghost) 被抬 = 误判 long-lie 真受害者。
+
+**P1 四处数学改(行为从模型涌现,删所有 veto 规则)**:
+
+**① 转移耦合(核心)——Ghost 先验 ∝ ∃ 共存 Real**:Track 层转移**不再 per-track 独立**。进/留 Ghost 的倾向乘以共存 Real 信念 ρ:
+- `Ã_T[·→TGhost] = A_T[·→TGhost] · ρ`,其中 `ρ = max_{j≠i} P(T_j=Real)`(房内其它 track 的 Real 信念峰)。
+- **孤立 track:ρ=0 → 进 Ghost 倾向=0 → 即使 frozen 发射强,后验 P(Ghost)≈0 → 必走 Real**。long-lie 真受害者**结构性安全,无需"1 track 不否"规则**。
+- TGhost 自维持(track.go:111 的 63)也乘 ρ:Real partner 走了 → ρ↓ → ghost 加速消散到 None。
+
+**② 发射换源——Ghostness = co-existence 对称,非单 track frozen**:`TObsPresent.Ghostness` 改由**镜像/运动对称**(与某 Real partner)算:`Ghostness = f(mirror/motion symmetry with Real partner j)`。复用 gate-list `checkMirrorSymmetry/checkMotionSymmetry` 的**几何**作 feature,**不复用其二元 VerdictGhost 判决**。孤立无 partner→无对称→Ghostness≈0。单 track frozenGhost/realLO **废弃**(或降为弱先验,不能单独驱动 Ghost)。
+
+**③ Room 层 fall 发射被 P(Real) 加权**:SFallen 的 fall 证据(dwell/pose/nodetect)似然乘 faller 的 `P(T=Real)`:ghost(P(Real)低)→ 证据被乘小 → 喂不动 SFallen → 不会被 dwell 喂成假 still-fall。**"真伪前置摔型"= 耦合加权,非顺序 gate**。
+
+**④ 决策代价 context 化(风险分层)——DecideTauCtx 的 C_FN ∝ 无人救**:`τ* = C_FP/(C_FP+C_FN)`;`C_FN = g(human-presence)`:独处→C_FN→∞→τ*→0→必发(=独处永发,**从代价涌现非规则**);有人在场→C_FN 小→τ* 高→容抑制(激进否)。委员会细化2"低阈非0"自动满足(τ*>0 恒)。现 `DecideTauCtx`(P7.2)已是 context-τ* 的家,加 human-presence 入 C_FN。
+
+**净**:ghost/long-lie/误报分层/真伪前置**全从一个数学模型涌现**——耦合转移①+对称发射②+P(Real)加权③+context代价④。**没有独立 veto 动作**:ghost 数学上 P(Real)低→P(Fallen)被压→后验本身不报。gate-list 整套(含 ghost 判决)才能真删。
+
+**建序**:① 先落①②(Track 层 co-existence 耦合+对称发射,shadow R0 单测验 P(Ghost) 孤立=0/共存对称=高)② 落③(Room 加权)④(context 代价)③ cutover veto 从 gate-list 补丁换成"读模型后验"。**问委员会**:ρ 取 `max P(Real)` 还是软 OR(`1-∏(1-P(Real_j))`)?对称发射 Ghostness 的标定(symmetry hit→Ghostness 值)走 calibration.go 同款 LR?bar 不涉代码(数学规格)。
+
+---
+
 ### [2026-06-09] ★ 委员会 → 施工方:合并开干清单(所有提问已裁,全部授权,按优先级建,不用再等)
 
 施工方提问散在多条 entry 已分别裁过,合并成一张清单——**全部 approve,照建,裁后即建不再等**:
