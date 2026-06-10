@@ -7,6 +7,30 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-10] ⚠️ 4-case DBN 复核 — ★方法纠正:test harness 不可信,必须 replay(用户拍)
+
+**任务**:DBN 跑 4 真 case 给结果——#1 `bedtest-0605-1`(101/9e7 床边摔,雷达误识 chair,firmware 漏)/ #2 `bedtest-0605-2`(101 床边摔靠床,sleepad 检 HR/RR,firmware 火)/ #3 `unit201-handoff-0609-bathroom-333B`(201 tub 旁摔 firmware 火后起身)/ #4 `bedroom201-bedside-1027`(201/CD2B 床边摔)。
+
+**★方法纠正(用户两拍,委员会认账)**:
+1. **「只用 DBN 已知信息+DBN 自己的计算」**:#1 有 **sleepad LeftBed 事件**(17:45:50 `:978 EVENT LeftBed bed_status=1`)——有 LeftBed 就**必然进 silent_fall 分支**(LeftBed→bed 占用释放→radar 仍报 area=1 卧床=床边摔被几何映射进床区→DwellStill 应 ramp)。我初版只看 radar `pose=5`,**漏了这条 DBN 自有 bed-state→silent 链**。
+2. **「不应该用 test,应该用 replay」**:我写的 Go-test(`feedTxtCase` 自喂)**不可信**——亲查 `radarEventToObs`(belief_adapter:420)**只处理 EnterRoom/ExitRoom**,sleepad LeftBed/InBed 走另一条 `BedStatus→ObsBedOccupied` + sleepad 占用链(belief_shadow:630「any-source-OR LeftBed→BedOccupancyState 占用降→释放→Fall 浮出」);自写 feed **很可能没把 sleepad LeftBed 接进 bed-occupancy → silent_fall 没 engage**。**初版 test 结论 #1/#4 peak 0.003/0.012「漏检」= 测试假象,撤回,不作数**。
+
+**★唯一权威路径 = redis-replay(真 pipeline)**:`tools/redis-replay` 从 PG(`monitor_stream`/`event_log`)按 device_uid+窗重放进 Redis 实时流→运行中 `owlback.sensor` 真消费→真 belief shadow→journal 出 DBN 日志。DBN 拿到全部真输入(含 sleepad bed-state)。**委员会/审计机(darwin,无 psql/redis-cli/PG/sensor)跑不了,只能生产主机跑**。
+
+**生产主机 4-case replay 命令**(`/home/wisefido/owl/owlBack/tools`,前提 sensor 服务在跑+PG `owl_v2`+redis):
+```
+journalctl -u owlback-sensor -f | grep -E 'belief_shadow_fall|belief_shadow_trace|belief_dbn_fire|belief_dbn_veto|p7_3_reason|silent|lost|LeftBed'
+# #1: go run ./redis-replay/ --device-uids 9D8A326309E7,BM87224700978 --t1 "2026-06-05 11:37:50" --t2 "2026-06-05 11:46:30" --tz America/Denver --streams monitor,event
+# #2: go run ./redis-replay/ --device-uids 9D8A326309E7,BM87224700978 --t1 "2026-06-05 13:08:30" --t2 "2026-06-05 13:18:45" --tz America/Denver --streams monitor,event
+# #3: go run ./redis-replay/ --device-uids 25A859B8333B --t1 "2026-06-09 07:14:00" --t2 "2026-06-09 07:27:00" --tz America/Denver --streams monitor,event   (bathroom 无 sleepad)
+# #4: go run ./redis-replay/ --device-uids 9D8A32A1CD2B,BM87224601641 --t1 "2026-06-06 10:26:00" --t2 "2026-06-06 10:37:00" --tz America/Denver --streams monitor,event
+```
+看:`belief_shadow_trace.p_fallen` 峰 / `belief_shadow_fall`+`p7_3_reason`(lost/silent/pose_lying)/ cutover `belief_dbn_fire`/`belief_dbn_veto_*`(需 `.env DBN_FIRE=1`)。**★重点 #1/#4:LeftBed 后是否出 `reason=silent`(silent_fall 真 engage)——本案核心待验**。注:replay 需 `DB_NAME=owl_v2`(`.env` 现 `owlrd`),跑前确认或临时覆盖。
+
+**待施工方/运维**:生产主机跑 4-case replay,贴 journal 回委员会判读(尤其 #1/#4 的 silent_fall)。**教训记账**:验真 case 行为**禁用自写 test-feed**(漏信号链),**一律 redis-replay 走真 pipeline**;test 只验逻辑单元,不验真 case 检出。
+
+---
+
 ### [2026-06-10] 施工方 → 委员会：**recall 真数据载体落地**(neighbor_verification_spec §2 唯一 blocked 项 unblock)——unit201 真 fixture 经生产路径,首例真摔 recall **DBN confirm P=0.998 + neighbor 不误压 + recovery 不误撤**;R0 test-only,9 红 0 新增
 
 **性质**:用户拍「上 unit201 数据跑 P9」。spec §2 唯一仍 blocked = recall(真摔召回,合成证不了),2026-06-09 导出 unit201-handoff fixture(CD2B 卧室 + 333B 浴室)后即可跑。本贴落地真数据载体 + 首例 recall 观测。R0 纯 test(`belief_neighbor_recall_test.go` 新增,生产码零改)。
