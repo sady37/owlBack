@@ -25,6 +25,20 @@
 
 ---
 
+### [2026-06-09] ✅ 委员会裁 P1 数学规格——approve 模型涌现路线 + ρ=max + 钉「①ρ-prior+②对称发射 必须同建」
+
+施工方把 P1 ghost 做成**模型涌现**(转移 ρ-prior/对称发射/τ* 代价)而非 veto 规则。**委员会强 approve**——这是「一切看风险」+「用数学算不是 gate-list」的**对的实现**:行为从一个概率模型涌现,无独立 veto 动作 → gate-list 整套才能真删。long-lie 安全**结构涌现**(孤立 ρ=0→P(Ghost)≈0→必走 Real),不靠规则。④τ* 代价 context 化(独处 C_FN→∞→τ*→0 必发)让「一切看风险」**从代价涌现**,非硬阈——优雅。
+
+**★委员会钉一条(必守,防 ① 单独 over-flag)**:**① ρ-prior 和 ② 对称发射 必须同建,缺 ② 会误杀 2 真人**。ρ=max P(其它 track=Real),**2 个真人** A/B → A 的 ρ=P(B=Real)高、B 同→**① 单独会把两个真人都推向 Ghost 倾向**!靠 **② 对称发射**救:2 真人独立运动**无镜像/运动对称**→Ghostness≈0→都留 Real。⟹ **① 是「ghost 可能性」prior(共存才可能,孤立=0),② 是「谁是 ghost」判别器(对称)**。`1 真+1 ghost`:①ρ>0+②ghost 对称真人→ghost 被识别;`2 真人`:①ρ>0 但②无对称→都 Real。**落实委员会细化 1**。⟹ **单测必覆盖两个:孤立→P(Ghost)≈0 + 2 真人(无对称)→都 Real**,不只测孤立。
+
+**答 ρ=max vs soft-OR → max**:① 语义对(ghost 需**一个**真源,max=最强真 partner);② 更安全(max ≤ soft-OR,ρ 低=ghost 倾向低=更偏 Real/发火=漏报更少)。soft-OR 会被多弱 track 抬 ρ→过判 ghost→更险。**用 max**。
+
+**答对称发射标定 → 保守起步,live 精**:对称→Ghostness 权重摆拍标不准(artifact)→**初版保守(Ghostness 偏低=偏发火=安全),live 真案精**。结构(对称→Ghostness feature)对。
+
+**裁定**:**approve 模型涌现 + ρ=max + 对称保守标定**。**建序**:①② 先 shadow R0,**单测覆盖孤立→P(Ghost)≈0 AND 2 真人(无对称)→都 Real**(防 ① over-flag)+ 9 红基线不破。③④随后。**碰核心 belief(转移/发射/代价)比 veto 规则大,R6 严验涌现行为(孤立安全+2 真人不误杀+风险从代价涌现)+ 现有 9 红/belief 测不破**。last-audited 不动(纯 doc 规格)。
+
+---
+
 ### [2026-06-09] ★施工方 → 委员会：P1 数学规格(co-existence ghost = 改转移矩阵/发射/代价,非 veto 规则)——用户拍"用数学算不是 gate-list"
 
 用户拍死铁律:**这些行为必须长在 DBN 数学里(转移矩阵+发射+代价),不是再加一层 veto 规则**。现 cutover veto(`coExist && VerdictGhost`)= 临时 gate-list 补丁,P1 治本=改 belief 模型。规格:
