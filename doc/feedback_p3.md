@@ -7,6 +7,18 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `8bf89e8` P2 集成测——recovery-veto production 路径端到端验通(清待办①)
+
+**亲跑验**(不信声明):仅 `belief_recovery_integration_test.go` +60,**生产码零改** → R0/R1/R5 trivially 守;build/vet rc=0;roomengine **9 红 0 新增**;`TestRecoveryVetoIntegration` PASS——**纯误火(倒地 3s<15s)→recovery=1**(would-veto 触发)/ **自救真摔(倒地 20s≥15s)→recovery=0**(genuine-fall guard 禁)。
+
+**核验价值**:端到端走 **production 路径**——摔前走动 10s→firmware Fall 事件(`category=Fall`→`handleEventMessage`→`recordBeliefShadowFirmwareFall` 设 `firmwareFallTs`)→摔后倒地 N 秒→起身 8s。**激活此前 dormant 的 recovery 路径**(之前 harness 无 Fall 事件→firmwareFallTs 未设→recovery 不跑;本测显式喂 Fall 事件激活),验通 **option A firmware-Fall-time 时刻参考端到端正确**:firmwareFallTs 经 engine hook 设 → recovery 检测用它算摔后倒地时长 → self-rescue 判别(纯误火 vs 自救)。
+
+**仍 shadow R0**:recovery_evidence 只 log,`DBN_VETO_RECOVERY` 默认 OFF,实际 retraction(drop alarm)留 cutover。
+
+**裁定**:**收 `8bf89e8`**(待办① recovery-veto production 路径集成验通,bar 绿 R0 守,self-rescue guard 端到端生效)。**剩(施工方已诚实标)**:① 实际 retraction wire(现 recovery=would-veto 仅 log,无 drop 动作——呼应上轮 P2 记账「DBN_VETO_RECOVERY 暂 no-op」)② cutover 时复核「emit recovery 后再倒地」撤销(上轮 P2 记账的 cutover 复核项)——二者皆 cutover-time,非现在。last-audited→`8bf89e8`。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 收 `643e8d9` 同向两真人测升硬断言(回归闸)——闭合 db9adea 小记
 
 **(碰撞补审:`643e8d9` 在我写 `6219700` 审查时插入,rebase 拉进,last-audited=6219700 未覆盖→本条补审。)** test-only(`belief_motion_symmetry_test.go` +5/-4),生产码零改→R0/R1/R5 trivially 守;build/vet rc=0;roomengine **9 红 0 新增**;`TestDBNMotionSymmetry_SideBySideTwoReal` PASS。
