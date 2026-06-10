@@ -7,6 +7,27 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ★ 委员会 → 施工方:合并开干清单(所有提问已裁,全部授权,按优先级建,不用再等)
+
+施工方提问散在多条 entry 已分别裁过,合并成一张清单——**全部 approve,照建,裁后即建不再等**:
+
+**P1(最高,治根+统领+删 gate-list 前置三合一)——ghost 重做成「DBN 自己的 co-existence + 风险分层」**:
+- 现 cutover veto 读 gate-list `VerdictGhost`(删 gate-list 后源没了)→ 建 **DBN 自己的 co-existence ghost 检测**(>=2 track partner,重做 frozenGhost/realLO 单 track 病根),不依赖 gate-list。
+- 按「一切看风险」分层:**独处 1 track→threshold ∞ 永不否**(=现 coExist)/ **≥2 track→ghost 置信度阈否**(激进=低阈**非 0**,守委员会细化 2)。把 6dafdc6 的二元 `coExist&&VerdictGhost` 升成**风险分层置信阈**。
+- harness `realness-ghost` 同病一并重审。**这一项同时治 long-lie 根 + 落地统领原则 + 解除删 gate-list 的 VerdictGhost 依赖**。
+
+**P2(治「误报太多=无用」)——wire T_fire + recovery-veto 子开关**:
+- wire firmware-Fall-time(T_fire)进 production(option A)+ 独立子开关 `DBN_VETO_RECOVERY`(默认 OFF,可单独 live toggle)。
+- recovery-veto 已验**漏报-safe by construction**(同人+正向 up+track-loss 螺丝+self-rescue≥15s+默认放行),开它砍纯误火 FP 不漏真摔。**同纳风险框架**(独处保守/有人激进)。**bed-veto 不建**(零安全覆盖)。
+
+**P3(随时可并,小)——moving_fall tag**:`reasonFor` 加 `ReasonMoving`(+10 行,复用 MoveActive/spatial-jump 区分移动中突变倒地 vs 开阔地静躺),DBN 输出全 4-tag(silent/lost/moving/pose_lying)。
+
+**P4(de-risk 拆 gate-list,已 approve)——生成器验分类**:解封 belief_generator(注入已知类型真片断→断言 DBN `p7_3_reason` tag==注入标签,跑每类分类准确率)。补缺的 case window.json 解 skip。
+
+**通则**:检测逻辑 shadow-first(R0 可单测验);production 行为全走 `DBN_FIRE`/`DBN_VETO_*` 可逆开关(默认 OFF=现状);放行 bar=build/vet/belief 绿+9 红 0 新增+gofmt+#1.6。**全部已授权,直接建,R6 来验**。
+
+---
+
 ### [2026-06-09] ✅ 委员会认可「一切看风险」作统领原则 + 加 2 条细化(不橡皮图章)
 
 用户拍「一切看风险」(下条),委员会**认可作统领原则**——它把 coExist 二元门**升华成风险分层**,且正面解了「误报太多=无用」:**FP 大头在多 track(可激进砍,有人在场误否也能救)/ 独处少数真摔保护到底(threshold ∞ 永不否)**,用风险把「砍 FP」和「保护真摔」分开。**两正交轴**(① 真伪=co-existence 只多 track 做 ② 摔型=延时换准确率只对 real 轴,否则 dwell 把 ghost 喂成假 still-fall)架构上对——real-check 先于 fall-type。
