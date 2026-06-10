@@ -7,6 +7,22 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ⚠️✅ 委员会 R6 收 `344d31b` P3 moving_fall tag(功能收)——但开 #1.1/#1.3 整改单:`"dbn_moving"` inline 字面量 + 无单测
+
+**亲跑验**(不信声明):build/vet rc=0；belief ok；roomengine **精确 9 红 0 新增**;cutover #9 `dbn_fire=1` 不变(commit 称,且 tag 不改 fire)。
+
+**实质改动**:`tlayer.lastMoveMs`(MoveActive 时记摔前在动);cutover `case ok:` fire 分支里 `p7Reason==ReasonPoseLying` 且摔者摔前 `movingFallRecentMs`(5s)内有 MoveActive → `reasonTag="dbn_moving"`(移动中突变倒地)否则 `"dbn_pose_lying"`(开阔静躺);写进 `AIPayload.Reason` + `belief_dbn_fire` log。复用 MoveActive(bases lock-free 非 tm 方法)。
+
+**铁律**:R0(整 `case ok` 在 `if dbnFireEnabled`(675)内,默认 OFF)✓ / R1(未碰 alarm 路径,PublishAIAlarm 是 cutover 块原有)✓ / **R5**(tag 是 fire **后**的 label,`PublishAIAlarm` 是否发与 tag **无关**——tag 计算在 `case ok:` 已决定 fire 之后,不 gate 发射;不改 belief/SFallen)✓ / WF-b(无 firmware Fall 消费)✓。**tag 纯分类不影响安全**。
+
+**★实质挑刺 1 — #1.1/#1.3 字面量复写(整改单,非橡皮图章)**:`"dbn_moving"`(:743)是 **inline 裸字面量**,而其它 3 tag 走 `"dbn_"+p7Reason.String()`(label 源自 `fall_reason.go fallReasonLabel`)。**4-tag 词表分裂:3 个 enum 源 + 1 个硬编码** → 违 #1.1(「事件/类别字面量唯一来源…禁字面量复写」)+ #1.3(单源真相)。**委员会原裁(roadmap)是「+10 行 ReasonMoving」=落 enum**,施工方改成 inline literal=偏离。后果:reason label 方案若变,`dbn_moving` silent miss;grep `fall_reason.go` 枚举 DBN tag 只见 3 不见 4。**整改:`ReasonMoving` 落 `fall_reason.go`(enum+label "moving"),Room 层按 motion context **赋值** 该 reason(赋值逻辑留 Room 层=诚实分层,但词表单源),tag 统一 `"dbn_"+reason.String()` 消除 inline 字面量**。
+
+**★实质挑刺 2 — 无单测**:本提交 0 测试文件(仅 belief_shadow.go +17/-2)。moving vs pose_lying 判别(`lastMove<5s`)**无单测覆盖**。其它 3 reason 有 `fall_reason_test.go`。委员会钉过「DBN 分类准确率达标=cutover 前置」——**未测的 tag 不能声称分类准确率**。整改单一并补:moving/pose_lying 判别单测(摔前在动→moving / 静躺→pose_lying / lastMove 越窗→pose_lying)。
+
+**裁定**:**收 `344d31b` 功能**(R0/R1/R5/WF-b 守,bar 绿,tag 纯分类不碰安全)。**开整改单(cutover 前必清,因 tag cutover 时 live 下游消费)**:① `"dbn_moving"` 提升为 `ReasonMoving` 常量进 `fall_reason.go`(4-tag 词表单源,消 #1.1/#1.3)② 补 moving/pose_lying 判别单测。**非安全阻塞**(shadow R0 tag-only),但 cutover 前置(分类准确率+单源)。last-audited→`344d31b`。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 收 `68a904f` P2 wire firmware-Fall-time T_fire + recovery-veto 子开关(`DBN_VETO_RECOVERY`)——WF-b/R0 守,检测+log only 抑制留 cutover
 
 **亲跑验**(不信声明):build/vet rc=0；belief ok；roomengine **精确 9 红 0 新增**；harness 全 PASS——**#9 自救真摔(摔后倒地 80s≥15s)→不否**(self-rescue guard 生效)、5934 误火(倒地 1s)、精度 100% **真摔错否=0**;**cutover #9 `dbn_fire=1 dbn_veto=0` 不变**(recall 无 firmware Fall 事件→firmwareFallTs 未设→recovery 不跑=零影响)。`RadarPoseToCore/CorePose*` 既有常量非新字面量,R7 守。
