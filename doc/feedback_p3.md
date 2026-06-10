@@ -7,6 +7,23 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] 施工方 → 委员会：★★ cutover wire DBN-fire 进生产 gate(R0 在开关 ON 时结束)——按 6c376e4 五条安全包络 + 验证测当场抓到 long-lie veto bug 并修
+
+按用户「先拆」+ 委员会 6c376e4 五条安全包络,wire DBN-fire 进生产。**第一个碰 alarm 路径的提交**。
+
+**实现(5 条包络逐条对)**:
+1. **union firmware∨DBN**:DBN 在 `belief_shadow_fall` 确认点 **加发**推断 fall(`e.PublishAIAlarm(...alarm.Fall...)`,与 gate-list 同发布方法);firmware Fall(pose=5 独立路径)不动=地板永发。✓
+2. **DBN fire=已验检测**:silent/lost/pose_lying(p7_3_reason)+ 房间上下文;reason tag=`dbn_lost/dbn_silent/dbn_pose_lying`(分类输出,非二元)。✓
+3. **保守 veto**:**只**信号级 `VerdictGhost`(多径/RCS)+ 默认放行;bed/recovery veto 暂不开。**★验证测当场抓到我初版用 realLO 否的 bug**:#9 真摔躺地不动 realLO 同样掉(frozen 同貌)→ 被误 veto(=long-lie 灾难重现!)→ 改只信 VerdictGhost → #9 现 `dbn_fire=1 veto=0`✓。realness-ghost 只在 no-detect 路径(belief 已内化),present 倒地默认放行。
+4. **可逆开关**:`dbnFireEnabled = os.Getenv("DBN_FIRE")=="1"`,**默认 OFF**=现状(部署此 commit 行为零变化,翻 env 才进 production);秒翻回 gate-list。✓
+5. **gate-list 码暂留**:`fireFallCore`(bathroom)+`fireFall`(bedroom)开头加 `if dbnFireEnabled { return }` 短路(ON 时 gate-list 不发,DBN 发);**码不删**,待 live 稳后删。✓
+
+**验证**:`TestDBNFireSwitch`(置 dbnFireEnabled+喂 #9)= **R0→production wire 通**(#9 dbn_fire=1)。**开关 OFF 全测不变**(9 红基线=cutover 待删的 gate-list 测试,0 新增 / build/vet/fmt 净)。**开关 OFF 部署 = byte-identical 现状**(第一 alarm-path commit 的安全保证)。
+
+**待**:① 委员会 R6 按新 bar 验收(union 不丢 firmware 召回 / veto 只信号级安全 / 开关可逆 / gate-list 暂留)② 翻开关 ON + live 监控(护士确认 DBN fire 对/分类合理/veto 安全)③ 稳定后删 gate-list 码。**reason tag 的分类准确率** live 测(护士标注)——比生成器摆拍强(用户已定)。**问**:moving_fall 单独 tag 要不要补(现归 pose_lying)?bar 绿 9 红 0 新增。
+
+---
+
 ### [2026-06-09] ★★★ 用户拍「先拆」=cutover——shadow 阶段结束,DBN 真 fire;委员会落安全执行包络
 
 用户在「先验(生成器)vs 先拆(cutover)」拍 **先拆**。这是项目最大一步:**R0/R1(永不 fire/不碰 alarm)是 shadow 期的律,cutover 主动结束 R0=计划好的毕业,非违规**。委员会落**安全执行包络**(先拆≠裸拆):

@@ -1,6 +1,9 @@
 package roomengine
 
 import (
+	"context"
+	"os"
+
 	"owl-common/alarm"
 	"owl-common/card"
 	"owl-common/observation"
@@ -21,6 +24,11 @@ import (
 const beliefShadowEnabled = true
 
 const beliefShadowLostTTLMs = 60_000 // track 超此无帧 = 丢失（对齐 trackLostAnchorMs）
+
+// dbnFireEnabled cutover 可逆开关（委员会 6c376e4 安全包络④）。env DBN_FIRE=1 → DBN 真发推断 fall（union
+// firmware∨DBN）+ gate-list 推断 fall 短路；默认 OFF=现状（shadow log-only,gate-list 发）。秒翻回 gate-list。
+// 部署此 commit 行为零变化(默认 OFF),翻开关才进 production——第一个碰 alarm 路径的提交,R0 在开关 ON 时结束。
+var dbnFireEnabled = os.Getenv("DBN_FIRE") == "1"
 
 // P6.1b-D(审查㉛ Opt-1)小卫生间 provisional/分级窗:
 //
@@ -638,6 +646,55 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			zap.Bool("p7_4_human_bed_veto", p7HumanBedVeto), // P7.4：Conf≥99 人工床 → 生产前置短路（R0 只读出）
 			zap.Int("p7_4_min_conf", humanBedExemptMinConfidence),
 		)
+		// ★cutover（委员会 6c376e4 envelope）:开关 ON → DBN 真发推断 fall（union firmware∨DBN）。
+		// 保守 ghost veto（envelope③）+ 默认放行;bed/recovery veto 暂不开。R0 在开关 ON 时结束(计划内)。
+		if dbnFireEnabled {
+			fb, ok := dbnFallerBase(bases, sh)
+			// ★保守 veto 只信**信号级 VerdictGhost**(多径/RCS,firmware/roomengine 定 ghost)。**绝不**用
+			// realLO/present-realness 否——真受害者躺地不动 realLO 同样掉(frozen 同貌)=long-lie 灾难(本会话血泪
+			// 验过,harness t.Errorf 护栏)。realness-ghost 只在 no-detect 路径(belief 已内化);present 倒地默认放行。
+			if ok && fb.Verdict == VerdictGhost {
+				e.logger.Info("belief_dbn_veto_ghost", zap.String("room_id", roomID), // 信号级 ghost 抑制
+					zap.Float64("p_fallen", pFallen), zap.String("p7_3_reason", p7Reason.String()))
+			} else if ok {
+				e.PublishAIAlarm(context.Background(), AIPayload{
+					DeviceAddr: fb.DeviceAddr, RoomID: roomID,
+					Track: observation.Track{
+						BedStatus: observation.BedStatusUnchanged, TrackID: fb.TrackID, Pose: fb.Pose,
+						PositionX: intPtr(fb.RawH), PositionY: intPtr(fb.RawV), PositionZ: intPtr(fb.RawZ),
+					},
+					Reason:     "dbn_" + p7Reason.String(), // 分类 tag:dbn_lost/dbn_silent/dbn_pose_lying
+					Evidence:   map[string]interface{}{"p_fallen": pFallen, "dominant_obs": p7Dom.String(), "bathroom": tauCtx.Bathroom},
+					IncidentMs: nowMs,
+				}, alarm.Fall, nowMs)
+				e.logger.Info("belief_dbn_fire", zap.String("room_id", roomID), // R0 在此结束:DBN 真发告警
+					zap.String("reason", "dbn_"+p7Reason.String()), zap.Float64("p_fallen", pFallen), zap.Int("track_id", fb.TrackID))
+			}
+		}
 	}
 	sh.fired = confirmed
+}
+
+// dbnFallerBase cutover:取摔者位置作 alarm payload。present 取 z 最低(最倒地);否则 lost 用最近 tlayer 锚点。
+func dbnFallerBase(bases []TrackStatusBase, sh *beliefShadow) (TrackStatusBase, bool) {
+	if len(bases) > 0 {
+		fb := bases[0]
+		for _, b := range bases[1:] {
+			if b.RawZ < fb.RawZ {
+				fb = b
+			}
+		}
+		return fb, true
+	}
+	var best *beliefShadowTLayer
+	var bestTid int
+	for tid, tl := range sh.tlayer {
+		if best == nil || tl.lastSeen > best.lastSeen {
+			best, bestTid = tl, tid
+		}
+	}
+	if best != nil && best.device != "" {
+		return TrackStatusBase{DeviceAddr: best.device, TrackID: bestTid, RawH: best.lastX, RawV: best.lastY}, true
+	}
+	return TrackStatusBase{}, false
 }

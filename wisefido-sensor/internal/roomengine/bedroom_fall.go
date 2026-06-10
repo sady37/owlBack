@@ -223,9 +223,9 @@ func (r *BedroomFallRules) firstNonGhostNearBed(bases []TrackStatusBase, grid *R
 // 依赖 BedSession.LeftBedAtMs（PR-9 仍保留 latch），不依赖 v1 lastLeftBedAt（PR-9 已删）。
 //
 // 触发：
-//   1. 任一 BedSession 有 LeftBedAtMs > 0（最近一次离床事件）
-//   2. 夜间风险时段（IsNightTime）
-//   3. 存在 track 在床边 ≤ 100cm + 非 ghost + 静止 ≥ 15min
+//  1. 任一 BedSession 有 LeftBedAtMs > 0（最近一次离床事件）
+//  2. 夜间风险时段（IsNightTime）
+//  3. 存在 track 在床边 ≤ 100cm + 非 ghost + 静止 ≥ 15min
 //
 // dedup per-LeftBed-session：BedsideFiredForLeftBedAt 等于当前 LeftBedAtMs 时不再 fire；
 // 下次 LeftBed 事件 latches 新 ts → 允许再 fire（不同 session 互不影响）。
@@ -267,11 +267,11 @@ func (r *BedroomFallRules) evaluateBedsideFall(
 		return
 	}
 	r.fireFall(anchor, roomID, suiteID, ReasonBedroomBedsideStatic, map[string]interface{}{
-		"context":         "bedside_static_after_leftbed",
-		"still_sec":       anchor.StillBoxSec,
-		"timeout_sec":     bedroomBedsideNightStaticSec,
-		"margin_cm":       bedroomBedsideMarginCm,
-		"leftbed_at_ms":   latestLeftBed,
+		"context":       "bedside_static_after_leftbed",
+		"still_sec":     anchor.StillBoxSec,
+		"timeout_sec":   bedroomBedsideNightStaticSec,
+		"margin_cm":     bedroomBedsideMarginCm,
+		"leftbed_at_ms": latestLeftBed,
 	}, nowMs-int64(anchor.StillBoxSec)*1000, nowMs)
 	state.BedsideFiredForLeftBedAt = latestLeftBed
 }
@@ -291,7 +291,8 @@ func (r *BedroomFallRules) evaluateBedsideFall(
 // exempt 已覆盖大多数床场景，sleepad gating 仍作第二道保险（覆盖 cell 未被标床但人在床上的情况）。
 //
 // 取消（dedup reset）：person.AnchorRoomType 变（走到 bathroom）→ LostFallFired flag 重置；
-//   下次 person 回 bedroom 静默时允许再 fire。
+//
+//	下次 person 回 bedroom 静默时允许再 fire。
 func (r *BedroomFallRules) evaluateLostFall(
 	bases []TrackStatusBase, beds []BedSessionLatch, roomID, suiteID string,
 	c *SuiteBedroomCensus, state *bedroomFallState, nowMs int64,
@@ -420,6 +421,9 @@ func (r *BedroomFallRules) fireFall(
 	b *TrackStatusBase, roomID, suiteID, reason string,
 	evidence map[string]interface{}, incidentMs, nowMs int64,
 ) {
+	if dbnFireEnabled {
+		return // cutover 开关 ON:gate-list 推断 fall 短路,DBN 发(union firmware∨DBN)。gate-list 码暂留待删。
+	}
 	if evidence == nil {
 		evidence = map[string]interface{}{}
 	}

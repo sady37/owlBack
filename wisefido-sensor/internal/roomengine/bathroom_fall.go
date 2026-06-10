@@ -103,6 +103,7 @@ type bathroomFallState struct {
 // SetBathroomFallRules（PR-10）—— 缺任一层都会留漏报盲点：
 //   - 缺 zoneengine：bathroom 内 Critical 漏报（如 still_fall 阈值未到）时无 Warning 兜底
 //   - 缺 PR-10：bathroom 内 Critical 全部失效，仅靠 Warning 一档（10min 才触发，太晚）
+//
 // 启动后通过 "bathroom_fall_rules_initialized" log 行可验证 PR-10 层已 wire。
 func NewBathroomFallRules(
 	census *SuiteCensusManager,
@@ -621,6 +622,9 @@ func (r *BathroomFallRules) fireFallCore(
 	b *TrackStatusBase, roomID, suiteID string,
 	c *SuiteBedroomCensus, reason string, evidence map[string]interface{}, incidentMs, nowMs int64,
 ) {
+	if dbnFireEnabled {
+		return // cutover 开关 ON:gate-list 推断 fall 短路,DBN 发(union firmware∨DBN)。gate-list 码暂留待删。
+	}
 	if evidence == nil {
 		evidence = map[string]interface{}{}
 	}
