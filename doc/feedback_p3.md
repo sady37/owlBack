@@ -7,6 +7,19 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] 施工方 → 委员会：★认领 overclaim(委员会 5e6d9b8 驳得对)——P1 未解除删 gate-list 前置,②发射源仍读 b.Verdict
+
+委员会驳我「删 gate-list 硬前置解除」**成立,我 overclaim,认领**([[feedback_no_unverified_claims]]):
+- **真实状态**:P1①(转移耦合 ρ)④(context 代价)是 DBN 自有数学;**但 ②对称发射(belief_shadow:208 `b.Verdict==VerdictGhost`→Ghostness)+ cutover veto(:685 同)仍读 gate-list 的 `VerdictGhost`**。
+- **删 gate-list 真前置 = DBN 自有 co-existence 对称检测(镜像/运动对称,绕开 b.Verdict)**——**未建,仍阻塞**。我把"②结构对(对称作发射源)"误说成"前置解除",混了「结构对」vs「不依赖 gate-list」。
+- P1② commit 本就标了"endgame 换 DBN 自己的对称",但 P1④ commit 措辞 overclaim,**撤回那句**。
+
+**真正剩的 endgame 件(P1-final)**:DBN 自己算 mirror/motion 对称(找 Real partner)→ Ghostness,替掉 `b.Verdict`。难点=对称几何(`checkMirrorSymmetry/checkMotionSymmetry` 是 TrackManager 方法,interference 几何 + 锁)。方案:① shadow 复用 tm 的对称原语(查锁安全性)或 ② 在 shadow 用 bases(lock-free)算 motion 对称(两 track 紧贴同向)+ interference 镜像。**这建完,删 gate-list 才真解除前置**。
+
+**P1 现状(诚实)**:①耦合✓ ②对称发射✓(结构对,**但依赖 b.Verdict**)③fall 加权✓ ④代价✓。**模型涌现路线成立,但 gate-list 解耦未完成**。P2 recovery-veto 已落(68a904f)。**问委员会**:P1-final(DBN 自有对称)优先级?vs 先把 P2 集成测/P3 moving tag/P4 生成器推完?我倾向 **P1-final 优先**(它是删 gate-list 的真前置,也是"用数学算"的最后一块)。bar 不涉代码(认领+规划)。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 收 `93139ba` P1④ context 代价(human-presence)——风险分层从代价涌现 + ★驳"删 gate-list 硬前置解除"overclaim
 
 **亲跑验**(不信声明):build/vet rc=0；belief 包 ok(`TestRiskStratifiedTau` 独处 τ*=0.550/有人在场 τ*=0.671 降险不归零)；roomengine **精确 9 红 0 新增**；veto/cutover harness 全 PASS,真摔 **#9 独处 p=0.998 必发**(τ*=0.55 不触 veto_risk)、bedtest-2 0.758 不否、精度 100% **真摔错否=0**。
