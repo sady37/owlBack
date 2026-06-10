@@ -30,6 +30,18 @@ const beliefShadowLostTTLMs = 60_000 // track 超此无帧 = 丢失（对齐 tra
 // 部署此 commit 行为零变化(默认 OFF),翻开关才进 production——第一个碰 alarm 路径的提交,R0 在开关 ON 时结束。
 var dbnFireEnabled = os.Getenv("DBN_FIRE") == "1"
 
+// dbnVetoRecoveryEnabled P2 recovery-veto 独立子开关（委员会 6dafdc6,默认 OFF,可单独 live toggle）。
+// recovery-veto 漏报-safe by construction(同人+正向 up+track-loss 螺丝+self-rescue≥15s+默认放行)。
+// OFF=只 log belief_dbn_recovery_evidence(R0);ON=窗内纯误火 recovery 时抑制/auto-resolve(留 cutover)。
+var dbnVetoRecoveryEnabled = os.Getenv("DBN_VETO_RECOVERY") == "1"
+
+// recoveryGenuineFallenMs P2 安全判别:firmware 火后持续倒地超此=**自救型真摔**(倒了又起)≠纯误火 →
+// 禁 recovery(自救真摔不可静默抹,呼应 silent_leftbed)。15s≈真倒地 vs firmware 误火即起的分界(实证 #9 73s/5934 ~0)。
+const recoveryGenuineFallenMs = 15_000
+
+// recoveryUprightSustainMs P2:摔者持续直立须达此才认正向恢复(防 1 帧 tracking 伪迹把真受害者误判 walk)。
+const recoveryUprightSustainMs = 3_000
+
 // P6.1b-D(审查㉛ Opt-1)小卫生间 provisional/分级窗:
 //
 //	设备富(unit 有其它设备)→ 30min cancel 窗(覆盖立项 np=0 +335s),窗到未佐证升级。
@@ -68,6 +80,11 @@ type beliefShadowTLayer struct {
 	lastZ        int
 	poseZLock    int     // pose&z 连续恒定帧数
 	realLO       float64 // P3.3:realness log-odds(带遗忘 γ;>0 real <0 ghost),摔前走路 realness 带进倒地窗
+
+	// P2 recovery-veto:per-track upright/fallen 连续段 + 首现(同人绑定)。
+	uprightSince int64 // 连续直立(Stand/Move)起始 ms(0=非直立);firmware 火后同人持续直立=recovery
+	fallenSince  int64 // 连续倒地(Lie/Fallen/SitGround)起始 ms;火后持续倒地≥阈=自救真摔禁 recovery
+	firstSeenMs  int64 // 首现 ms(护工后进=新 track firstSeen>T_fire→排除,同人绑定)
 }
 
 type beliefShadow struct {
@@ -78,6 +95,11 @@ type beliefShadow struct {
 	tlayer       map[int]*beliefShadowTLayer // DBN P1 Track 层
 	deviceSpeed  map[string]*deviceSpeedStat // P2.1：per-device 学习走速封顶（device→room 稳定，跨 track 累积）
 	lastLostGeom belief.Geom                 // #3：最近一次丢失点 geom（fall log 辨床/桶区误报用）
+
+	// P2 recovery-veto:firmware Fall 时刻(T_fire)= post-fire 倒地时长/recovery 窗的参考(engine hook 喂)。
+	firmwareFallTs      int64 // firmware Fall 事件 ts(0=未火);recovery 须 ts>此
+	recoveryGenuineFall bool  // firmware 火后摔者持续倒地≥阈=自救真摔→禁 recovery(不静默抹)
+	recoveryEmitted     bool  // 已 emit 本次 recovery(防重复)
 }
 
 // tLostLogThresh Track 层 P(TLost) 超此即 log（对照 gate-list lost_track 报警）。
@@ -172,7 +194,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		curTL[b.TrackID] = struct{}{}
 		tl := sh.tlayer[b.TrackID]
 		if tl == nil {
-			tl = &beliefShadowTLayer{tb: belief.NewTrackBelief()}
+			tl = &beliefShadowTLayer{tb: belief.NewTrackBelief(), firstSeenMs: nowMs} // P2:首现=同人绑定锚
 			sh.tlayer[b.TrackID] = tl
 		}
 		// 本帧空间跳跃 Δ/dt(探测器①);缺前帧 → -1 跳过①,靠②③(读 ts raw 动学量)。
@@ -199,6 +221,21 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		tl.realLO, tlGhostness = realnessStep(tl.realLO, dtSec, b.MoveActive, jumpGhost, frozenGhost)
 		tl.lastX, tl.lastY, tl.lastPosTs = b.X, b.Y, nowMs
 		tl.lastPose, tl.lastZ = b.Pose, b.Z
+		// P2 recovery-veto:维护 upright(Stand/Move)/fallen(Lie/SitGround)连续段(条件③持续非瞬时)。
+		switch RadarPoseToCore(b.Pose) {
+		case CorePoseStand, CorePoseMove:
+			if tl.uprightSince == 0 {
+				tl.uprightSince = nowMs
+			}
+			tl.fallenSince = 0
+		case CorePoseLie:
+			if tl.fallenSince == 0 {
+				tl.fallenSince = nowMs
+			}
+			tl.uprightSince = 0
+		default: // 坐/未知:两者都清(不累计)
+			tl.uprightSince, tl.fallenSince = 0, 0
+		}
 		tlGeom := geomFromArea(b.CellAreaType)
 		// ★P1②(发射换源):Ghostness 主源 = **co-existence 对称**(b.Verdict=gate-list 镜像/运动对称结果,
 		// 正常处理时算好,lock-free)。**单 track frozenGhost/jumpGhost 不再驱动 Ghost 发射**(realLO 仅留日志)——
@@ -707,6 +744,55 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		}
 	}
 	sh.fired = confirmed
+
+	// ★P2 recovery-veto 检测(委员会 approve,DBN_VETO_RECOVERY 子开关):firmware 火后,**摔者本人**
+	// (firstSeen≤T_fire,护工后进=新 track 排除)持续直立(≥3s,正向 up 非 track-presence)= 纯误火恢复。
+	// 但火后持续倒地≥15s=**自救型真摔**→禁(不静默抹,呼应 silent_leftbed)。track-lost(无正向 up)→无 recovery=安全。
+	if sh.firmwareFallTs != 0 && !sh.recoveryEmitted {
+		for _, tl := range sh.tlayer { // 自救真摔判别:火后(T_fire 后)持续倒地≥阈
+			if tl.firstSeenMs > sh.firmwareFallTs || tl.fallenSince == 0 {
+				continue
+			}
+			postStart := tl.fallenSince
+			if sh.firmwareFallTs > postStart {
+				postStart = sh.firmwareFallTs
+			}
+			if nowMs-postStart >= recoveryGenuineFallenMs {
+				sh.recoveryGenuineFall = true
+			}
+		}
+		if !sh.recoveryGenuineFall {
+			for tid, tl := range sh.tlayer {
+				if tl.firstSeenMs > sh.firmwareFallTs || tl.uprightSince <= sh.firmwareFallTs {
+					continue // 护工后进排除;直立须火后起(摔后起身)
+				}
+				if nowMs-tl.uprightSince < recoveryUprightSustainMs {
+					continue // 持续非瞬时
+				}
+				e.logger.Info("belief_dbn_recovery_evidence", // R0 log;ON 时窗内抑制/auto-resolve(留 cutover)
+					zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
+					zap.String("logic_id", tl.logicID), zap.Int64("post_fire_ms", nowMs-sh.firmwareFallTs),
+					zap.Bool("would_veto", dbnVetoRecoveryEnabled))
+				sh.recoveryEmitted = true
+				break
+			}
+		}
+	}
+}
+
+// recordBeliefShadowFirmwareFall P2:engine 收 firmware Fall(category=Fall)时喂 T_fire 进 shadow(recovery 参考)。
+func (e *Engine) recordBeliefShadowFirmwareFall(roomID string, tMs int64) {
+	if !beliefShadowEnabled || tMs <= 0 {
+		return
+	}
+	e.beliefShadowMu.Lock()
+	defer e.beliefShadowMu.Unlock()
+	sh := e.beliefShadowFor(roomID)
+	if tMs > sh.firmwareFallTs {
+		sh.firmwareFallTs = tMs
+		sh.recoveryGenuineFall = false
+		sh.recoveryEmitted = false
+	}
 }
 
 // dbnCoExistRho P1①:共存 Real 信念 ρ=房内**其它** track 的 P(TReal) 峰(选 max,委员会待定 vs 软 OR)。

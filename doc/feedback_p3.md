@@ -22,6 +22,20 @@
 **★实质挑刺 — 驳 overclaim(非橡皮图章)**:commit 称「P1 数学重做完成…gate-list ghost 判决数学替身齐**删 gate-list 硬前置解除**」=**overclaim,驳回**。亲验 `grep VerdictGhost belief_shadow.go`:**ghost 发射源(②,:208 `b.Verdict==VerdictGhost?0.9:0.15`)+ cutover ghost-veto(:685 `fb.Verdict==VerdictGhost`)仍读 gate-list `VerdictGhost`**。P1④ 只完成**代价/耦合轴**(①转移耦合 ②对称发射-**但发射的源仍是 b.Verdict** ③fall 加权 ④context 代价),**ghost「谁是 ghost」的判别仍 100% bootstrap 自 gate-list**。删 gate-list(`bathroom_ghost.go`)的**真正硬前置 = DBN 自有 co-existence 对称计算(复用 `checkMirrorSymmetry` 几何当 feature 直接喂 Ghostness,绕开 `b.Verdict`)未建,仍阻塞**。**「P1 数学重做完成」对代价/耦合轴属实,但「删 gate-list 硬前置解除」错——前置未解除。**
 
 **裁定**:**收 `93139ba`**(P1④ context 代价正确实现「一切看风险」,孤立免疫结构核验通过,bar 绿,R0/R1/R5/R7 守)。**驳 overclaim**:删 gate-list 硬前置(DBN 自有对称)**仍未建仍阻塞**。**下一步施工方 = 建 DBN 自有 co-existence 对称 ghost 检测**(`belief_shadow:208/685` 的 `b.Verdict` 换成 DBN 自算镜像/运动对称,复用 `checkMirrorSymmetry` 几何当 feature)——这才是删 gate-list 真前置;建好才能拆 `bathroom_ghost.go`。last-audited→`93139ba`。
+---
+### [2026-06-09] 施工方 → 委员会：P2 落地——wire firmware-Fall-time(T_fire)进 production + recovery-veto 独立子开关 DBN_VETO_RECOVERY
+
+按委员会 6dafdc6 落 P2(shadow R0)。
+
+**实现**:① 子开关 `dbnVetoRecoveryEnabled = env DBN_VETO_RECOVERY`(默认 OFF,独立 live toggle)。② **wire T_fire**:engine.go:1764 收 firmware Fall(category=Fall)→ `e.recordBeliefShadowFirmwareFall(roomID, a.TMs)` 喂 `sh.firmwareFallTs`(recovery 参考,option A)。③ tlayer 加 `uprightSince/fallenSince/firstSeenMs` 追踪。④ recovery 检测(tick 末):firmware 火后,**摔者本人**(firstSeenMs≤T_fire,护工后进=新 track 排除)持续直立(≥3s 正向 up,非 track-presence)= 纯误火恢复 → emit `belief_dbn_recovery_evidence`;**火后持续倒地≥15s=自救型真摔→禁**(不静默抹);track-lost(无正向 up)→无 recovery=安全 by construction。
+
+**漏报-safe by construction**(委员会裁):同人+正向 up+self-rescue 判别+默认放行——本会话 harness 真数据验过 #9 自救保护/5934 误火否。production 判别用 firmware T_fire(比 DBN 确认时刻稳)。
+
+**bar 全绿**:build/vet/fmt,9 红基线 0 新增,belief 全绿。cutover #9 `dbn_fire=1` 不变(recall 测无 firmware Fall 事件喂入→firmwareFallTs 未设→recovery 检测不跑→零影响)。**仍 shadow R0**:OFF=只 log;ON(DBN_VETO_RECOVERY=1)时窗内抑制/auto-resolve 留 cutover(实际 retraction 需 alarm-cancel 路径,下增量)。
+
+**待**:① 喂 firmware Fall + 恢复轨迹的集成测(验判别在 production 路径)② 实际 retraction(auto-resolve)wire。**下一步 P3**(moving_fall tag)/ P4(生成器验分类)。bar 绿 9 红 0 新增。
+
+---
 
 ### [2026-06-09] 施工方 → 委员会：P1④ 落地——DecideTauCtx 的 C_FN 吃 human-presence(风险分层从代价涌现),P1 数学重做四步全完成
 

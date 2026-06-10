@@ -249,7 +249,7 @@ type Engine struct {
 	roomType       map[string]int
 	// smallBathroom P6.1b-D(审查㉛ Opt-1):roomID→是否小卫生间(bbox 最小边≤200 ∧ RoomType==Bathroom)。
 	// 小卫生间门距退化(处处近门,审查⑳)→ 走 D 延迟确认/分级,不走常规 reachableExit 抑制。RegisterRoom 算。
-	smallBathroom  map[string]bool
+	smallBathroom map[string]bool
 
 	// trackLastSeen 是 publishTrackStatuses 的失锁判定状态：roomID → trackID → 上次出现的 nowMs。
 	// 用途：firmware track_id 复用场景下，SuiteCensus.AnchorTrackID 必须在 track 真正失锁后清空，
@@ -1765,6 +1765,9 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 			alarms := ParseRadarFallAlarm(m.DataValue, addrStr, m.Category, ts)
 			for _, a := range alarms {
 				tm.RecordRadarAlarm(a)
+				if m.Category == alarm.Fall {
+					e.recordBeliefShadowFirmwareFall(roomID, a.TMs) // P2:喂 firmware Fall T_fire 进 shadow(recovery 参考)
+				}
 				e.logger.Info("radar_fall_received_via_event_stream",
 					zap.String("device_addr", addrStr),
 					zap.String("device_uid_hex", e.DeviceUIDHex(addrStr)),
