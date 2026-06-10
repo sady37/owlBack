@@ -1,11 +1,15 @@
 // Ad-hoc PHI decrypt verify — not for prod path.
 //
-// Usage:
-//   MASTER_PIN=... go run ./cmd/verify_phi                    # default: 1st row with non-empty first_name+_enc
-//   MASTER_PIN=... go run ./cmd/verify_phi <nickname-or-uuid> # named resident, dump all non-empty *_enc + note
+// 适配当前 schema：resident_phi.resident_id (INET PK)，*_enc BYTEA 列存
+// owl-common envelope (nonce||ct||tag)；_iv/_tag 列遗留未用；无 tenant_id/明文列。
+// tenant_id (AAD + KMS key 派生) 取自 residents.tenant_id::text（/48 CIDR 形）。
 //
-// Reads MASTER_PIN from env (never prints it). Asks KMS for tenant_key, decrypts
-// real ciphertext from PG resident_phi.*_enc, prints plaintext + cipher byte length.
+// Usage:
+//   MASTER_PIN=... go run ./cmd/verify_phi                    # round-trip：任一行 first_name_enc 解密
+//   MASTER_PIN=... go run ./cmd/verify_phi <nickname-or-inet> # 指定 resident，dump 所有非空 *_enc
+//
+// 读 MASTER_PIN from env（不打印）。向 KMS 要 tenant_key，解 PG resident_phi.*_enc。
+// GCM 认证标签保证：key/AAD 不对 → Open 失败，所以"解出可读明文"即端到端通路活。
 package main
 
 import (
@@ -25,18 +29,6 @@ import (
 	_ "github.com/lib/pq"
 )
 
-var phiFields = []string{
-	"first_name", "last_name", "gender", "date_of_birth",
-	"resident_phone", "resident_email",
-	"weight_lb", "height_ft", "height_in", "mobility_level",
-	"tremor_status", "mobility_aid", "adl_assistance", "comm_status",
-	"has_hypertension", "has_hyperlipaemia", "has_hyperglycaemia",
-	"has_stroke_history", "has_paralysis", "has_alzheimer",
-	"medical_history",
-	"home_address_street", "home_address_city", "home_address_state",
-	"home_address_postal_code", "plus_code",
-}
-
 func main() {
 	pin := os.Getenv("MASTER_PIN")
 	if pin == "" {
@@ -45,7 +37,7 @@ func main() {
 	}
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://postgres:postgres@127.0.0.1:5432/owlrd?sslmode=disable"
+		dbURL = "postgres://postgres:postgres@127.0.0.1:5432/owl_v2?sslmode=disable"
 	}
 	sock := os.Getenv("KMS_SOCKET")
 	if sock == "" {
@@ -56,8 +48,7 @@ func main() {
 	must(err, "db open")
 	defer db.Close()
 
-	now := time.Now().Format("2006-01-02 15:04:05")
-	fmt.Printf("[%s] verify_phi\n", now)
+	fmt.Printf("[%s] verify_phi\n", time.Now().Format("2006-01-02 15:04:05"))
 
 	if len(os.Args) >= 2 {
 		runNamed(db, sock, pin, os.Args[1])
@@ -66,86 +57,98 @@ func main() {
 	runRoundTrip(db, sock, pin)
 }
 
-// runRoundTrip: pick any row with non-empty first_name+first_name_enc, verify decrypt matches plaintext.
+// runRoundTrip: 任选一行非空 first_name_enc，用 KMS 派生 key 解密。
+// 无明文列可比对，GCM Open 成功（无 error）即证明 key + AAD + 通路全对。
 func runRoundTrip(db *sql.DB, sock, pin string) {
-	var tid, pid, plain string
+	var rid, tid string
 	var ct []byte
-	err := db.QueryRow(`SELECT tenant_id::text, phi_id::text, first_name, first_name_enc
-		FROM resident_phi
-		WHERE first_name IS NOT NULL AND first_name <> ''
-		  AND first_name_enc IS NOT NULL AND length(first_name_enc) > 30
-		LIMIT 1`).Scan(&tid, &pid, &plain, &ct)
+	err := db.QueryRow(`
+		SELECT resident_id::text,
+		       network(set_masklen(resident_id, 48))::text,
+		       first_name_enc
+		  FROM resident_phi
+		 WHERE first_name_enc IS NOT NULL AND length(first_name_enc) > 12
+		 LIMIT 1`).Scan(&rid, &tid, &ct)
 	must(err, "no eligible round-trip row")
 
 	key := tenantKey(sock, pin, tid)
 	pt, err := kmscrypto.DecryptWithDataKey(key, []byte(tid), ct)
-	must(err, "decrypt")
-	if string(pt) == plain {
-		fmt.Printf("tenant=%s phi=%s field=first_name plain=%q cipher=%dB\n", tid, pid[:8], plain, len(ct))
-		fmt.Println("OK — END-TO-END decrypt matches plaintext")
-		return
-	}
-	fmt.Printf("FAIL — got %q, expected %q\n", string(pt), plain)
-	os.Exit(1)
+	must(err, "decrypt (key/AAD/通路异常)")
+
+	fmt.Printf("tenant=%s resident=%s field=first_name plain=%q cipher=%dB\n", tid, rid, string(pt), len(ct))
+	fmt.Println("OK — END-TO-END decrypt 成功（KMS 在线 + tenant_key 派生正确）")
 }
 
-// runNamed: resolve nickname or UUID, dump every non-empty *_enc + the residents.note plaintext.
+// runNamed: 按 nickname 或 resident_id(INET) 定位，dump 所有非空 *_enc 字段解密结果。
 func runNamed(db *sql.DB, sock, pin, target string) {
-	var tid, rid, nickname, note string
-	var noteN sql.NullString
-	q := `SELECT t.tenant_id::text, t.tenant_name, r.resident_id::text, r.nickname, r.note
-		FROM residents r JOIN tenants t USING(tenant_id)
-		WHERE r.resident_id::text=$1 OR r.nickname=$1
-		LIMIT 1`
-	var tname string
-	err := db.QueryRow(q, target).Scan(&tid, &tname, &rid, &nickname, &noteN)
+	var rid, tid, nickname string
+	err := db.QueryRow(`
+		SELECT resident_id::text,
+		       network(set_masklen(resident_id, 48))::text,
+		       COALESCE(nickname,'')
+		  FROM residents
+		 WHERE resident_id::text = $1 OR nickname = $1
+		 LIMIT 1`, target).Scan(&rid, &tid, &nickname)
 	must(err, "resident not found: "+target)
-	if noteN.Valid {
-		note = noteN.String
-	}
-	fmt.Printf("tenant=%s/%s nickname=%s resident=%s\n", tname, tid[:8], nickname, rid[:8])
-	fmt.Printf("residents.note (plaintext, not PHI) = %q\n\n", note)
+	fmt.Printf("tenant=%s resident=%s nickname=%s\n\n", tid, rid, nickname)
 
-	key := tenantKey(sock, pin, tid)
-
-	cols := make([]string, 0, len(phiFields)*2)
-	for _, f := range phiFields {
-		cols = append(cols, "COALESCE("+f+"::text,'')", f+"_enc")
+	encCols := encColumns(db)
+	if len(encCols) == 0 {
+		fmt.Fprintln(os.Stderr, "no *_enc columns in resident_phi")
+		os.Exit(1)
 	}
-	row := db.QueryRow(`SELECT `+strings.Join(cols, ",")+` FROM resident_phi WHERE resident_id=$1`, rid)
-	dest := make([]any, len(cols))
-	plains := make([]string, len(phiFields))
-	cts := make([][]byte, len(phiFields))
-	for i := range phiFields {
-		dest[2*i] = &plains[i]
-		dest[2*i+1] = &cts[i]
+
+	cols := strings.Join(encCols, ",")
+	row := db.QueryRow(`SELECT `+cols+` FROM resident_phi WHERE resident_id = $1::INET`, rid)
+	blobs := make([][]byte, len(encCols))
+	dest := make([]any, len(encCols))
+	for i := range encCols {
+		dest[i] = &blobs[i]
 	}
 	must(row.Scan(dest...), "scan PHI")
 
+	key := tenantKey(sock, pin, tid)
 	okCount, failCount, emptyCount := 0, 0, 0
-	for i, f := range phiFields {
-		ct := cts[i]
+	for i, col := range encCols {
+		field := strings.TrimSuffix(col, "_enc")
+		ct := blobs[i]
 		if len(ct) == 0 {
 			emptyCount++
 			continue
 		}
 		pt, err := kmscrypto.DecryptWithDataKey(key, []byte(tid), ct)
 		if err != nil {
-			fmt.Printf("  %-26s  FAIL: %v\n", f, err)
+			fmt.Printf("  %-28s  FAIL: %v\n", field, err)
 			failCount++
 			continue
 		}
-		fmt.Printf("  %-26s = %-30q  (cipher %dB, plaintext_col=%q)\n", f, string(pt), len(ct), plains[i])
+		fmt.Printf("  %-28s = %-30q  (cipher %dB)\n", field, string(pt), len(ct))
 		okCount++
 	}
 	fmt.Printf("\nfields: %d decrypted OK, %d failed, %d empty/null\n", okCount, failCount, emptyCount)
 	if failCount == 0 && okCount > 0 {
-		fmt.Println("OK — all non-empty PHI fields decrypted successfully")
+		fmt.Println("OK — 所有非空 PHI 字段解密成功")
 	} else if okCount == 0 {
-		fmt.Println("WARN — no non-empty *_enc fields to verify")
+		fmt.Println("WARN — 该 resident 无非空 *_enc 字段")
 	} else {
 		os.Exit(1)
 	}
+}
+
+func encColumns(db *sql.DB) []string {
+	rows, err := db.Query(`
+		SELECT column_name FROM information_schema.columns
+		 WHERE table_name = 'resident_phi' AND column_name LIKE '%\_enc'
+		 ORDER BY ordinal_position`)
+	must(err, "list _enc columns")
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var c string
+		must(rows.Scan(&c), "scan col")
+		cols = append(cols, c)
+	}
+	return cols
 }
 
 func tenantKey(sock, pin, tid string) []byte {

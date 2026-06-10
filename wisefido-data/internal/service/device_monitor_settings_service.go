@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -801,12 +804,85 @@ func (s *deviceMonitorSettingsService) ListSleepaceFirmwareVersions(ctx context.
 	return nil, errNotImplemented("ListSleepaceFirmwareVersions")
 }
 
+// LocalUploadSleepaceFirmware 把 zip 落到 OtaDir()/<filename>（qinglan OTA 与 update.ini 同目录），
+// 追加 update.ini stub；deviceType+deviceVersion 都填时顺带推一份给厂家。
+// pushedToVendor 仅在厂家推送成功时为 true；本地落盘成功而厂家失败 → 返回 (false, err)，
+// 但 zip 已在本地（人工可重试 push），与前端文案"local + ini stub only"一致。
 func (s *deviceMonitorSettingsService) LocalUploadSleepaceFirmware(ctx context.Context, filename string, file io.Reader, deviceType, deviceVersion string) (bool, error) {
-	return false, errNotImplemented("LocalUploadSleepaceFirmware")
+	name := filepath.Base(strings.TrimSpace(filename))
+	if name == "" || name == "." || name == "/" {
+		return false, fmt.Errorf("invalid filename %q", filename)
+	}
+	if err := os.MkdirAll(OtaDir(), 0o755); err != nil {
+		return false, fmt.Errorf("mkdir ota: %w", err)
+	}
+	dst := filepath.Join(OtaDir(), name)
+	out, err := os.Create(dst)
+	if err != nil {
+		return false, fmt.Errorf("create %s: %w", dst, err)
+	}
+	if _, err := io.Copy(out, file); err != nil {
+		out.Close()
+		return false, fmt.Errorf("write %s: %w", dst, err)
+	}
+	if err := out.Close(); err != nil {
+		return false, fmt.Errorf("close %s: %w", dst, err)
+	}
+
+	if err := AppendUpdateIniStub(name, strings.TrimSpace(deviceType), strings.TrimSpace(deviceVersion)); err != nil {
+		return false, fmt.Errorf("update.ini: %w", err)
+	}
+
+	if deviceType == "" || deviceVersion == "" {
+		return false, nil
+	}
+	if s.sleepaceGateway == nil {
+		return false, fmt.Errorf("sleepace gateway not configured; saved locally only")
+	}
+	saved, err := os.Open(dst)
+	if err != nil {
+		return false, fmt.Errorf("reopen %s for vendor push: %w", dst, err)
+	}
+	defer saved.Close()
+	if err := s.sleepaceGateway.UploadFirmware(ctx, name, saved); err != nil {
+		s.logger.Warn("sleepace vendor firmware push failed",
+			zap.String("filename", name), zap.Error(err))
+		return false, fmt.Errorf("saved locally but vendor push failed: %w", err)
+	}
+	return true, nil
 }
 
+// LocalDeleteSleepaceFirmware 彻底删除一条固件：厂家拷贝 + 本地 zip + update.ini 段。
+// 厂家删除按 update.ini 查 (deviceType, deviceVersion)，best-effort（查不到型号/版本或厂家失败
+// 都只 warn 不阻断本地清理）；本地 zip 删除幂等（不存在视为已删）；段删除幂等。
+// 目标是"列表里删一条就消失"，所以本地清理一定执行到底。
 func (s *deviceMonitorSettingsService) LocalDeleteSleepaceFirmware(ctx context.Context, filename string) error {
-	return errNotImplemented("LocalDeleteSleepaceFirmware")
+	name := filepath.Base(strings.TrimSpace(filename))
+	if name == "" || name == "." || name == "/" {
+		return fmt.Errorf("invalid filename %q", filename)
+	}
+	if name == "update.ini" {
+		return fmt.Errorf("refusing to delete update.ini")
+	}
+
+	if section, err := LookupUpdateIni(name); err == nil && section != nil &&
+		section.DeviceAddr != "" && section.DeviceVerison != "" && s.sleepaceGateway != nil {
+		if deviceType, convErr := strconv.Atoi(section.DeviceAddr); convErr == nil {
+			if delErr := s.sleepaceGateway.DeleteFirmware(ctx, deviceType, section.DeviceVerison); delErr != nil {
+				s.logger.Warn("sleepace vendor firmware delete failed (continuing local cleanup)",
+					zap.String("filename", name), zap.Int("device_type", deviceType),
+					zap.String("device_version", section.DeviceVerison), zap.Error(delErr))
+			}
+		}
+	}
+
+	if err := os.Remove(filepath.Join(OtaDir(), name)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete local %s: %w", name, err)
+	}
+	if err := RemoveUpdateIniSection(name); err != nil {
+		return fmt.Errorf("remove update.ini section %s: %w", name, err)
+	}
+	return nil
 }
 
 func (s *deviceMonitorSettingsService) ResolveSleepaceUpgradeVersion(filename string) (string, error) {

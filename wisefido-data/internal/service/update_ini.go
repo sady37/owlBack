@@ -118,6 +118,42 @@ func AppendUpdateIniStub(filename, deviceAddr, deviceVerison string) error {
 	return fillExistingSection(filename, needFillID, deviceAddr, needFillVer, deviceVerison)
 }
 
+// RemoveUpdateIniSection 删除指定 file: 段（file: 行 + 其后续行，直到下一个 file: 或 EOF）。
+// 段前的注释/空行不动（它们逻辑上不属于本段）；段尾若紧跟一个空行一并删，避免空行累积。
+// 段不存在 = no-op（幂等）。
+func RemoveUpdateIniSection(filename string) error {
+	path := UpdateIniPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read update.ini: %w", err)
+	}
+	want := strings.TrimSpace(filename)
+	lines := strings.Split(string(data), "\n")
+	out := make([]string, 0, len(lines))
+	dropping := false
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "file:") {
+			fname := strings.TrimSpace(strings.TrimPrefix(line, "file:"))
+			if fname == want {
+				dropping = true
+				continue
+			}
+			dropping = false
+			out = append(out, raw)
+			continue
+		}
+		if dropping {
+			continue
+		}
+		out = append(out, raw)
+	}
+	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644)
+}
+
 func appendNewSection(filename, deviceAddr, deviceVerison string) error {
 	if err := os.MkdirAll(OtaDir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir ota: %w", err)
