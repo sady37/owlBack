@@ -7,6 +7,23 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `7e983b7` P4 生成器基建 + 裁「合成测不准分类」问题——**承认合成不可测分类(=本会自家原则),推 live,不精化合成造假签名**
+
+**亲跑验**(不信声明):仅 `belief_generator_test.go`,**生产码零改** → R0/R1/R5 trivially 守；build/vet rc=0；roomengine **9 红 0 新增**。诊断复现:`moving_fall`/`lost_fall` fire **0/10**(根本没触发)、`silent_fall` fire 6/10 **分类对 1/6**(多判 pose_lying)、`walk_only` fire 0/10 检出 **10/10**(无误火对)。基建本身 work(donorV2Frames 缺 window.json 返 nil 不 skip 整测 / buildLibrary 容忍 ghost 块缺 / 分类 oracle `expectReason{silent,lost,moving→pose_lying}` 比对 `p7_3_reason`)。
+
+**★诊断核验(silent 误判 pose_lying 不是 DBN bug)**:亲析根因——合成 `silent_fall` 场景用了**躺姿 `fallen` 乐高块**(120 真实帧),Pose obs 主导 → DBN **正确**判 pose_lying(输入就是躺姿)。oracle 期望「silent」对这个**合成签名是错的**。要让 silent fire **成 silent** 需「久 dwell-still 无躺姿」合成=**手搓签名**。lost 需「走动中消失前置」、moving 需「移动突变倒姿」——都得手搓。**即合成分不开各 fall 类型签名,除非手搓=循环**(测的是 DBN 认不认我手搓的签名,非真签名)。施工方诊断属实。
+
+**★委员会裁(施工方提问:精化合成 vs 承认测不准推 live)——裁:推 live,不精化合成**:
+- **理据=本委员会自己 ratify 过的原则(`feedback.md` 合成 vs 真碎片定调)**:「纯全合成复刻 gate-list 坑;合成验**程序完备非正确**;recall/precision oracle 必须真碎片」。**分类准确率是 correctness 问题** → 合成 composition 结构上测不了(手搓签名=循环)。施工方发现正是这条原则的实证,自洽。
+- **精化合成造真签名 = 驳回**:那是「把合成搞得像真」的陷阱,手搓 silent/lost/moving 签名 → 测的是 DBN 认不认手搓签名,非真世界判别力,假阳性的信心。
+- **分类准确率测量正路两条**:① **pre-cutover 小 N 真碎片**(correctness-valid):我们**已有**带已知类型的真 donor(#9 真摔=pose_lying/moving / hunzi=lost / cd2b=ghost),veto/recall harness 已让 #9 fire 带 `p7_3_reason`——**加 reason 断言在真 donor 上**=小样本但真签名的分类信号,胜过合成零信号 ② **authoritative=post-cutover live 护士标注**(用户已定)。
+- **修正 cutover 前置**:roadmap 曾列「DBN 分类准确率达标(生成器跑)」为 cutover 前置——**此条修正**:用户「先拆」已定**分类非安全 live 验**(memory:cutover 终局),分类准确率**不是合成 gate、不阻塞 cutover**;生成器合法价值=**程序完备(pipeline 吃合成输入不崩)+ 场景压力**,非分类准确率。
+- **生成器负结果是有价值的 no-silent-caps**:明写「合成不可靠触发 moving/lost,silent 签名分不开」=诚实记账,防未来有人拿合成分类数字当真。
+
+**裁定**:**收 `7e983b7`**(test-only,基建 work,诚实负结果,R0/R1/R5 守 bar 绿)。**承认合成测不准分类=推 live**(合本会合成-vs-真原则+用户先拆定调),**不精化合成造假签名**。**建议(非强制)**:pre-cutover 分类信号走**真 donor 小 N reason 断言**(harness 已有 #9 fire,加 p7_3_reason==pose_lying 断言),非合成。last-audited→`7e983b7`。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 收 `3611c8c` 清 P3 整改单——`ReasonMoving` 落 enum 词表单源 + 判别单测,两项实清
 
 **亲跑验**(不信声明):build/vet rc=0；belief ok；roomengine **精确 9 红 0 新增**;MovingReason/MotionSymmetry/Veto/DBNFire 全 PASS;**`grep "dbn_moving" belief_shadow.go` 无残留 inline 字面量**(整改实清非声明)。
