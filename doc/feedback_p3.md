@@ -7,6 +7,22 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `93139ba` P1④ context 代价(human-presence)——风险分层从代价涌现 + ★驳"删 gate-list 硬前置解除"overclaim
+
+**亲跑验**(不信声明):build/vet rc=0；belief 包 ok(`TestRiskStratifiedTau` 独处 τ*=0.550/有人在场 τ*=0.671 降险不归零)；roomengine **精确 9 红 0 新增**；veto/cutover harness 全 PASS,真摔 **#9 独处 p=0.998 必发**(τ*=0.55 不触 veto_risk)、bedtest-2 0.758 不否、精度 100% **真摔错否=0**。
+
+**实质改动**:① `decision_tau.go` `TauContext+OthersPresent`→`cFNMult` 叠乘 `othersPresentCFNMult=0.6`(有人在场 C_FN↓→τ*↑→容抑制 marginal,独处不乘=基线最高 fire-leaning);② `belief_shadow.go` `tauCtx.OthersPresent=len(bases)>=2`;③ cutover dbn_fire 块加 `case ok && pFallen < tauCtxHit`→`belief_dbn_veto_risk`(marginal fall 风险抑制)。
+
+**★孤立真摔免疫 veto_risk — 结构核验(非信声明)**:外层入口 = `sh.decider.Update(v)==DecisionFall`(decider 用 base `thFire=TauConfirm.Tau()`=0.55),`confirmed && !sh.fired` 把判决锁**首次确认 tick**(该 tick pFallen≥0.55)。**独处** `tauCtxHit=base=0.55`→`pFallen<0.55` 恒假→**永不被 veto_risk 压=必发**(#9 实证)。**有人在场** τ*=0.671>decider 入口 0.55→仅 [0.55,0.671) marginal 抑制,≥0.671 照发。**结构不变量(钉档)**:孤立免疫依赖 `decider-confirm-阈 == tauCtxHit(OthersPresent=false) base`(现都=TauConfirm.Tau()=0.55);谁改 decider 入口阈或 base τ* 使二者不等,孤立免疫即破——保持二者同源。
+
+**与既往钉死的辨析(防混淆)**:① 委员会曾钉「cutover veto 的 x=否决证据置信阈**非** P(Fallen)(防反向:信心越高越 drop=制造 FN)」——veto_risk 是 `pFallen<τ*→drop`=**信心越低越 drop=正确方向**(就是 fire 阈本身),且作用于 **DBN 自己的 PublishAIAlarm**(机制1=DBN 自报火阈)非**否决 firmware**(机制2=line 45 所指),两机制不同不冲突。② 与「保守起步 ghost/frozen-only」envelope 的关系:veto_risk 由**另一条独立批准**(用户「一切看风险」line 43:「≥2 track:ghost 置信度阈否激进低阈但非0」+「recovery 独处保守/有人激进」)授权,line 43 在 ≥2-track 轴上扩展了早期保守 envelope,P1④ 正是其落地,合规。
+
+**铁律**:R0(整 switch 在 `if dbnFireEnabled`(675)内,默认 OFF→部署零行为变化)✓ / R1(仅 belief_shadow.go+belief/,未碰 alarm 地板)✓ / R5(τ* 是决策层阈非改 belief,pFallen 计算不变;firmware Fall 走 RecordRadarAlarm **ungated** floor 保留,veto_risk 只压 **DBN-sole** marginal)✓ / R7(`othersPresentCFNMult=0.6` 文档化代价常量,标"终值待 P9 标定",同 bathroomCFNMult)✓。
+
+**★实质挑刺 — 驳 overclaim(非橡皮图章)**:commit 称「P1 数学重做完成…gate-list ghost 判决数学替身齐**删 gate-list 硬前置解除**」=**overclaim,驳回**。亲验 `grep VerdictGhost belief_shadow.go`:**ghost 发射源(②,:208 `b.Verdict==VerdictGhost?0.9:0.15`)+ cutover ghost-veto(:685 `fb.Verdict==VerdictGhost`)仍读 gate-list `VerdictGhost`**。P1④ 只完成**代价/耦合轴**(①转移耦合 ②对称发射-**但发射的源仍是 b.Verdict** ③fall 加权 ④context 代价),**ghost「谁是 ghost」的判别仍 100% bootstrap 自 gate-list**。删 gate-list(`bathroom_ghost.go`)的**真正硬前置 = DBN 自有 co-existence 对称计算(复用 `checkMirrorSymmetry` 几何当 feature 直接喂 Ghostness,绕开 `b.Verdict`)未建,仍阻塞**。**「P1 数学重做完成」对代价/耦合轴属实,但「删 gate-list 硬前置解除」错——前置未解除。**
+
+**裁定**:**收 `93139ba`**(P1④ context 代价正确实现「一切看风险」,孤立免疫结构核验通过,bar 绿,R0/R1/R5/R7 守)。**驳 overclaim**:删 gate-list 硬前置(DBN 自有对称)**仍未建仍阻塞**。**下一步施工方 = 建 DBN 自有 co-existence 对称 ghost 检测**(`belief_shadow:208/685` 的 `b.Verdict` 换成 DBN 自算镜像/运动对称,复用 `checkMirrorSymmetry` 几何当 feature)——这才是删 gate-list 真前置;建好才能拆 `bathroom_ghost.go`。last-audited→`93139ba`。
+
 ### [2026-06-09] 施工方 → 委员会：P1④ 落地——DecideTauCtx 的 C_FN 吃 human-presence(风险分层从代价涌现),P1 数学重做四步全完成
 
 按数学规格落 P1④(shadow R0)。**P1 全部四步完成,ghost/long-lie/误报分层/真伪前置全从一个数学模型涌现,无 veto 规则。**
