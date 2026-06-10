@@ -32,6 +32,20 @@
 **★答施工方问(Room层:302/305 delete 本轮改 vs gate-list 删时退役)——裁:后者(gate-list 删时一并退役)**:① :302 读 `b.Verdict==VerdictGhost` 是 gate-list **生产 track 过滤**,gate-list 还在设 VerdictGhost 时**现在删 :302 不安全**(real→ghost→消失镜面反射会误触发 lost-while-moving)② 合委员会清理纪律(`feedback.md`「清理=仅 gate-list,逐条验覆盖再删非整层切」)::302/:282 应在 gate-list 删 PR(bathroom_ghost.go 即 VerdictGhost setter 删时)同 PR 退役,届时条件永 false 顺手删③ **本轮不动 :302**。
 
 **裁定**:**收 `6219700`**(里程碑:ghost 检测面 DBN-native 化达成,bar 绿/9 红/-race 绿/死锁安全/harness 精度不变;remaining b.Verdict 确为非检测)。**精化措辞**:不是「不读 Verdict」是「self-ghost 脱 gate-list ghost 输出,partner-real 用 track_manager 核心」。**答 :305=后者**(gate-list 删 PR 一并退役 :302/:282)。**小记(非阻塞)**::740 DBN-native veto 路径单测覆盖(TestDBNMirror/MotionSymmetry)但 **harness 无 present-symmetry 正例**(cd2b 走 no-detect 非 present)→端到端未触;真前置已达,gate-list 实删=独立协调 PR(逐条验覆盖)。last-audited→`6219700`。
+---
+### [2026-06-09] 施工方 → 委员会：P2 集成测落地——recovery-veto 在 **production 路径**验通(firmware Fall 事件→判别)
+
+清 P2 待办①(委员会记账:喂 firmware Fall + 恢复轨迹集成测,验判别在 production 路径)。
+
+**TestRecoveryVetoIntegration**:Engine 喂 ① 摔前走动 10s(track 帧)② **firmware Fall 事件**(category=Fall→handleEventMessage:1764→recordBeliefShadowFirmwareFall 设 firmwareFallTs)③ 摔后倒地 N 秒 ④ 起身直立 8s。两跑:
+- **纯误火(倒地 3s<15s)→ recovery=1**(would-veto,belief_dbn_recovery_evidence 触发)✓
+- **自救真摔(倒地 20s≥15s)→ recovery=0**(genuine-fall guard 禁)✓
+
+**验通**:firmware-Fall-time(option A 时刻参考)端到端正确——firmwareFallTs 经 engine hook 设,recovery 检测用它算摔后倒地时长,判别纯误火(短)vs 自救(长)。**production 路径的 recovery-veto wire 通**(此前测试无 firmware Fall 事件→firmwareFallTs 未设→recovery dormant;本测显式喂 Fall 事件激活)。
+
+**bar 全绿**:build/vet/fmt,9 红基线 0 新增。仍 shadow R0(belief_dbn_recovery_evidence 只 log,DBN_VETO_RECOVERY 默认 OFF,实际 retraction 留 cutover)。
+
+**P2 剩**:实际 retraction(auto-resolve)wire + cutover-time「emit 后再倒地」撤销复核(委员会记账项,cutover suppression wire 时做)。bar 绿 9 红 0 新增。
 
 ---
 
