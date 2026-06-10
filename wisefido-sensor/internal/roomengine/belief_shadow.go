@@ -650,12 +650,16 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		// 保守 ghost veto（envelope③）+ 默认放行;bed/recovery veto 暂不开。R0 在开关 ON 时结束(计划内)。
 		if dbnFireEnabled {
 			fb, ok := dbnFallerBase(bases, sh)
-			// ★保守 veto 只信**信号级 VerdictGhost**(多径/RCS,firmware/roomengine 定 ghost)。**绝不**用
-			// realLO/present-realness 否——真受害者躺地不动 realLO 同样掉(frozen 同貌)=long-lie 灾难(本会话血泪
-			// 验过,harness t.Errorf 护栏)。realness-ghost 只在 no-detect 路径(belief 已内化);present 倒地默认放行。
-			if ok && fb.Verdict == VerdictGhost {
-				e.logger.Info("belief_dbn_veto_ghost", zap.String("room_id", roomID), // 信号级 ghost 抑制
-					zap.Float64("p_fallen", pFallen), zap.String("p7_3_reason", p7Reason.String()))
+			// ★★ghost 判据 = co-existence（用户铁律,安全包线）：ghost 是真人的反射 → 必有共存的真人 partner
+			// → 画面里 **≥2 track**;**孤立 1 track = 没有被反射的源 = 不可能是 ghost = 一定是真人 → 永远发,绝不否**
+			// (护住 long-lie 躺地不动的真受害者——他越不动越像 frozen,但孤立就证明他是真人)。**绝不**用 realLO/
+			// present-realness 单 track 判 ghost(那把躺地真受害者误判=灾难)。只 **≥2 track 且 faller 是 VerdictGhost**
+			// (gate-list 镜像/运动对称,触发即需另一 Real partner)才否。endgame:DBN 自己的 frozenGhost/realLO 是
+			// 单 track 病根,待重做成 co-existence(找 Real partner),不再依赖 gate-list VerdictGhost。
+			coExist := len(bases) >= 2 // 有共存的 partner(否则孤立 = real)
+			if ok && coExist && fb.Verdict == VerdictGhost {
+				e.logger.Info("belief_dbn_veto_ghost", zap.String("room_id", roomID), // co-existence ghost 抑制
+					zap.Float64("p_fallen", pFallen), zap.String("p7_3_reason", p7Reason.String()), zap.Int("track_count", len(bases)))
 			} else if ok {
 				e.PublishAIAlarm(context.Background(), AIPayload{
 					DeviceAddr: fb.DeviceAddr, RoomID: roomID,

@@ -19,6 +19,20 @@
 **亲跑全绿**:开关 **OFF(默认)build/vet/belief/9 红基线=9/gofmt 全绿**(现状 byte-identical,部署零风险);`TestDBNFireSwitch` PASS(#9 fire=1 veto=0)。`belief_generator_test`(生成器骨架,27b15c2 approve)SKIP(缺 cabb window.json,待数据非阻塞)。
 
 **裁定**:**收(高质量,cutover wire 安全落地)**。**R0 在代码层结束(开关 ON 时),但部署默认 OFF=behavior 仍 shadow**——code ready+switch off+可逆,最干净的 cutover。**真正 cutover=运营翻 `DBN_FIRE=1`**(用户/ops 决策)。**残留(post-cutover 非阻塞)**:① firmware 地板 + DBN 双发同一摔的去重(双报 safe 非漏,留 live 调)② 补 #1/#9 等案 window.json 解封 generator scenario 跑分类验证。last-audited→`6d2d8da`。
+---
+### [2026-06-09] 施工方 → 委员会：★用户纠正 ghost 判据=co-existence(非单 track realness)——cutover veto 加"孤立 1 track 绝不否"安全包线 + endgame ghost 检测重做方向
+
+用户拍正:**ghost 判据是 co-existence 不是 realness**。ghost = 真人的反射 → 必有共存真人 partner → **≥2 track**;**孤立 1 track = 无源 = 不可能 ghost = 真人 → 永远发绝不否**(护 long-lie 躺地真受害者:越不动越像 frozen,但孤立就证明是真人)。**这是我 ghost 检测没做好,不是 veto 用错信号**——更深一层。
+
+**对照实证**:gate-list `checkMirrorSymmetry`/motion_symmetry 触发条件 #1 = **"房间存在另一 verdict=Real 的 track(partner)"** = 正确的 2-track co-existence;DBN 的 `shadowFrozenArtifact(ts *TrackState)`/`shadowTrackGhostness` **只吃单 track** = 病根(把孤立 frozen 真受害者误判 ghost)。
+
+**cutover veto 改(加安全包线)**:`coExist := len(bases) >= 2`;veto 须 `coExist && fb.Verdict == VerdictGhost`(co-existence + gate-list 对称判据)。**孤立 faller → 永远 fire**(显式护 long-lie)。`TestDBNFireSwitch` #9(孤立)仍 dbn_fire=1 veto=0✓,9 红基线 0 新增。
+
+**endgame 方向(在档)**:DBN 自己的 ghost 检测(frozenGhost/realLO 单 track)是病根,gate-list 删后须重做成 **co-existence**(找 Real partner 镜像/运动对称),不再依赖 gate-list VerdictGhost。harness 的 realness-ghost(单 track realLO<.5)同病,一并重审。
+
+**★用户提"误报太多=无用"(关键)**:保守 cutover 只开 ghost veto,**漏掉非 ghost 的 FP**(firmware 误火在**孤立**真人身上、人随后起身=recovery 类)。这类**不是 ghost(孤立)**,co-existence ghost veto 砍不掉。要把 FP 压到可用,需**也开本会话已验的 recovery-veto**(自救判别+track-lost 螺丝,砍纯误火留自救真摔)——委员会原定"暂不开 live 验"。**问委员会**:① ghost 重做成 co-existence(优先,治 long-lie 病根)② 为压 FP(用户"无用"红线),recovery-veto 是否提前开(它已验安全)?bar 绿 9 红 0 新增。
+
+---
 
 ### [2026-06-09] 施工方 → 委员会：★★ cutover wire DBN-fire 进生产 gate(R0 在开关 ON 时结束)——按 6c376e4 五条安全包络 + 验证测当场抓到 long-lie veto bug 并修
 
