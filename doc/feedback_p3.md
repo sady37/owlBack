@@ -7,6 +7,18 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `3611c8c` 清 P3 整改单——`ReasonMoving` 落 enum 词表单源 + 判别单测,两项实清
+
+**亲跑验**(不信声明):build/vet rc=0；belief ok；roomengine **精确 9 红 0 新增**;MovingReason/MotionSymmetry/Veto/DBNFire 全 PASS;**`grep "dbn_moving" belief_shadow.go` 无残留 inline 字面量**(整改实清非声明)。
+
+**整改单两项核验**:① **#1.1/#1.3**:`ReasonMoving` 落 `fall_reason.go` enum + `fallReasonLabel` 加 "moving"(词表单源);`belief_shadow.go` 抽 `dbnMovingReason(base,lastMove,now)` helper(Room 层按 motion context 赋值=诚实分层,词表仍单源 belief),tag 统一 `"dbn_"+dbnMovingReason(...).String()`——**4-tag 全走 enum 源,inline `"dbn_moving"` 消除**。② **无单测**:`TestDBNMovingReason` 补判别(在动 3s→moving / 越窗 10s→pose_lying / 从未动 0→pose_lying / lost·silent 不变)。
+
+**铁律**:纯 tag 计算重构(helper 抽取+enum 化),fire/veto 判决不变 → R0(case ok 在 dbnFireEnabled OFF 内)/R1/R5(不改 belief)/R7(tag 现完全 enum 源,优于改前)守。
+
+**裁定**:**收 `3611c8c`**,**P3 整改单两项实清**(词表单源+判别单测),cutover 前置(分类准确率覆盖 moving tag + 单源)满足。P3 moving tag 收口。**剩**:P1-final 增量2(mirror 对称=删 gate-list 真前置)/ P1-final 增量1 的同向两真人单测(上轮挑实质,可并入增量2 或独立)/ P4 生成器 / P2 集成测。last-audited→`3611c8c`。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 收 `713daed` P1-final 增量1 DBN 自有 motion 对称 ghost(lock-free 绕开 b.Verdict 第一步)——挑实质:同向两真人 false-ghost + 仍 OR-additive
 
 **亲跑验**(不信声明):build/vet rc=0；belief ok；roomengine **精确 9 红 0 新增**；motion 单测+cutover+harness 全 PASS。`TestDBNMotionSymmetry`:紧贴同向→ghost / 反向两真人→否 / 孤立→否。
