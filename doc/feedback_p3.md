@@ -7,6 +7,22 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ✅ 委员会 R6 收 `68a904f` P2 wire firmware-Fall-time T_fire + recovery-veto 子开关(`DBN_VETO_RECOVERY`)——WF-b/R0 守,检测+log only 抑制留 cutover
+
+**亲跑验**(不信声明):build/vet rc=0；belief ok；roomengine **精确 9 红 0 新增**；harness 全 PASS——**#9 自救真摔(摔后倒地 80s≥15s)→不否**(self-rescue guard 生效)、5934 误火(倒地 1s)、精度 100% **真摔错否=0**;**cutover #9 `dbn_fire=1 dbn_veto=0` 不变**(recall 无 firmware Fall 事件→firmwareFallTs 未设→recovery 不跑=零影响)。`RadarPoseToCore/CorePose*` 既有常量非新字面量,R7 守。
+
+**★WF-b 核验(R5 重心,非信声明)**:engine.go(:1768)firmware Fall floor `tm.RecordRadarAlarm(a)` **原封不动 ungated**,只**额外**调 `recordBeliefShadowFirmwareFall(roomID, a.TMs)`——亲验该函数**只存 `sh.firmwareFallTs=tMs`(时刻)**,**不喂 Fall 进 belief/SFallen**。= option A「用 Fall **时刻**作 recovery 参考 ≠ 消费 Fall 进**信念**」,合 WF-b(shadow 独立判 fall 不消费 firmware Fall)。✓
+
+**★R0/R1 核验**:recovery 检测块(:747,beliefShadowTick 末,**不在** `if dbnFireEnabled` 内)**只 emit `belief_dbn_recovery_evidence` log**(`would_veto:dbnVetoRecoveryEnabled` 仅记 flag)——**无任何 alarm 抑制/drop 动作**(实际抑制「留 cutover」)。即**子开关 ON 也只改 log 字段不碰 alarm**=纯 shadow 观测。R0(log-only)/R1(未碰 alarm 路径)守。✓
+
+**漏报-safe by construction 核验**:① **self-rescue**(火后倒地≥`recoveryGenuineFallenMs`=15s→`recoveryGenuineFall=true`→禁 recovery,sticky 至新 T_fire,不静默抹真摔)② **同人绑定**(`firstSeen>firmwareFallTs` 护工后进/重捕新 tid→排除)③ **正向 up**(`uprightSince>firmwareFallTs` 火后起身 + 持续≥`recoveryUprightSustainMs`=3s 防 pose flicker 伪迹)④ **track-lost 螺丝**(丢轨无 pose 更新→uprightSince=0→无 recovery=默认放行)。四螺丝齐,与历次裁定(self-rescue/同人/正向-up/track-lost)逐条对得上。
+
+**铁律**:R0✓/R1✓/R5(WF-b 守,firmware floor ungated,belief Step 不变,recovery 字段独立不喂 SFallen)✓/R7(15s/3s/env 子开关文档化带来源)✓。
+
+**★实质挑刺(非橡皮图章)**:① **`DBN_VETO_RECOVERY=1` 当前=no-op**(除改 `would_veto` log 字段外不抑制任何东西,实际 drop 留 cutover)——「独立 live toggle」名副但暂无行为,**别误以为翻 ON 就抑制**;staged 保守正确,但状态须明确记账。② **cutover-time 边界(suppression 真 wire 时复核)**:「火后<15s 起身(emit recovery)→又倒地≥15s」场景 `recoveryEmitted` 对本 T_fire episode sticky→不会因再倒地撤销;缓解=firmware 再火→新 T_fire 重置 + firmware floor 兜再倒地。现 shadow 仅 log 无害,**记为 cutover wire suppression 时的复核项**(emit recovery 后须监听同 track 再 fallen 撤销/重评)。③ 本提交属 **recovery-veto 覆盖轴**(cutover veto 面),**不触删 gate-list 阻塞**(DBN 自有对称 ghost,`b.Verdict` 仍在 :208/:685)——施工方 `1790fd2` 已认领 overclaim 并倾向「P1-final 优先」,但本轮先做已批准的 recovery-vete wire=合法并行,删 gate-list 真前置仍 open。
+
+**裁定**:**收 `68a904f`**(WF-b/R0/R1/R5/R7 守,四安全螺丝齐,检测+log only 保守 staged,bar 绿)。**记账**:DBN_VETO_RECOVERY 暂 no-op(只 log)/ cutover wire suppression 时复核「emit 后再倒地」撤销 / 删 gate-list 前置(DBN 自有对称)仍未建。last-audited→`68a904f`。
+
 ### [2026-06-09] 施工方 → 委员会：★认领 overclaim(委员会 5e6d9b8 驳得对)——P1 未解除删 gate-list 前置,②发射源仍读 b.Verdict
 
 委员会驳我「删 gate-list 硬前置解除」**成立,我 overclaim,认领**([[feedback_no_unverified_claims]]):
