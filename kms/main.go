@@ -42,8 +42,9 @@ func main() {
 	recoverMode := flag.Bool("recover", false, "Recover KMS from archive")
 	pin := flag.String("pin", "", "PIN for MW GPG encryption")
 	archivePath := flag.String("archive", "", "Archive file path")
-	mwToken := flag.String("mw-token", "", "MW token for archive decryption")
-	masterPinFlag := flag.String("master-pin", "", "Master PIN")
+	mwToken := flag.String("mw-token", "", "MW cell that seals the existing archive (= its filename date's cell)")
+	resealToken := flag.String("reseal-token", "", "MW cell to seal the NEW archive (today's cell)")
+	masterPinFlag := flag.String("master-pin", "", "Master PIN — online /tenant-key auth only, never seals disk")
 	socketPath := flag.String("socket", "/tmp/owl-kms.sock", "Unix socket path")
 	vaultDir := flag.String("vault-dir", "owlBack/vault", "Vault directory")
 	outDir := flag.String("out-dir", "owlBack/out", "Output directory")
@@ -65,13 +66,13 @@ func main() {
 		if mp == "" {
 			mp = os.Getenv("MASTER_PIN")
 		}
-		if *archivePath == "" || *mwToken == "" || mp == "" {
-			log.Fatal("--archive, --mw-token, --master-pin required")
+		if *archivePath == "" || *mwToken == "" || *resealToken == "" || mp == "" {
+			log.Fatal("--archive, --mw-token (unseal: this archive's filename-date cell), --reseal-token (today's MW cell), --master-pin required")
 		}
-		kms.doRecover(mp, *mwToken, *archivePath, *vaultDir)
+		kms.doRecover(mp, *mwToken, *resealToken, *archivePath, *vaultDir)
 	} else {
-		fmt.Println("Usage: owl-kms --init --pin <PIN>")
-		fmt.Println("       owl-kms --recover --archive <path> --mw-token <token> --master-pin <pin>")
+		fmt.Println("Usage: owl-kms --init --pin <GPG-PIN>")
+		fmt.Println("       owl-kms --recover --archive <path> --mw-token <unseal-cell> --reseal-token <today-cell> --master-pin <pin>")
 		os.Exit(1)
 	}
 	kms.serve(*socketPath)
@@ -128,26 +129,37 @@ func (k *KMS) doInit(pin, vaultDir, outDir string) {
 	fmt.Printf("  → Add to .env: KMS_SOCKET=/tmp/owl-kms.sock\n")
 }
 
-func (k *KMS) doRecover(masterPin, mwOldToken, archivePath, vaultDir string) {
-	data, _ := os.ReadFile(archivePath)
+func (k *KMS) doRecover(masterPin, unsealToken, resealToken, archivePath, vaultDir string) {
+	data, err := os.ReadFile(archivePath)
+	if err != nil {
+		log.Fatalf("read archive %s: %v", archivePath, err)
+	}
 	var arc Archive
-	json.Unmarshal(data, &arc)
+	if err := json.Unmarshal(data, &arc); err != nil {
+		log.Fatalf("parse archive %s: %v", archivePath, err)
+	}
 	k.deploymentSalt, _ = base64.StdEncoding.DecodeString(arc.Salt)
 	wrappedBytes, _ := base64.StdEncoding.DecodeString(arc.Wrapped)
-	masterKey, _, err := crypto.UnwrapMasterKey(wrappedBytes, mwOldToken)
+	masterKey, _, err := crypto.UnwrapMasterKey(wrappedBytes, unsealToken)
 	if err != nil {
-		log.Fatalf("unwrap failed (wrong MW token?): %v", err)
+		log.Fatalf("unseal failed (wrong MW cell for this archive's date?): %v", err)
 	}
+	defer zeroBytes(masterKey)
+
+	// master_pin wraps the in-memory copy ONLY — it is the online /tenant-key auth gate,
+	// never the disk seal. Disk stays MW-sealed so KMS death always requires the offline table.
 	k.masterKeyPGP, _ = crypto.WrapMasterKey(masterKey, masterPin, "v1")
-	newWrapped, _ := crypto.WrapMasterKey(masterKey, masterPin, "v1")
-	newArc := Archive{Version: "OWLKMS1", CreatedAt: time.Now().UTC().Format(time.RFC3339), Salt: arc.Salt, Wrapped: base64.StdEncoding.EncodeToString(newWrapped)}
+
+	// Reseal disk with today's MW cell: each recover rotates the seal so a once-seen cell
+	// expires at the next restart. Filename date == the cell that seals it (see doc §4).
+	reWrapped, _ := crypto.WrapMasterKey(masterKey, resealToken, "v1")
+	newArc := Archive{Version: "OWLKMS1", CreatedAt: time.Now().UTC().Format(time.RFC3339), Salt: arc.Salt, Wrapped: base64.StdEncoding.EncodeToString(reWrapped)}
 	newJSON, _ := json.MarshalIndent(newArc, "", "  ")
 	newPath := filepath.Join(vaultDir, fmt.Sprintf("master_key-%s.json", time.Now().Format("20060102")))
 	os.WriteFile(newPath, newJSON, 0600)
-	zeroBytes(masterKey)
 	cleanupArchives(vaultDir, 2)
-	auditLog("recover", "", fmt.Sprintf("from=%s new=%s", archivePath, newPath))
-	fmt.Printf("KMS recovered. New archive: %s\n", newPath)
+	auditLog("recover", "", fmt.Sprintf("from=%s new=%s seal=mw", archivePath, newPath))
+	fmt.Printf("KMS recovered. New archive (MW-sealed): %s\n", newPath)
 }
 
 func (k *KMS) serve(socketPath string) {

@@ -56,10 +56,14 @@ owl-common/server.crt
 owl-common/server.key
 owl-common/cert/
 
-# KMS secrets (per-machine)
+# KMS secrets (per-machine) — never commit key material, any location
 kms/master_key*.json
 kms/mw.*
 kms/owl-kms
+kms-backup/
+**/master_key-*.json
+**/mw.pgp
+**/mw.md
 vault/
 
 # MQTT TLS (per-env)

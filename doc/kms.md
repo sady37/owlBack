@@ -1,7 +1,54 @@
 # KMS (owl-kms) — PHI 加密密钥服务
 
-> 本文基于源码 [owlBack/kms/main.go](../kms/main.go) + [owl-common/crypto/wrap.go](../owl-common/crypto/wrap.go) 重建。
+> 本文基于源码 [owlBack/kms/main.go](../kms/main.go) + [owl-common/crypto/wrap.go](../owl-common/crypto/wrap.go)。
 > 原始设计文档 `owl/kms.md (v2)`（commit 10f8e16 引用）已丢失，本文替代之。
+>
+> **2026-06-10 设计复位**：早前 `doRecover` 用 master_pin 重封盘上 archive，使 master_pin（盘上常驻）单独即可解封 KMS——离线第二因子被架空（偷盘=拿 PHI）。已改回原始设计：**盘上 archive 始终用 MW 格子封，每次重启必须人工查离线表解封，master_pin 退回纯在线 `/tenant-key` 认证、绝不碰盘**。同日完成数据迁移（archive 重封为 MW，销毁所有 master_pin 封残档 + 自动解封旁路 + 明文 MW 表）。
+
+---
+
+## 0. 原理与心智模型（先读这节，后面就不会记反）
+
+### 0.1 解密链：PHI 是被谁解开的
+
+```
+   ── 解封（每次重启，离线人工）────────────────────────────────
+   盘上 archive ──[ MW 格子 解封 ]──▶  masterKey
+   master_key-*.json                 （32B，只在 K 内存，永不落盘、永不变）
+                                            │
+   ── 取钥（serve 时，在线，每 tenant 一次）──┤
+   业务请求带 master_pin ─[ 解开内存 masterKeyPGP ]┘
+                                            │
+                          + deploymentSalt + tenant_id ,  HKDF-SHA256
+                                            ▼
+                                       tenant_key（每 tenant 一把，32B）
+                                            │
+                                       AES-256-GCM
+                                            ▼
+                                  resident_phi.*_enc（库里密文）
+```
+
+**两道闸守着同一个 masterKey**：离线闸（MW 格子，重启时把 masterKey 载入内存）、在线闸（master_pin，serve 时凭它取用）。PHI 始终由 **masterKey**（经 tenant_key）解开——archive 本身不解 PHI，它只是 masterKey 的保险箱。
+
+### 0.2 四件套：什么变、什么不变、在线还是离线
+
+| 东西 | 变不变 | 在哪 | 角色 |
+|---|---|---|---|
+| **masterKey** | **永不变**（变=全库 PHI 报废） | 只在 K 内存 | 解所有 PHI 的根钥（经 tenant_key） |
+| **deploymentSalt** | **永不变** | 随 archive 存（`arc.Salt`） | tenant_key 派生的固定 salt |
+| **archive** (`master_key-*.json`) | 文件名/封印格**每次重启轮换**；**里面 masterKey 永远同一个** | 盘上 + **异地备一份** | 锁着 masterKey 的保险箱 |
+| **MW 格子** | **每次重启轮换 → 近一次性** | 离线纸表 / `mw.pgp` | 开保险箱的**离线**钥匙 |
+| **master_pin** | **静态常驻、不过期、可重置** | `.env`（盘上） | **在线**认证：业务取 tenant_key + 封内存副本 |
+
+### 0.3 三条反直觉但关键（最易记反）
+
+1. **master_pin 是"外层口令"不是 salt**。它是 Argon2id 的 passphrase（[wrap.go:21](../owl-common/crypto/wrap.go#L21)），派生出 AES key 去**封内存里的 masterKey**；不参与 tenant_key 派生。改它 = 用新口令重封同一个 masterKey，**数据一字不动** → 任意一次重启都能换（代价：同步各业务 `.env`）。
+
+2. **任一份 archive 永久够用**。任何一份（哪怕旧的）archive + 它**文件名日期**那格 MW = 解出**同一个** masterKey = 解**全部** PHI（含以后才写入的）。所以离线**备一份就一劳永逸**，不必追最新那份。
+
+3. **静态的是 master_pin，轮换/一次性的是 MW 格子**——别对调。master_pin 跨重启永远同一个字符串、不会"失效"；每次重启要重查的是 MW 格子。
+
+> **双因子真义**：在线=master_pin（盘上）、离线解封=MW 格子（盘外）。**盘上没有任何能自动解封的凭证 → 偷整盘 ≠ 拿 PHI**。这就是 2026-06-10 设计复位守住的核心不变量。
 
 ---
 
@@ -34,11 +81,14 @@
 
 | 凭证 | 长度/来源 | 保管位置 | 生命周期 | 角色 |
 |---|---|---|---|---|
-| **master_pin** | 8 字符随机 ([main.go:83 `randAlphanumeric(8)`](../kms/main.go#L83)) | `.env: MASTER_PIN` | **init 一次生成，永不变** | 日常运维凭证：业务进程认证、archive 加解密 |
-| **MW 表** | 12 行 × 7 列，每格 6 字符 base32 | `kms/mw.pgp` (GPG 加密) + 客户纸质件 | **init 一次生成，永不变** | 灾难恢复跳板：解开 init archive |
-| **GPG PIN** | 用户自定义口令 | 运维记忆 / 密码管理器 | 永久 | 解 mw.pgp |
+| **master_pin** | 8 字符随机 ([main.go:83 `randAlphanumeric(8)`](../kms/main.go#L83)) | `.env: MASTER_PIN` | init 生成；**可重置**（只是在线口令，不封 masterKey） | **仅在线认证**：业务进程调 `/tenant-key` 的口令、封 K 内存里的 masterKeyPGP。**绝不解封盘上 archive** |
+| **MW 表** | 12 行 × 7 列，每格 6 字符 base32 | `kms/mw.pgp` (GPG 加密) + 客户纸质件 | **init 一次生成，永不变** | **唯一解封钥匙**：每次 KMS/服务器重启，用离线表查格子解盘上 archive；每次重启轮换格子 |
+| **GPG PIN** | 用户自定义口令（`--init --pin`） | 运维记忆 / 密码管理器 | 永久 | 解 `mw.pgp` 看到 MW 表 |
 
-**双因素互锁**：日常重启需 `master_pin + 任一 archive`；灾难恢复需 `MW 表 + GPG PIN + init archive 备份`。
+**职责分离（非"盘上双因子"）**：
+- **在线服务**（K 活着）：业务凭 `master_pin` 取 tenant_key。master_pin 的效力**绑定在"K 已解封"的活会话上**。
+- **解封**（K 死/重启）：K 内存清空 → masterKey 没了 → **master_pin 单独无能为力**，必须人工查 **MW 表** 解盘上 archive，把 masterKey 重新载入内存。这是离线人工因子，盘上没有任何能自动解封的东西。
+- **致命口令排序**：丢 master_pin = 不致命（重置一个新的，更新 `.env` + recover 时 `--master-pin` 传新值即可，masterKey 不动）。丢 **MW 表 + GPG PIN** 且无 archive 异地备份 = **masterKey 永久无法解封，全部 PHI 报废**。
 
 ---
 
@@ -65,31 +115,34 @@
 - `<out-dir>/mw.pgp` — 12×7 MW 表，**用 GPG PIN 加密**
 - stdout 提示把 `MASTER_PIN=<8字符>` 与 `KMS_SOCKET=/tmp/owl-kms.sock` 写入 `.env`
 
-**为何 init archive 用 MW token 而非 master_pin？**
-让 init archive 成为"灾难恢复跳板"：即便 `.env` 丢失（master_pin 没了），只要还有 init archive + MW 纸质表 + GPG PIN，就能解出 masterKey、重建 master_pin 体系。
+**为何盘上 archive 用 MW token 而非 master_pin？**
+解封必须是离线人工因子。master_pin 在 `.env`（盘上），若它能解盘上 archive 就等于偷盘=拿 PHI。所以盘上 archive 一律 MW 封（init 与之后每次 recover 同理，详 §3.2）；master_pin 仅封内存副本作在线认证，且**可重置**——`.env` 丢了只是重新定一个新 master_pin，masterKey 不受影响。
 
 ### 3.2 `--recover` （K 重启 / 服务器重启）
 
-[main.go:131-151 doRecover()](../kms/main.go#L131-L151)：
+[main.go doRecover()](../kms/main.go#L131)。**两个 MW 格子,由运维当场查离线表提供**:`--mw-token` 解旧、`--reseal-token` 封新。
 
 ```
-1. masterPin: 来自 --master-pin flag 或 fallback 到 env MASTER_PIN  (不重新生成)
-2. 读 archive 文件 → 反序列化
-3. masterKey = UnwrapMasterKey(archive.Wrapped, mwOldToken)
-   ↑ mwOldToken 必须是 archive 创建那天对应的 MW 单元格
-     — init archive 用 MW 加密 → 传 init 当日 MW token
-     — recover archive 用 master_pin 加密 → 传 master_pin（参数名虽叫 mw-token）
-4. masterKeyPGP = WrapMasterKey(masterKey, masterPin)       ← 内存
-5. newArchive   = WrapMasterKey(masterKey, masterPin)       ← 写新 archive（master_pin 包装）
+1. masterPin: --master-pin flag 或 fallback env MASTER_PIN   (仅用于步骤 4 的内存封装)
+2. 读 archive 文件 → 反序列化（失败即 fatal）
+3. masterKey = UnwrapMasterKey(arc.Wrapped, unsealToken)
+   ↑ unsealToken(--mw-token) = 该 archive **文件名日期**对应的 MW 格子
+     GCM 带认证：格子错 → "unseal failed: message authentication failed" 当场报错
+4. masterKeyPGP = WrapMasterKey(masterKey, masterPin)        ← 内存（在线认证闸，master_pin 封）
+5. reWrapped    = WrapMasterKey(masterKey, resealToken)      ← 盘上新 archive（**MW 格子封**）
+   ↑ resealToken(--reseal-token) = **今日**那格 → 每次重启轮换封印
 6. 写 <vault-dir>/master_key-<今日>.json
-7. cleanupArchives(vaultDir, keep=2)                        ← 按文件名字典序保留最新 2 份
+7. cleanupArchives(vaultDir, keep=2)                         ← 按文件名（=日期）字典序留最新 2 份
 8. zero(masterKey)
 ```
 
-**为何 recover archive 用 master_pin？**
-recover 之后的 archive 是"日常重启钥匙"——只要 `.env` 在，master_pin 永远不变，就能解开任何后续 archive。**MW 表只在 init archive 上有用**，recover 写出的新 archive 不再绑 MW，是因为 master_pin 已经是"运维知道的常驻口令"。
+**为何盘上 archive 始终 MW 封、且每次轮换？**
+- **始终 MW 封**：解封是离线人工因子。master_pin 在盘上（`.env`），若它能解盘上 archive，就等于"偷盘=拿 PHI"，离线因子失效。所以 master_pin 只封步骤 4 的**内存**副本（在线认证用），**绝不**封盘上 archive。
+- **每次轮换（用今日格而非复用一格）**：让"抄到一次格子"的人在下次重启后失效——能持续恢复必须持续能查离线表，而非一次性记忆。固定一格则一次泄露=永久可解。
 
-> ⚠️ **cleanupArchives 副作用**：保留最新 2 份是按文件名（=日期）字典序。第 2 次 recover 之后，**init archive 会被删除**！如果想保留 MW 灾备能力，必须在 init 后立刻把 `master_key-<init日期>.json` **异地备份**，然后允许本地 cleanup 删它也无妨。
+> **masterKey 永不变**：步骤 3 解出、步骤 5 原样重封，deploymentSalt 复用 `arc.Salt`。"轮换"换的只是外层封印格子，masterKey 与 salt 一字不动——否则全库 PHI 解不开。
+
+> ⚠️ **单点 + cleanup**：archive 每次轮换、`keep=2` 只留最新 2 份本地。整盘丢失即 masterKey 没了 → **必须异地备份至少一份 MW 封 archive + 记下它的日期（=解它的格子）+ mw.pgp + GPG PIN**。这是唯一的灾难恢复底牌。
 
 ### 3.3 `serve` 模式（持续运行）
 
@@ -112,16 +165,25 @@ recover 之后的 archive 是"日常重启钥匙"——只要 `.env` 在，maste
 
 ## 4. MW 表查表规则
 
-[main.go:219-226 mwToken()](../kms/main.go#L219-L226)：
+每格由 [main.go mwToken()](../kms/main.go#L219) 算出（KMS 自己不持种子、不算格子——只有持 mw.pgp/纸表的人能查）：
 
 ```
 mwToken(seed, month, isoWd) = upper(base32(SHA256(seed || month_byte || isoWd_byte))[:6])
 ```
 
-- `month`: 1~12
-- `isoWeekday`: 周一=1, 周二=2, …, **周日=7**（不是 0）
+- `month`: 1~12 ；`isoWeekday`: 周一=1 … **周日=7**（不是 0）
+- 只有 12×7 = 84 个格子，按 (月 × 周几) 定位。
 
-例：archive 创建于 2026-04-17 (Friday) → 查 MW 表 `Apr × Fri` 单元格 = `FCKE7K`。
+**每次 recover 查两格**（运维从离线 mw.pgp / 纸表读）：
+
+| 参数 | 查哪一格 | 用途 |
+|---|---|---|
+| `--mw-token`（解） | **现有 archive 文件名日期**对应的 (月×周几) | 解开盘上 archive |
+| `--reseal-token`（封） | **今天**的 (月×周几) | 重封新 archive（轮换） |
+
+> 因为 recover 总用"今日格"重封、文件名也用今日日期，所以**不变量成立**：任何 archive 的封印格 == 它文件名日期的格。下次解它,照文件名日期查表即可。
+>
+> **禁止把真实格子值写进任何受版本控制的文件**（含本 doc）。格子值只在离线纸表 / GPG 封的 mw.pgp 里。示例一律用占位 `<XXXXXX>`。
 
 ---
 
@@ -130,15 +192,16 @@ mwToken(seed, month, isoWd) = upper(base32(SHA256(seed || month_byte || isoWd_by
 | 路径 | 来源 | 说明 |
 |---|---|---|
 | [owlBack/kms/owl-kms](../kms/owl-kms) | `go build` | 二进制 |
-| [owlBack/kms/main.go](../kms/main.go) | 源码 | 248 行单文件 |
-| owlBack/kms/master_key-20260417.json | `--init` (本机首次) | init archive (用 FCKE7K = Apr×Fri MW token 加密) |
-| owlBack/kms/master_key-YYYYMMDD.json | `--recover` 后续产生 | recover archive (用 master_pin 加密) |
-| owlBack/kms/mw.pgp | `--init` | GPG 加密的 12×7 MW 表 |
+| [owlBack/kms/main.go](../kms/main.go) | 源码 | 单文件 |
+| owlBack/kms/master_key-YYYYMMDD.json | `--recover` 每次产生 | archive，**MW 格子封**（封它的格 = 文件名日期那格），`keep=2` 滚动 |
+| owlBack/kms/mw.pgp | `--init` | GPG PIN 加密的 12×7 MW 表（**git-ignored，不入库**） |
 | /tmp/owl-kms.sock | `serve` 时创建 | unix socket，0660 |
 | log/unseal_audit.log | `serve` 全程 | init/recover/tenant-key 审计 |
-| .env | 人工 | `MASTER_PIN=...`, `KMS_SOCKET=/tmp/owl-kms.sock` |
+| .env | 人工 | `MASTER_PIN=...`（仅在线认证）, `KMS_SOCKET=/tmp/owl-kms.sock` |
 
-> **vault-dir 一致性**：本机 init 时人工传了 `--vault-dir owlBack/kms`，所以 init archive 在 `kms/` 而不是默认的 `vault/`。recover 时务必也传 `--vault-dir owlBack/kms`，否则新 archive 散到 `vault/` 目录、cleanupArchives 也作用不到 init archive 那个目录。
+> **已废除（2026-06-10 移除）**：`kms/.kms-secrets`（盘上存 token 供自动解封）、`scripts/systemd/owl-kms-run.sh`（自动喂 token 的 wrapper）。二者把 MW 离线因子架空，与原设计冲突，已删。`owl-kms.service` 因此**不再能自动解封**——重启后需人工跑 recover（场景 B）。
+
+> **vault-dir 一致性**：本机 `--vault-dir owlBack/kms`（非默认 `vault/`）。recover 必须传同一 `--vault-dir owlBack/kms`，否则新 archive 散到别处、cleanupArchives 也管不到。
 
 ---
 
@@ -152,90 +215,89 @@ mwToken(seed, month, isoWd) = upper(base32(SHA256(seed || month_byte || isoWd_by
 sudo systemctl restart owlback.data
 ```
 
-### 场景 B：K 服务重启 / 服务器 reboot
+### 场景 B：K 服务重启 / 服务器 reboot（**人工 MW 解封，无自动恢复**）
 
-需要：
-- `.env` 里的 `MASTER_PIN`（一直在）
-- 最新一份 archive 文件
-- **archive 创建那天**对应的"解锁口令"：
-  - 如果还在用 init archive → 查 mw.pgp 找 init 当日 MW token
-  - 如果是 recover archive → 直接用 `MASTER_PIN`（master_pin 既是运维认证、又是 archive 解锁）
+K 内存清空 → 必须人工查离线 MW 表解封。需要：
+- 能读 MW 表（手头纸表，或用 **GPG PIN** 解 `mw.pgp`）
+- `.env` 的 `MASTER_PIN`（仅用于封内存、让业务能认证）
+- 最新一份 archive（看文件名日期）
 
 ```bash
-# 1. (仅 init archive 时需要) 解 mw.pgp 查 token
-gpg --batch --yes --output /tmp/mw.md --decrypt owlBack/kms/mw.pgp
-cat /tmp/mw.md      # 找到对应 month × isoWeekday 单元格
-shred -u /tmp/mw.md
+cd /home/wisefido/owl/owlBack
 
-# 2. 启动恢复（注意 --vault-dir 与 init 时一致）
-nohup owlBack/kms/owl-kms --recover \
-  --archive owlBack/kms/master_key-20260417.json \
-  --vault-dir owlBack/kms \
-  --mw-token <init当日MW单元格 或 .env的MASTER_PIN> \
-  --master-pin <.env的MASTER_PIN> \
-  > log/kms.out 2>&1 &
-disown
+# 1. 取 MW 表（若无纸表）——读完即焚
+gpg --batch --yes -o /tmp/mw.md -d kms/mw.pgp && cat /tmp/mw.md && shred -u /tmp/mw.md
 
-# 3. 验证 socket 在线
-curl -s --unix-socket /tmp/owl-kms.sock http://localhost/health
-# {"status":"ok"}
+# 2. 查两格：
+#    ① 解格 = 最新 archive 文件名日期的 (月×周几)
+#    ② 封格 = 今天的 (月×周几)
+LATEST=$(ls -1 kms/master_key-*.json | tail -1)   # 文件名字典序=日期序
 
-# 4. 业务进程重连
+# 3. 解封 + 重封（master_pin 只封内存）
+nohup kms/owl-kms --recover --archive "$LATEST" --vault-dir kms \
+  --mw-token     <①解格 XXXXXX> \
+  --reseal-token <②今日格 XXXXXX> \
+  --master-pin   <.env MASTER_PIN> \
+  > log/kms.out 2>&1 & disown
+sleep 1
+
+# 4. 验证在线
+curl -s --unix-socket /tmp/owl-kms.sock http://localhost/health   # {"status":"ok"}
+
+# 5. 业务重连（reboot 后 owlback 已自启但 KMS 当时还没起，必须重启让它重连）
 sudo systemctl restart owlback
 ```
 
-> 本机首次 reboot 后的 token = `FCKE7K` (Apr 17 = Apr × Fri)；
-> 之后用 recover archive 时 token = `FtjPuGB8` (`.env` MASTER_PIN)。
+> **解格错** → 步骤 3 当场 `unseal failed: message authentication failed`，不会有任何破坏，查对再来。
+> **封格错（typo）** → 本次能起，但下次按"今日格"解不开新档；靠 `keep=2` 退回上一份档（用它文件名日期的格解）。所以**封格务必从离线表照抄**。
+> **顺序**：先 KMS（场景 B），再 `restart owlback`。reboot 时 owlback 自启、owl-kms 不自启，业务会先起来连不上 socket。
 
 ### 场景 C：首次部署（一次性）
 
 ```bash
-cd /home/wisefido/owl/owlBack
-go build -o kms/owl-kms ./kms
+cd /home/wisefido/owl/owlBack/kms && go build -o owl-kms . && cd ..
 
-./kms/owl-kms --init --pin <你定的 GPG 口令> \
-  --vault-dir kms --out-dir kms
+./kms/owl-kms --init --pin <你定的 GPG 口令> --vault-dir kms --out-dir kms
 
-# 把 stdout 输出的 master_pin 写 .env
+# stdout 打印的 master_pin 写 .env（仅在线认证口令）
 echo "MASTER_PIN=<打印的8字符>" >> .env
 echo "KMS_SOCKET=/tmp/owl-kms.sock" >> .env
 
-# 解出 mw.md 打印 12×7 表交付客户纸质件
-gpg --batch --yes --output /tmp/mw.md --decrypt kms/mw.pgp
-cat /tmp/mw.md   # 客户打印归档
-shred -u /tmp/mw.md
+# 解出 mw.md 打印 12×7 表交付客户纸质件，读完即焚
+gpg --batch --yes -o /tmp/mw.md -d kms/mw.pgp && cat /tmp/mw.md && shred -u /tmp/mw.md
 
-# 把 init archive 异地备份（重要！cleanup 会在第 2 次 recover 后删它）
-cp kms/master_key-$(date +%Y%m%d).json /backup/异地/
+# 异地备份（灾备必需）：一份 MW 封 archive + mw.pgp，并记下 archive 文件名日期
+cp kms/master_key-$(date +%Y%m%d).json kms/mw.pgp /backup/异地/
 
-# K 进入 serve 模式（init 完会自动 serve；如已退出，用场景 B 的 recover 流程）
+# init 完自动 serve；之后每次重启走场景 B
 ```
 
-### 场景 D：灾难恢复（`.env` 丢 / 全盘重装）
+### 场景 D：灾难恢复（全盘重装 / 本地 archive 全丢）
 
-需要异地备份的：
-1. `kms/master_key-<init日期>.json` (init archive)
-2. 客户提供的纸质 MW 表
-3. 运维记忆/密码管理器里的 master_pin
+需要异地备份的（三选其备齐）：
+1. 一份 **MW 封 archive** + **它的文件名日期**（决定解它用哪格）
+2. **MW 表**：纸质件，或 `mw.pgp` + **GPG PIN**
+3. ~~master_pin~~ **不需要**——它只是在线口令，恢复时**现取一个新值**即可
 
 ```bash
-# 1. 把 init archive 拿回来放回 owlBack/kms/
-# 2. 重建 .env
-echo "MASTER_PIN=<记忆中的8字符>" >> .env
+# 1. 把异地 archive 放回 owlBack/kms/，记下它的日期 D
+# 2. 重建 .env（master_pin 随便定一个新的，与下面 --master-pin 一致即可）
+echo "MASTER_PIN=<新定一个8字符>" >> .env
 echo "KMS_SOCKET=/tmp/owl-kms.sock" >> .env
-# 3. 跑场景 B 的 recover，--mw-token 用 init 当日的 MW 单元格
+# 3. 查表：--mw-token = 日期 D 的格；--reseal-token = 今日格；跑场景 B 的 recover
 ```
 
-> 如果 master_pin 也忘了——那就只能新 init 了，**所有已加密的 PHI 数据无法恢复**。所以 master_pin 必须有可靠的离线副本（密码管理器导出加密份）。
+> **致命损失边界**:archive **与** (MW 表/mw.pgp+GPG PIN) **同时全丢** = masterKey 永久无法解封 → **全部 PHI 报废**，只能新 init（旧密文成废数据）。所以异地必须同时备 archive + mw.pgp，且 GPG PIN 有可靠离线副本。
+> **反之 master_pin 丢了不致命**——它不封 masterKey，重置即可。这正是设计复位后的关键改进：盘上常驻口令不再是单点解密钥匙。
 
 ---
 
 ## 7. 安全约束
 
-- `.env` 在 `.gitignore`，master_pin 不入 git
-- mw.pgp 入 git 是可接受的（GPG 对称加密，PIN 不在仓库）
-- master_pin 永不落日志、永不落审计记录
-- masterKey 永不以任何形式落盘
+- **盘上无自动解封凭证**：archive 始终 MW 格子封；master_pin 只封内存副本（在线认证），单独解不开盘上任何 archive。验证：用 master_pin 当 `--mw-token` 解档应 `message authentication failed`。
+- **MW 格子值禁止落任何受控文件**（含本 doc）；只在离线纸表 / GPG 封的 mw.pgp 里。
+- `.env`、`mw.pgp`、`master_key-*.json` 均 `.gitignore`，不入 git
+- master_pin 永不落日志、永不落审计记录；masterKey 永不以任何形式落盘
 - tenant_key 仅在业务进程内存，进程退出即清除
 - unix socket 0660，仅同组可读写
 - 审计日志 `log/unseal_audit.log` 记录所有 init / recover / tenant-key 调用
@@ -301,7 +363,7 @@ KMS 代码在 owlBack 仓库**只有一个 commit**：
 ```
 10f8e16  feat: PHI encryption — K service + AES-256-GCM full-field encryption
          Author: sady37   Date: 2026-04-17 00:26:46 -0700
-         Files: kms/{go.mod, go.sum, main.go} (264 行)
+         Files: kms/{go.mod, go.sum, main.go}
 ```
 
-之后无任何修改。本文档替代丢失的 `owl/kms.md (v2)`，作为权威设计 + 操作参考。
+**2026-06-10 设计复位**（doRecover）：盘上 archive 改回 MW 格子封、`--mw-token`/`--reseal-token` 分离、master_pin 退出解封路径。同日迁移既有 archive + 销毁 master_pin 封残档/自动解封旁路/明文 MW 表。本文档替代丢失的 `owl/kms.md (v2)`，作为权威设计 + 操作参考。
