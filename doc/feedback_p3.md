@@ -7,6 +7,20 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-10] 施工方 → 委员会:**alarm_level 单源归 cardagg**(非 DBN,横切修复;用户多轮 steer 拍定)— commit `c72f415` 已 push
+
+**性质**:与 DBN 正交的 alarm 流水线修复。起于线上巡查发现 radar Fall 报 `EMERG`(用户疑应 CRITICAL)。逐层查证 + 用户多轮拍定后落地。R0 不涉 DBN/belief。
+
+**根因(代码实证)**:`alarm_level` **本不在 `IoTStreamMessage` envelope 定义里**(message_types.go:56,只是 payload 字段)→ 它是 cardagg 写库时**从 device_config 派生**的属性,非 producer 契约。但旧码:sensor producer 盖 `Registry.DefaultLevel`(engine.go),cardagg platform-agent 分支(alarm_router:144-146)用 producer 盖的 level **覆盖**掉自己 `Resolve` 算出的设备配置 level → 设备 `device_config.alarm_items` 里配的 level(生成时填 default)被忽略。sleepace(设备直发,非 platform-agent)反而对——它走 `Resolve`(router_adapters.go:15 读 device_config)→ 拿到正确 level,是「producer 不盖 level 也对」的活证。
+
+**架构定论(由 message/stream 定义推出,非推测)**:`device_config.alarm_items[]` 每条三字段各归各层,全是同一张表只读消费——`is_enabled`→各 producer 源头自管(sensor / sleepace-service,决定发 alarm vs event)/ `duration_sec/min`→sensor(跑时间型 FSM:LeftBed/NightAbsence/Stay)/ **`alarm_level`→cardagg 单点**(写 alarm_events 时 `Resolve(envelope.device_addr,…)`,**按设备查,与 producer 无关** → device-direct 与 platform-agent 同源)。alarm 唯一流 = `iot:alarm:stream`(无 sensor:alarm:stream)。
+
+**改动(commit `c72f415`)**:① cardagg alarm_router 删 platform-agent producer-level override → 走 Resolve 设备配置 level;② 删 Registry 兜底(Resolve 内部 + 主路径;device_config 已填 default,空=配置缺陷 LOG+drop 不静默);③ sensor engine.go 停止盖 level;④ zonealarm 死 level 级联清除(Rule.Level struct+yaml / FireEvent.Level / evaluator / alarm_firer / PublishAlarmFire 签名 / DeviceFailureEmitter 接口 / sleepstage caller+test / mergeTriggerData / zone_alarm.yaml)。**device-class**(Offline/Signal/Angle/Detached,gateway 直发不经 sensor、不在 alarm_items、在 `offlinealarm` 字段 DEFAULT 'ERROR')分支**保留** Registry default(== offlinealarm 默认,删了会落空 level)。
+
+**bar**:cardagg + sensor build/vet/test 全绿;roomengine **9 红基线不变**。**未决(交用户/后续)**:device-class level 是否改读 `offlinealarm` 字段以支持租户自定义(当前 Registry ERROR == 默认,功能无差,独立小改)。
+
+---
+
 ### [2026-06-10] ⚠️ 4-case DBN 复核 — ★方法纠正:test harness 不可信,必须 replay(用户拍)
 
 **任务**:DBN 跑 4 真 case 给结果——#1 `bedtest-0605-1`(101/9e7 床边摔,雷达误识 chair,firmware 漏)/ #2 `bedtest-0605-2`(101 床边摔靠床,sleepad 检 HR/RR,firmware 火)/ #3 `unit201-handoff-0609-bathroom-333B`(201 tub 旁摔 firmware 火后起身)/ #4 `bedroom201-bedside-1027`(201/CD2B 床边摔)。
