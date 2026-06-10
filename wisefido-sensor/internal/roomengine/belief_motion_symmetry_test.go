@@ -3,6 +3,8 @@ package roomengine
 import (
 	"testing"
 
+	"owl-common/radarutils"
+
 	"wisefido-sensor/internal/roomengine/belief"
 )
 
@@ -61,5 +63,22 @@ func TestDBNMovingReason(t *testing.T) {
 	}
 	if r := dbnMovingReason(belief.ReasonSilent, now-1_000, now); r != belief.ReasonSilent {
 		t.Errorf("silent 不应变 moving,得 %v", r)
+	}
+}
+
+// TestDBNMirrorSymmetry — P1-final 增量2:DBN 自有 mirror 静态对称 ghost(catch cd2b 冻结类,绕开 b.Verdict)。
+func TestDBNMirrorSymmetry(t *testing.T) {
+	mirror := radarutils.Rect{X1: 0, Y1: 100, X2: 200, Y2: 110} // 水平反射面,中线 cy=105
+	self := TrackStatusBase{TrackID: 1, X: 50, Y: 80}
+	partner := TrackStatusBase{TrackID: 2, X: 50, Y: 130, Verdict: VerdictReal} // self 镜像位 (50,2*105-80=130)
+	if !dbnMirrorSymmetryGhost(&self, []TrackStatusBase{self, partner}, []radarutils.Rect{mirror}) {
+		t.Errorf("★self 在 Real partner 镜像位 应判 mirror ghost")
+	}
+	partnerFar := TrackStatusBase{TrackID: 2, X: 50, Y: 200, Verdict: VerdictReal}
+	if dbnMirrorSymmetryGhost(&self, []TrackStatusBase{self, partnerFar}, []radarutils.Rect{mirror}) {
+		t.Errorf("partner 不在镜像位 不应判 ghost")
+	}
+	if dbnMirrorSymmetryGhost(&self, []TrackStatusBase{self, partner}, nil) {
+		t.Errorf("无反射面 不应判 ghost")
 	}
 }

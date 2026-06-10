@@ -8,6 +8,7 @@ import (
 	"owl-common/alarm"
 	"owl-common/card"
 	"owl-common/observation"
+	"owl-common/radarutils"
 	"wisefido-sensor/internal/roomengine/belief"
 
 	"go.uber.org/zap"
@@ -196,6 +197,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			prevPos[tid] = [2]int{tl.lastX, tl.lastY}
 		}
 	}
+	interferes := tm.GetInterferes() // P1-final 增量2:反射面快照(线程安全),算 mirror 静态对称
 	for i := range bases {
 		b := &bases[i]
 
@@ -252,12 +254,11 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			tl.uprightSince, tl.fallenSince = 0, 0
 		}
 		tlGeom := geomFromArea(b.CellAreaType)
-		// ★P1②/P1-final(发射换源):Ghostness 主源 = **co-existence 对称**。**单 track frozenGhost/jumpGhost
-		// 不再驱动 Ghost 发射**(realLO 仅留日志)——治"真人静止 bystander 被单 track frozen 误判 ghost"(委员会细化1)。
-		// P1-final:DBN **自有 motion 对称**(lock-free,bases+prevPos 算紧贴+同向)绕开 gate-list b.Verdict;
-		// 静态 mirror 对称(反射面几何)仍暂靠 b.Verdict 兜(留下增量,需 interference plumbing)。
+		// ★P1-final 完成(发射换源):Ghostness 全由 **DBN 自有 co-existence 对称**(motion 紧贴同向多径 + mirror
+		// 反射面镜像位静态 cd2b 冻结类)驱动,**不再读 gate-list b.Verdict**——删 gate-list 真前置(ghost 检测面)达成。
+		// 单 track frozenGhost/jumpGhost 不再驱动 Ghost 发射(realLO 仅留日志);配 P1① 耦合孤立 ρ=0→P(Ghost)=0。
 		ghostness := 0.15
-		if dbnMotionSymmetryGhost(b, bases, prevPos) || b.Verdict == VerdictGhost {
+		if dbnMotionSymmetryGhost(b, bases, prevPos) || dbnMirrorSymmetryGhost(b, bases, interferes) {
 			ghostness = 0.9
 		}
 		// ★P1①(co-existence 耦合):进 Ghost 的转移 ×ρ,ρ=房内其它 track 的 P(Real) 峰。孤立 track ρ=0 →
@@ -733,8 +734,10 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			// (gate-list 镜像/运动对称,触发即需另一 Real partner)才否。endgame:DBN 自己的 frozenGhost/realLO 是
 			// 单 track 病根,待重做成 co-existence(找 Real partner),不再依赖 gate-list VerdictGhost。
 			coExist := len(bases) >= 2 // 有共存的 partner(否则孤立 = real)
+			// ★P1-final 完成:DBN 自有 co-existence 对称(motion/mirror),不再读 b.Verdict。
+			dbnGhost := coExist && (dbnMotionSymmetryGhost(&fb, bases, prevPos) || dbnMirrorSymmetryGhost(&fb, bases, interferes))
 			switch {
-			case ok && coExist && fb.Verdict == VerdictGhost:
+			case ok && dbnGhost:
 				e.logger.Info("belief_dbn_veto_ghost", zap.String("room_id", roomID), // co-existence ghost 抑制
 					zap.Float64("p_fallen", pFallen), zap.String("p7_3_reason", p7Reason.String()), zap.Int("track_count", len(bases)))
 			case ok && pFallen < tauCtxHit:
@@ -816,6 +819,26 @@ func (e *Engine) recordBeliefShadowFirmwareFall(roomID string, tMs int64) {
 		sh.recoveryGenuineFall = false
 		sh.recoveryEmitted = false
 	}
+}
+
+// dbnMirrorSymmetryGhost P1-final 增量2:DBN **自有** mirror 静态对称 ghost(绕开 gate-list b.Verdict)。复刻
+// tm.checkMirrorSymmetry:self 关于某反射面 m 的镜像位 (rx,ry),若有共存 VerdictReal partner 距镜像位 ≤50cm →
+// self 是该真人的镜面反射 → ghost。catch 静态冻结 ghost(cd2b 类,motion 对称漏的)。复用 reflectAcrossMirror(lock-free)。
+func dbnMirrorSymmetryGhost(self *TrackStatusBase, bases []TrackStatusBase, interferes []radarutils.Rect) bool {
+	const mirrorDistCm = 50
+	for _, m := range interferes {
+		rx, ry := reflectAcrossMirror(self.X, self.Y, m)
+		for i := range bases {
+			p := &bases[i]
+			if p.TrackID == self.TrackID || p.Verdict != VerdictReal {
+				continue
+			}
+			if distInt(p.X, p.Y, rx, ry) <= mirrorDistCm {
+				return true // self 在某 Real partner 的镜像位 → self 是 mirror ghost
+			}
+		}
+	}
+	return false
 }
 
 // dbnMovingReason P3:pose_lying 主导时,摔者摔前 movingFallRecentMs 内在动 → ReasonMoving(移动中突变倒地);

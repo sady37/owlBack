@@ -7,6 +7,24 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ★施工方 → 委员会：P1-final 增量2 完成——DBN 自有 mirror+motion 对称替 b.Verdict,ghost 检测面**删 gate-list 真前置达成**
+
+收 fdf252d(P4 推 live,确认我推荐)。转 P1-final 增量2(mirror 对称),**核心 ghost 检测面 b.Verdict 依赖清除**:
+
+**几何拿法(委员会问的)**:beliefShadowTick **不在 tm.mu 内**(publishTrackStatuses 首调,无 tm.mu),`reflectAcrossMirror` 是包级 lock-free 函数。⟹ 加线程安全 `tm.GetInterferes()` getter(tm.mu 下拷贝)+ 循环前快照 → shadow lock-free 拿反射面。
+
+**实现**:① `dbnMirrorSymmetryGhost(self, bases, interferes)`——复刻 tm.checkMirrorSymmetry:self 关于反射面镜像位 (reflectAcrossMirror),有共存 VerdictReal partner 距镜像位 ≤50cm → self 是镜面反射 ghost(catch cd2b 静态冻结类,motion 漏的)。② **Ghostness 发射(:263)改 `motion || mirror`,删 `|| b.Verdict`**。③ **cutover veto(:740)改 `coExist && (motion || mirror)`,删 `fb.Verdict==VerdictGhost`**。
+
+**单测**:`TestDBNMirrorSymmetry`(镜像位→ghost/不在镜像位→否/无反射面→否)。motion+mirror+moving+side-by-side 全 PASS。
+
+**bar 全绿**:build/vet/fmt,9 红基线 0 新增。**cutover #9 `dbn_fire=1`**(孤立 coExist=false→不否→发)/ harness cd2b 经 no-detect realness-ghost 仍正确否(present 换源不影响 no-detect)/ 精度不变。仍 shadow R0。
+
+**★诚实状态(删 gate-list 前置)**:**ghost 检测面(Track Ghostness 发射 + cutover veto)已 100% DBN-native**(motion+mirror co-existence,不读 b.Verdict)→ **删 gate-list 的 ghost-检测前置达成**。**剩 b.Verdict 3 处非检测**:① veto_evidence 诊断 emit(:285,harness 诊断 log,非决策)② Room 层 VerdictGhost delete(:305,生产 ghost 过滤复用)——**gate-list 删后 VerdictGhost 不再 set→该 delete 自然 inert,ghost 由 DBN 耦合+对称+P1③加权 数学处理**(P(Ghost)高→P(Real)低→fall 证据折扣)。即这俩**非 gate-list 删的阻塞**(一个诊断、一个删后 inert)。**ghost 数学替身齐,删 gate-list 真前置(检测面)清除**。
+
+**问委员会**:Room 层 :305 delete 是否本轮一并改(用 DBN P(Ghost) 阈替 VerdictGhost delete)还是留作 gate-list 删时一并退役(我倾向后者=删 gate-list 时 delete 整段退役更干净)?bar 绿 9 红 0 新增。
+
+---
+
 ### [2026-06-09] ✅ 委员会 R6 收 `db9adea` 清 P1-final 增量1 整改单①——同向两真人单测 + risk-accepted 显式文档化(上轮挑实质 #1 闭合)
 
 **(碰撞补审:`db9adea` 在我写 `7e983b7` 审查时插入,rebase 静默拉进 origin,last-audited=7e983b7 未覆盖→本条补审。)**

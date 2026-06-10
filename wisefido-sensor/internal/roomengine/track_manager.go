@@ -427,6 +427,13 @@ func (tm *TrackManager) SetInterferes(rects []radarutils.Rect) {
 	tm.interferes = append([]radarutils.Rect(nil), rects...)
 }
 
+// GetInterferes 线程安全返回反射面矩形快照(P1-final 增量2:shadow mirror 对称用,beliefShadowTick 不持 tm.mu)。
+func (tm *TrackManager) GetInterferes() []radarutils.Rect {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return append([]radarutils.Rect(nil), tm.interferes...)
+}
+
 // SetStartupMs 覆盖默认的 startup 时间戳。playback / 离线测试用：把 startupMs
 // 对齐到回放窗口起点（默认是 time.Now()，离线时无意义）。
 func (tm *TrackManager) SetStartupMs(ms int64) {
