@@ -7,6 +7,25 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-09] ★★★ 用户拍「先拆」=cutover——shadow 阶段结束,DBN 真 fire;委员会落安全执行包络
+
+用户在「先验(生成器)vs 先拆(cutover)」拍 **先拆**。这是项目最大一步:**R0/R1(永不 fire/不碰 alarm)是 shadow 期的律,cutover 主动结束 R0=计划好的毕业,非违规**。委员会落**安全执行包络**(先拆≠裸拆):
+
+**一、cutover 的安全envelope(5 条,必守)**:
+1. **firmware 地板留(union firmware∨DBN)**:DBN **加**检测,**绝不顶替** firmware 的基础 Fall。漏报-safe。**禁 DBN-sole**(那会丢 firmware 召回)。
+2. **DBN fire = 已验的检测**:silent/lost/moving/pose + 房间上下文(本会话 P=0.998 验过)。
+3. **DBN veto 保守起步**:**只**高置信安全验过的 ghost/frozen(realLO-realness + production_verdict_ghost)+ **默认放行**;**bed/recovery veto 暂不开**(未 live 验,先放行,live 数据确认精度再开)。
+4. **可逆开关**:cutover 走开关(ON=DBN fire),**保留翻回 gate-list 的能力**,直到 live 确认 DBN fire 稳定。
+5. **gate-list 代码删在最后**:**先翻开关(DBN fire)→ live 确认稳 → 才删** `bathroom_fall/bedroom_fall/fall_rules/fall_verify/fall_exempt`+9 红。**绝不在 DBN 还没 live-fire 时删码**(否则没 revert 退路)。
+
+**二、执行序**:① 施工方 wire DBN-fire 进生产 gate(开关后,union+保守 veto)= **首次碰 alarm 路径,R0 在此结束**(计划内)② 翻开关 ON ③ live 监控(护士确认):DBN fire 对?分类合理?veto 安全?④ 稳定后删 gate-list 码(server+维护减负)。
+
+**三、live 验一切(post-cutover,比摆拍强)**:分类准确率 / veto 精度(≥95%)/ FP mix / recall 召回率——全在护士确认真案上测、标定 τ*/尾形/damp、按 fall 类型(p7_3_reason tag)分类归因(补 Room 层 veto_evidence 进 sensor_decision_log 作归因轴)。
+
+**四、铁律演进(在档)**:R0(shadow log-only)→ cutover 后 = **firmware∨DBN 开火 + DBN 保守 veto(default-release)+ 可逆**;R5 字面(pose/z 不压 SFallen)仍守;veto 的 95% 精度 live 测,保守起步漏报-safe。
+
+**裁定**:**approve 先拆/cutover,按上 5 条安全envelope**。施工方下一步 = wire DBN-fire 进生产 gate(可逆开关+union+保守 veto+保留 gate-list 待删)。**这是 R0→production 转折,首个碰 alarm 路径的 commit**,R6 验收按新 bar(union 不丢 firmware 召回 / veto 只开安全验过的 / 开关可逆 / gate-list 暂留)。补 moving_fall tag(+10 行)可并入。**last-audited 不动**(本轮 doc 指令)。
+
 ### [2026-06-09] ✅ 委员会裁项目组「生成器验分类→de-risk 拆 gate-list」提案——approve + ★亲验 ghost 子类是内部记账(granularity gap 排除)+ 钉 2 条
 
 项目组分析(DBN tag 能不能输出/拆 gate-list 可行吗)扎实,与委员会收敛。**裁(含亲验)**:
