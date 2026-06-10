@@ -182,29 +182,32 @@ KMS 故意**不 enable** auto-start。重启后 K 内存清空 → masterKey 没
 
 **恢复步骤**（每次 KMS / 服务器重启都走这条，需手头有 MW 纸表或 GPG PIN）：
 
+> ⚠️ **别把 archive/格子/pin 藏进 shell 变量再引用**——值**字面写进命令、所见即所跑**（变量没设上 → `--master-pin ""` 直接 fatal，或封错格埋雷，且无回显无法核对）。
+
 ```bash
 cd /home/wisefido/owl/owlBack
 
-# (1) 取 MW 表（若无纸表，用 GPG PIN 解 mw.pgp）——读完即焚
+# (1) 看清现有 archive：决定 --archive 选哪份 + 解格 = 该份文件名日期的 (月×周几)
+ls -lt kms/master_key-*.json
+#     正常选最新；若它打不开(上次封格 typo) → 退回上一份，解格改成它的日期
+
+# (2) 取 MW 表查两格(要 GPG PIN)——读完即焚
 gpg --batch --yes -o /tmp/mw.md -d kms/mw.pgp && cat /tmp/mw.md && shred -u /tmp/mw.md
+#     解格 = 步骤(1)所选档文件名日期那格；封格 = 今天那格
 
-# (2) 查两格（从离线表照抄）：
-#     ① 解格 = 最新 archive 文件名日期的 (月×周几)
-#     ② 封格 = 今天的 (月×周几)
-LATEST=$(ls -1 kms/master_key-*.json | tail -1)   # 文件名字典序 = 日期序
-
-# (3) recover：MW 解格解旧 + 今日封格封新；master_pin 只封内存（在线认证，不解盘）
-nohup kms/owl-kms --recover --archive "$LATEST" --vault-dir kms \
-  --mw-token     <①解格 XXXXXX> \
-  --reseal-token <②今日格 XXXXXX> \
-  --master-pin   <.env MASTER_PIN> \
+# (3) recover —— 全部字面值，无变量（XXXXXX 换真格，YYYYMMDD 换所选档）
+nohup kms/owl-kms --recover --archive kms/master_key-YYYYMMDD.json --vault-dir kms \
+  --mw-token     XXXXXX \
+  --reseal-token XXXXXX \
+  --master-pin   <.env 里 MASTER_PIN 的值> \
   > log/kms.out 2> log/kms.err & disown
-sleep 1
+sleep 2; tail -2 log/kms.out          # 应见 "MW-sealed" + "serving"
 
 # (4) 验证
-ls -la /tmp/owl-kms.sock           # srw-rw---- wisefido wisefido
 curl -s --unix-socket /tmp/owl-kms.sock http://localhost/health   # {"status":"ok"}
 ```
+
+> **顺便重置 master_pin**（作废泄漏的旧 pin）：上面 `--master-pin` 改用新值，recover 后 `sed -i 's/^MASTER_PIN=.*/MASTER_PIN=<新值>/' .env` 同步所有业务 `.env`，再 `sudo systemctl restart owlback`，最后 `MASTER_PIN=<新值> go run ./cmd/verify_phi` 验证。新 pin 规格见 §4.5。
 
 > **解格错** → 步骤 3 当场 `unseal failed: message authentication failed`，无任何破坏，查对再来。
 > **封格 typo** → 本次能起，但下次按"今日格"解不开新档；靠 `keep=2` 退回上一份档（用**它**文件名日期的格解）。封格务必照离线表抄。
@@ -287,6 +290,19 @@ curl -s --unix-socket /tmp/owl-kms.sock http://localhost/health
 - ~~写 kms.service 自动 recover~~ — **已废**：自动解封违背离线人工因子设计（2026-06-10 复位移除）。重启恒手动。
 - [ ] 异地备份一份 **MW 封 archive + 记其文件名日期 + mw.pgp**（盘上 keep=2 滚动，整盘丢即 masterKey 没；master_pin 丢可重置不致命）
 - [ ] owl-kms 支持从 fd/env 读 token（消除 `ps` 可见 CLI token 的妥协）
+
+### 4.5 master_pin 规格
+
+密码学层无约束（Argon2id passphrase，任意长度/字符），唯一硬性 = **不能为空**。实际约束来自管道：
+
+| 管道 | 约束 |
+|---|---|
+| `.env`（`MASTER_PIN=<值>`） | 单行无换行；避开 `#`；无首尾空格 |
+| CLI `--master-pin` | 进 `ps` 可见；特殊字符要引号 |
+| `sed 's/^MASTER_PIN=.*/.../'` | 避开 `/ & \`（否则 sed 炸） |
+| 跨 KMS 与各业务 `.env` | 逐字节相同、区分大小写 |
+
+**建议**：12–16+ 位，`[A-Za-z0-9]`（可加 `- _`），避开 `# / & \ $` 空格 及易混 `I O l 0 1`。详 [kms.md §2.1](kms.md)。
 
 ---
 
@@ -612,15 +628,17 @@ sudo systemctl start owlback owlfront sleepace
 sudo systemctl restart owlback.data        # 或 cardagg/qinglan/sleepace/iot/ai
 
 # KMS 恢复（重启后必做，人工查离线 MW 表两格——详 §3.2 / kms.md 场景 B）
-KMS=/home/wisefido/owl/owlBack/kms
-gpg --batch --yes -o /tmp/mw.md -d $KMS/mw.pgp && cat /tmp/mw.md && shred -u /tmp/mw.md
-LATEST=$(ls -1 $KMS/master_key-*.json | tail -1)
-nohup $KMS/owl-kms --recover --archive "$LATEST" --vault-dir $KMS \
-  --mw-token     <解格=最新档文件名日期那格> \
-  --reseal-token <封格=今日那格> \
-  --master-pin   <.env MASTER_PIN> \
+cd /home/wisefido/owl/owlBack
+ls -lt kms/master_key-*.json    # 看清选哪份；解格=所选档文件名日期那格、封格=今日那格
+gpg --batch --yes -o /tmp/mw.md -d kms/mw.pgp && cat /tmp/mw.md && shred -u /tmp/mw.md
+# 全字面值，无变量（XXXXXX 换真格，YYYYMMDD 换所选档）
+nohup kms/owl-kms --recover --archive kms/master_key-YYYYMMDD.json --vault-dir kms \
+  --mw-token     XXXXXX \
+  --reseal-token XXXXXX \
+  --master-pin   <.env MASTER_PIN 的值> \
   > /home/wisefido/owl/log/kms.out 2>&1 &
 disown
+curl -s --unix-socket /tmp/owl-kms.sock http://localhost/health   # {"status":"ok"}
 sudo systemctl restart owlback   # 让 data/cardagg/ai 重连 KMS
 
 # DST 切换日

@@ -90,6 +90,21 @@
 - **解封**（K 死/重启）：K 内存清空 → masterKey 没了 → **master_pin 单独无能为力**，必须人工查 **MW 表** 解盘上 archive，把 masterKey 重新载入内存。这是离线人工因子，盘上没有任何能自动解封的东西。
 - **致命口令排序**：丢 master_pin = 不致命（重置一个新的，更新 `.env` + recover 时 `--master-pin` 传新值即可，masterKey 不动）。丢 **MW 表 + GPG PIN** 且无 archive 异地备份 = **masterKey 永久无法解封，全部 PHI 报废**。
 
+### 2.1 master_pin 规格
+
+**密码学层无约束**——它只是 Argon2id 的 passphrase（[wrap.go](../owl-common/crypto/wrap.go#L21)），任意长度/字符皆可。唯一硬性：**不能为空**（recover 与 `/tenant-key` 空值都拒）。`init` 默认生成 `randAlphanumeric(8)`，但那只是生成器默认，不是上限。
+
+实际约束来自它经过的管道：
+
+| 管道 | 约束 |
+|---|---|
+| 存 `.env`（`MASTER_PIN=<值>`） | 单行、无换行；**避开 `#`**（行内注释）；无首尾空格 |
+| CLI `--master-pin` | 进 `ps`/proc 可见；含特殊字符要引号包 |
+| `sed 's/^MASTER_PIN=.*/.../' .env` | sed 用 `/` 分隔 → **避开 `/ & \`**（否则该 sed 炸） |
+| 跨 KMS 与各业务 `.env` | 必须逐字节相同、区分大小写 |
+
+**建议规格**：长度 12–16+，字符集 `[A-Za-z0-9]`（可加 `- _`），避开 `# / & \ $` 空格 及易混 `I O l 0 1`。这样过 Argon2、又不卡 .env/CLI/sed 任何一关。重置流程见 [场景 B′](#场景-b重启时顺便重置-master_pin作废泄漏的旧-pin)。
+
 ---
 
 ## 3. 三种运行模式（源码行为）
@@ -217,29 +232,28 @@ sudo systemctl restart owlback.data
 
 ### 场景 B：K 服务重启 / 服务器 reboot（**人工 MW 解封，无自动恢复**）
 
-K 内存清空 → 必须人工查离线 MW 表解封。需要：
-- 能读 MW 表（手头纸表，或用 **GPG PIN** 解 `mw.pgp`）
-- `.env` 的 `MASTER_PIN`（仅用于封内存、让业务能认证）
-- 最新一份 archive（看文件名日期）
+K 内存清空 → 必须人工查离线 MW 表解封。需要：能读 MW 表（纸表或用 **GPG PIN** 解 `mw.pgp`）、`.env` 的 `MASTER_PIN`。
+
+> ⚠️ **不要把 archive / 格子藏进 shell 变量再引用**。PHI 关键命令把值**字面写进命令、所见即所跑**——变量没设上 → `--master-pin ""` 直接 fatal，或封错格埋雷，且无回显无法核对。
 
 ```bash
 cd /home/wisefido/owl/owlBack
 
-# 1. 取 MW 表（若无纸表）——读完即焚
+# 1. 看清现有 archive：决定 --archive 选哪份 + 解格 = 该份文件名日期的 (月×周几)
+ls -lt kms/master_key-*.json
+#    正常选最新那份；若它打不开(上次封格 typo) → 退回上一份，解格随之改成它的日期
+
+# 2. 取 MW 表查两格(要 GPG PIN)——读完即焚
 gpg --batch --yes -o /tmp/mw.md -d kms/mw.pgp && cat /tmp/mw.md && shred -u /tmp/mw.md
+#    解格 = 步骤1所选 archive 文件名日期那格；封格 = 今天那格
 
-# 2. 查两格：
-#    ① 解格 = 最新 archive 文件名日期的 (月×周几)
-#    ② 封格 = 今天的 (月×周几)
-LATEST=$(ls -1 kms/master_key-*.json | tail -1)   # 文件名字典序=日期序
-
-# 3. 解封 + 重封（master_pin 只封内存）
-nohup kms/owl-kms --recover --archive "$LATEST" --vault-dir kms \
-  --mw-token     <①解格 XXXXXX> \
-  --reseal-token <②今日格 XXXXXX> \
-  --master-pin   <.env MASTER_PIN> \
+# 3. recover —— 全部字面值，无变量（XXXXXX 换成查到的真格，YYYYMMDD 换成所选档）
+nohup kms/owl-kms --recover --archive kms/master_key-YYYYMMDD.json --vault-dir kms \
+  --mw-token     XXXXXX \
+  --reseal-token XXXXXX \
+  --master-pin   <.env 里 MASTER_PIN 的值> \
   > log/kms.out 2>&1 & disown
-sleep 1
+sleep 2; tail -2 log/kms.out          # 应见 "MW-sealed" + "serving"
 
 # 4. 验证在线
 curl -s --unix-socket /tmp/owl-kms.sock http://localhost/health   # {"status":"ok"}
@@ -248,9 +262,36 @@ curl -s --unix-socket /tmp/owl-kms.sock http://localhost/health   # {"status":"o
 sudo systemctl restart owlback
 ```
 
-> **解格错** → 步骤 3 当场 `unseal failed: message authentication failed`，不会有任何破坏，查对再来。
-> **封格错（typo）** → 本次能起，但下次按"今日格"解不开新档；靠 `keep=2` 退回上一份档（用它文件名日期的格解）。所以**封格务必从离线表照抄**。
-> **顺序**：先 KMS（场景 B），再 `restart owlback`。reboot 时 owlback 自启、owl-kms 不自启，业务会先起来连不上 socket。
+> **解格(`--mw-token`)** = 你选的那份 archive 文件名日期的格；**封格(`--reseal-token`)** = 今日格。两者分别对应，**别都填今天**。
+> **解格错** → 步骤 3 当场 `unseal failed: message authentication failed`，无破坏，查对再来。
+> **封格 typo** → 本次能起，下次按"今日格"解不开新档；靠 `keep=2` 退回上一份档（用它日期的格解）。封格务必照离线表抄。
+> **顺序**：先 KMS，再 `restart owlback`。
+
+### 场景 B′：重启时顺便重置 master_pin（作废泄漏的旧 pin）
+
+与场景 B 同，只在 recover 处用**新 pin**，并同步 `.env` + 重启业务。master_pin 仅封内存、可重置，masterKey 与 archive 不受影响。新 pin 规格见 [§2.1](#21-master_pin-规格)。
+
+```bash
+cd /home/wisefido/owl/owlBack
+
+# 1~2 同场景 B（看清 archive、查两格）
+
+# 3. recover：--master-pin 用新值（字面值；NEWPIN 换成你定的，XXXXXX 换成真格）
+pkill -x owl-kms; sleep 1
+nohup kms/owl-kms --recover --archive kms/master_key-YYYYMMDD.json --vault-dir kms \
+  --mw-token XXXXXX --reseal-token XXXXXX --master-pin <NEWPIN> \
+  > log/kms.out 2>&1 & disown
+sleep 2; curl -s --unix-socket /tmp/owl-kms.sock http://localhost/health
+
+# 4. 同步 .env（所有含 MASTER_PIN 的 .env 都要改），再重启业务
+sed -i 's/^MASTER_PIN=.*/MASTER_PIN=<NEWPIN>/' .env      # 注意 NEWPIN 别含 / & \
+sudo systemctl restart owlback; sleep 3; systemctl is-active owlback
+
+# 5. 端到端验证（用新 pin）
+( cd wisefido-data && MASTER_PIN=<NEWPIN> go run ./cmd/verify_phi )   # 期望 OK
+```
+
+> 旧 pin 失效是预期：改 .env 前业务还拿旧 pin 会被 KMS `401`，重启业务后恢复。验证时旧 pin → `KMS HTTP 401`、新 pin → `OK`，即轮换成功。
 
 ### 场景 C：首次部署（一次性）
 
