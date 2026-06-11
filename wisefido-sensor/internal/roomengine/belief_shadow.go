@@ -746,23 +746,23 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 					lastMove = tlf.lastMoveMs
 				}
 				reasonTag := "dbn_" + dbnMovingReason(p7Reason, lastMove, nowMs).String()
+				incidentMs := nowMs
+				if p7Dom == belief.ObsDwellStill {
+					for _, o := range obs {
+						if o.Kind == belief.ObsDwellStill && o.Value > 0 {
+							incidentMs = nowMs - int64(o.Value*1000)
+							break
+						}
+					}
+				}
 				e.PublishAIAlarm(context.Background(), AIPayload{
 					DeviceAddr: fb.DeviceAddr, RoomID: roomID,
 					Track: observation.Track{
 						BedStatus: observation.BedStatusUnchanged, TrackID: fb.TrackID, Pose: fb.Pose,
 						PositionX: intPtr(fb.RawH), PositionY: intPtr(fb.RawV), PositionZ: intPtr(fb.RawZ),
 					},
-					Reason:     reasonTag, // 分类 tag:dbn_lost/dbn_silent/dbn_moving/dbn_pose_lying
+					Reason:     reasonTag,
 					Evidence:   map[string]interface{}{"p_fallen": pFallen, "dominant_obs": p7Dom.String(), "bathroom": tauCtx.Bathroom},
-					incidentMs := nowMs
-					if p7Dom == belief.ObsDwellStill {
-						for _, o := range obs {
-							if o.Kind == belief.ObsDwellStill && o.Value > 0 {
-								incidentMs = nowMs - int64(o.Value*1000)
-								break
-							}
-						}
-					}
 					IncidentMs: incidentMs,
 				}, alarm.Fall, nowMs)
 				e.logger.Info("belief_dbn_fire", zap.String("room_id", roomID), // R0 在此结束:DBN 真发告警
