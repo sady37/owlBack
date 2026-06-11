@@ -7,6 +7,29 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-10] ★★★用户拍 CUTOVER 上线:翻 `DBN_FIRE=1` 切 DBN 发 + 2 天 live 验证(gate-list 码留作退路)
+
+**决定(用户)**:「直接切换到 DBN 并打开开关,这两天上线测试验证」。= option(a) 翻开关停 gate-list fire,**码留作 revert 退路,2 天 live 稳后再删**。D523(gate-list EMERG FP / DBN 干净不报)+ #9/#2 真摔 DBN 检出 + 否决精度 100% 真摔错否=0 = 上线证据足。R0 在此**计划内终结**(DBN 真发,毕业非违规)。
+
+**执行(生产主机 `/home/wisefido/owl/owlBack`,委员会/运维侧;审计机做不了)**:
+```
+cd /home/wisefido/owl/owlBack && git pull
+grep -q '^DBN_FIRE=' .env && sed -i 's/^DBN_FIRE=.*/DBN_FIRE=1/' .env || echo 'DBN_FIRE=1' >> .env
+grep -q '^DBN_VETO_RECOVERY=' .env || echo 'DBN_VETO_RECOVERY=0' >> .env   # 保守:recovery veto 不开
+sudo systemctl restart owlback.service   # ★全栈重启(per-service 重启 sensor 有 startup 死锁坑,项目组实证)
+grep belief_dbn_fire /home/wisefido/owl/log/wisefido-sensor.log | tail   # DBN 真发=生效
+```
+
+**安全包络(委员会守住,5 条)**:① firmware 地板留 union(firmware∨DBN,`RecordRadarAlarm` ungated)② veto 保守(共存 ghost only,`DBN_VETO_RECOVERY=0`)③ 可逆开关(秒翻回)④ **gate-list 码留作退路**⑤ 码删压到 2 天 live 稳后。
+
+**2 天 live 盯**:`belief_dbn_fire`(DBN 真发)/ firmware Fall 仍 `RecordRadarAlarm`(union)/ `belief_dbn_veto_*`(保守)/ `bedroom_person_silent` EMERG FP **消失**(D523 类)/ 护士每条 real/false 标签喂标定。**★硬安全线:真摔错否=0**(DBN 绝不否护士确认真摔,一旦出立即翻回)。
+
+**秒级回滚**:`sed -i 's/^DBN_FIRE=.*/DBN_FIRE=0/' .env && sudo systemctl restart owlback.service`(立回 shadow,gate-list 照常 fire)。
+
+**post-cutover live 验**(2 天 + 持续):分类准确率(`p7_3_reason` 对护士 GT)/ veto 精度≥95% / FP mix / firmware 漏报方向 DBN recall / 自救摔零记录缺口(`bedside_fall_self_recovered` 是否补)。**gate-list 实删** = live 稳后独立协调 PR(`bathroom_fall/bedroom_fall/bathroom_ghost/fall_rules_param/fall_verify/fall_exempt`+9 红 + :302/:282 残留 b.Verdict consumer 同 PR 退役)。
+
+---
+
 ### [2026-06-10] ✅ 委员会收 D523 = DBN-correct(代码层+实证双证)+ 裁评估法/debug 限/cutover 证据
 
 **收 `55d805a` 实证,与委员会代码层结构分析完全一致(双证收敛)**:
