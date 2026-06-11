@@ -7,6 +7,44 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-11] ★委员会 → 项目组A: sleepad LeftBed 不进 bed scorer 的根因 + 修复(用户证据确凿)
+
+**用户完整证据**(replay `--unit 112` 0606 窗):
+1. **bed scorer**:`bed_decision_trace` replay 窗 `19:29:26 LeftBed slr=+0.6931`(vital-only) vs normal 态 `09:37:34 LeftBed slr=−2.9444`(含 LeftBed event 贡献) → `OnSleepadLeftBed` 在 replay 时未被调用
+2. **StillBox**: `still_box_break disp_cm=60`(>50cm 阈值) → 打破 still-box 累积 → lost-fall 检测被阻断
+3. **sensor_decision_log**:cd2b replay 窗(19:27-20:00)0 条记录 → DBN 未进 lostfall pending
+
+**★根因(委员会亲查代码坐实,非 guess)**:replay 工具 `IoTStreamMessage` **不设 `SubjectEntity`** → `adapter_sleepace.go:140` 硬过滤 → 全部 sleepad 事件(LeftBed/InBed)在 **zoneengine adapter 层**被丢弃 → 永不到达 `bed_bayesian_scorer` → `OnSleepadLeftBed` 永不被调 → bed scorer 仅靠 vital HR/RR 驱动(slr 恒 +0.6931)。
+
+```
+replay XADD → iot:event:stream ✅
+  → SleepaceAdapter.runLoop ✅  
+  → handleMsg ✅
+  → SubjectEntity == "" ❌ return (adapter_sleepace.go:140) ← 根因
+  → engine.Apply → bed_bayesian_scorer → OnSleepadLeftBed ❌ 永不到达
+```
+
+**@项目组A 修复**(`tools/redis-replay/main.go`,~3 行):构建 `IoTStreamMessage` 时,对 sleepad 设备(`r.dtype=="Sleepad"`)填入 `SubjectEntity`:
+```go
+subjectEntity := ""
+if r.dtype == "Sleepad" {
+    // sleepad 的 SubjectEntity = 其 /80 spatial prefix(同 unit 前缀)
+    // e.g. fd00:0:3:111:3:101:2470:978 → fd00:0:3:111:3::/80
+    subjectEntity = addr.String()[:strings.LastIndex(addr.String(),":")] + "::/80" // 或从 unit_device 表查
+}
+msg := rediscommon.IoTStreamMessage{
+    ...
+    SubjectEntity: subjectEntity,  // ← 补这行
+}
+```
+若 replay 从 DB 查不到 card 绑定,用 sleepad addr 前 80 bit 作为 subject entity 即可(zoneengine 只验非空,不验内容)——sleepad subject 在 zoneengine 语义 = "这个床垫属于哪个 unit",/80 prefix 天然就是 unit 前缀。
+
+**@项目组A 验证**:修完后跑 `--unit 112 --t1 "2026-06-06 19:27" --t2 "2026-06-06 20:00" --tz America/Denver --streams monitor,event`,查 `bed_decision_trace` 里 replay 窗 LeftBed 的 `slr` 应 ≈−2.9444(normal 态),`sensor_decision_log` cd2b 应有 lostfall pending 记录。
+
+**reminder**:此 gate 是 zoneengine adapter 层 routing(确认 sleepad 绑卡/unit),**不是 gate-list 判断**——gate-list 已全删(`0fac478`),DBN matrix 计算本身没问题。
+
+---
+
 ### [2026-06-11] ✅ 委员会 R6 收 `498cd63` redis-replay unit 级全量回放——spec 合 + 挑一默认 alarm + ★收 bed scorer gap 发现
 
 **亲跑验**(不信声明):`tools/` build/vet rc=0。实现核验:
