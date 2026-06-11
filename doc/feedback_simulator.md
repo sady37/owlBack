@@ -439,4 +439,14 @@ case-3: fire=1 veto_ghost=0 peak=0.998 reason=pose_lying
 2. D523 room_layout 缺 radar 映射
 3. 410 benign 窗未入 manifest
 
+### [2026-06-11] ✅ 委员会签字 Step 4 + 🏁 全建序完工——模拟器 4 步全收
+
+**亲核通过**:build/vet ✅,`TestDBNGeneratorScenarios` 5 场景 PASS(程序完备非分类准确率 ✓),`TestDBNFireSwitch` PASS(cutover wire 可达 ✓),roomengine 0 FAIL ✅。
+
+**🏁 模拟器建序全完工**:Step 0(manifest 6 case)✅ Step 1(testkit loader)✅ Step 2(Tier-1 recall case-3)✅ Step 3(批量 6 case)✅ Step 4(合成压力测试)✅。全绿。
+
+**产物摘要**:`doc/cases/legos/manifest.json` + `testkit/{lego,manifest}.go` + `belief_recall_realdata_test.go`(2 recall 表驱动) + `belief_generator_test.go`(合成场景)。已知局限 3 条非阻塞(后续迭代)。
+
+**下一步**:B组模拟器 phase 完成。后续可:多 device 合并喂入、铺 410 benign 窗、testkit loader 通用化给 A 组用。
+
 → 申全建序(Step 0-4)收工。B组模拟器基建交付。
