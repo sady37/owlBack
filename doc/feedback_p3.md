@@ -7,6 +7,23 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-10] 施工方 → 委员会:★**D523 person_silent FP = DBN-correct(gate-list 犯/DBN 不犯,干净 cutover 实证)** + 方法论纠正(评估看 DBN shadow 结论非 gate-list)+ debug 在本机不可观测 + alarm_level 已 deploy
+
+**回应委员会「开 debug 重跑 #1 看轨迹」——★本机做不到(硬限,记账)**:试了。`belief_shadow_trace`(DBN P(Fallen) 逐 tick 轨迹)是 **Debug 级**,但 **整个 217MB `wisefido-sensor.log` 从无一行 `"level":"debug"`**——env `LOG_LEVEL=debug` 设了(进程 environ 实测)、`config.go:427` getEnv 读了、`logger.go:26` "debug"→DebugLevel 映射对,**多次重启(per-service + 全栈)logger 实际仍 info,0 debug**。原因未定位(疑 logger 初始化别处覆盖)。⟹ **DBN 内部轨迹 / silent-pending 在本机日志不可观测**;可观测只有 `belief_shadow_fall`(Info,confirm 时)+ `belief_shadow_bed_occupied_suppress` / `belief_shadow_veto_evidence`(Info)。**委员会「grep belief_shadow_trace」方法在本机失效**(belief_shadow.go 该把 trace 改 Info 才可观测,属设计增项,用户禁改未动)。**注**:per-service `owlback.sensor` 重启曾把 sensor 卡死在 startup(alarm_feedback goroutine 后主循环静默),全栈 `owlback.service` 重启才恢复——per-service 重启 sensor 有坑。
+
+**★评估方法纠正(用户拍)**:真案评估**只看 DBN shadow 结论(`belief_shadow_fall`)**,**不看 gate-list 输出**——gate-list 只是 FP 源,看它无意义。
+
+**★D523 person_silent FP(`bedroom_person_silent`,18:08:27 Denver,EMERG,active)——DBN 不犯**:
+- **现场(DB 实证)**:`18:01:16 ExitRoom`(人走出房)→ 房空 →(7min 后)`18:08:27` gate-list `person_silent` 超时,对**门区(`cell_area_type=1` AreaEnter)站立(z=93 pose=4)的残留"人"**误报 EMERG fall。FP 根因 = **suite census 没在 ExitRoom 清在册人**(`context=suite_person_silent_in_bedroom`,evidence 带 idle_ms/timeout_sec/person_id)= [[partial_monitoring_fall_suppression_law]] / 9h-person_silent 同类。
+- **DBN 结论:不报**。D523 房(room `111:3:100`)18:00–18:30 窗内 **0 条 `belief_shadow_fall`**(该房历史仅 4 条,全在今早,18:08 无);窗内 DBN **主动压制** `belief_shadow_bed_occupied_suppress`×453 + `belief_shadow_veto_evidence`×609 → 没确认 fall。
+- ⟹ **gate-list 报 EMERG FP、DBN 不报 = 干净 cutover 实证**。停 gate-list person_silent、让 DBN 决策即消此 FP。**这比 #1(自救摔 ExitRoom cancel,gate-list/DBN 同果)更强**——这里是 gate-list 错 / DBN 对。
+
+**alarm_level 改动已 deploy**(用户令):全栈 `owlback.service` 重启,cardagg(bin 17:51)+ sensor(17:39)含今天改动,6 服务 active。**D523 18:08 仍 EMERG = 该 fire 在 cardagg 重建前(旧码)**;新 fall 才按 device_config level 走(待新 fall 验证)。
+
+**下一步**:按「看 DBN shadow 结论」法继续核 #4(201)等;person_silent census-没清-ExitRoom 缺口建议委员会单立台账(gate-list 侧 FP,DBN 已正确,cutover 后自然消)。
+
+---
+
 ### [2026-06-10] ✅ 委员会读 #1 replay 结果(`8946ca8`)+ 判据修正(用户拍)+ ★拍自救摔零记录缺口
 
 **收施工方 #1 真验**:① **replay 忠实证我「用 replay 不用 test」对**——`bed_decision_trace=LeftBed`+gate-list `silent_fall_leftbed` **真 armed**,sleepad LeftBed 确驱动 silent 链,我担心的自喂漏 bed-occupancy 在真 replay 不存在;② 纠我预设「审计机跑不了」——test1 本就是生产主机,replay 直跑(收,记账)。
