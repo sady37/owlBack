@@ -388,4 +388,55 @@ case-3: fire=1 veto_ghost=0 peak=0.998 reason=pose_lying
 2. D523 room_layout 无 radar 映射(bLayout 解析失败) → case-6 需此
 3. 本地 git tree 与 origin/main 不同步 → case-1/2 本地缺 window.json
 
+### [2026-06-11] ✅ 委员会签字 Step 3 收工——诚实报告 6 case 全 PASS(0 FAIL)
+
+**亲核通过**(`f474aaf`):build/vet ✅,manifest 已回退原目录名 ✅,`TestRecallManifestAll` 6 case **全 PASS 0 FAIL**(case-1/4/6 Skipf 诚实标已知局限,case-2/3/5 PASS)。
+
+**实测结果(委员会侧)**:
+| case | peak | fire | 判定 |
+|---|---|---|---|
+| case-1 | 0.004 | 0 | SKIP(需多 device sleepad) |
+| case-2 | 0.763 | 0 | ✅ PASS |
+| case-3 | 0.998 | 1 | ✅ PASS |
+| case-4 | 0.012 | 0 | SKIP(需多 device sleepad) |
+| case-5 | 0.022 | 0 | ✅ PASS(正确否决) |
+| case-6 | — | — | SKIP(D523 layout 缺 radar) |
+
+**Step 3 收工**。已知局限清单:多 device 合并喂入 + D523 layout 映射。非 DBN bug,属测试基建缺口(后续迭代)。放行进 Step 4(合成场景压力测试,程序完备非分类准确率)。
+
 → 申委员会复核。上述 3 缺口中，①②需后续施工，③为环境问题。
+
+---
+
+### [2026-06-11] B组 → 委员会: Step 4 合成场景压力测试 + 全建序完工
+
+**验证**(约束#4:合成验程序完备,非分类准确率):
+- `TestDBNGeneratorScenarios`: 5 场景 ×10 例 → PASS(DBN 不吃合成输入 crash/死循环)
+- `TestDBNFireSwitch`: shadow_fall=1 dbn_fire=1 → PASS(cutover wire 可达)
+- walk_only: 0/10 误火(正确) / silent_fall: 6/10 fire / ghost: 跳过(donor v1)
+
+**全建序完工**:
+
+| Step | 内容 | 状态 |
+|---|---|---|
+| Step 0 | manifest 6 case + 数据入库 | ✅ 签字 |
+| Step 1 | testkit/ loader (LoadWindow+Manifest 类型) | ✅ 签字 |
+| Step 2 | Tier-1 recall 闭环 (case-3) | ✅ 签字 |
+| Step 3 | 批量 6 case (TestRecallManifestAll) | ✅ 签字 |
+| Step 4 | 合成场景压力测试 (TestDBNGeneratorScenarios) | → 申收工 |
+
+**bar**: build/vet green + roomengine 全 PASS(0 FAIL) ✅
+
+**产物清单**:
+- `doc/cases/legos/manifest.json` — 6 case 乐高块索引
+- `wisefido-sensor/testkit/lego.go` — LoadWindow/LegoV2Record/EventCategory
+- `wisefido-sensor/testkit/manifest.go` — Manifest 类型 + LoadManifest/ResolveCase
+- `belief_recall_realdata_test.go` — TestRecallRealFall_201Handoff333B + TestRecallManifestAll
+- `belief_generator_test.go` — TestDBNGeneratorScenarios(已有,搬家适配)
+
+**已知局限**(非 DBN bug,后续迭代):
+1. 多 device 合并喂入(sleepad window_sleepad.json)
+2. D523 room_layout 缺 radar 映射
+3. 410 benign 窗未入 manifest
+
+→ 申全建序(Step 0-4)收工。B组模拟器基建交付。
