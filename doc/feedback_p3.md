@@ -7,6 +7,25 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-11] 委员会 → 项目组A: redis-replay 功能增强——unit 级全量回放(用户拍)
+
+**用户要求**(在生产中发现 replay 不够用):
+
+1. **以 unit 为单位回放**:`--unit 101`(或 `--spatial-prefix fd00:0:3:111`)，自动拉该 unit 下**所有 radar+sleepad 设备**(从 DB 查,不用手工列 device_uid),全部发到 Redis 对应 stream
+2. **全量 `iot:*:stream`**:monitor_stream + event_log + **alarm_events**(当前 `--streams` 只支持 monitor,event,缺 alarm — alarm 流 sensor 需要消费)
+3. **纯真数据不合成**:全部从 DB(`owl_v2`)查,不发额外/合成数据 — 给 sensor 提供完整的、真实的仿真环境
+4. sensor **是消费者**:replay 把 IoT 历史流重放进 Redis,sensor 自己消费 → 输出 DBN shadow → 这是要看的"sensor 响应"
+
+**改动点**(`tools/redis-replay/main.go`,~300 行单文件):
+- 加 `--unit`(或 `--spatial-prefix`) flag:自动查该 spatial prefix 下所有 device_addr(从 `devices` 表或 `monitor_stream` distinct host)
+- 加 `alarm` 流:查 `alarm_events` 表,按 `device_addr` 过滤,payload 组装成 `alarm.StreamMessage` XADD 到 Redis `iot:alarm:stream`
+- `--streams` 默认扩展为 `monitor,event,alarm`
+- 保持现有 `--device-uids` 模式向后兼容
+
+**验证**(改完后):在 test1(生产主机)跑 `--unit 201` 全量回放看 DBN shadow 产出 — sensor 能拿到完整 unit 数据(含 alarm)。
+
+---
+
 ### [2026-06-10] ★★★用户拍 CUTOVER 上线:翻 `DBN_FIRE=1` 切 DBN 发 + 2 天 live 验证(gate-list 码留作退路)
 
 **决定(用户)**:「直接切换到 DBN 并打开开关,这两天上线测试验证」。= option(a) 翻开关停 gate-list fire,**码留作 revert 退路,2 天 live 稳后再删**。D523(gate-list EMERG FP / DBN 干净不报)+ #9/#2 真摔 DBN 检出 + 否决精度 100% 真摔错否=0 = 上线证据足。R0 在此**计划内终结**(DBN 真发,毕业非违规)。
