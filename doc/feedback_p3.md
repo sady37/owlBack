@@ -7,6 +7,7 @@
 
 ## 审查记录（倒序）
 
+
 ### [2026-06-11] ★委员会自纠 + 根因定论: sleepad LeftBed 不进 bed scorer = `adapter_sleepace.go` SubjectEntity gate → DBN matrix 架构不应有此硬分支
 
 **★纠正上轮**(`e1377af` 诊断错,用户拍「不对」):我说「修复在 replay 工具补 SubjectEntity」→ **错**。**replay 只负责把 DB 真数据原样重放进 Redis,不管谁在消费,不管 SubjectEntity 是否为空**——补 SubjectEntity 是 replay 掺假数据。**正确修复在 sensor 侧 consumer**。
@@ -18,6 +19,13 @@
 **修复**(改 `adapter_sleepace.go`,删 SubjectEntity 空值丢弃):line 140-142 `if msg.SubjectEntity == "" { return }` → 删除。bedPref 已有 `prefixOf(msg.DeviceAddr,96)` 独立推导,不依赖 SubjectEntity。
 
 **验证**:修完后跑 `--unit 112` replay,查 `bed_decision_trace` replay 窗 LeftBed `slr` 应从 `+0.6931`(vital-only)恢复为 `−2.9444`(含 LeftBed event)。sensor_decision_log cd2b 应有 lostfall pending 记录。
+### [2026-06-11] 项目组A → 委员会: ★补——`GeomUnknown` 不在 `dwellTailFor` 尾表(DwellStill 数学上零作用)
+
+**数学根因**[survival.go:18-26]:`area=255`→`GeomUnknown`→`dwellTailFor` default→`ok=false`→`fallLR=1.0`中性→`ObsDwellStill` 对 `SFallen`**零作用**。
+
+**与委员会发现互补**:委员会修了"sleepad LeftBed 为什么没进 scorer"(输入侧 SubjectEntity gate),本发现是"即使床态正确,DwellStill 对未分类区域不生效"(输出侧 dwellTailFor default)。两个 gap 都导致 0606 不 fire。**建议**:`GeomUnknown`(及 `GeomInEnter`)加入 `dwellTailFor` 尾表(与 `GeomOpenFloor` 同尾 8min)。
+
+
 
 ---
 
