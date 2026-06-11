@@ -965,6 +965,8 @@ var DefaultAlarmSetting = struct {
 			AlarmLevel: strPtr(AlarmLevelCrit),
 			AlarmParams: map[string]interface{}{
 				ParamDurationSec: 60,
+				ParamMin:         30,
+				ParamMax:         120,
 			},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
@@ -985,6 +987,8 @@ var DefaultAlarmSetting = struct {
 			AlarmLevel: strPtr(AlarmLevelCrit),
 			AlarmParams: map[string]interface{}{
 				ParamDurationSec: 90,
+				ParamMin:         60,
+				ParamMax:         300,
 			},
 			DisplaySetting: DisplayAlarmCloudAndDevice,
 		},
