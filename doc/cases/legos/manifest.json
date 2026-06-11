@@ -12,7 +12,7 @@
       "labels": ["silent", "bedside"],
       "device_uids": ["9D8A326309E7", "BM87224700978"],
       "device_addrs": ["fd00:0:3:111:3:101:3263:9e7", "fd00:0:3:111:3:101:2470:978"],
-      "source_fixture": "bedtest-0605-1-bedside-fall-no-fw-detect",
+      "source_fixture": "case-9e7-0605-11371146-bedside-fall-no-fw-detect",
       "windows": {
         "primary": {
           "start_ms": 1780681020000,
@@ -31,7 +31,7 @@
       "labels": ["pose_lying", "bedside"],
       "device_uids": ["9D8A326309E7", "BM87224700978"],
       "device_addrs": ["fd00:0:3:111:3:101:3263:9e7", "fd00:0:3:111:3:101:2470:978"],
-      "source_fixture": "bedtest-0605-2-bedside-fall-fw-detect",
+      "source_fixture": "case-9e7-0605-13081318-bedside-fall-fw-detect",
       "windows": {
         "primary": {
           "start_ms": 1780686480000,
