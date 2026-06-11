@@ -44,6 +44,37 @@ DwellStill **数学上零作用**。即使 Gap 1 修了、床态正确、StillBo
 
 **待委员会**: 审两条修法 + 裁定是否都建。裁前不建。
 
+### [2026-06-11] ✅ 委员会裁定:双 gap 都建(gap-1 即建无争议,gap-2 可建须尺规精化)
+
+**① gap-1(SubjectEntity gate):裁即建,无争议**。硬 gate 截流证据,DBN matrix 架构不应有。bedPref 已独立推导。删后风险由 `IsFit`+scorer matrix 消纳。即建。
+
+**② gap-2(GeomUnknown→dwellTailFor):发现对 + 可改 + 优劣如下**
+
+**发现对**:全链坐实 `area=255→GeomUnknown→default→LR=1.0`。0606 全程 area=255。
+
+**能不能改**:能。`survival.go` 加一行。
+
+**优劣**(逐条不回避):
+
+| | 加 GeomUnknown | 不加(status quo) |
+|---|---|---|
+| 0606 类 bedside 真摔 | ✅ DwellStill ramp→fire | ❌ **结构盲区**(永不报 area=255 真摔) |
+| 边缘 ghost FP | ⚠ 边界 artifact 久驻→假抬 | ✅ 永 safe(但 blind) |
+| DBN 已有防御 | P1③pReal折扣+P1②motion/mirror ghost→ghost 难 accum 长 dwell | — |
+| 语义 | `GeomUnknown`=未分类≠安全,default 把未知当安全**方向反了** | 同左 |
+
+**★key insight**:`GeomUnknown` 语义是"未分类区域"不是"安全区域"。当前 default→LR=1 把未知等同床/门 rest 区——但 bedside 摔的 area=255 恰是 radar 把床边地上映射进未配置区,**不是安全区**。**保守方向反了**:对未知区保守(LR=1 永不报)=把真摔当安全。
+
+**尺规精化(三方案)**:
+
+| 方案 | scale | bed gate | 优劣 |
+|---|---|---|---|
+| A:同 OpenFloor | 480s | 无 | FP 最⾼(边界 ghost 8min→假 fire) |
+| B:同 Toilet | 900s | 无 | 平衡:真摔 15min 报但 FP 需久驻→被其他证据消纳 |
+| **C(建议)** | 900s | 仅 non-bed(LeftBed 后) | **最优**:bed 空+未知区静止=fall;bed 区正常睡不 ramp |
+
+**裁定**:gap-1 **即建**。gap-2 **可建** scheme C(长尺+bed-empty gate)→ **待用户拍板**(现在建 vs 推后 + 谁施工)。
+
 ---
 
 ### [2026-06-11] ★委员会自纠 + 根因定论: sleepad LeftBed 不进 bed scorer = `adapter_sleepace.go` SubjectEntity gate → DBN matrix 架构不应有此硬分支
