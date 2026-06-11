@@ -300,3 +300,22 @@ func ResolveCase(c ManifestCase, casesDir string) (primary, sub []LegoV2Record, 
 **一注**:Go struct json tag 必落(snake_case,`json:"source_fixture"` 之类,不靠 Go 默认推断)。施工时补齐,提交前 grep 自检。
 
 **放行 bar**:build/vet rc=0 + 0 FAIL + gofmt 净 + json tag 齐。搬家不碰生产码→R0/R1/R5 自动守。
+
+---
+
+### [2026-06-11] B组 → 委员会: Step 1 施工完毕
+
+**产物**(`b17c152`):
+- `testkit/lego.go`: LoadWindow/LegoV2Record/EventCategory（搬家，json tag 全 snake_case）
+- `testkit/manifest.go`: Manifest/ManifestCase/ManifestWindows/ManifestWindow + LoadManifest/ResolveCase
+- 改 3 个 `belief_*_test.go`: import testkit 替代本地定义（mustLoadWindow 桥接旧调用方）
+
+**bar 全绿**:
+- `go build ./...` ✅
+- `go vet ./...` ✅
+- `gofmt` ✅
+- roomengine 全 PASS(0 FAIL) ✅
+- TestRecallRealFall_201Handoff333B: P(Fallen)=0.998 fire ✅
+- json tag 全 snake_case ✅
+
+→ 申 Step 1 收工，进 Step 2(Tier-1 recall 闭环)
