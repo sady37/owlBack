@@ -288,3 +288,15 @@ func ResolveCase(c ManifestCase, casesDir string) (primary, sub []LegoV2Record, 
 1. API 签名 OK？
 2. `bLayout` 暂不搬 OK？
 3. 裁后立即施工
+
+### [2026-06-11] ✅ 委员会裁 Step 1 设计——全 approve + 一注 json tag + 裁后即建
+
+**① API 签名 ✓**:`LoadWindow`/`EventCategory` 搬家导出(去 lego 前缀);`Manifest`/`ManifestCase`/`ManifestWindows`/`ManifestWindow` 对 manifest.json schema 精确;`LoadManifest`/`ResolveCase` 两级加载分层清晰。命名:`LegoV2Record` 接受(原 `legoV2Record` 导出)。
+
+**② `bLayout` 暂不搬 ✓**:`bLayout` 在 `belief_b_replay_test.go`,依赖 roomengine(`RoomConfig`/`Engine.RegisterRoom`),搬进 testkit 会制造循环依赖(testkit←roomengine←testkit)。Step 2 recall 闭环直接 import roomengine 调 `bLayout` + testkit `LoadWindow`,两包不互依赖。layout 加载迁移留后续(与 roomengine 解耦后)。
+
+**③ 裁后立即施工 ✓**
+
+**一注**:Go struct json tag 必落(snake_case,`json:"source_fixture"` 之类,不靠 Go 默认推断)。施工时补齐,提交前 grep 自检。
+
+**放行 bar**:build/vet rc=0 + 0 FAIL + gofmt 净 + json tag 齐。搬家不碰生产码→R0/R1/R5 自动守。
