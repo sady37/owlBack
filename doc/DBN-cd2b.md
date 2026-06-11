@@ -54,3 +54,33 @@
 - DBN 压制: `nodetect_gated`×83 + `v认同_evidence`×83,**0** `bed_occupied_suppress`
 - 相比 1514: 床占用压制消失(第二 run 床态干净),但 nodetect+v认同 仍不 fire
 - **结论: 即使床态正确,棉被旁摔的 track 在场+无 dwell → DBN 不 fire。根本 gap = 棉被遮挡后雷达丢 track,但 replay 数据 track 在,所以 DBN 看到的是在场→不触发 nodetect。**
+
+## case-9e7-2311 (快速下床)
+
+- 窗口: 2026-06-05 23:11-23:16 MDT
+- 设备: 9e7 radar + 978 sleepad
+- DB: 281 track 帧
+- 原始: 0 alarm(固件+gate-list 未报)
+- DBN: **0 fire**
+- 场景: EnterRoom→InBed(9e7+978)→978 LeftBed 23:15:00→9e7 Walking 23:15:01 **(1秒差)**
+- **结论: ✅ DBN 正确不 fire。这是快速起床,不是摔。LeftBed+Walking 同时=正常行为**
+
+## case-d5f7-bathroom (浴室摔,05-24)
+
+- 窗口: 2026-05-24 13:35-13:57 MDT, DB: 55 track 帧(稀疏)
+- DBN: **0 fire**(room 111:3:300 0 belief 活跃)
+- **结论: 数据太旧/太稀疏,不可靠。待用例文件 format 统一后重测**
+
+## case-d523-mirror-ghost (镜像 ghost)
+
+- 窗口: 2026-05-16 21:00-21:40 MDT
+- DB: 0 track(数据过期)
+- **结论: ❌ 不可测**
+
+## 关键发现汇总
+
+1. **bedAdapter BedStatus 不同源 bug**: `bed_decision_trace`=LeftBed 时,`BedStatus` 可能 stale(InBed) → 错误 `bed_occupied_suppress`。`bedAdapter` 应读 Bayesian 的 `Occupied` 概率而非 `BedStatus` 整数。
+2. **LeftBed 回溯 gap**: sleepad LeftBed 晚于 Fall,DBN 不回溯修正(已在 #2 讨论)。
+3. **dwell 时长**: 床边摔 27s dwell 不够触发 silent(需要 ≥30-60s),快下床 1s 够。
+4. **DBN 不 fire 床旁摔 = 结构问题**:track 在场→无丢轨→不触发 lost-fall;床占用→压制 silent-fall;LeftBed 破床占用但晚到→不回溯。三道门全关 → 床旁摔 FN。
+5. **DBN 对真人坠落(D523 bathroom,P=0.985)正确 fire** — 非床旁摔场景,无床占用干扰。
