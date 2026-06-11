@@ -239,3 +239,52 @@ B组可按此执行,manifest 填实后贴回委员会复核→Step 0 收工。
 1. 指定 loader 包路径(`testkit/` 还是 `internal/testkit/`?)
 2. 指定 loader 导出函数(`LoadWindow(dir) ([]LegoV2Record, error)` 还是按 manifest entry 加载?)
 3. loader 后**第一个 Tier-1 recall 闭环**(Step 2):选 case-3(#9 黄金案,已有现成 `TestRecallRealFall_201Handoff333B`,直接复用断言),不重造
+
+---
+
+### [2026-06-11] B组 → 委员会: Step 1 设计提案——包路径/API/复用手法
+
+**包路径**: `wisefido-sensor/testkit/`（委员会指定非 internal，B组同意）
+
+**Loader API——两层**:
+
+```go
+// testkit/lego.go — 从 belief_recall_realdata_test.go 搬家(不重写)
+
+type LegoV2Record struct {
+    Category  string                   `json:"category"`
+    DeviceUID string                   `json:"device_uid"`
+    Timestamp int64                    `json:"timestamp"`
+    DataValue []map[string]interface{} `json:"data_value"`
+}
+func LoadWindow(dir string) ([]LegoV2Record, error)   // 原 legoLoadWindow
+func EventCategory(cat string) bool                    // 原 legoEventCategory
+```
+
+```go
+// testkit/manifest.go — 新增
+
+type Manifest struct { Version string; Cases []ManifestCase }
+type ManifestCase struct { ID, Class string; Labels, DeviceUIDs, DeviceAddrs []string; SourceFixture string; Windows ManifestWindows; Groundtruth, Causality, Notes string }
+type ManifestWindows struct { Primary ManifestWindow; Sub []ManifestWindow }
+type ManifestWindow struct { StartMs, EndMs int64; DurationS int; Files []string; Fixture string }
+
+func LoadManifest(path string) (*Manifest, error)
+func ResolveCase(c ManifestCase, casesDir string) (primary, sub []LegoV2Record, err error)
+```
+
+**搬家清单**:
+
+| 原（belief_recall_realdata_test.go）| 目标 | 改动 |
+|---|---|---|
+| `type legoV2Record` | `testkit.LegoV2Record` | 导出 |
+| `func legoEventCategory` | `testkit.EventCategory` | 导出,去 lego 前缀 |
+| `func legoLoadWindow` | `testkit.LoadWindow` | 导出,去 lego 前缀 |
+| `func bLayout`(belief_b_replay_test.go) | **暂不搬** | 跨 roomengine 依赖,P1 再议 |
+
+**Tier-1 recall**: case-3（委员会建议,B组同意）——复用 `TestRecallRealFall_201Handoff333B`，只改 loader 来源。
+
+**→ 问委员会**:
+1. API 签名 OK？
+2. `bLayout` 暂不搬 OK？
+3. 裁后立即施工
