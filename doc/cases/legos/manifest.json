@@ -18,7 +18,7 @@
           "start_ms": 1780681020000,
           "end_ms": 1780681560000,
           "duration_s": 540,
-          "files": ["window.json(radar 553 rows)", "window_sleepad.json(sleepad 42 rows)"]
+          "files": ["window.json", "window_sleepad.json"]
         }
       },
       "groundtruth": "verified-fall",
@@ -37,7 +37,7 @@
           "start_ms": 1780686480000,
           "end_ms": 1780687080000,
           "duration_s": 600,
-          "files": ["window.json(radar 589 rows)", "window_sleepad.json(sleepad 195 rows)"]
+          "files": ["window.json", "window_sleepad.json"]
         }
       },
       "groundtruth": "verified-fall",
@@ -56,14 +56,14 @@
           "start_ms": 1781010840016,
           "end_ms": 1781011679222,
           "duration_s": 839,
-          "files": ["window.json(333B radar 287 rows)"]
+          "files": ["window.json"]
         },
         "sub": [
           {
             "fixture": "unit201-handoff-0609-bedroom-CD2B",
             "start_ms": 1781011099229,
             "end_ms": 1781011764383,
-            "files": ["window.json(CD2B radar 93 rows)"],
+            "files": ["window.json"],
             "role": "neighbor"
           }
         ]
@@ -84,7 +84,7 @@
           "start_ms": 1780763160000,
           "end_ms": 1780763820000,
           "duration_s": 660,
-          "files": ["window.json(radar 676 rows)", "window_sleepad.json(sleepad 31 rows)"]
+          "files": ["window.json", "window_sleepad.json"]
         }
       },
       "groundtruth": "verified-fall",
@@ -103,21 +103,21 @@
           "start_ms": 1780091948811,
           "end_ms": 1780092738712,
           "duration_s": 790,
-          "files": ["window.json(428 records)"]
+          "files": ["window.json"]
         },
         "sub": [
           {
             "fixture": "hunzi-cabb-lost-0529-FP",
             "start_ms": 1780017084838,
             "end_ms": 1780017885636,
-            "files": ["window.json(209 records)"],
+            "files": ["window.json"],
             "role": "alternate"
           },
           {
             "fixture": "hunzi-cabb-lost-0601-2247-FP",
             "start_ms": 1780353579920,
             "end_ms": 1780354056140,
-            "files": ["window.json(114 records)"],
+            "files": ["window.json"],
             "role": "alternate"
           }
         ]
@@ -138,7 +138,7 @@
           "start_ms": 1779854400515,
           "end_ms": 1779856799362,
           "duration_s": 2399,
-          "files": ["window.json(3059 records)"]
+          "files": ["window.json"]
         }
       },
       "groundtruth": "verified-FP",
