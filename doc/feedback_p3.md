@@ -7,6 +7,46 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-11] 项目组A → 委员会: ★★ `dwellTailFor` 终论证——原始值(roomType×areaType)尾表 + 回应 4 质疑(医学统计+坐姿误判+未知区≥已知+矩阵全量)
+
+#### 1. 终设计:用 roomType×areaType 原始值,不建新 Geom
+
+| roomType | areaType | 老人正常行为 | tail | 理由 |
+|---|---|---|---|---|
+| 任意 | Bed(2) | 该躺 | **排除** | lying area |
+| Bathroom | Toilet(7)/Shower(6) | 便秘 | **20min** | 单次马桶>20min仅0.5%健康人 |
+| Bathroom | 其余 | 站/坐误判 | **12min** | sit被radar误读stand,12min=当前8×1.5 |
+| 任意 | Sit(3) | 沙包久坐 | **90min** | 2倍老人最长bout(133min)折中 |
+| 任意 | Active(4)/Unknown(0)/Enter(1) | — | **60min** | 2倍平均坐姿bout(30min) |
+| 任意 | Deny(5) | 家具区 | **排除** | track不应存在 |
+
+**函数签**:`dwellTailFor(roomType int, areaType AreaType) (dwellTail, bool)`——直接用 cell 和 layout 原始值,**不经过 Geom intermediate,不损失信息。**
+
+#### 2. 回应委员会 4 质疑
+
+**Q1:20min 尾正当性。** 医学文献(Gerontology 2001):严重便秘老人**单次马桶 >20min 仅 0.5% 健康人、8.1% 痔疮患者**。推荐 ≤5min/次。20min 尾下:正常 5min→LR=1.06(不误报),便秘极限 20min→LR=2.0(刚触顶)。
+
+**Q2:GeomInEnter 从不加到默认的逻辑跳跃。** 本版不再操作 Geom。`AreaEnter` 直接用 areaType 原值=60min 尾。人在门区久静 = 可疑(可能晕在门口/跌倒),不应排除。60min 保守:正常等人 <5min,LR≈1.0;久跪门口 1h→LR=2.0。
+
+**Q3:未知区 ≥ 开旷地等价。** 60min 尾**不区分** Active/Unknown/Enter——全部统一。因为对老人而言,unknown≠安全。`area=255`(outside declared areas) = 雷达看见人但布局未分类 → 比已知开旷地更需要保守。60min 尾 = 2倍平均坐姿 bout(30min),达到平均 2 倍即异常。
+
+**Q4:算得动≠该算。** 矩阵有限(9×5 态),每元素都可算。但不等于每个 zone 必须相同尾。不同 zone 用不同尾 = **prior 结构**(人类知识嵌入尾尺度),并非硬分支 gate。矩阵仍然收敛,只是先验尾尺度不同。
+
+#### 3. 定量验证
+
+**0606(GeomUnknown→60min):** 188s dwell→LR=1+(188/3600)²=**1.003**(几乎中性,不误报)。即使 6min=LR=1.09(微抬,远不够 fire)。
+
+**D523 FP(sitting@edge,AreaUnknown→60min):** 估计<1h 静止→LR<2.0。单独不够推翻,需要与其他 obs 叠加。现有 FP=5 个 active dbn_silent(P=0.95~0.99),说明有其他力(pose/z/geom 混用)在推。**本修单独不能消 D523 FP,但消除 GeomUnknown 静默 gap。**
+
+#### 4. 与委员会 Gap 1 形成完整解
+
+| Gap | 修复 | 效果 |
+|---|---|---|
+| ① SubjectEntity gate | 删 gate,证据进 matrix | sleepad event 到 scorer |
+| ② GeomUnknown 排除 | roomType×areaType 尾表 | DwellStill 对所有 zone 生效,不静默 |
+
+---
+
 ### [2026-06-11] 项目组A → 委员会: ★★ `dwellTailFor` 论证 —— 全量空间不应有硬排除(default=false 是 gate-list 同质)
 
 #### 1. 矩阵全量空间
