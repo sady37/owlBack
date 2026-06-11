@@ -7,41 +7,17 @@
 
 ## 审查记录（倒序）
 
-### [2026-06-11] ★委员会 → 项目组A: sleepad LeftBed 不进 bed scorer 的根因 + 修复(用户证据确凿)
+### [2026-06-11] ★委员会自纠 + 根因定论: sleepad LeftBed 不进 bed scorer = `adapter_sleepace.go` SubjectEntity gate → DBN matrix 架构不应有此硬分支
 
-**用户完整证据**(replay `--unit 112` 0606 窗):
-1. **bed scorer**:`bed_decision_trace` replay 窗 `19:29:26 LeftBed slr=+0.6931`(vital-only) vs normal 态 `09:37:34 LeftBed slr=−2.9444`(含 LeftBed event 贡献) → `OnSleepadLeftBed` 在 replay 时未被调用
-2. **StillBox**: `still_box_break disp_cm=60`(>50cm 阈值) → 打破 still-box 累积 → lost-fall 检测被阻断
-3. **sensor_decision_log**:cd2b replay 窗(19:27-20:00)0 条记录 → DBN 未进 lostfall pending
+**★纠正上轮**(`e1377af` 诊断错,用户拍「不对」):我说「修复在 replay 工具补 SubjectEntity」→ **错**。**replay 只负责把 DB 真数据原样重放进 Redis,不管谁在消费,不管 SubjectEntity 是否为空**——补 SubjectEntity 是 replay 掺假数据。**正确修复在 sensor 侧 consumer**。
 
-**★根因(委员会亲查代码坐实,非 guess)**:replay 工具 `IoTStreamMessage` **不设 `SubjectEntity`** → `adapter_sleepace.go:140` 硬过滤 → 全部 sleepad 事件(LeftBed/InBed)在 **zoneengine adapter 层**被丢弃 → 永不到达 `bed_bayesian_scorer` → `OnSleepadLeftBed` 永不被调 → bed scorer 仅靠 vital HR/RR 驱动(slr 恒 +0.6931)。
+**根因**(replay 无误,是 sensor consumer 的 gate):`adapter_sleepace.go:140` — `if msg.SubjectEntity == "" { return }`。**此 gate 不是 routing 需要**——bed zone 由 `prefixOf(msg.DeviceAddr, 96)` 从 device addr 直接算,SubjectEntity 只是"sleepad 必须已绑卡"的安全检查。replay 发的是 DB 历史数据(无 card 绑定),**此 gate 把 sleepad LeftBed/InBed 全丢弃** → bed scorer 仅靠 vital HR/RR → `slr=+0.6931`(vital-only) vs 正常 `-2.9444`(含 LeftBed event)。
 
-```
-replay XADD → iot:event:stream ✅
-  → SleepaceAdapter.runLoop ✅  
-  → handleMsg ✅
-  → SubjectEntity == "" ❌ return (adapter_sleepace.go:140) ← 根因
-  → engine.Apply → bed_bayesian_scorer → OnSleepadLeftBed ❌ 永不到达
-```
+**★DBN matrix 架构不应有硬 gate**:用户拍「DBN 用 matrix 相乘就是为了避免 gate-list 分支判断」——`adapter_sleepace.go:140` 正是 gate-list 同质的硬分支(条件→丢弃)。bed_bayesian_scorer 的 matrix(`LR_S×γ + LR_R + prior`)应接收全部证据自己算权重,**不应被上游 adapter 前置 gate 截流**。
 
-**@项目组A 修复**(`tools/redis-replay/main.go`,~3 行):构建 `IoTStreamMessage` 时,对 sleepad 设备(`r.dtype=="Sleepad"`)填入 `SubjectEntity`:
-```go
-subjectEntity := ""
-if r.dtype == "Sleepad" {
-    // sleepad 的 SubjectEntity = 其 /80 spatial prefix(同 unit 前缀)
-    // e.g. fd00:0:3:111:3:101:2470:978 → fd00:0:3:111:3::/80
-    subjectEntity = addr.String()[:strings.LastIndex(addr.String(),":")] + "::/80" // 或从 unit_device 表查
-}
-msg := rediscommon.IoTStreamMessage{
-    ...
-    SubjectEntity: subjectEntity,  // ← 补这行
-}
-```
-若 replay 从 DB 查不到 card 绑定,用 sleepad addr 前 80 bit 作为 subject entity 即可(zoneengine 只验非空,不验内容)——sleepad subject 在 zoneengine 语义 = "这个床垫属于哪个 unit",/80 prefix 天然就是 unit 前缀。
+**修复**(改 `adapter_sleepace.go`,删 SubjectEntity 空值丢弃):line 140-142 `if msg.SubjectEntity == "" { return }` → 删除。bedPref 已有 `prefixOf(msg.DeviceAddr,96)` 独立推导,不依赖 SubjectEntity。
 
-**@项目组A 验证**:修完后跑 `--unit 112 --t1 "2026-06-06 19:27" --t2 "2026-06-06 20:00" --tz America/Denver --streams monitor,event`,查 `bed_decision_trace` 里 replay 窗 LeftBed 的 `slr` 应 ≈−2.9444(normal 态),`sensor_decision_log` cd2b 应有 lostfall pending 记录。
-
-**reminder**:此 gate 是 zoneengine adapter 层 routing(确认 sleepad 绑卡/unit),**不是 gate-list 判断**——gate-list 已全删(`0fac478`),DBN matrix 计算本身没问题。
+**验证**:修完后跑 `--unit 112` replay,查 `bed_decision_trace` replay 窗 LeftBed `slr` 应从 `+0.6931`(vital-only)恢复为 `−2.9444`(含 LeftBed event)。sensor_decision_log cd2b 应有 lostfall pending 记录。
 
 ---
 
