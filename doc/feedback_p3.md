@@ -29,6 +29,20 @@
 
 **K 值范围 45-120s**:基于老人行为尺 + 单元类型 —— 1≤人/min(公共区)到 0.5人/min(独居)。45s = 约 1.3 事件/分,120s = 约 0.5 事件/分。
 
+### [2026-06-11] 委员会追问:两层怎么集成(不插入新层,替换+参数化)
+
+**不是插入 2 新层**——tail 表替换现有 Geom lookup(改 `dwellTailFor` 签名),K 参数化 `Predict(1)`(改硬编码 nSteps=1)。
+
+**集成点 1 — tail 表:替换 `survival.go:18` `dwellTailFor(zone Geom)`**
+
+当前:`dwellTailFor(Geom)` → Geom 枚举 switch → 返回 tail scale。提案:改签名为 `dwellTailFor(roomType int, areaType int)` → roomType×areaType 查表 → 返回 tail scale。**改动**:改函数签名 + 改调用方 `fallLRFromDwell` + 改调用链上游 `belief_shadow.go`(当前只传 `tlGeom`,需加传 roomType/areaType)。**无新层,替换现有 lookup**。
+
+**集成点 2 — K 值:参数化 `track.go:286` `Predict(1)`**
+
+当前:`Step()` 硬编码 `tb.Predict(1)`——不管两帧间隔多久,都预测 **1 步**。`Predict(nSteps)` 已支持多步(循环 nSteps 次 A_T·b)。K 的含义:`nSteps = max(1, int((nowMs - tb.lastTs) / (K * 1000)))`。**改动**:从 unit DB 字段读 K→传进 `beliefShadowTick`→存入 `beliefShadowTLayer`→`Step` 时用 K 算 nSteps。**无新层,参数化现有硬编码**。
+
+**两个改动互不依赖**(tail 表改 dwell 似然比计算,K 改时间转移步数)。可分别建、分别验证。
+
 ---
 
 ### [2026-06-11] ★委员会自纠²:上轮 2 硬质疑基于错误理解(60s 误为 dwell 时长)——撤销 + 新挑战(60s 相关距离的正当性)
