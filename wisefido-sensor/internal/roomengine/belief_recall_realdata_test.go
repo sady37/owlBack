@@ -32,12 +32,29 @@ func mustLoadWindow(t *testing.T, dir string) []testkit.LegoV2Record {
 }
 
 func TestRecallRealFall_201Handoff333B(t *testing.T) {
-	dir := "unit201-handoff-0609-bathroom-333B" // 201 bathroom 0609 真摔(firmware Fall pose=5)
-	cfg, radarAddr, roomID := bLayout(t, dir)
-	recs, err := testkit.LoadWindow(filepath.Join(casesDir, dir))
+	// Step 2: 走 manifest.ResolveCase 加载（替代硬编码路径），断言强化。
+	manifestPath := filepath.Join(casesDir, "legos", "manifest.json")
+	m, err := testkit.LoadManifest(manifestPath)
 	if err != nil {
-		t.Fatalf("LoadWindow %s: %v", dir, err)
+		t.Fatalf("LoadManifest: %v", err)
 	}
+	var case3 *testkit.ManifestCase
+	for i := range m.Cases {
+		if m.Cases[i].ID == "case-3" {
+			case3 = &m.Cases[i]
+			break
+		}
+	}
+	if case3 == nil {
+		t.Fatal("manifest 中找不到 case-3")
+	}
+	recs, _, err := testkit.ResolveCase(*case3, casesDir)
+	if err != nil {
+		t.Fatalf("ResolveCase case-3: %v", err)
+	}
+
+	dir := case3.SourceFixture
+	cfg, radarAddr, roomID := bLayout(t, dir)
 
 	core, logs := observer.New(zapcore.DebugLevel)
 	e := NewEngine(nil, zap.New(core))
@@ -60,18 +77,34 @@ func TestRecallRealFall_201Handoff333B(t *testing.T) {
 		}
 	}
 
-	// 断言：DBN 在真摔上抬 P(Fallen)（recall：真摔不被压）。
+	// 断言强化(委员会 Step 2):P(Fallen)≥0.3 + fire + reason==pose_lying + veto_ghost=0。
 	fired := logs.FilterMessage("belief_shadow_fall").Len()
+	vetoed := logs.FilterMessage("belief_dbn_veto_ghost").Len()
 	var peak float64
+	var reason string
 	for _, le := range logs.All() {
 		if le.Message == "belief_shadow_trace" {
 			if v, ok := le.ContextMap()["p_fallen"].(float64); ok && v > peak {
 				peak = v
 			}
 		}
+		if le.Message == "belief_shadow_fall" {
+			if r, ok := le.ContextMap()["p7_3_reason"].(string); ok {
+				reason = r
+			}
+		}
 	}
-	t.Logf("真摔 #9-333B：belief_shadow_fall=%d  peak P(Fallen)=%.3f", fired, peak)
-	if fired == 0 && peak < 0.3 {
-		t.Fatalf("真摔(201 0609 333B firmware Fall)DBN 既未 fire 也未抬 P(Fallen)(peak=%.3f) → recall 漏", peak)
+	t.Logf("case-3: fire=%d veto_ghost=%d peak=%.3f reason=%s", fired, vetoed, peak, reason)
+	if fired == 0 {
+		t.Fatalf("真摔 case-3 DBN 未 fire → recall 漏")
+	}
+	if peak < 0.3 {
+		t.Fatalf("真摔 case-3 P(Fallen)=%.3f < 0.3 → recall 漏", peak)
+	}
+	if reason != "pose_lying" {
+		t.Errorf("真摔 case-3 p7_3_reason=%s, want pose_lying", reason)
+	}
+	if vetoed > 0 {
+		t.Errorf("真摔 case-3 veto_ghost=%d, 真摔不应被 ghost veto", vetoed)
 	}
 }
