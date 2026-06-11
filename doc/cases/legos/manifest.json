@@ -1,0 +1,132 @@
+{
+  "manifest_version": "1",
+  "description": "乐高块 manifest — 真碎片案例索引。不复制原始数据，只存坐标。",
+  "created": "2026-06-11",
+  "schema_note": "字段定义见 doc/feedback_simulator.md §约束#2。window 为 UTC ISO 8601。groundtruth 枚举: verified-fall | verified-FP | verified-benign | unverified-benign。causality 枚举: real-contiguous | synthetic-composite。",
+
+  "cases": [
+    {
+      "id": "case-1",
+      "class": "real-fall",
+      "labels": ["silent", "bedside"],
+      "device_uids": ["9D8A326309E7", "BM87224700978"],
+      "source_fixture": "bedtest-0605-1-bedside-fall-no-fw-detect",
+      "window": {
+        "start_utc": "2026-06-05T17:37:00Z",
+        "end_utc": "2026-06-05T17:46:00Z"
+      },
+      "duration_s": 540,
+      "groundtruth": "verified-fall",
+      "causality": "real-contiguous",
+      "notes": "床边自救摔。雷达误识旁 chair，firmware 未报 Fall。sleepad LeftBed 触发 silent_fall 链。自救起身后 ExitRoom(17:46:43) cancel→零记录。待导出 v2 window.json（当前仅 test_record.txt 旧格式）。",
+      "_status": "needs_export"
+    },
+    {
+      "id": "case-2",
+      "class": "real-fall",
+      "labels": ["pose_lying", "bedside"],
+      "device_uids": ["9D8A326309E7", "BM87224700978"],
+      "source_fixture": "bedtest-0605-2-bedside-fall-fw-detect",
+      "window": {
+        "start_utc": "2026-06-05T19:08:00Z",
+        "end_utc": "2026-06-05T19:18:00Z"
+      },
+      "duration_s": 600,
+      "groundtruth": "verified-fall",
+      "causality": "real-contiguous",
+      "notes": "床边跌倒，身仍靠床→sleepad 检 HR/RR。firmware pose=5 fire。DBN P=0.758。待导出 v2 window.json（当前仅 test_record.txt 旧格式）。",
+      "_status": "needs_export"
+    },
+    {
+      "id": "case-3",
+      "class": "real-fall",
+      "labels": ["pose_lying", "moving", "hand-off"],
+      "device_uids": ["25A859B8333B", "9D8A32A1CD2B", "BM87224601641"],
+      "source_fixture": "unit201-handoff-0609-bathroom-333B",
+      "window": {
+        "start_utc": "2026-06-09T13:14:00Z",
+        "end_utc": "2026-06-09T13:27:00Z"
+      },
+      "duration_s": 780,
+      "groundtruth": "verified-fall",
+      "causality": "real-contiguous",
+      "notes": "#9 黄金 hand-off 案。bathroom 333B 真摔+firmware Fall→起身→ExitRoom→4s 后 bedroom CD2B EnterRoom。真因果非拼接。DBN P=0.998 fire。window.json 已导出(287 records)。邻房 window: unit201-handoff-0609-bedroom-CD2B/window.json(93 records)。",
+      "_status": "ready"
+    },
+    {
+      "id": "case-4",
+      "class": "real-fall",
+      "labels": ["TBD"],
+      "device_uids": ["9D8A32A1CD2B", "BM87224601641"],
+      "source_fixture": "TBD",
+      "window": {
+        "start_utc": "2026-06-06T16:26:00Z",
+        "end_utc": "2026-06-06T16:37:00Z"
+      },
+      "duration_s": 660,
+      "groundtruth": "verified-fall",
+      "causality": "TBD",
+      "notes": "⚠ 待委员会确认：CD2B bedroom 床边真摔。现有 cd2b-fall-* 目录窗口均不匹配（0606 0917/0929 MDT≠此时），且 test_case_catalog.md 标注 cd2b-fall-060x 均为 false。需确认源 fixture 目录或重新导出。",
+      "_status": "needs_clarification"
+    },
+    {
+      "id": "case-5",
+      "class": "false-alarm",
+      "labels": ["lost"],
+      "device_uids": ["4D8710D5CABB"],
+      "source_fixture": "TBD",
+      "sub_windows": [
+        {
+          "fixture": "hunzi-cabb-lost-0529-FP",
+          "window": { "start_utc": "TBD", "end_utc": "TBD" },
+          "records": 209
+        },
+        {
+          "fixture": "hunzi-cabb-lost-0530-FP",
+          "window": { "start_utc": "TBD", "end_utc": "TBD" },
+          "records": 428
+        },
+        {
+          "fixture": "hunzi-cabb-lost-0601-2247-FP",
+          "window": { "start_utc": "TBD", "end_utc": "TBD" },
+          "records": 114
+        }
+      ],
+      "window": {
+        "start_utc": "TBD",
+        "end_utc": "TBD"
+      },
+      "duration_s": null,
+      "groundtruth": "verified-FP",
+      "causality": "real-contiguous",
+      "notes": "hunzi CABB lost_track 误报，共 3 窗。test_case_catalog.md #5 用户确认。3 个 window.json 均已导出。primary 窗口待委员会指定（建议 0530 记录最多 428）。",
+      "_status": "needs_primary_selection"
+    },
+    {
+      "id": "case-6",
+      "class": "false-alarm",
+      "labels": ["ghost", "person_silent"],
+      "device_uids": ["E598A2ACD523"],
+      "source_fixture": "d523-mirror-ghost-0526",
+      "window": {
+        "start_utc": "TBD",
+        "end_utc": "TBD"
+      },
+      "duration_s": null,
+      "groundtruth": "verified-FP",
+      "causality": "real-contiguous",
+      "notes": "D523 镜面 ghost 误报。gate-list 报 EMERG FP，DBN 0 fire（干净不犯）——cutover 最强证据。当前仅有 monitor_stream JSON(旧格式)，待导出 v2 window.json。时间窗待从 monitor_stream_21-00_to_21-40_PDT.json 确定。",
+      "_status": "needs_export"
+    }
+  ],
+
+  "_todo": {
+    "next_after_clarification": [
+      "1. case-1/2/6 导出 v2 window.json（export_case_v2.sh）",
+      "2. case-4 确认 fixture 目录 + 导出",
+      "3. case-5 选 primary 窗口",
+      "4. 补全 TBD 字段后进入 Step 1（testkit/ loader）",
+      "5. benign 410 窗按需加入 manifest（不复制，只记坐标）"
+    ]
+  }
+}

@@ -61,3 +61,62 @@
 | case-4 | real-fall | 9D8A32A1CD2B, BM87224601641 | 2026-06-06 16:26–16:37 | 真摔(CD2B bedroom 床边) | #4 DBN 待 replay 验 |
 | case-5 | false-alarm(lost) | 4D8710D5CABB | TBD | FP(lost_track, hunzi cabb) | #5 DBN P=0.002 正确否决 |
 | case-6 | false-alarm(ghost) | E598A2ACD523 | TBD | FP(person_silent ghost, D523) | D523 DBN 不犯(gate-list EMERG/DBN 0 fire) |
+
+
+---
+
+### [2026-06-11] B组 → 委员会: Step 0 manifest skeleton 起草 + 4 个待裁问题
+
+**做了什么**: 按委员会附录 6 case 速查表 + `test_case_catalog.md` unit×device 编组，起草了 `doc/cases/legos/manifest.json` skeleton。
+
+**manifest 结构**:
+- `manifest_version: "1"` + `description` + `created`
+- `cases[]`: 每条含 `id/class/labels/device_uids/source_fixture/window{start_utc,end_utc}/duration_s/groundtruth/causality/notes/_status`
+- 附加 `_todo` 块记下一步待办
+
+**各 case 现状**:
+
+| id | source_fixture | window.json | 状态 |
+|---|---|---|---|
+| case-1 | `bedtest-0605-1-bedside-fall-no-fw-detect` | ❌ 仅 test_record.txt | needs_export |
+| case-2 | `bedtest-0605-2-bedside-fall-fw-detect` | ❌ 仅 test_record.txt | needs_export |
+| case-3 | `unit201-handoff-0609-bathroom-333B` | ✅ 287 records | ready |
+| case-4 | TBD | ❌ 无匹配目录 | needs_clarification |
+| case-5 | 3 个 hunzi-cabb-lost-* | ✅ 三窗均导出 | needs_primary_selection |
+| case-6 | `d523-mirror-ghost-0526` | ❌ 旧格式 monitor_stream JSON | needs_export |
+
+**发现的问题(4 个待委员会裁)**:
+
+**① case-4 fixture 对不上**。附录给的窗口 `2026-06-06 16:26–16:37 UTC`(=10:26-10:37 MDT)。现有 cd2b-fall-* 目录窗口均不匹配：
+- `cd2b-fall-0606-0917`: 06-06 09:15-09:18 MDT(15:15-15:18 UTC) ❌
+- `cd2b-fall-0606-0929`: 06-06 09:27-09:30 MDT(15:27-15:30 UTC) ❌
+- `cd2b-fall-0607-1021`: 06-07 10:19-10:22 MDT(16:19-16:22 UTC) — 日期差一天 ❌
+- `test_case_catalog.md` 标注 "cd2b-fall-060x 是 false，不要轻易用"
+
+**→ 问委员会**: case-4 的 fixture 是哪个目录？是尚未导出的新窗口还是现有某个 cd2b-fall-* 重标？如果是新窗口，给准确 UTC 起止我们跑 `export_case_v2.sh`。
+
+**② case-5 三窗选哪个作 primary**。hunzi CABB lost 有三个已导出窗口：
+- `hunzi-cabb-lost-0529-FP`: 209 records
+- `hunzi-cabb-lost-0530-FP`: 428 records（最多）
+- `hunzi-cabb-lost-0601-2247-FP`: 114 records
+
+manifest 里当前全列在 `sub_windows`，primary 未指定。
+
+**→ 问委员会**: 三窗全入还是选一个？建议 0530(428 records 最富)作 primary，其余作 sub_windows 备选。
+
+**③ case-1/2 的 test_record.txt 旧格式怎么处理**。`bedtest-0605-1` 和 `bedtest-0605-2` 都没有 v2 window.json（只有旧格式 test_record.txt）。`belief_recall_realdata_test.go` 的 `legoLoadWindow` 只认 window.json。
+
+**→ 问委员会**: 这两个是跑 `export_case_v2.sh` 重新导出为 window.json，还是 testkit loader 需要同时支持旧 test_record.txt 格式？建议前者（统一格式=约束#1），后者增加 loader 复杂度且旧格式是死胡同。
+
+**④ manifest schema 确认**。当前 skeleton 加了 `_status`（内部状态标记）和 `_todo`（待办）两个下划线前缀字段，以及 case-5 的 `sub_windows` 扩展。这些是临时脚手架还是可以入 schema？
+
+**→ 问委员会**: schema 是否接受 `_status`/`_todo`/`sub_windows` 字段？还是 manifest 只保留纯数据字段，状态管理走 feedback_simulator.md？
+
+---
+
+**B组下一步(待上述 4 问裁后执行)**:
+1. 跑 `export_case_v2.sh` 导出 case-1/2/6 的 window.json
+2. 补全 case-4 fixture
+3. 定 case-5 primary 窗口
+4. manifest TBD 字段全部填实 → Step 0 收工
+5. 进 Step 1: 抽 `testkit/` loader
