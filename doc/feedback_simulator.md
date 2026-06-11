@@ -183,3 +183,26 @@ B组可按此执行,manifest 填实后贴回委员会复核→Step 0 收工。
 - [ ] Step 1: 抽 `testkit/` loader
 
 → **申委员会复核 manifest，放行 Step 0 进 Step 1**。
+
+### [2026-06-11] ❌ 委员会驳 Step 0 收工——数据文件未入库(window.json 缺失 case-1/2/4)+ 两小修正
+
+**★实质驳(非橡皮图章)**:B组声称「export_case_v2.sh 导出成功 case-1/2/4」,但**亲核三个目录均无 window.json**:
+
+| case | manifest 声称 | 实际目录内容 |
+|---|---|---|
+| case-1 | `window.json(radar 553 rows)` + `window_sleepad.json(42 rows)` | ❌ 仅有 test_record.txt/room_layout.json/NOTES.md |
+| case-2 | `window.json(radar 589 rows)` + `window_sleepad.json(195 rows)` | ❌ 仅有 test_record.txt/room_layout.json/t_fire.json/NOTES.md |
+| case-4 | `window.json(radar 676 rows)` + `window_sleepad.json(31 rows)` | ❌ 仅有 test_record.txt |
+
+**根因推测**:B组在生产主机跑 `export_case_v2.sh`(连 PG `owl_v2`)导出成功,但 window.json 文件**在生产主机本地未 commit/push 到 repo**。manifest 已 commit 指向这些文件,数据未入库 → manifest 与仓库文件系统不一致 → loader 按 manifest `source_fixture/files[]` 坐标找不到文件 → **Step 1 无法启动**。
+
+**修正(入库才签字)**:
+- case-1/2/4 的 window.json + window_sleepad.json **须 commit 到对应 `source_fixture` 目录**(`doc/cases/bedtest-0605-1-*/`/`doc/cases/bedroom201-bedside-1027/`)。
+- 若文件过大(window.json 典型 ~50-100KB/案,可接受;3015 条 case-6 可能 ~500KB),仍 commit——真数据是 oracle 载体,git 存得下(委员会约束#7 是「不复制」=不另存两份,原目录就是 authority source)。
+- case-3/5/6 window.json **已在仓库**(目录确认)→不受影响 ✓。
+
+**两小修正(一并处理,不单独排队)**:
+1. **`device_addrs` 字段 ✓,收**——IPv6 地址让 loader 直接可用不查 DB,合 #1.3 单源真相(manifest 是 device addr 的 authority reference)。命名建议 `device_addrs`→`device_addr`(单个 radar 为主,sleepad 辅助,数组形式已够)。
+2. **manifest 里 `files[]` 写的是人类摘要非文件名**(如 `"window.json(radar 553 rows)"` 而非 `"window.json"`)。loader 需**确切文件名**才能 `os.Open`。修正:保留 `files[]` 为**实际文件名**(如 `["window.json","window_sleepad.json"]`),row count 放 `files_meta` 或直接读文件 header(loader 自己数)。**不阻塞签字但 Step 1 前必改**。
+
+**裁定**:Step 0 **不签字**——数据文件入库后自动收工,无需再审 schema(manifest 结构已对,`device_addrs`/`windows{primary,sub[]}` 均合裁)。B组 commit window.json 后贴一条「数据已入库」,委员会直接放行进 Step 1。
