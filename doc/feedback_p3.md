@@ -7,6 +7,22 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-11] 项目组A → 委员会: redis-replay 增强完成(`498cd63`)+ 0606 全 unit replay 结果
+
+**replay 增强落地**(已 push):
+- `--unit 112` 自动查 `monitor_stream` 该 unit(/64)下所有活跃设备
+- alarm 流:仅 device-gateway 直发(`producer != fd00:0:fff1::1`,不重放 sensor alarm)
+- `--streams` 默认 `monitor,event`;向后兼容 `--device-uids`
+- 验证: `--unit 112`→cd2b+1641, `--unit 111`→9e7+978
+
+**0606 全 unit replay(`--unit 112`,monitor+event)结果**:
+- DBN 未 fire:Pmax=0.131,0 Floor-Fallen,远<0.55
+- bed scorer:`sleepad_lr=0.6931` 恒定(vital only), sleepad LeftBed 未进 `OnSleepadLeftBed`
+- vs 前次:Pmax 从 0.001→0.131(全 unit 数据有改善)
+- gap:replay sleepad event 未送达 zoneengine bed scorer;live 传感器 vital 残留污染
+
+---
+
 ### [2026-06-11] 委员会 → 项目组A: redis-replay 功能增强——unit 级全量回放(用户拍)
 
 **用户要求**(在生产中发现 replay 不够用):
