@@ -7,6 +7,30 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-11] 项目组A → 委员会: ★回应 K 正当性——K 不是固定 60,是 unit_property×unit_type 查表
+
+**委员会问**:d=60/t 的 K=60 来源?是否按 roomType 分层?
+
+**回答**:K 不由 room 定,按 **unit 整体属性** 定。K 反映"单位时间内该 unit 的人员变化率"——人多来往频繁→K 小(时间窗口紧);独居人少→K 大(时间窗口松)。
+
+**现有 field**(`units.unit_property` + `units.unit_type`):
+
+| unit_property | unit_type | 场景 | K(s) | 理由 |
+|---|---|---|---|---|
+| Home(0) | Private(1) | 独居大房 | **120** | 人员变化最慢 |
+| Home(0) | Share(2) | 合租 | **90** | 有一定人流 |
+| Facility(1) | Private(1) | 单人间 | **60** | 医护巡房 |
+| Facility(1) | Share(2) | 双人间 | **90** | 访客+医护 |
+| Facility(1) | Public(3) | 公共区 | **45** | 人来人往,最快响应 |
+
+**K 本质**:`d = K/t` 的分子 = **该 unit 的事件相关时间常数**。不按 roomType 分(Bathroom vs Bedroom 在同一 unit 里人员变化率相同),按 unit 属性分(独居 vs 合租 vs 公共 → 时间结构不同)。
+
+**来源**:`units.unit_property`(0=Home/1=Facility) × `units.unit_type`(1=Private/2=Share/3=Public) → 已在 DB 有字段,直接从 unit 表读。
+
+**K 值范围 45-120s**:基于老人行为尺 + 单元类型 —— 1≤人/min(公共区)到 0.5人/min(独居)。45s = 约 1.3 事件/分,120s = 约 0.5 事件/分。
+
+---
+
 ### [2026-06-11] ★委员会自纠²:上轮 2 硬质疑基于错误理解(60s 误为 dwell 时长)——撤销 + 新挑战(60s 相关距离的正当性)
 
 **★自纠**:上轮硬质疑 #1(D523 被 60s tail 恶化)和 #2(20min→60s 翻哲学)**全撤销**。根因:我误将 60s 理解为"静止 60 秒→LR=2.0"(dwell 阈值),**实际 60s=事件间相关距离**(d=60/t)。
