@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
-	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
 
 	rediscommon "owl-common/redis"
+
+	"wisefido-sensor/testkit"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -36,11 +37,11 @@ type fragment struct {
 // donorV2Frames 读真实 v2 案的 track 帧（按 ts 升序,展开 data_value）。缺 window.json → 返 nil(不 skip 整测)。
 func donorV2Frames(t *testing.T, dir string) []synthFrame {
 	t.Helper()
-	if _, err := os.Stat(filepath.Join(casesDir, dir, "window.json")); err != nil {
-		return nil // 该 donor 非 v2(无 window.json)→ 跳过,不 skip 整测
+	recs, err := testkit.LoadWindow(filepath.Join(casesDir, dir))
+	if err != nil {
 	}
 	var out []synthFrame
-	for _, r := range legoLoadWindow(t, dir) {
+	for _, r := range recs {
 		if r.Category != "track" {
 			continue
 		}
@@ -223,10 +224,10 @@ func TestDBNFireSwitch(t *testing.T) {
 	e.RegisterRoom(cfg)
 	e.deviceRoom[radarAddr] = roomID
 	e.deviceMounts[radarAddr] = cfg.Radar
-	for _, r := range legoLoadWindow(t, "unit201-handoff-0609-bathroom-333B") {
+	for _, r := range mustLoadWindow(t, "unit201-handoff-0609-bathroom-333B") {
 		dvJSON, _ := json.Marshal(r.DataValue)
 		topic := "monitor"
-		if legoEventCategory(r.Category) {
+		if testkit.EventCategory(r.Category) {
 			topic = "event"
 		}
 		msg := rediscommon.StreamMessage{Values: map[string]interface{}{

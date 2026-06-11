@@ -2,14 +2,12 @@ package roomengine
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"testing"
 
-	"owl-common/alarm"
 	rediscommon "owl-common/redis"
+	"wisefido-sensor/testkit"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -20,45 +18,26 @@ import (
 // 喂 export_case_v2 的 window.json（真摔）→ 生产 handleMessage/handleEventMessage → 真 beliefShadowTick，
 // 断言 DBN belief shadow 抬起 P(Fallen)（真摔不被压成 Vacant）。委员会建序「第一个 recall 闭环」。
 //
-// loader 把 v2 window.json（{category,device_uid,timestamp,data_value}，无 topic_type）按 category
-// 推断 topic_type（event 名→event / track·heart→monitor），喂生产 StreamMessage（同归一化，含 IPv6）。
+// loader 已迁至 testkit 包（LoadWindow/EventCategory/LegoV2Record），本文件 import 使用。
 
-// legoEventCategory v2 window 里属"事件流"的 category（其余 track/heart 走 monitor）。
-func legoEventCategory(cat string) bool {
-	switch cat {
-	case alarm.Fall, alarm.EnterRoom, alarm.ExitRoom, alarm.InBed, alarm.LeftBed, alarm.NumberPeople,
-		alarm.Activity, alarm.Walking, alarm.Sitting, alarm.Standing:
-		return true
-	}
-	return false
-}
-
-type legoV2Record struct {
-	Category  string                   `json:"category"`
-	DeviceUID string                   `json:"device_uid"`
-	Timestamp int64                    `json:"timestamp"`
-	DataValue []map[string]interface{} `json:"data_value"`
-}
-
-// legoLoadWindow 读 v2 window.json，按 ts 升序。
-func legoLoadWindow(t *testing.T, dir string) []legoV2Record {
+// mustLoadWindow 桥接 testkit.LoadWindow → 旧 legoLoadWindow(t, dir) 调用方。
+// 只做 path join + error→t.Fatal，不重写逻辑。
+func mustLoadWindow(t *testing.T, dir string) []testkit.LegoV2Record {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(casesDir, dir, "window.json"))
+	recs, err := testkit.LoadWindow(filepath.Join(casesDir, dir))
 	if err != nil {
-		t.Skipf("window 缺 %s: %v", dir, err)
+		t.Fatalf("LoadWindow %s: %v", dir, err)
 	}
-	var recs []legoV2Record
-	if err := json.Unmarshal(raw, &recs); err != nil {
-		t.Fatalf("解析 window %s: %v", dir, err)
-	}
-	sort.SliceStable(recs, func(i, j int) bool { return recs[i].Timestamp < recs[j].Timestamp })
 	return recs
 }
 
 func TestRecallRealFall_201Handoff333B(t *testing.T) {
 	dir := "unit201-handoff-0609-bathroom-333B" // 201 bathroom 0609 真摔(firmware Fall pose=5)
 	cfg, radarAddr, roomID := bLayout(t, dir)
-	recs := legoLoadWindow(t, dir)
+	recs, err := testkit.LoadWindow(filepath.Join(casesDir, dir))
+	if err != nil {
+		t.Fatalf("LoadWindow %s: %v", dir, err)
+	}
 
 	core, logs := observer.New(zapcore.DebugLevel)
 	e := NewEngine(nil, zap.New(core))
@@ -74,7 +53,7 @@ func TestRecallRealFall_201Handoff333B(t *testing.T) {
 		}}
 	}
 	for _, r := range recs {
-		if legoEventCategory(r.Category) {
+		if testkit.EventCategory(r.Category) {
 			e.handleEventMessage(mk("event", r.Category, r.DataValue, r.Timestamp))
 		} else { // track / heart → monitor
 			e.handleMessage(nil, mk("monitor", r.Category, r.DataValue, r.Timestamp))

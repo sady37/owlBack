@@ -18,6 +18,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
+	"wisefido-sensor/testkit"
 )
 
 // rawDumpRow d523 类 raw monitor_stream dump 行：{ts(ISO),device_addr,stream_type,payload}。
@@ -236,9 +237,9 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 	frames := 0
 	switch vc.format {
 	case "v2": // {category,device_uid,timestamp,data_value} 无 topic_type → 按 category 推
-		for _, r := range legoLoadWindow(t, vc.dir) {
+		for _, r := range mustLoadWindow(t, vc.dir) {
 			topic := "monitor"
-			if legoEventCategory(r.Category) {
+			if testkit.EventCategory(r.Category) {
 				topic = "event"
 			}
 			feed(topic, r.Category, r.DataValue, r.Timestamp)
@@ -250,7 +251,7 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 			topic := r.TopicType
 			if topic == "" {
 				topic = "monitor"
-				if legoEventCategory(r.Category) {
+				if testkit.EventCategory(r.Category) {
 					topic = "event"
 				}
 			}
@@ -469,7 +470,7 @@ func analyzeRecoveryV2(t *testing.T, vc vetoCase, tFireMs int64) (recoveryTsMs, 
 		lostGap                                      bool // 摔后曾丢轨>TTL(委员会螺丝:track-lost≠up,盲区受害者倒地显短是假象)
 	}
 	tracks := map[int]*tk{}
-	for _, r := range legoLoadWindow(t, vc.dir) {
+	for _, r := range mustLoadWindow(t, vc.dir) {
 		if r.Category != "track" {
 			continue
 		}
@@ -616,7 +617,7 @@ func caseTimeSpanMs(t *testing.T, vc vetoCase) (int64, int64, int) {
 	var ts []int64
 	switch vc.format {
 	case "v2":
-		for _, r := range legoLoadWindow(t, vc.dir) {
+		for _, r := range mustLoadWindow(t, vc.dir) {
 			ts = append(ts, r.Timestamp)
 		}
 	case "v1":
