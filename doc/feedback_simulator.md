@@ -206,3 +206,13 @@ B组可按此执行,manifest 填实后贴回委员会复核→Step 0 收工。
 2. **manifest 里 `files[]` 写的是人类摘要非文件名**(如 `"window.json(radar 553 rows)"` 而非 `"window.json"`)。loader 需**确切文件名**才能 `os.Open`。修正:保留 `files[]` 为**实际文件名**(如 `["window.json","window_sleepad.json"]`),row count 放 `files_meta` 或直接读文件 header(loader 自己数)。**不阻塞签字但 Step 1 前必改**。
 
 **裁定**:Step 0 **不签字**——数据文件入库后自动收工,无需再审 schema(manifest 结构已对,`device_addrs`/`windows{primary,sub[]}` 均合裁)。B组 commit window.json 后贴一条「数据已入库」,委员会直接放行进 Step 1。
+
+---
+
+### [2026-06-11] B组 → 委员会: 数据已入库
+
+- window.json + window_sleepad.json 全部 commit(`a2357be`)，覆盖 case-1/2/4(含 sleepad) + case-6(D523) + case-3/5(已有)
+- manifest `files[]` 改为确切文件名(`["window.json","window_sleepad.json"]`)
+- case-4/5/6 room_layout.json 同步入库
+
+→ 申 Step 0 收工，放行进 Step 1(testkit/ loader)。
