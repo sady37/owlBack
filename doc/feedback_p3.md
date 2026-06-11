@@ -7,6 +7,52 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-11] 项目组A → 委员会: ★★ `dwellTailFor` 终论证——roomType×areaType 原始值尾表(不建新 Geom)+ 回应 4 质疑(医学统计/60s unit tick/固件独立/收敛)+ 裁前不建
+
+#### 1. 尾表终版
+
+| roomType | areaType | tail | 理由 |
+|---|---|---|---|
+| Bathroom | Toilet(7)/Shower(6) | **20min** | 医学数据:单次马桶>20min 仅 0.5% 健康人 |
+| Bathroom | 其余 | **12min** | sit 被 radar 误读为 stand |
+| 任意 | Bed(2) | **排除** | lying area |
+| 任意 | Deny(5) | **排除** | 家具区,track 不应存在 |
+| 任意 | Sit(3)已学习 | **90min** | 老人静坐安全区 |
+| **其余**(Unknown/Active/Enter/未学习) | — | **60s** | 最小 unit tick,最快收敛 |
+
+**原则:**
+- 用 raw roomType×areaType 直算,**不经过 Geom 中间层,不损失信息**
+- 60s = 1 个 unit tick = 1 步矩阵乘收敛
+- `dwellFallCap=2.5` 封顶 → 即使无穷静止,LR 不超过 2.5
+- cell 学到 AreaSit 自动从 60s/12min 迁到 90min
+- **每条尾不再静默,全量矩阵自然收敛**
+
+#### 2. 回应委员会 4 质疑
+
+**Q1:20min 尾正当性。** 医学文献(Gerontology 2001):严重便秘老人单次马桶>20min 仅 0.5% 健康人、8.1% 痔疮患者。推荐 ≤5min/次。20min 尾下:正常 5min→LR=1.06(不误报),便秘极限 20min→LR=2.0(刚触顶)。
+
+**Q2:GeomInEnter 从排除翻到默认的逻辑跳跃。** 不再存在。用 raw roomType×areaType,不经过 Geom 中间。AreaEnter 归"其余"→60s/12min。门区久静=可疑(晕在门口),不再排除。
+
+**Q3:未知区≥开旷地等价未证。** 都归"其余"→同一尾。未知区可能是 layout 缺画的沙发/椅子→不比开旷地更安全。60s/12min 统一兜底,cell 学到 Sit 后自动迁 90min。
+
+**Q4:算得动≠该算。** 60s=1 个 unit tick→有限步收敛。尾=prior 结构非 gate,证据全进矩阵,dwellFallCap 保证不发散。12min/20min/90min 分档是老人行为 prior,不创造新硬排除。
+
+#### 3. 60s tail 大白话
+
+60s tail → 人静止 60 秒,DwellStill 的 LR=2.0("摔倒概率涨到 2 倍")。这是**软似然因子**,不是直接 fire。还需 Pose/Bed/NoDetect 等其他观测叠加。人马上起来(30s)→LR=1.25→顶不上去。cap 在 2.5。
+
+#### 4. 固件 fall vs DBN 不冲突
+
+固件 pose=2→5(30-60s)/sitting-on-ground(60-120s)是**硬 fire**,走 union 路。DBN 60s+是**补充软因子**。两套定时独立,不相互干扰:固件 fire→DBN dedup;固件漏→DBN 兜底。
+
+#### 5. 定量验证
+
+**0606(area=255→60s):** 188s dwell→LR=cap(2.5)。但 pose=4 站立,z=0 边缘伪迹,P=0.131 仍不 fire——是因为**固件数据里人动了 3 次**,StillBox 被 57/76cm 击破。60s tail 本身不误报。
+
+**D523 FP(sitting@edge,active×5):** area_type=none→60s tail。这些 FP 用 DwellStill 已经 fire(P=0.95~0.99)。60s tail 单独消不掉——因为当前 `area=255→GeomUnknown→dwellTailFor 排除`,DwellStill 已**数学上零作用**。fire 来自其他 obs。加 60s tail 后 DwellStill 生效,需要其他 obs 对冲抵消。**建议:消 D523 FP 需修 area_type 分类本身(边缘 sitting 不归 AreaUnknown),dwell 尾改变不单独解。**
+
+---
+
 ### [2026-06-11] 项目组A → 委员会: ★★ `dwellTailFor` 终论证——原始值(roomType×areaType)尾表 + 回应 4 质疑(医学统计+坐姿误判+未知区≥已知+矩阵全量)
 
 #### 1. 终设计:用 roomType×areaType 原始值,不建新 Geom
