@@ -7,7 +7,7 @@
 | Case | 窗口(MDT) | 固件检测 | gate-list | DBN | 结果 |
 |---|---|---|---|---|---|
 | case-cd2b-0427 | 04-27 11:35-11:48 | — | — | ❌ | data expired |
-| case-cd2b-0606 | 06-06 10:27-10:37 | 0 fire | 0 fire | **0 fire** | 不 fire(nodetect+dwell) |
+| case-cd2b-0606 | 06-06 10:27-10:37 | 0 fire | 0 fire | **0 fire ✅** | **正确不fire**:人动了3次(57/76cm→StillBox破),最长静止仅188s,pose=4站立 |
 | case-cd2b-0604-1514 | 06-04 16:14-16:31 | 0 fire | 0 fire | **0 fire** | bed_occupied_suppress bug |
 | case-cd2b-0604-1614 | 06-04 16:14-16:31 | 0 fire | 0 fire | **0 fire** | 同窗,无 bed_occupied |
 
@@ -22,17 +22,21 @@
 - DB: monitor_stream 0 track(45 天,已过期)
 - **不可测**
 
-## case-cd2b-0606 — ⚠️ DBN 不 fire(与 gate-list 同)
+## case-cd2b-0606 — ✅ DBN 正确不 fire(人动了3次,不是纯静止)
 
 - 窗口: 2026-06-06 10:27-10:37 MDT
 - 设备: CD2B radar + 1641 sleepad
 - DB: 605 track 帧
-- 原始: 0 alarm(固件+gate-list 均未报,false-negative)
-- DBN: **0 fire**
-- DBN 压制: `nodetect_gated`×85 + `v认同_evidence`×27
-- bed_decision: LeftBed P=0.01(床空)
-- 场景: 两次 sleepad LeftBed→InBed。10:35:21 LeftBed→10:35:49 InBed(~27s 摔)。无固件 Fall。track 在场无丢轨—So nodetect 门控不触发,silent/dwell 累积不到阈值(27s < dwell)。
-- **gap: dwell 太短,27s 不够。不是 DBN bug。**
+- 原始: 0 alarm(固件+gate-list 均未报)
+- DBN: **0 fire → 正确**
+- DBN replay Pmax=0.131,0 Floor-Fallen(clean room replay,437 traces in window)
+- 场景: 两次 LeftBed(10:28:45 cd2b+10:28:48 1641)。床正确翻 NotInBed
+- **★纠正(2026-06-11):之前误判"6min静止",逐帧位移实算:**
+  - 16:30:12 14cm微动→16:31:20 **57cm跳**→16:31:22 58cm回→16:34:30 **76cm起身**
+  - StillBox(30s滚动窗,50cm阈值)被57cm/76cm两次击破
+  - 最长连续StillBox=188s,pose=4站立,DwellStill累积不够
+- **★纠正2:之前说"sleepad LeftBed 没进 bed scorer 导致压制"是错的。即使 bed scorer 正确、床态正确,人动了就达不到 fire**
+- **结论:DBN 不 fire 正确。人动了。**
 
 ## case-cd2b-0604-1514 — ⚠️ DBN 不 fire(bed_occupied_suppress bug)
 

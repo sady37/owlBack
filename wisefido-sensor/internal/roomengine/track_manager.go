@@ -3321,8 +3321,17 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			// 起点回填到 History 最早帧（box 内最早可见点）
 			ts.StillBoxRunStart = ts.History[0].TMs
 		}
-	} else {
+	} else if ts.StillBoxRunStart > 0 {
+		dur := nowMs - ts.StillBoxRunStart
 		ts.StillBoxRunStart = 0
+		if tm.logger != nil {
+			tm.logger.Info("still_box_break",
+				zap.Int("track_id", f.TrackID),
+				zap.Int64("duration_ms", dur),
+				zap.Int("disp_cm", disp),
+				zap.Int64("now_ms", nowMs))
+		}
+	} else {
 	}
 	// NOTE（防御层备忘，未实施）：box 判据只看 max-min 范围。理论 edge case：
 	// box 内反复抖动（30cm 范围内来回跨越）→ box 小但累计位移大 → 误判 still。

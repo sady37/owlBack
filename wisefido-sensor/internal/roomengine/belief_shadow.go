@@ -423,7 +423,8 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				st.provisionalSince = nowMs
 				e.logger.Info("belief_shadow_lostfall_provisional", // provisional-now 低 sev(真摔即时有声,不静默 5.5min)
 					zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
-					zap.String("last_geom", st.geom.String()))
+					zap.String("last_geom", st.geom.String()),
+					zap.Int64("still_box_age_ms", st.stillBoxAgeMs))
 			}
 			// cancel 佐证 = recapture ONLY(审查㉝:正向重现,过 attribution-safe + leave-discriminating 两条)
 			recaptured := false
