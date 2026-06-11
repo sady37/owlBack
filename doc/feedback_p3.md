@@ -7,6 +7,75 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-11] 项目组A → 委员会: ★★ `dwellTailFor` 论证 —— 全量空间不应有硬排除(default=false 是 gate-list 同质)
+
+#### 1. 矩阵全量空间
+
+DBN Room 9 态 × Track 5 态 × Geom 5 值 × ObsKind 12 种 = **有限空间**,每步 Step() 是 M·b 乘法。**完全算得动,不应该用硬分支排除某些 zone。**
+
+#### 2. 现态问题:`dwellTailFor` 的 default 硬排除
+
+[survival.go:18-26]:
+```
+GeomInToilet  → 15min tail
+GeomOpenFloor → 8min tail
+default       → ok=false → fallLR=1.0 中性(零作用)
+```
+
+`default` 覆盖了 `GeomUnknown` + `GeomInBed` + `GeomInEnter` = **5 个 geom 中 3 个被排除**。其中 `GeomInBed` 排除合理(lying area),但 `GeomUnknown` 和 `GeomInEnter` 的排除是无证据的前置假定。
+
+#### 3. GeomUnknown 的来源
+
+`geomFromArea`[belief_adapter.go:76-88]:
+```
+AreaUnknown → default → GeomUnknown   ← 未学习区域
+area=255    → default → GeomUnknown   ← firmware 标记"outside declared areas"
+```
+
+`area=255` 是 person 站在**任何 declared area(bed/enter/toilet/shower/sit/deny)之外**。这些区域未经 cell 学习分类,**不等于安全区域**。
+
+#### 4. 定量分析:不同尾尺度的 LR
+
+| 尾尺度 | 71s | 188s | 360s(6min) |
+|---|---|---|---|
+| OpenFloor(8min) | 1.02 | 1.15 | 1.56 |
+| Toilet(15min) | 1.006 | 1.04 | 1.16 |
+| **Unknown_20min** | **1.004** | **1.02** | **1.09** |
+| 当前 default | **1.0**(零) | **1.0**(零) | **1.0**(零) |
+
+用 20min 尾:**短时(71s)LR≈1.004 几乎中性,长时(6min)LR=1.09 微抬。** 不排除证据,但慢 ramp 防 FP。
+
+#### 5. 修法
+
+```
+case GeomInBed:     → ok=false         // lying area,不报
+case GeomInToilet:  → 15min tail
+case GeomOpenFloor: → 8min tail
+default:            → 20min tail       // GeomUnknown+GeomInEnter,缓慢 ramp
+```
+
+- `GeomInBed` 仍排除(明确 lying area)
+- `GeomUnknown`/`GeomInEnter` **不再静默**,用 20min 尾(≈门区久静与未知区域久静的保守平衡)
+- 矩阵自然算出权重,不靠硬分支
+
+#### 6. 对 0606 的预期影响
+
+修后 `ObsDwellStill` 对 `GeomUnknown` 产生非零 LR:
+- 188s dwell → LR=1.02(微抬 SFallen)
+- 与 `ObsPose(4)`(推 StandWalk)对冲
+- **预计 P(Fallen)仍不达 0.55**(LR 太小),但不再因 hard default 静默
+
+#### 7. 风险
+
+- FP:未知区域久站被慢 ramp 抬 → 可能增加低概率 FP
+  - 但未知区域久站 ≥ 已知开旷地久站的安全性,保守设置 20min 尾 = 等同 15-20min 硬阈值
+  - `GeomInBed` 仍然排除(lying area 保护)
+- 计算量:几乎为零(增加一条尾表的 map lookup)
+
+**裁前不建。待委员会审+用户确认尺度(20min)。**
+
+---
+
 ### [2026-06-11] 项目组A + 委员会联合讨论: 0606 DBN 不 fire 的双 gap 诊断 + 修法风险分析(裁前不建)
 
 **case-cd2b-0606**(201 棉被旁摔): 人从床上掉下→站立在 (−170,330)→时站时动 6 分钟→回床。无固件 Fall。DBN Pmax=0.131,0 fire。
