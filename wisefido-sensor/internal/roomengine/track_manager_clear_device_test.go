@@ -6,6 +6,9 @@ package roomengine
 
 import (
 	"testing"
+
+	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
 
 func TestClearDevice_RemovesBedSessionAndSleepadState(t *testing.T) {
@@ -108,4 +111,10 @@ func TestEngineOnDeviceUnfit_UnroutedDeviceNoOp(t *testing.T) {
 	e := newTestEngineForPublicBathroom(t)
 	// 不应 panic（未路由 device 在 deviceRoom map 里返 ""，rooms[""]==nil）
 	e.OnDeviceUnfit("fd00:0:3:111:3:101::abcd")
+}
+func newTestEngineForPublicBathroom(t *testing.T) *Engine {
+	t.Helper()
+	// redis client = nil 容忍，PR-3 publishTrackStatuses 在 nil 时早 return
+	var rc *redis.Client
+	return NewEngine(rc, zap.NewNop())
 }

@@ -99,13 +99,7 @@ func main() {
 			zap.Error(err))
 	}
 
-	// PR-Bootstrap invariant 检查：3 层 wire 都必须 armed
-	if engine.BathroomFallRulesWired() == false {
-		logger.Fatal("BathroomFallRules not wired — refusing to start (sensor_v2_known_limitations.md L4)")
-	}
-	if engine.BedroomFallRulesWired() == false {
-		logger.Fatal("BedroomFallRules not wired — refusing to start (sensor_v2_known_limitations.md L4)")
-	}
+	// gate-list BathroomFallRules/BedroomFallRules 已退役(DBN_FIRE=1 接管 fire,DBN 自有 ghost 检测)
 
 	// 5.2 PR1 (A7): sensor 端 monitor 流消费者 + buffer。
 	monitorBuf := service.NewMonitorBuffer()

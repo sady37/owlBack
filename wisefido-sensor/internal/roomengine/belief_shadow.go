@@ -276,16 +276,12 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		}
 		tl.loggedLo = false // 重新检出 → 允许后续再次 Lost 时重新 log
 
-		// R0 结构化否决证据(委员会 276e852 升关键路径):ghost/frozen verdict 此前只喂 belief、不 log 成
-		// 可消费形态(VerdictGhost 静默 delete+continue / frozenGhost 仅进 realLO)→ harness 测不到覆盖。
-		// 仅多 log 不动作(下方 delete/continue 不变,shadow=生产同代码)。schema=harness vetoEvidence。
-		if jumpGhost || frozenGhost || b.Verdict == VerdictGhost {
+		// R0 结构化否决证据(委员会 276e852):realness 基础的 ghost/frozen track 否决 emit。
+		// gate-list 删后 VerdictGhost 停产→b.Verdict==VerdictGhost 条件永假,已清 #1.2。
+		if jumpGhost || frozenGhost {
 			reason := "shadow_realness_jump"
 			if frozenGhost {
 				reason = "shadow_realness_frozen"
-			}
-			if b.Verdict == VerdictGhost {
-				reason = "production_verdict_ghost"
 			}
 			e.logger.Info("belief_shadow_veto_evidence",
 				zap.String("room_id", roomID),
@@ -299,13 +295,8 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			)
 		}
 
-		if b.Verdict == VerdictGhost {
-			// 沿用 production ghost 检测；且把已注册 track 移出追踪：
-			// real→ghost→消失 的镜面反射不得触发 lost-while-moving（ghost 闪灭 ≠ 倒地）。
-			// 与 gate 侧 method-2 + belief replay guard 同构。
-			delete(sh.tracks, b.TrackID)
-			continue
-		}
+		// gate-list 删后 VerdictGhost 永不设→Room 层 ghost track delete 条件永假,已清 #1.2。
+		// (原逻辑:real→ghost→消失镜面反射误触发 lost-while-moving→delete 防此,现 DBN 自有 ghost 检测处理)
 		cur[b.TrackID] = struct{}{}
 		x, y, z := b.X, b.Y, b.Z
 		tr := observation.Track{BedStatus: observation.BedStatusUnchanged, Pose: b.Pose, PositionX: &x, PositionY: &y, PositionZ: &z}

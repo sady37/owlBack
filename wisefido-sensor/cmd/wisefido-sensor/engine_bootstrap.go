@@ -73,40 +73,11 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 	// 3c. config:card:stream 事件驱动 reload —— 见 main.go configCardConsumer wire。
 	// (旧 60s SetRoutesReloader 已废弃；事件驱动延迟 < 1s，10 次/天可忽略)
 
-	// 3d. PR-4/6/7 GhostAdjudicators 二件套
-	//     - General (§4.B Noop, PR-7 留待实现)
-	//     - Bathroom (§4.A 真实实现, PR-6) — 注入 census + grid/suite lookup
-	general := roomengine.NewGeneralGhostAdjudicator(logger)
-	bathroomGhost := roomengine.NewBathroomGhostAdjudicator(
-		census,
-		engine.GridForRoom,
-		engine.SuiteIDForRoom,
-		logger,
-	)
-	engine.SetGhostAdjudicators(general, bathroomGhost)
-	logger.Info("roomengine: ghost adjudicators wired",
-		zap.String("general", "NoopGhostAdjudicator (PR-7 留待 §4.B 实现)"),
-		zap.String("bathroom", "BathroomGhostAdjudicator (§4.A 4 规则 + Rule 4 fallback)"))
-
-	// 3e. PR-10 BathroomFallRules（§6.A 4 类 Critical fall）
-	bathroomFall := roomengine.NewBathroomFallRules(
-		census,
-		engine.GridForRoom,
-		engine.SuiteIDForRoom,
-		engine, // Engine 实现 AIPublisher
-		logger,
-	)
-	engine.SetBathroomFallRules(bathroomFall)
-
-	// 3f. PR-11 BedroomFallRules（§6.B 11b BedsideFall + 11c LostFall + PR-11.1 sleepad gating）
-	bedroomFall := roomengine.NewBedroomFallRules(
-		census,
-		engine.GridForRoom,
-		engine.SuiteIDForRoom,
-		engine,
-		logger,
-	)
-	engine.SetBedroomFallRules(bedroomFall)
+	// 3d. GhostAdjudicator:general noop(见 ghost_adjudicator.go);bathroom/bedroom=gate-list 推断 fall 已退役,
+	// DBN_FIRE=1 下断路,DBN 自有 ghost 检测(motion/mirror)替 gate-list VerdictGhost.
+	engine.SetGhostAdjudicators(roomengine.NewGeneralGhostAdjudicator(logger), nil)
+	// 3e/3f BathroomFallRules / BedroomFallRules = gate-list(退役):DBN_FIRE=1 短路,已删.
+	logger.Info("roomengine: gate-list fall rules retired; DBN_FIRE=1 union firmware∨DBN")
 
 	// 4. 启动主循环（消费 monitor + event 流，跑学习+持久化定时器）
 	go func() {

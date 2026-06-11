@@ -259,13 +259,8 @@ type Engine struct {
 	// 写者：publishTrackStatuses（per-room 串行，与 handleMessage 同 goroutine）；无锁需要。
 	trackLastSeen map[string]map[int]int64
 
-	// sensor_v2 PR-4 ghost adjudicator 分支选择（决定 16 / §10.3.1）：
-	//   bathroomGhostAdj → room_type == card.RoomTypeBathroom
-	//   generalGhostAdj  → 默认（含 bedroom / living / kitchen / ...）
-	// nil = 用 NoopGhostAdjudicator（行为 == v1，PR-4 默认）；bootstrap 调 SetGhostAdjudicators 注入真实实现。
-	// 读取走 e.mu.RLock；写入仅在 SetGhostAdjudicators 一次（无 hot swap 需求）。
-	bathroomGhostAdj GhostAdjudicator
-	generalGhostAdj  GhostAdjudicator
+	// generalGhostAdj = NoopGhostAdjudicator(默认),gate-list bathroom ghost 已退役.
+	generalGhostAdj GhostAdjudicator
 
 	// sensor_v2 PR-5 BathroomGate 入口流量子模块（§4.A.2）：
 	//   每 bathroom room 一个 gate（key = roomID），lazy 创建在 publishTrackStatuses。
@@ -278,16 +273,7 @@ type Engine struct {
 	beliefShadows  map[string]*beliefShadow
 	beliefShadowMu sync.Mutex
 
-	// sensor_v2 PR-10 BathroomFallRules（§6.A）：
-	//   实例级单例（所有 bathroom rooms 共用一个 rules，内部 per-roomID 状态分桶）；
-	//   bootstrap 调 SetBathroomFallRules 注入；nil = 跳过 bathroom fall 判定（PR-9 后 v1 路径已删，
-	//   不注入意味着 dev 阶段 fall 检测降级）。
-	bathroomFall *BathroomFallRules
-
-	// sensor_v2 PR-11 BedroomFallRules（§6.B 11b + 11c）：
-	//   仅 non-bathroom room（bedroom 默认 + 其他 room.kind）入；
-	//   silent_fall (11a) 仍由 TrackManager.scanSilentFallLeftBed 处理（PR-9 后已对齐 §6.B.1）。
-	bedroomFall *BedroomFallRules
+	// gate-list BathroomFallRules/BedroomFallRules 已退役(DBN_FIRE=1 短路,DBN 接管 fire)—码删 #1.2
 }
 
 // RuntimeConfig 与 wisefido-sensor/internal/config::RoomEngineConfig 一一对应；
@@ -771,63 +757,14 @@ func (e *Engine) SetSuiteCensus(m *SuiteCensusManager) {
 	e.suiteCensus = m
 }
 
-// SetBathroomFallRules 注入 PR-10 BathroomFallRules（§6.A 4 类 fall）。
-// nil → 跳过 bathroom fall 判定（PR-9 后 v1 路径已删，相当于 fall 检测降级）。
-// 实例级单例：所有 bathroom rooms 共用，内部 per-roomID 分桶状态。
-func (e *Engine) SetBathroomFallRules(r *BathroomFallRules) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.bathroomFall = r
-	// 门区 exit 推断：把 per-room TrackManager 的 np=0 时间喂给 bathroom fall 规则。
-	r.SetNumberPeopleZeroLookup(func(roomID string) int64 {
-		e.mu.RLock()
-		tm := e.rooms[roomID]
-		e.mu.RUnlock()
-		if tm == nil {
-			return 0
-		}
-		return tm.LastNumberPeopleZeroMs()
-	})
-}
-
-// SetBedroomFallRules 注入 PR-11 BedroomFallRules（§6.B 11b + 11c）。
-// 仅 non-bathroom room 入；silent_fall 11a 仍走 TrackManager.scanSilentFallLeftBed。
-func (e *Engine) SetBedroomFallRules(r *BedroomFallRules) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.bedroomFall = r
-}
-
-// BathroomFallRulesWired bootstrap invariant 检查（sensor_v2_known_limitations.md L4）。
-// main.go 启动后调用；false → log.Fatal 拒启动。
-func (e *Engine) BathroomFallRulesWired() bool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.bathroomFall != nil
-}
-
-// BedroomFallRulesWired bootstrap invariant 检查（同上）。
-func (e *Engine) BedroomFallRulesWired() bool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.bedroomFall != nil
-}
-
-// SetGhostAdjudicators 注入 ghost 判定器二件套（sensor_v2 PR-4，决定 16 + §10.3.1）。
-// general nil → fallback NoopGhostAdjudicator（PR-7 §4.B 落地前 = v1 行为）；
-// bathroom nil → fallback NoopGhostAdjudicator（未注入真实 BathroomGhostAdjudicator 时不做 §4.A 判定）。
-// 任一调用都是幂等替换，没有 hot swap 边界 —— PR-X 想换实现请重启 engine。
-func (e *Engine) SetGhostAdjudicators(general, bathroom GhostAdjudicator) {
+// SetGhostAdjudicators 注入 ghost 判定器(gate-list bathroom ghost 已退役,nil=bathroom)。
+func (e *Engine) SetGhostAdjudicators(general, _ GhostAdjudicator) {
 	if general == nil {
 		general = NoopGhostAdjudicator{}
-	}
-	if bathroom == nil {
-		bathroom = NoopGhostAdjudicator{}
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.generalGhostAdj = general
-	e.bathroomGhostAdj = bathroom
 }
 
 // GridForRoom 暴露 grid 给 BathroomGhostAdjudicator 用（lookup callback）。
@@ -913,15 +850,10 @@ func (e *Engine) SuiteHasOtherDevice(suiteID, excludeDevice string) bool {
 
 // pickAdjudicator 按 room_type binary 分类挑选 adjudicator。读锁内调用。
 // nil-safe：未调 SetGhostAdjudicators 时退化 Noop（保 PR-4 默认行为 == v1）。
-func (e *Engine) pickAdjudicator(roomType int) GhostAdjudicator {
-	if roomType == card.RoomTypeBathroom {
-		if e.bathroomGhostAdj != nil {
-			return e.bathroomGhostAdj
-		}
-	} else {
-		if e.generalGhostAdj != nil {
-			return e.generalGhostAdj
-		}
+func (e *Engine) pickAdjudicator(_ int) GhostAdjudicator {
+	// gate-list bathroom ghost 已退役;统一走 general noop.
+	if e.generalGhostAdj != nil {
+		return e.generalGhostAdj
 	}
 	return NoopGhostAdjudicator{}
 }
@@ -1056,24 +988,7 @@ func (e *Engine) publishTrackStatuses(ctx context.Context, roomID string, bases 
 		gate.Process(bases, nowMs)
 	}
 
-	// 步骤 1.6：PR-10 BathroomFallRules（gate 之后 fall 之前，保 BathroomCount 已最新）。
-	// 仅 bathroom room 入；空 bases 也调（10c 最强档需要扫上帧 anchor）。
-	if isBathroom && e.bathroomFall != nil {
-		e.bathroomFall.Evaluate(roomID, bases, nowMs)
-	}
-
-	// 步骤 1.7：PR-11 BedroomFallRules（non-bathroom room 入；含 bedroom 默认 + 未来 living/kitchen）。
-	// 11b BedsideFall 依赖 BedSession.LeftBedAtMs latch；从 TrackManager 取 snapshot 后传入。
-	if !isBathroom && e.bedroomFall != nil {
-		var beds []BedSessionLatch
-		e.mu.RLock()
-		tm := e.rooms[roomID]
-		e.mu.RUnlock()
-		if tm != nil {
-			beds = tm.SnapshotBedSessions()
-		}
-		e.bedroomFall.Evaluate(roomID, bases, beds, nowMs)
-	}
+	// gate-list BathroomFallRules/BedroomFallRules 已退役(DBN_FIRE=1 短路,DBN 接管 fire)—码删 #1.2
 
 	// 步骤 2：Build TrackStatus 副本 + PR-3 PersonID 关联。
 	statuses := make([]*TrackStatus, 0, len(bases))

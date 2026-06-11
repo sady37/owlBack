@@ -13,6 +13,8 @@ package roomengine
 
 import (
 	"testing"
+
+	"owl-common/observation"
 )
 
 // fakeWeakBioSource 测试 mock，按 spatial prefix 返预设 score。
@@ -223,3 +225,48 @@ func TestVerify_CellFallSuppressUnset_NoShortCircuit(t *testing.T) {
 		t.Errorf("unset suppress (default 0) must NOT short-circuit, got reason=%q", r.Reason)
 	}
 }
+func newTestTM() (*TrackManager, *RoomGrid) {
+	g := newTestGrid()
+	return NewTrackManager("test-room", g), g
+}
+
+func frameAt(tid int, x, y, z int, pose int, tms int64) TrackFrame {
+	return TrackFrame{TrackID: tid, DeviceAddr: "dev1", X: x, Y: y, Z: z, Pose: pose, TMs: tms}
+}
+
+// runFramesUntilReal 喂 ≥12 帧（保证 AgeSec≥10）+ 强制升 Verdict=Real。
+// 测试 grid 无 Enter 区，birthScore 默认起步低，自然升级困难；测试关心消失/融合逻辑，
+// 所以兜底强制改 Verdict 不影响本意。
+func runFramesUntilReal(tm *TrackManager, tid, x, y int, startTms int64, dx int) int64 {
+	tms := startTms
+	for i := 0; i < 14; i++ { // 14 帧 × 1s = 13s gap，AgeSec=13 ≥ 10
+		tm.processFrameAt([]TrackFrame{frameAt(tid, x+i*dx, y, 50, observation.PoseWalking, tms)}, tms)
+		tms += 1000
+	}
+	if ts, ok := tm.tracks[tid]; ok {
+		ts.Verdict = VerdictReal
+		ts.Score = ScoreConfirmTh
+		ts.CurrentAnomaly = AnomalyNone
+	}
+	return tms
+}
+
+func tickAt(tm *TrackManager, nowMs int64) []TrackOutput {
+	return tm.processFrameAt(nil, nowMs)
+}
+
+// PR-9: v1 Bed-Fall (AnomalyBedFall) 物理矛盾测试已删除（功能 dropped 段 5）。
+// PR-9: v1 bedPersonCount counter 测试已删除（字段 dropped）。
+// PR-11 silent_fall 重写后会有等价的"床上方矛盾"测试，用 BedSession + SuiteCensus 表达。
+
+// ============================================================================
+func newTestGrid() *RoomGrid {
+	g := NewRoomGrid(500, 500, 10)
+	for i := range g.Cells {
+		g.Cells[i].InRoom = true
+		g.Cells[i].InFOV = true
+		g.Cells[i].EdgeDist = 100
+	}
+	return g
+}
+
