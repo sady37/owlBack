@@ -1,0 +1,63 @@
+# 模拟器 / 乐高库 / testkit 反馈日志 — B组 ↔ 审核委员会
+
+> 本文件专用于模拟器(乐高库 Lego + testkit + recall 闭环)阶段交流。倒序，最新在上。
+> A组 = DBN cutover 后 live 验证 case；B组 = 模拟器基建。两组独立并行。
+>
+> **协作协议(同主线)**:B组提案 → 委员会裁 → 裁后建；裁前不建 / 需新岔口列选项不擅决 / 直接 main / cd wisefido-sensor 跑 go / 放行 bar = build/vet/belief 绿 + 0 FAIL(9 红已随 gate-list 删除退役)。
+>
+> **铁律(继承)**:R0 shadow-first(DBN_FIRE 默认 OFF,R0 已计划内终结,cutover 后 R0 律改为「新代码 test-only 保守,不碰 production alarm」)/ **#1.1 单源真相**(格式=生产 StreamMessage 原字段名,不造平行类型 bRecord)/ **#1.2 删即删**(不留 stub/shim/deprecated)/ **#1.3 单一入口**(manifest 索引指源不复制,loader 抽 testkit/ 包)/ **R5 对 fall 只正向**(合成 fall 场景不造负向样本,R5-lock 测守住)/ **R7 常量化带来源**。
+
+---
+
+## 审查记录（倒序）
+
+### [2026-06-11] 委员会起步——B组模拟器通信频道建立
+
+**当前状态(2026-06-11)**:
+- **A组**:已翻 DBN_FIRE=1 cutover live,gate-list 已删(`0fac478`),正在跑 4 个真 case(#1/#2/#3/#4)的 DBN shadow 验证
+- **B组(模拟器)**:本文建立,待起步
+
+**已存在的相关资产(供 B组起步参考,不需重造)**:
+
+| 文件 | 内容 | 状态 |
+|---|---|---|
+| `doc/test_case_catalog.md` | 乐高块主计划:unit×device 编组、6 核心 case(2 真摔+3 假+1 hand-off)、积木分类法、benign 块挖掘配方(已挖 410 窗)、委员会裁定的格式/manifest/build order | ✅ 已提交 |
+| `doc/feedback_p3.md`(~L1500-1560) | P9 oracle 验证基建:两层验证 + 独立乐高库 + AI 模拟生成器定位 | ✅ 已裁定 |
+| `doc/neighbor_verification_spec.md` | bReplayUnit 多房回放设计 spec:multi-room 同 suite + census seed + per-device 路由 + 全局合并喂 production pipeline | ✅ V1-V4 全绿 |
+| `belief_generator_test.go` | 合成生成器:真 donor 案切 walk/stand/fallen/ghost 片段→建乐高库→场景模板组装→喂 DBN→报检出率 | ✅ 已建,委员会收但裁「合成测不准分类」(手搓签名=循环) |
+| `belief_recall_realdata_test.go` | Tier-1 recall 闭环:`legoLoadWindow()` 读 v2 window.json→喂生产 handleMessage→断言真摔不压;含 `legoV2Record` 结构体 + `legoEventCategory()` 分类器 | ✅ 单个 #9 case 跑通 |
+| `belief_neighbor_pipeline_test.go` | `bReplayUnit` 多房整单元回放(V1-V5 已绿) | ✅ 已建 |
+| `tools/redis-replay/` | 从 PG monitor_stream/event_log 按 device_uid+窗重放进 Redis→sensor 真消费→DBN 日志 | ✅ 已建 |
+| `scripts/export_case_v2.sh` | 导出任意窗口为 v2 window.json | ✅ 已建 |
+
+**委员会已裁决的约束(B组必须遵守,不重新讨论)**:
+
+1. **格式 = 生产 StreamMessage 原字段名**(`device_addr`/`device_type`/`topic_type`/`category`/`timestamp`/`dataValue`)。**不造平行类型**(`bRecord`/`synthFrame` 等仅限测试内部,不导出为乐高块格式)。理由:drift=最贵的 bug——平行类型与生产字段不同步→测试通过的 case 不代表生产过。
+2. **manifest 落 `doc/cases/legos/`**(索引指向真源文件,不复制原始数据)。JSON schema:每条含 `id`/`class`(真摔/假/benign)/`labels`(lost/silent/moving/pose_lying/ghost)/`source_fixture`(原始 case 目录)/`window`(UTC 起止)/`device_type`/`duration`/`groundtruth`(用户标注)/`causality`(跨房 hand-off/邻房关系)。
+3. **loader 落 `testkit/`**(抽取 `belief_recall_realdata_test.go` 的 `legoLoadWindow`/`legoV2Record` 为通用包,生产码不依赖 testkit)。`testkit/` 不是独立 module,是 `wisefido-sensor` 模块内的测试工具包(Go internal/testkit 或 testkit 顶层均可,施工方提案时指定)。
+4. **合成 ≠ 正确性验证**。`belief_generator_test.go` 的合成组装验**程序完备**(DBN 不吃合成输入 crash/死循环),**不验分类准确率/correctness**。recall/precision **oracle 必须真碎片**(已导出 window.json 的真 case)。合成合法价值 = 程序完备 + 场景压力 + 边界输入。
+5. **建序(委员会定,不可跳)**:
+   - **Step 0**(本阶段):建 `doc/cases/legos/` manifest(6 个核心 case + 410 benign 窗→manifest 条目)
+   - **Step 1**:抽 `testkit/` loader(从 `belief_recall_realdata_test.go` 迁出通用 `legoLoadWindow`/`legoV2Record`,改成按 manifest 坐标加载)
+   - **Step 2**:**第一个真碎片 Tier-1 recall 闭环**(选 manifest 里一个真摔块,喂 production pipeline,断言 `belief_shadow_fall` fire + `p7_3_reason` 对 + 真摔 P(Fallen)≥0.3 R5-lock)
+   - **Step 3**:闭环走通后→批量铺(2 真摔 + 3 假 + benign 抽样)
+   - **Step 4**:合成场景压力测试(程序完备,非分类准确率)
+6. **「只用 DBN 已知信息+DBN 自己的计算」**(用户 2026-06-10 拍):验真 case 时,喂真数据走真 pipeline,看 DBN 产出;**禁用自写 feed/test harness 替代**(漏信号链,教训已记 feedback_p3)。replay/`rclReplay` 载体均为真 pipeline 路径。
+7. **乐高块 = 真窗口切片的索引,不复制原始数据**。`window.json`/`test_record.txt` 保留在原 `doc/cases/<case>/` 目录,manifest 只存坐标(路径+时间偏移)。理由:单一权威源(#1.3),原始数据改了 manifest 自反映,不会有两份分歧。
+
+**B组起步第一步(委员会建议,非强制)**:起草 `doc/cases/legos/manifest.json`——把 `test_case_catalog.md` 里 6 个核心 case 转成 manifest 条目(skeleton 即可,先不填全字段),委员会审核 schema 后再铺 410 benign。
+
+**下一步**:B组在本文件下方贴提案/问题,委员会逐条裁(不橡皮图章,挑实质)。每组独立贴,格式:`### [日期] B组 → 委员会:<主题>`。委员会回复用 `### [日期] ✅/❌/❓ 委员会:<裁定>`。
+
+---
+
+## 附录:核心 case 速查(committee reference,施工方可直接用于 manifest)
+
+| id | class | device_uid(s) | window(UTC) | groundtruth | notes |
+|---|---|---|---|---|---|
+| case-1 | real-fall(fw-漏) | 9D8A326309E7, BM87224700978 | 2026-06-05 17:37–17:46 | 真摔(床边,雷达误识 chair,无 fw Fall,有 sleepad LeftBed) | #1 自救摔,silent_fall pending 待 DBN debug 验 |
+| case-2 | real-fall(fw-火) | 9D8A326309E7, BM87224700978 | 2026-06-05 19:08–19:18 | 真摔(床边靠床,sleepad 检 HR/RR,fw Fall fire) | #2 DBN P=0.758 |
+| case-3 | real-fall(fw-火,自救) | 25A859B8333B | 2026-06-09 13:14–13:27 | 真摔(bathroom tub 旁,fw Fall fire,后起身,hand-off 去卧室) | #9 黄金 hand-off 案, DBN P=0.998 fire |
+| case-4 | real-fall | 9D8A32A1CD2B, BM87224601641 | 2026-06-06 16:26–16:37 | 真摔(CD2B bedroom 床边) | #4 DBN 待 replay 验 |
+| case-5 | false-alarm(lost) | 4D8710D5CABB | TBD | FP(lost_track, hunzi cabb) | #5 DBN P=0.002 正确否决 |
+| case-6 | false-alarm(ghost) | E598A2ACD523 | TBD | FP(person_silent ghost, D523) | D523 DBN 不犯(gate-list EMERG/DBN 0 fire) |
