@@ -23,6 +23,14 @@ const (
 	DefaultRespiratoryRateMax = 24 // 呼吸率nomal最大值默认值
 	DefaultHeartRateMin       = 50 // 心率正nomal小值默认值
 	DefaultHeartRateMax       = 95 // 心率nomal最大值默认值
+
+	// Radar 固件监测参数默认值（AlarmAlarmParams 键值，FE device_monitor_settings 可覆写）
+	DefaultFallDelaySec       = 60  // 雷达 Fall 检测延迟(pose=2→5)
+	FallDelayMinSec           = 30
+	FallDelayMaxSec           = 120
+	DefaultSitGroundDelaySec  = 90  // 雷达 SittingOnGround 检测延迟
+	SitGroundDelayMinSec      = 60
+	SitGroundDelayMaxSec      = 300
 )
 
 // 事件 payload 字段名（iot:event:stream data 的 key，由 alarm 域定义）
