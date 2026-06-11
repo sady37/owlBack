@@ -30,7 +30,7 @@ func rawLikelihood(o Observation) Vector {
 	case ObsDwellStill:
 		// dwell 生存函数 ramp（P4.1：−ln S_vol(d|zone)+1）单源走 survival.go fallLRFromDwell（per-zone 尾 +
 		// 开阔地 cell tolerance 拉长尾 + P4.3 夜间短尾）。toilet 15min/open 8min×tol；bed/enter/unknown 不报。
-		fallLR := fallLRFromDwell(o.Value, o.ToleranceFactor, o.Geom, o.Night)
+		fallLR := fallLRFromDwell(o.Value, o.ToleranceFactor, o.RoomType, o.AreaType, o.Night)
 		if fallLR <= 1.0 {
 			return lk(nil) // 中性（不在尾表 / dwell≤0）
 		}

@@ -308,6 +308,10 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			pReal := tl.tb.Vector().P(belief.TReal)
 			for _, o := range radarFrameAdapter(tr, ts, grid, nowMs, night) {
 				o.Conf *= pReal
+				if o.Kind == belief.ObsDwellStill {
+					o.RoomType = roomType
+					o.AreaType = int(b.CellAreaType)
+				}
 				obs = append(obs, o)
 			}
 		}
@@ -623,6 +627,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	// = 一举两得:修 P5(退 radar-on-bed leg)+ wire 死源#1(BedOccupied)。retire bedLeakState/bedAuthorityObs(#1.2)。
 	bedObs := bedAdapter(tm.BedOccupancyState(nowMs), nowMs)
 	obs = append(obs, bedObs...)
+
 	for _, o := range bedObs {
 		if o.Kind == belief.ObsBedOccupied && o.Fresh && o.Value >= 0.5 {
 			e.logger.Info("belief_shadow_bed_occupied_suppress", // 占用概率压 radar fall(无 radar-on-bed 要求)

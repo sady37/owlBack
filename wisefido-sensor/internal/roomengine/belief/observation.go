@@ -81,6 +81,10 @@ type Observation struct {
 	// ghost 消失(RealnessP→0)或门区可达走出(DoorExitP→1)→ 因子→1 中性(不裸 absence 抬 fall)。0=未设。
 	RealnessP float64
 	DoorExitP float64
+	// RoomType/AreaType 原始值（不经过 Geom intermediate,直接用于 dwellTailFor roomType×areaType 查尾表）。
+	// 0=未设/向后兼容(default path)。
+	RoomType int
+	AreaType int
 }
 
 // effConf 有效置信度：stale 观测当缺失。

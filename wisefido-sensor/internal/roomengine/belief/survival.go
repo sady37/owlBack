@@ -15,14 +15,25 @@ type dwellTail struct {
 
 // dwellTailFor zone → 生存尾。不在表的 zone（bed/rest/enter/unknown）= 久驻正常不报（返回 ok=false → LR=1）。
 // scale 锚现有硬阈（P9.6 待 oracle 收紧；shape=2 沿用现行 Weibull k=2）。
-func dwellTailFor(zone Geom) (dwellTail, bool) {
-	switch zone {
-	case GeomInToilet:
-		return dwellTail{scaleSec: dwellScaleToiletSec, shape: dwellShape}, true // toilet/shower 15min（Z_cell-无关）
-	case GeomOpenFloor:
-		return dwellTail{scaleSec: dwellScaleOpenSec, shape: dwellShape}, true // 开阔地 8min（前置 cell tolerance gate，见 toleranceMult）
+func dwellTailFor(roomType int, areaType int) (dwellTail, bool) {
+	const (
+		RoomTypeBathroom = 1
+	)
+	// Bathroom toilet/shower: 20min (constipation-safe, medical data)
+	if roomType == RoomTypeBathroom && (areaType == 7 || areaType == 6) {
+		return dwellTail{scaleSec: 20 * 60, shape: dwellShape}, true
+	}
+	// Bathroom rest (standing/sitting misclassified): 12min
+	if roomType == RoomTypeBathroom {
+		return dwellTail{scaleSec: 12 * 60, shape: dwellShape}, true
+	}
+	switch areaType {
+	case 2, 5:
+		return dwellTail{}, false // bed/deny: lying area / furniture, 不报
+	case 3:
+		return dwellTail{scaleSec: 90 * 60, shape: dwellShape}, true // learned sitting area: 90min
 	default:
-		return dwellTail{}, false // bed/rest/enter/unknown → 不报（保守防裸 ramp FP）
+		return dwellTail{scaleSec: 60, shape: dwellShape}, true // Unknown/Active/Enter/unlearned: 60s unit tick
 	}
 }
 
@@ -30,8 +41,8 @@ func dwellTailFor(zone Geom) (dwellTail, bool) {
 //   - toleranceMult：开阔地 cell tolerance 拉长尾（被容忍久站→尾更长→久站真人不报，R3 只读；<1 视为 1）。
 //   - night：P4.3 风险时段夜间短尾（scale×dwellNightTailMult<1 → 更快 ramp，夜间久静更可疑）。
 //   - zone 不在尾表 ∨ dwell≤0 → 1.0 中性（不抬 fall）。
-func fallLRFromDwell(dwellSec, toleranceMult float64, zone Geom, night bool) float64 {
-	tail, ok := dwellTailFor(zone)
+func fallLRFromDwell(dwellSec, toleranceMult float64, roomType int, areaType int, night bool) float64 {
+	tail, ok := dwellTailFor(roomType, areaType)
 	if !ok || dwellSec <= 0 {
 		return 1.0
 	}
