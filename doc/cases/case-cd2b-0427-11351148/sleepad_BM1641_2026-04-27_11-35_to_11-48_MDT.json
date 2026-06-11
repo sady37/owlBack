@@ -1,0 +1,1874 @@
+[
+    {
+        "id": 5396623,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311307000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396651,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311317000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396673,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311327000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396696,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311337000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396719,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311347000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396744,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311357000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396763,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311367000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396785,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311377000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396808,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311387000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396824,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311397000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396853,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311407000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396878,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311417000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396906,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311427000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396940,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311437000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5396969,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311447000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397001,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311457000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397008,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311459000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 0,
+                "heart_rate": 80,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "respiratory_rate": 16,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397004,
+        "category": "InBed",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311460913,
+        "data_value": [
+            {
+                "bed_status": 0,
+                "event_name": "InBed",
+                "event_since": 1777311459000,
+                "dataCategory": "InBed",
+                "event_status": "instant",
+                "event_payload": "{\"bed_status\":0,\"dataCategory\":\"InBed\",\"track_id\":0}"
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "event"
+    },
+    {
+        "id": 5397012,
+        "category": "sleep-stage",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311460913,
+        "data_value": [
+            {
+                "event_name": "sleep-stage",
+                "event_since": 1777311459000,
+                "sleep_stage": 1,
+                "dataCategory": "sleep-stage",
+                "event_status": "instant",
+                "event_payload": "{\"dataCategory\":\"sleep-stage\",\"event_name\":\"sleep-stage\",\"event_since\":1777311459000,\"event_status\":\"instant\",\"sleep_stage\":1,\"track_id\":0}"
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "event"
+    },
+    {
+        "id": 5397013,
+        "category": "InBed",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311460913,
+        "data_value": [
+            {
+                "bed_status": 0,
+                "event_name": "InBed",
+                "event_since": 1777311459000,
+                "dataCategory": "InBed",
+                "event_status": "start"
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "event"
+    },
+    {
+        "id": 5397036,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311467000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 0,
+                "heart_rate": 65,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "respiratory_rate": 18,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397075,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311477000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 0,
+                "heart_rate": 91,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "respiratory_rate": 18,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397104,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311487000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 1,
+                "bed_status": 0,
+                "heart_rate": 85,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "respiratory_rate": 19,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397132,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311497000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 0,
+                "heart_rate": 85,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397164,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311506000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 0,
+                "heart_rate": 85,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397167,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311507000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 1,
+                "turn_over": 0,
+                "bed_status": 0,
+                "heart_rate": 85,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397195,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311515000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 0,
+                "heart_rate": 85,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "respiratory_rate": 19,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397201,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311517000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 1,
+                "bed_status": 0,
+                "heart_rate": 85,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "respiratory_rate": 16,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397224,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311526000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 0,
+                "heart_rate": 90,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "respiratory_rate": 19,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397229,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311527000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 1,
+                "turn_over": 1,
+                "bed_status": 0,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "respiratory_rate": 19,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397250,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311532000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 0,
+                "heart_rate": 90,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "respiratory_rate": 19,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397265,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311537000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 0,
+                "heart_rate": 90,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "respiratory_rate": 19,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397304,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311547000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 0,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397327,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311555000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 0,
+                "heart_rate": 90,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "respiratory_rate": 19,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397332,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311557000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 1,
+                "bed_status": 0,
+                "heart_rate": 90,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "respiratory_rate": 14,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397368,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311568000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 1,
+                "turn_over": 0,
+                "bed_status": 0,
+                "heart_rate": 78,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397379,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311570000,
+        "data_value": [
+            {
+                "pose": 9,
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 0,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397391,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311573000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397388,
+        "category": "LeftBed",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311575079,
+        "data_value": [
+            {
+                "bed_status": 1,
+                "event_name": "LeftBed",
+                "event_since": 1777311573000,
+                "dataCategory": "LeftBed",
+                "event_status": "instant",
+                "event_payload": "{\"bed_status\":1,\"dataCategory\":\"LeftBed\",\"track_id\":0}"
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "event"
+    },
+    {
+        "id": 5397395,
+        "category": "sleep-stage",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311575079,
+        "data_value": [
+            {
+                "event_name": "sleep-stage",
+                "event_since": 1777311573000,
+                "sleep_stage": 1,
+                "dataCategory": "sleep-stage",
+                "event_status": "instant",
+                "event_payload": "{\"dataCategory\":\"sleep-stage\",\"event_name\":\"sleep-stage\",\"event_since\":1777311573000,\"event_status\":\"instant\",\"sleep_stage\":1,\"track_id\":0}"
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "event"
+    },
+    {
+        "id": 5397396,
+        "category": "LeftBed",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311575079,
+        "data_value": [
+            {
+                "bed_status": 1,
+                "event_name": "LeftBed",
+                "event_since": 1777311573000,
+                "dataCategory": "LeftBed",
+                "event_status": "start"
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "event"
+    },
+    {
+        "id": 5397406,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311578000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 2,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397434,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311588000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397467,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311598000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397505,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311608000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397533,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311618000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397555,
+        "category": "OfflineRecover",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311625330,
+        "data_value": [
+            {
+                "offline": 0,
+                "track_id": 11,
+                "event_name": "OfflineRecover",
+                "event_since": 1777311625330,
+                "dataCategory": "OfflineRecover",
+                "event_status": "end"
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "alarm"
+    },
+    {
+        "id": 5397582,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311628000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397615,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311638000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397644,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311648000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397680,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311658000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397719,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311668000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397746,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311678000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397773,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311688000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397809,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311698000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397840,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311708000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397870,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311718000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397908,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311728000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397940,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311738000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5397966,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311748000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398001,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311758000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398033,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311768000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398060,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311778000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398098,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311788000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398133,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311798000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398163,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311808000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398200,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311818000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398236,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311828000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398290,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311838000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398325,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311848000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398355,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311858000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398385,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311868000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398417,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311878000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398453,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311888000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398485,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311898000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398514,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311908000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398536,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311918000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398558,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311928000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398576,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311938000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398602,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311948000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398630,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311958000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398647,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311969000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398670,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311979000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398690,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311989000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398710,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777311999000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398737,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777312009000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398764,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777312019000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398787,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777312029000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398819,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777312039000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398858,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777312049000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398884,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777312059000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398917,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777312069000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    },
+    {
+        "id": 5398956,
+        "category": "track",
+        "device_id": "ad16fdff-383b-444a-b7c0-d2c021f97f7b",
+        "timestamp": 1777312079000,
+        "data_value": [
+            {
+                "track_id": 0,
+                "body_move": 0,
+                "turn_over": 0,
+                "bed_status": 1,
+                "init_status": 0,
+                "pose_confidence": 90,
+                "track_confidence": 90,
+                "vital_confidence": 0
+            }
+        ],
+        "device_uid": "BM87224601641",
+        "topic_type": "monitor"
+    }
+]
