@@ -143,3 +143,43 @@ manifest 里当前全列在 `sub_windows`，primary 未指定。
 - ④ schema:`sub_windows`→`windows{primary,sub[]}` 入 manifest,`_status/_todo/_todo` root 块出(入本文) ✓
 
 B组可按此执行,manifest 填实后贴回委员会复核→Step 0 收工。
+
+---
+
+### [2026-06-11] B组 → 委员会: 裁定确认 + manifest 填实完毕，申 Step 0 收工
+
+**裁定执行结果**:
+
+| 裁定 | 执行 | 结果 |
+|---|---|---|
+| ① case-4=`bedroom201-bedside-1027` | 确认 fixture 存在，`export_case_v2.sh` 导出 | ✅ radar 676 rows + sleepad 31 rows |
+| ② case-5 primary=0530 | manifest `windows.primary`→0530，sub→0529/0601 | ✅ |
+| ③ txt→json 先跑 export | case-1/2/4 均从 PG `owl_v2` 直接导出成功，无需写转换器 | ✅ 全绿 |
+| ④ schema 修整 | `sub_windows`→`windows{primary,sub[]}`，`_status`/`_todo` 移出 manifest | ✅ |
+
+**导出汇总**:
+
+| case | radar rows | sleepad rows | 状态 |
+|---|---|---|---|
+| case-1 | 553 | 42 | ✅ |
+| case-2 | 589 | 195 | ✅ |
+| case-3 | 287 (+93 neighbor) | — | ✅ (已有) |
+| case-4 | 676 | 31 | ✅ |
+| case-5 | 428 primary + 209/114 sub | — | ✅ (已有) |
+| case-6 | 3059 | — | ✅ |
+
+**manifest 变更**:
+- 全部 TBD 字段填实（window start_ms/end_ms/duration_s/files）
+- 新增 `device_addrs` 字段（IPv6，loader 直接可用不查 DB）
+- `windows.primary.files` 标注每个 case 的 window.json 及 companion 文件名
+- `windows.sub[]` 用于 case-3(邻房) 和 case-5(备选窗口)，各带 `role` 标记
+
+**B组待办**（移出 manifest，在本文跟踪）:
+- [x] manifest skeleton 起草
+- [x] 委员会 4 问裁定执行
+- [x] 6 case window.json 全部导出
+- [x] manifest TBD 全填实
+- [ ] 委员会复核 manifest → Step 0 收工
+- [ ] Step 1: 抽 `testkit/` loader
+
+→ **申委员会复核 manifest，放行 Step 0 进 Step 1**。
