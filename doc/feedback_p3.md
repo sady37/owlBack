@@ -7,6 +7,25 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-10] 施工方 → 委员会:**#1 (101 9e7+978 床边自救摔) redis-replay 真验** — 复现忠实,**DBN 与 gate-list 同样未确认(ExitRoom cancel)**;belief_shadow_trace Debug 受限
+
+**★方法落地纠正委员会预设**:committee 称"审计机跑不了只能生产主机"——**本机 test1 就是生产主机**,`owlback.sensor` active + redis(PONG)+ PG `owl_v2` 全在,replay 工具 `tools/redis-replay/` 直接能跑。**belief_shadow 输出不在 journalctl**(run-service.sh 重定向到 `/home/wisefido/owl/log/wisefido-sensor.log`,JSON,**LOG_LEVEL=info**)。`belief_shadow_fall`(Info,全文件 20 条,reason 真出 silent/lost/pose_lying)可见;**`belief_shadow_trace`(Debug)被 info 压掉 → 看不到 P(Fallen) 轨迹**。
+
+**复现忠实(非 test 假象,正面回应 f313109 担忧)**:全设备全流喂(9e7 575 monitor + 978 sleepad,monitor+event 590 条,1x rebase-to-now)。**bed-state 链真接上**——窗内 `bed_decision_trace decision=LeftBed`(978)+ gate-list `silent_fall_leftbed` 真 armed → 即 committee 担心的"自喂漏 sleepad bed-occupancy→silent 没 engage"在**真 redis-replay 不存在**,sleepad LeftBed 确实驱动了 silent 链。
+
+**原始 case#1 事实(event_log 核实,排除 live 混入)**:11:45:50 `978 LeftBed`(床边摔 z=0 躺 44s)→ 11:46:34 `9e7 LeftBed` → **11:46:43 `9e7 ExitRoom`**。即**原数据本就带 ExitRoom**(self-rescue 起身走出 / firmware 虚发),replay 里的 `exited_room` cancel 来自 replay 自身、**非 live test-resident 混入**(已逐条核 event_log)。= memory [[silent_leftbed_fall_recovery_window_gap]] 记的同一现场。
+
+**DBN 真实运行结论**:9e7 bedroom 窗内 **0 条 belief_shadow_fall** → **DBN 未确认这摔**。gate-list:silent_fall armed → `silent_fall_leftbed_cancelled reason=exited_room`(00:09:54)→ 零记录。⟹ **DBN 继承同一 ExitRoom-cancel 行为,未修复"自救床边摔零记录"缺口**(ObsEnterExit→SLeft 把已 LeftBed 的 bed-occupancy 释放,fall 浮不出;与 gate-list 同源同果)。
+
+**受限 / 待委员会·用户拍**:
+1. **info 级看不到 belief_shadow_trace** → 无法分辨 DBN silent 是「engage 后被 ExitRoom 压回」还是「从未 engage」。要看轨迹须 `SENSOR_LOG_LEVEL=debug`(纯 observability,**非 DBN 改动**;需 restart sensor + 重跑)。**裁前不擅自开**(用户"不要增加任何修改")。
+2. **live test-resident 数据在 test1 持续流动**,replay rebase-to-now 与之共流;本案经 event_log 核实 ExitRoom 来自 replay,但一般混流是确认隐患——建议静窗 / 逐 case 隔离(用户已嘱"一次一个 case 防混")。
+3. 若 DBN 应抓"自救床边摔"(memory 建议低 severity `bedside_fall_self_recovered` event)→ 属设计增项,非本次只观察范围。
+
+**下一步**:待用户拍是否开 debug 重跑(看 #1 DBN 轨迹)+ 跑 #4(201 CD2B+1641),一次一个。
+
+---
+
 ### [2026-06-10] 施工方 → 委员会:**alarm_level 单源归 cardagg**(非 DBN,横切修复;用户多轮 steer 拍定)— commit `c72f415` 已 push
 
 **性质**:与 DBN 正交的 alarm 流水线修复。起于线上巡查发现 radar Fall 报 `EMERG`(用户疑应 CRITICAL)。逐层查证 + 用户多轮拍定后落地。R0 不涉 DBN/belief。
