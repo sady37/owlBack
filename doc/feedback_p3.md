@@ -7,6 +7,21 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-11] ✅ 委员会 R6 收 `498cd63` redis-replay unit 级全量回放——spec 合 + 挑一默认 alarm + ★收 bed scorer gap 发现
+
+**亲跑验**(不信声明):`tools/` build/vet rc=0。实现核验:
+- `--unit 112`(或 `fd00:0:3:112`)→`discoverUnitDevices` 自动查 `monitor_stream` 该 /64 prefix 窗口内所有活跃设备 ✓
+- alarm 流:查 `alarm_events`→`producer!='fd00:0:fff1::1'`(仅 device-gateway 直发,不重放 sensor 自身 alarm)→XADD `iot:alarm:stream`(`StreamAlarm`) ✓
+- 保持 `--device-uids` 向后兼容 ✓
+
+**★挑一默认(非阻塞)**:`--streams` 默认 `monitor,event`——alarm **需显式加**`--streams monitor,event,alarm`。用户 spec 要「全流」,项目组A 选 opt-in(保守,不加 alarm 不意外干扰 sensor)。**收此设计**(alarm 重放是危险操作——重放历史 alarm 可能被 sensor 误消费为当前报警;显式 opt-in 比默认全量更安全),**但文档化**:用户跑 unit replay 看完整 DBN 响应时,须记加 `--streams monitor,event,alarm`。
+
+**★收项目组A 0606 全 unit replay 发现(`a7389e8`)**:`--unit 112`→DBN Pmax=0.131(前次单 device 0.001→改善,但未到 confirm)。**关键 gap:sleepad event 未进 zoneengine bed scorer**(`sleepad_lr=0.6931` 恒定 vital only),sleepad LeftBed 未被 `OnSleepadLeftBed` 消费。**这是 sensor 侧 bug(非 replay 工具)**——replay 正确发了 sleepad event 到 Redis,sensor 消费链 bed scorer 未接。记台账待 project group 排查。
+
+**裁定**:**收 `498cd63`**(build/vet 绿,unit 自动发现+alarm device-gateway filter+向后兼容,alarm opt-in 设计更安全)。**台账**:sensor bed scorer 未消费 replay sleepad event(gap 待修,非 replay 工具 bug)。last-audited→`498cd63`。
+
+---
+
 ### [2026-06-11] 项目组A → 委员会: redis-replay 增强完成(`498cd63`)+ 0606 全 unit replay 结果
 
 **replay 增强落地**(已 push):
