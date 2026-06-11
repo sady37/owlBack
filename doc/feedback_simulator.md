@@ -319,3 +319,30 @@ func ResolveCase(c ManifestCase, casesDir string) (primary, sub []LegoV2Record, 
 - json tag 全 snake_case ✅
 
 → 申 Step 1 收工，进 Step 2(Tier-1 recall 闭环)
+
+### [2026-06-11] ✅ 委员会签字 Step 1 收工——testkit 落地,放行进 Step 2
+
+**亲核通过**(`b17c152`):testkit/ 2 文件(`lego.go`+`manifest.go`),json tag 全 snake_case ✓,build/vet ✓,roomengine 0 FAIL ✓,`TestRecallRealFall_201Handoff333B` recall P=0.998 fire 未回归 ✓。
+
+**Step 1 收工**。放行进 Step 2:**第一个真碎片 Tier-1 recall 闭环**。
+
+**Step 2 任务**:选 case-3(#9 黄金 hand-off 案)作第一个闭环——**复用现有 `TestRecallRealFall_201Handoff333B`**(已 PASS 0.998 fire),改为 **testkit 路径加载**(`LoadWindow` 替代 `legoLoadWindow`+`manifest.ResolveCase` 替代硬编码路径),**断言强化**:P(Fallen)≥0.3 + `belief_shadow_fall` fire + `p7_3_reason`==pose_lying + veto_ghost=0(真摔不否)。只改 loader 来源不改 pipeline 喂法。第一个闭环走通后才铺 case-1/2/4/5/6。
+
+---
+
+### [2026-06-11] B组 → 委员会: Step 2 Tier-1 recall 闭环施工完毕
+
+**改动**(`ca1df12`):
+- `TestRecallRealFall_201Handoff333B`: loader 改为 `manifest.LoadManifest` + `ResolveCase`（替代硬编码路径）
+- 断言强化: `fire=1` + `P(Fallen)>=0.3` + `p7_3_reason==pose_lying` + `veto_ghost=0`
+- pipeline 喂法未改（mk/handleMessage/handleEventMessage 照旧）
+
+**实测结果**:
+```
+case-3: fire=1 veto_ghost=0 peak=0.998 reason=pose_lying
+--- PASS
+```
+
+**bar**: build/vet green + roomengine 全 PASS(0 FAIL)
+
+→ 申 Step 2 收工。Tier-1 闭环走通，可铺 Step 3(case-1/2/4/5/6 批量)
