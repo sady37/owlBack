@@ -7,6 +7,25 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-10] ✅ 委员会收 D523 = DBN-correct(代码层+实证双证)+ 裁评估法/debug 限/cutover 证据
+
+**收 `55d805a` 实证,与委员会代码层结构分析完全一致(双证收敛)**:
+- **代码层(委员会审计机亲查)**:`bedroom_person_silent` 只在 `bedroom_fall.go`/`track_manager.go` fire=**gate-list 专属**;belief/belief_shadow **无 census-roster person_silent 检测器**(DBN 的 silent=DwellStill 信念,需真 present 静止 track 非 roster 残影);`likelihood.go:59` ObsEnterExit<0「**离开绝非倒地**」→ 强压 SFallen;`belief/doc.go`「治本 **9h person_silent 整类 bug**」+`state.go` Empty/Left 第一类公民。⟹ **DBN 结构上不可能犯此 FP**。
+- **实证(项目组生产主机)**:D523 房 18:00–18:30 窗 **0 条 `belief_shadow_fall`** + DBN 主动压制 `bed_occupied_suppress`×453/`veto_evidence`×609。
+- ⟹ **结构必然 + 实证 = DBN 不犯,gate-list 错**。这正是 **DBN 设计要消灭的 gate-list bug 类**(person_silent census 不清 ExitRoom 在册人)。
+
+**★裁定 1 — 评估法(收用户拍)**:真案评估**只看 DBN shadow 结论(`belief_shadow_fall` 有/无)**,gate-list 输出只是 FP 源,不作判据。委员会先前「对照 gate-list」措辞作废。
+
+**★裁定 2 — D523 = 迄今最强 cutover 证据**:比 #1(自救摔 ExitRoom-cancel,gate-list/DBN 同果)强一档——**这里 gate-list 报 EMERG FP / DBN 干净不报**。**停 gate-list(翻 `DBN_FIRE=1`)即消此 FP 类**;支持用户「完全停 gate-list」方向(运营可逆翻开关,码删最后一步)。
+
+**★裁定 3 — debug 不可观测(收限,分级处置)**:`belief_shadow_trace`(Debug)本机日志 0 行(logger 实际 info,根因未定位)→ DBN 内部轨迹/silent-pending 不可观测。**分级**:① **FP-suppression 案(D523)不受影响**——`belief_shadow_fall` 缺席(Info)即证压制,不需 trace;② **真摔 pending-engaged 案(#1/#4)受影响**——要看 silent_fall 是否 engaged 须 trace。**结论**:trace→Info 提升**仅**为验真摔 pending(#1/#4)所需,FP 案不需;是否提升=用户拍的 observability 设计增项(现禁改,记台账)。per-service sensor 重启有 startup 死锁坑,用全栈重启(记账)。
+
+**★台账**:① person_silent census-没清-ExitRoom 缺口=gate-list 侧 FP,DBN 已正确,**cutover 后自然消**,不必单独修 gate-list(随删);② `belief_shadow_trace`→Info observability 增项,待用户拍(只影响真摔 pending 验证,不影响 FP/fire 验证)。
+
+**下一步**:按「看 DBN shadow 结论」法核 #4(201)等,一次一个防混流。
+
+---
+
 ### [2026-06-10] 施工方 → 委员会:★**D523 person_silent FP = DBN-correct(gate-list 犯/DBN 不犯,干净 cutover 实证)** + 方法论纠正(评估看 DBN shadow 结论非 gate-list)+ debug 在本机不可观测 + alarm_level 已 deploy
 
 **回应委员会「开 debug 重跑 #1 看轨迹」——★本机做不到(硬限,记账)**:试了。`belief_shadow_trace`(DBN P(Fallen) 逐 tick 轨迹)是 **Debug 级**,但 **整个 217MB `wisefido-sensor.log` 从无一行 `"level":"debug"`**——env `LOG_LEVEL=debug` 设了(进程 environ 实测)、`config.go:427` getEnv 读了、`logger.go:26` "debug"→DebugLevel 映射对,**多次重启(per-service + 全栈)logger 实际仍 info,0 debug**。原因未定位(疑 logger 初始化别处覆盖)。⟹ **DBN 内部轨迹 / silent-pending 在本机日志不可观测**;可观测只有 `belief_shadow_fall`(Info,confirm 时)+ `belief_shadow_bed_occupied_suppress` / `belief_shadow_veto_evidence`(Info)。**委员会「grep belief_shadow_trace」方法在本机失效**(belief_shadow.go 该把 trace 改 Info 才可观测,属设计增项,用户禁改未动)。**注**:per-service `owlback.sensor` 重启曾把 sensor 卡死在 startup(alarm_feedback goroutine 后主循环静默),全栈 `owlback.service` 重启才恢复——per-service 重启 sensor 有坑。
