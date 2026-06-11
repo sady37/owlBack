@@ -1,17 +1,20 @@
-// redis-replay：把历史 monitor_stream / event_log 行按原始时序重放回 Redis 实时流，
+// redis-replay：把历史 monitor_stream / event_log / alarm_events 行按原始时序重放回 Redis 实时流，
 // 时间戳 rebase 到「当前」（t1 -> now），供 wisefido-sensor / cardagg 当作实时数据消费。
 //
 // 消费者丢弃 >6s 的消息（sensorMonitorMaxInboundAgeMs=6000），所以必须 rebase + 按真实
 // 间隔节奏 sleep 重放，否则整批被当陈旧丢掉。消息信封复用 rediscommon.IoTStreamMessage
-// .ToStreamMap()，与真实生产者（qinglan）XADD 格式完全一致。
+// .ToStreamMap()，与真实生产者 XADD 格式完全一致。
 //
-// 用法:
-//   cd owlBack/tools
+// 用法（device 级，向后兼容）:
 //   go run ./redis-replay/ --device-uids 4D8710D5CABB --t1 "2026-06-05 06:06:44" \
-//       --t2 "2026-06-05 06:16:42" --tz Asia/Shanghai [--speed 1] [--streams monitor,event] [--dry-run]
+//       --t2 "2026-06-05 06:16:42" --tz Asia/Shanghai [--streams monitor,event] [--dry-run]
+//
+// 用法（unit 级，自动拉所有设备）:
+//   go run ./redis-replay/ --unit fd00:0:3:112 --t1 ... --t2 ... --tz America/Denver
 //
 // 环境变量: DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME(默认 owl_v2)
 //           REDIS_ADDR(默认 localhost:6379)/REDIS_PASSWORD(默认 TeLunSu-36kr)
+
 package main
 
 import (
@@ -43,24 +46,35 @@ type record struct {
 	tsMs      int64
 	addr      string
 	dtype     string // "Radar" / "Sleepad"
-	topicType string // "monitor" / "event"
+	topicType string // "monitor" / "event" / "alarm"
 	category  string // "track" / "heart" / "EnterRoom" / "Fall" / ...
 	payload   []interface{}
 }
 
 func main() {
 	var (
-		uidsArg   = flag.String("device-uids", "", "逗号分隔 device_uid 列表（必填）")
+		uidsArg   = flag.String("device-uids", "", "逗号分隔 device_uid 列表（与 --unit 二选一）")
+		unitArg   = flag.String("unit", "", "spatial prefix(fd00:0:3:112 或 201)，自动拉该 unit 所有设备（与 --device-uids 二选一）")
 		t1Arg     = flag.String("t1", "", "起始本地时间 \"YYYY-MM-DD HH:MM:SS\"（必填，按 --tz 解释）")
 		t2Arg     = flag.String("t2", "", "结束本地时间（必填）")
 		tzArg     = flag.String("tz", "", "IANA 时区，如 Asia/Shanghai（必填）")
 		speed     = flag.Float64("speed", 1.0, "重放倍速（>1 加快，<1 放慢）")
-		streamSel = flag.String("streams", "monitor,event", "重放哪些流：monitor,event 逗号组合")
+		streamSel = flag.String("streams", "monitor,event", "重放哪些流：monitor,event,alarm 逗号组合")
 		dryRun    = flag.Bool("dry-run", false, "只打印不实际 XADD")
 	)
 	flag.Parse()
 
-	if *uidsArg == "" || *t1Arg == "" || *t2Arg == "" || *tzArg == "" {
+	if *uidsArg == "" && *unitArg == "" {
+		fmt.Fprintln(os.Stderr, "ERROR: 必须指定 --device-uids 或 --unit")
+		flag.Usage()
+		os.Exit(1)
+	}
+	if *uidsArg != "" && *unitArg != "" {
+		fmt.Fprintln(os.Stderr, "ERROR: --device-uids 和 --unit 不能同时指定")
+		flag.Usage()
+		os.Exit(1)
+	}
+	if *t1Arg == "" || *t2Arg == "" || *tzArg == "" {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -83,8 +97,9 @@ func main() {
 
 	wantMonitor := strings.Contains(*streamSel, "monitor")
 	wantEvent := strings.Contains(*streamSel, "event")
-	if !wantMonitor && !wantEvent {
-		fatal("--streams 至少含 monitor 或 event")
+	wantAlarm := strings.Contains(*streamSel, "alarm")
+	if !wantMonitor && !wantEvent && !wantAlarm {
+		fatal("--streams 至少含 monitor、event 或 alarm")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -103,13 +118,26 @@ func main() {
 	}
 	defer db.Close()
 
-	uids := splitCSV(*uidsArg)
-	addrs, dtypeByAddr := resolveDevices(ctx, db, uids)
-	if len(addrs) == 0 {
-		fatal("没有解析到任何 device_addr（device_uids=%v）", uids)
+	var addrs []string
+	var uids []string
+	dtypeByAddr := map[string]string{}
+
+	if *unitArg != "" {
+		// unit 模式：解析 spatial prefix → 自动查 window 内所有活跃设备
+		prefix := resolveUnitPrefix(*unitArg)
+		addrs, dtypeByAddr = discoverUnitDevices(ctx, db, prefix, t1.UTC(), t2.UTC())
+		if len(addrs) == 0 {
+			fatal("unit %q 在窗口内无活跃设备（prefix=%s）", *unitArg, prefix)
+		}
+	} else {
+		uids = splitCSV(*uidsArg)
+		addrs, dtypeByAddr = resolveDevices(ctx, db, uids)
+		if len(addrs) == 0 {
+			fatal("没有解析到任何 device_addr（device_uids=%v）", uids)
+		}
 	}
 
-	rows, err := loadRecords(ctx, db, addrs, dtypeByAddr, t1.UTC(), t2.UTC(), wantMonitor, wantEvent)
+	rows, err := loadRecords(ctx, db, addrs, dtypeByAddr, t1.UTC(), t2.UTC(), wantMonitor, wantEvent, wantAlarm)
 	if err != nil {
 		fatal("查询时序失败: %v", err)
 	}
@@ -131,20 +159,30 @@ func main() {
 		}
 	}
 
-	fmt.Printf("重放 %d 条 (monitor+event) | 设备 %d 台 | 窗口 %s~%s %s | 倍速 %.2gx | rebase t1->now%s\n",
-		len(rows), len(addrs), *t1Arg, *t2Arg, *tzArg, *speed, dryRunTag(*dryRun))
+	streamNames := []string{}
+	if wantMonitor {
+		streamNames = append(streamNames, "monitor")
+	}
+	if wantEvent {
+		streamNames = append(streamNames, "event")
+	}
+	if wantAlarm {
+		streamNames = append(streamNames, "alarm")
+	}
+	fmt.Printf("重放 %d 条 (%s) | 设备 %d 台 | 窗口 %s~%s %s | 倍速 %.2gx | rebase t1->now%s\n",
+		len(rows), strings.Join(streamNames, "+"), len(addrs), *t1Arg, *t2Arg, *tzArg, *speed, dryRunTag(*dryRun))
 
 	t1ms := t1.UnixMilli()
 	startWall := time.Now()
 	seq := map[string]uint64{}
-	var nMon, nEvt int
+	var nMon, nEvt, nAlarm int
 
 	for _, r := range rows {
 		rel := time.Duration(float64(r.tsMs-t1ms)/(*speed)) * time.Millisecond
 		if d := time.Until(startWall.Add(rel)); d > 0 {
 			select {
 			case <-ctx.Done():
-				fmt.Printf("\n中断：已重放 monitor=%d event=%d\n", nMon, nEvt)
+				fmt.Printf("\n中断：已重放 monitor=%d event=%d alarm=%d\n", nMon, nEvt, nAlarm)
 				return
 			case <-time.After(d):
 			}
@@ -153,11 +191,11 @@ func main() {
 		addr, _ := netip.ParseAddr(r.addr)
 		seq[r.addr]++
 		msg := rediscommon.IoTStreamMessage{
-			Producer:       r.addr, // device-direct producer = device_addr（非 sensor.* 不触发回环过滤）
+			Producer:       r.addr, // device-direct producer = device_addr
 			SequenceNumber: seq[r.addr],
 			DeviceAddr:     addr,
 			DeviceType:     r.dtype,
-			Timestamp:      time.Now().UnixMilli(), // 发布即时戳，保证消费者 age≈0
+			Timestamp:      time.Now().UnixMilli(),
 			TopicType:      r.topicType,
 			Category:       r.category,
 			DataValue:      r.payload,
@@ -165,6 +203,8 @@ func main() {
 		def := rediscommon.StreamMonitor
 		if r.topicType == "event" {
 			def = rediscommon.StreamEvent
+		} else if r.topicType == "alarm" {
+			def = rediscommon.StreamAlarm
 		}
 
 		rel0 := time.UnixMilli(r.tsMs).In(loc).Format("15:04:05")
@@ -179,16 +219,55 @@ func main() {
 			}
 			fmt.Println(line)
 		}
-		if r.topicType == "event" {
+		switch r.topicType {
+		case "event":
 			nEvt++
-		} else {
+		case "alarm":
+			nAlarm++
+		default:
 			nMon++
 		}
 	}
-	fmt.Printf("完成：monitor=%d event=%d\n", nMon, nEvt)
+	fmt.Printf("完成：monitor=%d event=%d alarm=%d\n", nMon, nEvt, nAlarm)
 }
 
-// resolveDevices: device_uid -> device_addr，并取 device_type（devices 无 type 列，从 monitor_stream 取）。
+// resolveUnitPrefix 将简写 unit 名（"201" / "fd00:0:3:112"）归一化为 /64 INET prefix。
+func resolveUnitPrefix(raw string) string {
+	s := strings.TrimSpace(raw)
+	// "201" 简写 → fd00:0:3:201::/64 (B2B unit，前 4 组 = /64)
+	if len(s) <= 4 && s[0] >= '1' && s[0] <= '9' {
+		return fmt.Sprintf("fd00:0:3:%s::/64", s)
+	}
+	// 已是 IP prefix 但没有 CIDR → 补 /64
+	if !strings.Contains(s, "/") {
+		return s + "::/64"
+	}
+	return s
+}
+
+// discoverUnitDevices 从 monitor_stream 查该 INET prefix 下 window 内所有活跃设备 addr。
+func discoverUnitDevices(ctx context.Context, db *sql.DB, prefix string, t1, t2 time.Time) ([]string, map[string]string) {
+	addrs := []string{}
+	dtype := map[string]string{}
+	rows, err := db.QueryContext(ctx,
+		`SELECT DISTINCT host(device_addr), device_type::text FROM monitor_stream
+		 WHERE device_addr <<= $1::inet AND ts BETWEEN $2 AND $3`, prefix, t1, t2)
+	if err != nil {
+		fatal("discoverUnitDevices: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var addr, dt string
+		if err := rows.Scan(&addr, &dt); err != nil {
+			fatal("scan unit device: %v", err)
+		}
+		addrs = append(addrs, addr)
+		dtype[addr] = dt
+	}
+	return addrs, dtype
+}
+
+// resolveDevices: device_uid -> device_addr，并取 device_type。
 func resolveDevices(ctx context.Context, db *sql.DB, uids []string) ([]string, map[string]string) {
 	addrs := []string{}
 	dtype := map[string]string{}
@@ -212,13 +291,13 @@ func resolveDevices(ctx context.Context, db *sql.DB, uids []string) ([]string, m
 		if dt.Valid && dt.String != "" {
 			dtype[a] = dt.String
 		} else {
-			dtype[a] = "Radar" // 无 monitor 历史的兜底（event-only 设备）
+			dtype[a] = "Radar"
 		}
 	}
 	return addrs, dtype
 }
 
-func loadRecords(ctx context.Context, db *sql.DB, addrs []string, dtype map[string]string, t1, t2 time.Time, wantMon, wantEvt bool) ([]record, error) {
+func loadRecords(ctx context.Context, db *sql.DB, addrs []string, dtype map[string]string, t1, t2 time.Time, wantMon, wantEvt, wantAlarm bool) ([]record, error) {
 	out := []record{}
 	if wantMon {
 		rows, err := db.QueryContext(ctx, `
@@ -237,7 +316,7 @@ func loadRecords(ctx context.Context, db *sql.DB, addrs []string, dtype map[stri
 			}
 			cat := st
 			if i := strings.IndexByte(st, '.'); i >= 0 {
-				cat = st[i+1:] // "radar.track" -> "track"
+				cat = st[i+1:]
 			}
 			out = append(out, record{tsMs: ms, addr: addr, dtype: dt, topicType: "monitor", category: cat, payload: mustArray(pl)})
 		}
@@ -262,6 +341,34 @@ func loadRecords(ctx context.Context, db *sql.DB, addrs []string, dtype map[stri
 		}
 		rows.Close()
 	}
+	if wantAlarm {
+		// alarm_events:仅重放 device-gateway 直发的 alarm(producer=设备 addr，非 sensor platform-agent)。
+		// sensor 自己发的 alarm(sensor producer=fd00:0:fff1::1)不应重放——sensor 应在 replay 中自己产出。
+		rows, err := db.QueryContext(ctx, `
+			SELECT (extract(epoch FROM triggered_at)*1000)::bigint, host(device_addr), event_type, payload, evidence
+			FROM alarm_events WHERE device_addr = ANY($1::inet[]) AND triggered_at BETWEEN $2 AND $3
+			  AND producer != 'fd00:0:fff1::1'
+			ORDER BY triggered_at`,
+			pq.Array(addrs), t1, t2)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var ms int64
+			var addr, et, pl string
+			var ev sql.NullString
+			if err := rows.Scan(&ms, &addr, &et, &pl, &ev); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			payload := mustMap(pl)
+			if ev.Valid && ev.String != "" && ev.String != "{}" {
+				payload["evidence"] = json.RawMessage(ev.String)
+			}
+			out = append(out, record{tsMs: ms, addr: addr, dtype: dtype[addr], topicType: "alarm", category: et, payload: []interface{}{payload}})
+		}
+		rows.Close()
+	}
 	return out, nil
 }
 
@@ -275,6 +382,14 @@ func mustArray(jsonStr string) []interface{} {
 		return []interface{}{obj}
 	}
 	return []interface{}{}
+}
+
+func mustMap(jsonStr string) map[string]interface{} {
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &m); err == nil {
+		return m
+	}
+	return map[string]interface{}{"payload": jsonStr}
 }
 
 func summary(payload []interface{}) string {
