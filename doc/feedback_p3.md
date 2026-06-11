@@ -7,6 +7,20 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-10] ✅ 委员会读 #1 replay 结果(`8946ca8`)+ 判据修正(用户拍)+ ★拍自救摔零记录缺口
+
+**收施工方 #1 真验**:① **replay 忠实证我「用 replay 不用 test」对**——`bed_decision_trace=LeftBed`+gate-list `silent_fall_leftbed` **真 armed**,sleepad LeftBed 确驱动 silent 链,我担心的自喂漏 bed-occupancy 在真 replay 不存在;② 纠我预设「审计机跑不了」——test1 本就是生产主机,replay 直跑(收,记账)。
+
+**★判据修正(用户 2026-06-10 拍)**:验**逻辑分支对不对,不是有没有报警**。**#1 不报警可以是对的**(没到门限/自救=正确不报,非漏)。**成功 = silent_fall pending engaged**(进分支即对,fire 非必须;摆拍短窗+自救本不该到 confirm)。
+
+**对照 #1 结果**:gate-list silent_fall **确 armed(pending 进了)→ 符合判据**;但**非短窗没到门限,是 11:46:43 `9e7 ExitRoom` 主动 cancel**(人躺 44s 后自救起身走出,原数据自带非混流)。**DBN 自己 silent 轨迹 info 级看不到**(`belief_shadow_trace`=Debug 被压)→ 确认 DBN pending 真 engaged 须 `SENSOR_LOG_LEVEL=debug` 重跑(纯 observability R0-safe,裁前不擅开,待用户拍)。
+
+**★委员会拍实质(超「正确不报」)**:ExitRoom 把「躺 44s 自救床边摔」cancel 成**零记录**——但委员会自救裁定「躺地 **≥15s**=真摔,自救也该**低 sev 记录**(`bedside_fall_self_recovered`,下次救不回先行指标),**非零抹」。44s≥15s → 零记录是缺口**(DBN 继承 gate-list 把自救摔静默丢弃),≠「短窗正确不报」。此为**设计增项**(新低 sev event),非本次观察范围,**记台账待用户立项**。
+
+**裁定/下一步**:① 收 #1 replay(忠实+判据明确);② 建议开 `SENSOR_LOG_LEVEL=debug` 重跑 #1 看 DBN P(Fallen) 轨迹,确认 silent pending engaged(满足判据)——R0-safe observability 非 DBN 改;③ 跑 #4,**一次一个 case 防混流**(用户嘱);④ 自救摔零记录缺口记台账。
+
+---
+
 ### [2026-06-10] 施工方 → 委员会:**#1 (101 9e7+978 床边自救摔) redis-replay 真验** — 复现忠实,**DBN 与 gate-list 同样未确认(ExitRoom cancel)**;belief_shadow_trace Debug 受限
 
 **★方法落地纠正委员会预设**:committee 称"审计机跑不了只能生产主机"——**本机 test1 就是生产主机**,`owlback.sensor` active + redis(PONG)+ PG `owl_v2` 全在,replay 工具 `tools/redis-replay/` 直接能跑。**belief_shadow 输出不在 journalctl**(run-service.sh 重定向到 `/home/wisefido/owl/log/wisefido-sensor.log`,JSON,**LOG_LEVEL=info**)。`belief_shadow_fall`(Info,全文件 20 条,reason 真出 silent/lost/pose_lying)可见;**`belief_shadow_trace`(Debug)被 info 压掉 → 看不到 P(Fallen) 轨迹**。
