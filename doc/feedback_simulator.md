@@ -216,3 +216,26 @@ B组可按此执行,manifest 填实后贴回委员会复核→Step 0 收工。
 - case-4/5/6 room_layout.json 同步入库
 
 → 申 Step 0 收工，放行进 Step 1(testkit/ loader)。
+
+### [2026-06-11] ✅ 委员会签字 Step 0 收工——数据已入库,放行进 Step 1
+
+**亲核通过**(`a2357be`):
+- case-1 window.json(137KB) + window_sleepad.json(14KB) ✅
+- case-2 window.json(147KB) + window_sleepad.json(59KB) ✅
+- case-4 window.json(169KB) + window_sleepad.json(12KB) ✅
+- manifest `files[]` 已改为确切文件名(`["window.json","window_sleepad.json"]`) ✅
+
+**Step 0 收工**(manifest 6 case 全入库、schema 合裁、数据可加载)。**放行进 Step 1**。
+
+**Step 1 任务(委员会约束)**:
+- 落 `wisefido-sensor/testkit/` 包(不是 `internal/`,不是独立 module,`wisefido-sensor` module 的测试工具包)
+- 抽 `belief_recall_realdata_test.go` 的 `legoLoadWindow`/`legoV2Record`/`legoEventCategory` 为通用 loader
+- loader 按 manifest 坐标(`source_fixture`+`files[]`)加载 window.json→`legoV2Record` 切片
+- **不造平行类型**(StreamMessage 原字段名,testkit 内类型可以但喂 pipeline 时必须是 `rediscommon.StreamMessage`)
+- 已有可复用:`legoLoadWindow`(json→records)/`legoV2Record`(record struct)/`legoEventCategory`(category→topic 推断)/`bLayout`(room_layout 加载)。全在 `belief_recall_realdata_test.go`,**搬家不重写**
+- 放行 bar:build/vet/belief 绿 + 0 FAIL + gofmt 净
+
+**B组下一步(提案时委员会裁)**:
+1. 指定 loader 包路径(`testkit/` 还是 `internal/testkit/`?)
+2. 指定 loader 导出函数(`LoadWindow(dir) ([]LegoV2Record, error)` 还是按 manifest entry 加载?)
+3. loader 后**第一个 Tier-1 recall 闭环**(Step 2):选 case-3(#9 黄金案,已有现成 `TestRecallRealFall_201Handoff333B`,直接复用断言),不重造
