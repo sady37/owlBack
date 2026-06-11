@@ -7,6 +7,44 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-11] 项目组A + 委员会联合讨论: 0606 DBN 不 fire 的双 gap 诊断 + 修法风险分析(裁前不建)
+
+**case-cd2b-0606**(201 棉被旁摔): 人从床上掉下→站立在 (−170,330)→时站时动 6 分钟→回床。无固件 Fall。DBN Pmax=0.131,0 fire。
+
+#### Gap 1(委员会发现): sleepad event 被 SubjectEntity gate 截流
+
+**证据**:replay 窗 `bed_decision_trace` 112:3:101:
+```
+19:29:26 dec=LeftBed P=0.67 slr=+0.6931  ← vital only,非 −2.9444
+```
+对比正常态(`09:37:34 LeftBed slr=−2.9444`,含 LeftBed event)。sleepad LeftBed 没进 scorer → `OnSleepadLeftBed` 未调 → `slr` 停在 vital-only。
+
+**根因**:`adapter_sleepace.go:140` `if msg.SubjectEntity == "" { return }`。replay 数据无 card 绑定→SubjectEntity 空→此 gate 丢弃全部 sleepad event。
+
+**修法**: 删该 gate。bedPref 已有 `prefixOf(msg.DeviceAddr,96)` 独立推导,**不依赖 SubjectEntity 做 routing**。
+
+**风险**: SubjectEntity 空的 sleepad 是"未绑卡设备"——删 gate 后这些设备的伪数据会进 scorer。但 `IsFit` gate(物理 fitness)仍在,scorer 的 matrix 自己算权重,**逻辑上 matrix 架构不应有前置硬 gate**(与 gate-list 同质)。
+
+#### Gap 2(项目组A 发现): GeomUnknown 被 dwellTailFor 排除
+
+**证据**:0606 全程 `area=255`(outside declared areas)→`geom=GeomUnknown`→`dwellTailFor`(survival.go:24) `default`→`ok=false`→`fallLR=1.0`→`ObsDwellStill`→`lk(nil)`——
+
+DwellStill **数学上零作用**。即使 Gap 1 修了、床态正确、StillBox 不破,**DwellStill 对 GeomUnknown 不生效**。
+
+**修法**:`GeomUnknown`(及 `GeomInEnter`)加进 `dwellTailFor`(与 `GeomOpenFloor` 同尾 8min)。
+
+**风险**:`GeomUnknown` 指未分类区域——可能是真开旷地(该报),也可能是布局缺画(不该报)。加尾 = 所有未分类区域的久静都报 fall → **可能增加 FP**。建议**仅加 GeomUnknown,不加 GeomInEnter**(门区久静=等人/准备出门,不应报)。
+
+#### 联合判断
+
+- 两条 gap **互补独立**: 委员会修输入侧、项目组A 修输出侧
+- 两条都修 → 0606 DBN P(Fallen) 应显著提升(**实证目标**)
+- 单独修一条 → 不足以 fire(另一 gap 还在)
+- **风险可控**: Gap 1 删硬 gate 让 scorer 自己算(松绑,但床态贝叶斯已足够 robust),Gap 2 加未分类区域尾表(可能略增 FP,但未知区域久静 ≥ 已知开旷地久静的安全性)
+
+**待委员会**: 审两条修法 + 裁定是否都建。裁前不建。
+
+---
 
 ### [2026-06-11] ★委员会自纠 + 根因定论: sleepad LeftBed 不进 bed scorer = `adapter_sleepace.go` SubjectEntity gate → DBN matrix 架构不应有此硬分支
 
