@@ -51,6 +51,38 @@
 
 **D523 FP(sitting@edge,active×5):** area_type=none→60s tail。这些 FP 用 DwellStill 已经 fire(P=0.95~0.99)。60s tail 单独消不掉——因为当前 `area=255→GeomUnknown→dwellTailFor 排除`,DwellStill 已**数学上零作用**。fire 来自其他 obs。加 60s tail 后 DwellStill 生效,需要其他 obs 对冲抵消。**建议:消 D523 FP 需修 area_type 分类本身(边缘 sitting 不归 AreaUnknown),dwell 尾改变不单独解。**
 
+### [2026-06-11] ✅ 委员会终审——收架构(roomType×areaType 直算优于 Geom) + 部分收尺度 + 2 硬质疑(D523 FP 恶化 + 60s 翻哲学)
+
+**总体**:架构比上版更优(去 Geom 信息损失)。但尺度从上版「20min 最保守非 0」翻到「60s 最快收敛」——**两哲学都合法,但翻的理由(60s=1 tick)是算法调参观非物理安全观,需澄清谁拍板**。
+
+**肯定(5 条,有理据,收)**:
+
+① roomType×areaType 去 Geom — 上版委员会质疑"算得动≠该算",本版改架构非修论证。原始值比枚举富,信息不损失。**实质性改进,收** ✓
+
+② toilet 20min 医学文献 — Gerontology 2001 外部实证,5min→LR=1.06 不误报,20min→LR=2.0 刚触顶。**独立可复现,收** ✓
+
+③ dwellFallCap=2.5 — 防静止∞→LR→∞,必要收敛保证。**收** ✓
+
+④ 诚实:60s tail 不消 D523,不自夸。**收** ✓
+
+⑤ 回应 4 质疑 — 每条有回应,不全回避。**建设性,收** ✓
+
+**硬质疑(2 条,须回应)**:
+
+**★1: D523 FP 被 60s tail 恶化,风险外化非消除**
+
+提案自陈:D523 area=255→当前 dwellTailFor 排除→DwellStill 数学零作用→fire 来自其他 obs→P=0.95~0.99。加 60s tail→DwellStill 生效→60s→LR=2.0→**与 P=0.95+ 叠加→推更高**。提案说消 D523 需修 area_type 分类——**把安全责任外推给未解决的另一问题**。"dwell 尾变不单独解 D523" ✅ 诚实,但没说"**dwell 尾变会恶化 D523**"→漏了风险侧。**要求回应:是否接受 60s 上线后 D523 类 FP 恶化?是否在 area_type 修复前暂缓 default 60s→改 8-12min?**
+
+**★2: 从上版 20min"最保守"翻到 60s"最快收敛" — 哲学翻转未论证**
+
+上版委员会接受"对未知区不预设安全,但 ramp 极慢(20min)"。本版 60s:"未知区=开旷地级敏感度,60 秒 LR→2.0"。理由是"60s=1 unit tick=快收敛"——这是**算法参数调优**(调参数让矩阵快收敛),非**物理安全**(未知区需多长 dwell 才确信是摔)。**要求回应:60s 是用户决策(提高灵敏度接受更多 FP)还是项目组自主?若是自主——为何"快收敛"优先级高于上版已接受的"保守防 FP"?**
+
+**中质疑:bathroom"其余"12min — 太短**
+
+情景:老人进 bathroom 坐 toilet 旁椅子解衣/等洗澡,radar 坐→stand 误读→12min DwellStill LR 趋 cap。正常行为不应报。**建议升 ≥18min**(比 toilet 20min 略短,不确定区应更保守)。
+
+**裁定**:架构✅收。尺度 default 60s⚠ 待 2 硬质疑回应后签(bathroom 其余 12min 建议升)。若是用户拍"提高灵敏度"→即签。
+
 ---
 
 ### [2026-06-11] 项目组A → 委员会: ★★ `dwellTailFor` 终论证——原始值(roomType×areaType)尾表 + 回应 4 质疑(医学统计+坐姿误判+未知区≥已知+矩阵全量)
