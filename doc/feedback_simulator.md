@@ -120,3 +120,26 @@ manifest 里当前全列在 `sub_windows`，primary 未指定。
 3. 定 case-5 primary 窗口
 4. manifest TBD 字段全部填实 → Step 0 收工
 5. 进 Step 1: 抽 `testkit/` loader
+
+### [2026-06-11] ✅ 委员会裁 B组 Step 0 4 问——fixture/primary/format/schema 全答复
+
+**① case-4 fixture = `bedroom201-bedside-1027`(已存在,非 cd2b-fall-*)**。B组搜 `cd2b-fall-*` 没命中是因为目录名不同。亲核:`doc/cases/bedroom201-bedside-1027/test_record.txt` 窗口 UTC `2026-06-06 16:26–16:37` **精确匹配**附录给的窗口,radar=`9D8A32A1CD2B`(fd00:0:3:112:3:100:32a1:cd2b)/sleepad=`BM87224601641`,与附录一致。`source_fixture` 填 `bedroom201-bedside-1027`。**但此目录也缺 window.json**(仅 test_record.txt)→处理方式同 ③。
+
+**② case-5 primary:裁 0530(428 records)作 primary**。B组建议合理——428 records 最富,覆盖最全。`hunzi-cabb-lost-0529-FP` 和 `hunzi-cabb-lost-0601-2247-FP` 入 `sub_windows`(保留,不丢信息)。manifest primary 标 0530。
+
+**③ case-1/2/4 的 test_record.txt → window.json:裁 `export_case_v2.sh` 先导,失败再议 txt→json 转换器**。委员会约束#1 是「格式=StreamMessage 原字段名」,不是「强制 window.json」。但 `legoLoadWindow` 只认 window.json,B组建议的统一格式方向对。**两步走**:
+- **先跑 `export_case_v2.sh`**(device_uid+窗,同 case-3 导出法):若 PG `owl_v2` 仍有这些 device 该窗的 monitor_stream/event_log,一条命令出 window.json → 最优,零新代码。
+- **若 PG 数据已过期(摆拍测试可能是离线录的,DB 无)**:B组写的 **test_record.txt→window.json 一次性转换器**(不增 loader 格式支持——旧 txt 格式是死胡同,约束#1.2 删即删)。转换器只跑一次产出 window.json 后即退役(非 testkit 常驻)。委员会接受此为「数据迁移」非「格式支持」,不违约束#1。
+
+**④ manifest schema:裁 `sub_windows` 保留入 schema / `_status`+`_todo` 出 manifest 入 feedback_simulator.md**。
+- **`sub_windows` = 入 schema**(case-level 而非 root-level):一个 case 可有多个窗口捕捉(采集重试/覆盖不同段),是真数据关系,不违「纯数据字段」原则。命名 ~>`windows.primary` + `windows.sub[]`(比 root-level `sub_windows` 更清晰,主窗自带所有字段,sub 可选摘要)。
+- **`_status`+`_todo` = 出 manifest,入本文**(feedback_simulator.md B组 section):它们是 B组工作状态标记(needs_export/needs_clarification),随 progress 变化,放 manifest 会让每条 case 的 commit diff 掺工作流噪声。**manifest 只存不变/低频变的数据字段**(fixture/window/labels/groundtruth),**工作状态在 feedback_simulator.md 跟踪**(B组每轮末尾更新 `_todo` checklist)。
+- **`_todo` root-level 块也同出**:manifest 是数据 schema,不是任务清单。B组的 to-do 在本文维护,commit log 辅助。
+
+**裁定总结**:
+- ① case-4 = `bedroom201-bedside-1027` ✓
+- ② case-5 primary = 0530(428 records) ✓
+- ③ txt→json:先 `export_case_v2.sh`,PG 无数据则一次性转换器(非 loader 常驻) ✓
+- ④ schema:`sub_windows`→`windows{primary,sub[]}` 入 manifest,`_status/_todo/_todo` root 块出(入本文) ✓
+
+B组可按此执行,manifest 填实后贴回委员会复核→Step 0 收工。
