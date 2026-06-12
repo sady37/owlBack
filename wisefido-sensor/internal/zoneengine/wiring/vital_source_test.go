@@ -23,7 +23,9 @@ func TestMonitorVitalSource_EmitsForFreshHRRR(t *testing.T) {
 		bedZoneID string
 		ts        int64
 	}
-	src.ScanActiveBedVitals(now+1000, 30_000, func(bid string, ts int64) {
+	var gotSource string
+	src.ScanActiveBedVitals(now+1000, 30_000, func(bid, source string, ts int64) {
+		gotSource = source
 		got = append(got, struct {
 			bedZoneID string
 			ts        int64
@@ -34,6 +36,9 @@ func TestMonitorVitalSource_EmitsForFreshHRRR(t *testing.T) {
 	}
 	if got[0].bedZoneID != "fd00:0:3:111:3:101::/96" {
 		t.Errorf("bedZoneID: %q", got[0].bedZoneID)
+	}
+	if gotSource != "vital" {
+		t.Errorf("sleepad source: %q (want vital)", gotSource)
 	}
 	if got[0].ts != now {
 		t.Errorf("ts: %d (want %d)", got[0].ts, now)
@@ -51,7 +56,7 @@ func TestMonitorVitalSource_SkipStale(t *testing.T) {
 	}, stale)
 
 	var got int
-	src.ScanActiveBedVitals(time.Now().UnixMilli(), 30_000, func(_ string, _ int64) { got++ })
+	src.ScanActiveBedVitals(time.Now().UnixMilli(), 30_000, func(_, _ string, _ int64) { got++ })
 	if got != 0 {
 		t.Errorf("stale (>30s) should be skipped, got %d emits", got)
 	}
@@ -79,31 +84,73 @@ func TestMonitorVitalSource_AnyPresenceEvidenceEmits(t *testing.T) {
 	}, now)
 
 	var got int
-	src.ScanActiveBedVitals(now+1000, 30_000, func(_ string, _ int64) { got++ })
+	src.ScanActiveBedVitals(now+1000, 30_000, func(_, _ string, _ int64) { got++ })
 	if got != 2 {
 		t.Errorf("HR-only + RR-only should both emit (2 emit), got %d", got)
 	}
 }
 
-func TestMonitorVitalSource_RadarSkipped(t *testing.T) {
-	// 设计约束（2026-05-20）：radar HR/RR ≠ in-bed 信号，不发 sustain
+type stubBedResolver struct{ bed string }
+
+func (r stubBedResolver) ResolveBed(_, _ string) (string, float64) { return r.bed, 1.0 }
+
+// radar HR/RR 由 firmware bed-enter 门控，存在即在床；经 BedResolver 归床，source=radar。
+func TestMonitorVitalSource_RadarResolvedToBed(t *testing.T) {
 	buf := service.NewMonitorBuffer()
 	src := NewMonitorVitalSource(buf)
+	src.SetBedResolver(stubBedResolver{bed: "fd00:0:3:111:3:200::/96"})
 	now := time.Now().UnixMilli()
 	buf.Write("card-radar", "fd00:0:3:111:3:101:a2ac:d523", "Radar", "0", map[string]any{
 		observation.FieldHeartRate:       float64(72),
 		observation.FieldRespiratoryRate: float64(15),
 	}, now)
+	var gotBed, gotSource string
 	var got int
-	src.ScanActiveBedVitals(now+1000, 30_000, func(_ string, _ int64) { got++ })
-	if got != 0 {
-		t.Errorf("radar HR/RR should NOT emit bed sustain, got %d emits", got)
+	src.ScanActiveBedVitals(now+1000, 30_000, func(bid, source string, _ int64) {
+		got++
+		gotBed, gotSource = bid, source
+	})
+	if got != 1 {
+		t.Fatalf("radar HR/RR (bed-gated) should emit, got %d", got)
+	}
+	if gotBed != "fd00:0:3:111:3:200::/96" {
+		t.Errorf("radar bed via resolver: %q", gotBed)
+	}
+	if gotSource != "radar" {
+		t.Errorf("radar source: %q (want radar)", gotSource)
+	}
+}
+
+// 多床候选未定 → BedResolver 返回 "" → 不发，让位 sleepad；无 resolver 注入同样静默跳过。
+func TestMonitorVitalSource_RadarUnresolvedSkipped(t *testing.T) {
+	buf := service.NewMonitorBuffer()
+	now := time.Now().UnixMilli()
+	buf.Write("card-radar", "fd00:0:3:111:3:101:a2ac:d523", "Radar", "0", map[string]any{
+		observation.FieldHeartRate:       float64(72),
+		observation.FieldRespiratoryRate: float64(15),
+	}, now)
+	for _, tc := range []struct {
+		name string
+		src  *MonitorVitalSource
+	}{
+		{"nil resolver", NewMonitorVitalSource(buf)},
+		{"empty resolve", func() *MonitorVitalSource {
+			s := NewMonitorVitalSource(buf)
+			s.SetBedResolver(stubBedResolver{bed: ""})
+			return s
+		}()},
+	} {
+		var got int
+		tc.src.ScanActiveBedVitals(now+1000, 30_000, func(_, _ string, _ int64) { got++ })
+		if got != 0 {
+			t.Errorf("%s: radar unresolved should not emit, got %d", tc.name, got)
+		}
 	}
 }
 
 func TestMonitorVitalSource_NilBufferIsNoOp(t *testing.T) {
 	src := NewMonitorVitalSource(nil)
-	src.ScanActiveBedVitals(time.Now().UnixMilli(), 30_000, func(_ string, _ int64) {
+	src.ScanActiveBedVitals(time.Now().UnixMilli(), 30_000, func(_, _ string, _ int64) {
 		t.Error("nil buffer should not emit")
 	})
 }

@@ -13,9 +13,9 @@ type stubVitalSource struct {
 	}
 }
 
-func (s *stubVitalSource) ScanActiveBedVitals(_, _ int64, emit func(string, int64)) {
+func (s *stubVitalSource) ScanActiveBedVitals(_, _ int64, emit func(string, string, int64)) {
 	for _, r := range s.readings {
-		emit(r.bedZoneID, r.ts)
+		emit(r.bedZoneID, "vital", r.ts)
 	}
 }
 

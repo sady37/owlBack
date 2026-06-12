@@ -150,6 +150,7 @@ func main() {
 	matrixCache := wiring.NewMatrixCache(zone.Spatial, engine, logger)
 	matrixCache.BuildAll(ctx)
 	zone.RadarAdapter.SetBedResolver(matrixCache)
+	zone.VitalSource.SetBedResolver(matrixCache)
 	zone.Start(ctx)
 
 	// 5.3.0 A 风险放大消费者: roomengine fall verifier 查 zone.TargetAggregator WeakBio≥80

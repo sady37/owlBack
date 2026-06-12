@@ -10,37 +10,47 @@ import (
 
 // MonitorVitalSource 实现 zoneengine.VitalSource —— 包装 service.MonitorBuffer。
 //
-// 扫描逻辑（2026-05-24 修订）：
+// 扫描逻辑：
 //   1. 遍历所有 active card
 //   2. 对每个 card snapshot，按 device 看：
-//      a) device_type ∈ {Sleepad, SleepPad}（**仅 sleepad；radar 排除**）
-//      b) **任一 track 有任一压感衍生信号**：HR>0 OR RR>0 OR body_move>0 OR turn_over>0 OR bed_status==0
-//   3. device 的 LastTs 在 freshness 窗内 → emit (bedZoneID, ts)
+//      a) sleepad（接触式）或 radar
+//      b) **任一 track 有任一压感/生命衍生信号**：HR>0 OR RR>0 OR body_move>0 OR turn_over>0 OR bed_status==0
+//   3. device 的 LastTs 在 freshness 窗内 → emit (bedZoneID, source, ts)
 //
-// **设计约束**：
-//   - sleepad 是接触式压感设备；HR/RR/body_move/turn_over 任一为正 + firmware bed_status==0 = 在床
-//   - 任一字段缺失 ≠ 反证不在床（2026-05-20 拍板）；故合取改成析取
-//   - **radar 排除**（radar 可在床外 detect 到坐沙发的人 HR/RR；不发 sustain）
-//   - radar in-bed 由 firmware 的 InBed/LeftBed alarm 走 adapter_radar
+// **归床**：
+//   - sleepad：device addr /96 = bed prefix（sleepad 物理贴床，device 即床）。
+//   - radar：HR/RR 由 firmware bed-enter 门控（只在 track 进床才开 sleep_monitor），存在即在床；
+//     radar 自己 /96 ≠ 床 /96 → 经 BedResolver(radarAddr, roomPref) 归床（复用 adapter_radar 同款）。
+//     多床候选未定 → BedResolver 返回 "" → 不发，让位每床自己的 sleepad（接触式权威）。
 //
-// **历史 bug**（2026-05-24 修复）：
-//   - 原 `HR>0 AND RR>0` 太严格 → 实际 sleepad 帧常单 HR 无 RR / 仅 body_move → 漏判
-//   - 加 SustainStaleMs 60s 配合 4G 上报周期 30s（详 scorer.go const 注释）
+// **置信层级**：radar sustain 的 LR = lrRadarVital(ln1.75) 是所有正向腿里最弱，叠 γ 冲突 tempering +
+// CoversWeight → 永远压不过有把握的 sleepad（接触式 > 雷达）。
 //
-// **Bed 派生约束**：device addr /96 = bed prefix，假设 device 物理上绑床。
-// Non-bed-bound sleepad 应该不存在（sleepad 物理上就贴床）；如有 sustain 进 zone 不污染状态。
+// **设计约束**：HR/RR/body_move/turn_over 任一为正 + firmware bed_status==0 = 在床；
+// 任一字段缺失 ≠ 反证不在床（2026-05-20 拍板）；故合取改成析取。
 type MonitorVitalSource struct {
-	buf *service.MonitorBuffer
+	buf      *service.MonitorBuffer
+	resolver bedResolver
+}
+
+// bedResolver radar HR/RR 归床（radar 设备 + 所在 /88 → 它覆盖的床 /96）。MatrixCache 满足。
+type bedResolver interface {
+	ResolveBed(radarAddr, roomPref string) (string, float64)
 }
 
 func NewMonitorVitalSource(buf *service.MonitorBuffer) *MonitorVitalSource {
 	return &MonitorVitalSource{buf: buf}
 }
 
+// SetBedResolver main wiring 注入（MatrixCache）；不调时 radar device 无法归床，radar vital 静默跳过。
+func (s *MonitorVitalSource) SetBedResolver(r bedResolver) {
+	s.resolver = r
+}
+
 // ScanActiveBedVitals satisfy zoneengine.VitalSource。
 // 物理寻址：emit (bed /96 CIDR, ts)，不依赖 card 概念。MonitorBuffer 的内部按 card 聚合
 // 仍是 v1 残留 —— v2 zone engine 只需要 device→/96 派生。
-func (s *MonitorVitalSource) ScanActiveBedVitals(nowMs, freshnessMs int64, emit func(bedZoneID string, ts int64)) {
+func (s *MonitorVitalSource) ScanActiveBedVitals(nowMs, freshnessMs int64, emit func(bedZoneID, source string, ts int64)) {
 	if s.buf == nil || emit == nil {
 		return
 	}
@@ -51,8 +61,9 @@ func (s *MonitorVitalSource) ScanActiveBedVitals(nowMs, freshnessMs int64, emit 
 			continue
 		}
 		for _, dev := range snap.Devices {
-			// 设计约束（2026-05-20）：sustain 仅信 sleepad；radar HR/RR 不证明 in-bed。
-			if !isSleepad(dev.DeviceType) {
+			isSp := isSleepad(dev.DeviceType)
+			isRadar := strings.EqualFold(dev.DeviceType, "radar")
+			if !isSp && !isRadar {
 				continue
 			}
 			// device-level freshness：dev 在 snapshot 里的所有 track 取 max ts；用 track 里嵌的 "ts" 字段
@@ -72,11 +83,23 @@ func (s *MonitorVitalSource) ScanActiveBedVitals(nowMs, freshnessMs int64, emit 
 			if nowMs-devLastTs > freshnessMs {
 				continue
 			}
-			bedZoneID := bedPrefixFromDeviceAddr(dev.DeviceAddr)
+			var bedZoneID, source string
+			if isSp {
+				bedZoneID = bedPrefixFromDeviceAddr(dev.DeviceAddr)
+				source = "vital"
+			} else {
+				// radar：HR/RR 由 firmware bed-enter 门控，存在即在床；经 BedResolver 归床。
+				// 多床候选未定 → "" → 不发，让位 sleepad。
+				if s.resolver == nil {
+					continue
+				}
+				bedZoneID, _ = s.resolver.ResolveBed(dev.DeviceAddr, roomPrefixFromDeviceAddr(dev.DeviceAddr))
+				source = "radar"
+			}
 			if bedZoneID == "" {
 				continue
 			}
-			emit(bedZoneID, devLastTs)
+			emit(bedZoneID, source, devLastTs)
 		}
 	}
 }
@@ -162,4 +185,20 @@ func bedPrefixFromDeviceAddr(deviceAddr string) string {
 		return ""
 	}
 	return netip.PrefixFrom(addr, 96).Masked().String()
+}
+
+// roomPrefixFromDeviceAddr device_addr → /88 room CIDR text（喂 BedResolver 的 roomPref）。
+func roomPrefixFromDeviceAddr(deviceAddr string) string {
+	if deviceAddr == "" {
+		return ""
+	}
+	s := deviceAddr
+	if idx := strings.Index(s, "/"); idx >= 0 {
+		s = s[:idx]
+	}
+	addr, err := netip.ParseAddr(s)
+	if err != nil || !addr.IsValid() {
+		return ""
+	}
+	return netip.PrefixFrom(addr, 88).Masked().String()
 }

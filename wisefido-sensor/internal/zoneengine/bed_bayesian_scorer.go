@@ -287,6 +287,7 @@ func (s *BedBayesianScorer) LastEvidenceTs() int64 {
 //	radar    + enter      → OnRadarInBed
 //	radar    + leave      → OnRadarLeftBed
 //	radar    + pose_lying → OnRadarPoseLying  (Stage 6 增）
+//	radar    + sustain    → OnRadarVital  (monitor HR/RR；firmware bed-enter 门控，存在即在床)
 //
 // 未列组合返回 false，调用方丢弃。
 func (s *BedBayesianScorer) IngestEvidence(ev SignalEvidence) bool {
@@ -324,6 +325,9 @@ func (s *BedBayesianScorer) IngestEvidence(ev SignalEvidence) bool {
 			return true
 		case "pose_lying":
 			s.OnRadarPoseLying(nowMs)
+			return true
+		case "sustain":
+			s.OnRadarVital(nowMs)
 			return true
 		}
 	}
