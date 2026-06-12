@@ -872,11 +872,12 @@ func (e *Engine) applyVerdictDeltas(statuses []*TrackStatus, deltas []VerdictDel
 		if d.NewVerdict != nil {
 			newV := *d.NewVerdict
 			if s.Verdict == VerdictAnchored && newV == VerdictGhost {
-				e.logger.Warn("adjudicator_anchored_to_ghost_rejected",
+				e.logger.Warn("ghost_veto",
+					zap.String("reason", "anchored_reject"),
+					zap.String("detail", d.Reason),
 					zap.Int("track_id", d.TrackID),
 					zap.String("device_addr", s.DeviceAddr),
 					zap.String("room_id", s.RoomID),
-					zap.String("reason", d.Reason),
 				)
 			} else {
 				s.Verdict = newV

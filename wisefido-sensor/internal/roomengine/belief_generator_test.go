@@ -242,7 +242,7 @@ func TestDBNFireSwitch(t *testing.T) {
 	}
 	shadowFall := logs.FilterMessage("belief_shadow_fall").Len()
 	fired := logs.FilterMessage("belief_dbn_fire").Len()
-	vetoed := logs.FilterMessage("belief_dbn_veto_ghost").Len()
+	vetoed := logs.FilterMessage("ghost_veto").FilterField(zap.String("reason", "dbn_coexist")).Len()
 	t.Logf("#9 DBN_FIRE=on: shadow_fall=%d  dbn_fire=%d  dbn_veto=%d", shadowFall, fired, vetoed)
 	if shadowFall > 0 && fired == 0 && vetoed == 0 {
 		t.Errorf("★开关 ON 但 DBN 既未 fire 也未 veto(fire block 未达)→ cutover wire 漏")

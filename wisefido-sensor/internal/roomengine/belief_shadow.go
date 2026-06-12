@@ -327,14 +327,14 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			if frozenGhost {
 				reason = "shadow_realness_frozen"
 			}
-			e.logger.Info("belief_shadow_veto_evidence",
+			e.logger.Info("ghost_veto",
+				zap.String("reason", reason),
 				zap.String("room_id", roomID),
 				zap.Int("track_id", b.TrackID),
 				zap.Int64("ts_ms", nowMs),
 				zap.Bool("ev_ghost", true),
 				zap.Bool("ev_frozen", frozenGhost),
 				zap.Bool("would_veto", true),
-				zap.String("veto_reason", reason),
 				zap.Float64("track_ghostness", tlGhostness),
 			)
 		}
@@ -802,12 +802,12 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			dbnGhost := coExist && (dbnMotionSymmetryGhost(&fb, bases, prevPos) || dbnMirrorSymmetryGhost(&fb, bases, interferes))
 			switch {
 			case ok && dbnGhost:
-				e.logger.Info("belief_dbn_veto_ghost", zap.String("room_id", roomID), // co-existence ghost 抑制
+				e.logger.Info("ghost_veto", zap.String("reason", "dbn_coexist"), zap.String("room_id", roomID), // co-existence ghost 抑制
 					zap.Float64("p_fallen", pFallen), zap.String("p7_3_reason", p7Reason.String()), zap.Int("track_count", len(bases)))
 			case ok && pFallen < tauCtxHit:
 				// ★P1④ 风险分层(从代价涌现):有他人在场 → C_FN↓ → τ*↑(tauCtxHit)。p_fallen<τ* 的 marginal fall 抑制。
 				// 独处 τ* 基线低 → p_fallen≥τ*(已 confirmed)→ 不触此 = **必发**。委员会细化2「降险不归零」:τ*>0 恒。
-				e.logger.Info("belief_dbn_veto_risk", zap.String("room_id", roomID),
+				e.logger.Info("ghost_veto", zap.String("reason", "risk"), zap.String("room_id", roomID),
 					zap.Float64("p_fallen", pFallen), zap.Float64("tau_ctx", tauCtxHit), zap.Bool("others_present", tauCtx.OthersPresent))
 			case ok:
 				// P3 moving_fall tag:pose_lying 主导 + 摔者摔前在动(lastMove 近)= 移动中突变倒地 → ReasonMoving;

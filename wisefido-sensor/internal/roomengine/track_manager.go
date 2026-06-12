@@ -1279,14 +1279,15 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			tm.emitGhostVerdict(ts, ReasonGhostPenalty, reason, nowMs)
 			if !ts.LoggedGhost {
 				pxF, pyF := ts.Kalman.Position()
-				tm.logger.Info("track_verdict_ghost",
+				tm.logger.Info("ghost_veto",
+					zap.String("reason", "penalty_accumulated"),
+					zap.String("birth_reason", reason),
 					zap.String("device_uid", ts.DeviceAddr),
 					zap.Int("track_id", ts.TrackID),
 					zap.String("verdict", "ghost"),
 					zap.Int("score", ts.Score),
 					zap.Int("birth_score", ts.BirthScore),
 					zap.Int("ghost_penalty", ts.GhostPenalty),
-					zap.String("reason", reason),
 					zap.Int("x", int(math.Round(pxF))),
 					zap.Int("y", int(math.Round(pyF))),
 					zap.Int64("ts_ms", nowMs),
@@ -1310,13 +1311,14 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				tm.emitGhostVerdict(ts, ReasonGhostLowScore, reason, nowMs)
 				if !ts.LoggedGhost {
 					pxF, pyF := ts.Kalman.Position()
-					tm.logger.Info("track_verdict_ghost",
+					tm.logger.Info("ghost_veto",
+						zap.String("reason", "low_score"),
+						zap.String("birth_reason", reason),
 						zap.String("device_uid", ts.DeviceAddr),
 						zap.Int("track_id", ts.TrackID),
 						zap.String("verdict", "ghost"),
 						zap.Int("score", ts.Score),
 						zap.Int("birth_score", ts.BirthScore),
-						zap.String("reason", reason),
 						zap.Int("x", int(math.Round(pxF))),
 						zap.Int("y", int(math.Round(pyF))),
 						zap.Int64("ts_ms", nowMs),
@@ -1583,7 +1585,8 @@ func (tm *TrackManager) applyLifetimeGhostFactors(ts *TrackState, nowMs int64) {
 		if tm.checkMotionSymmetry(ts, nowMs) {
 			ts.GhostPenalty += 10
 			ts.BirthReason = "motion_symmetric_with_real_track"
-			tm.logger.Info("ghost_motion_symmetry_hit",
+			tm.logger.Info("ghost_veto",
+				zap.String("reason", "motion_symmetry"),
 				zap.String("device_uid", ts.DeviceAddr),
 				zap.Int("track_id", ts.TrackID),
 				zap.Int("ghost_penalty", ts.GhostPenalty),
@@ -1593,7 +1596,8 @@ func (tm *TrackManager) applyLifetimeGhostFactors(ts *TrackState, nowMs int64) {
 			ts.GhostPenalty += 10
 			ts.BirthReason = "mirror_image_of_real_track"
 			bxF, byF := ts.Kalman.Position()
-			tm.logger.Info("ghost_mirror_symmetry_hit",
+			tm.logger.Info("ghost_veto",
+				zap.String("reason", "mirror_symmetry"),
 				zap.String("device_uid", ts.DeviceAddr),
 				zap.Int("track_id", ts.TrackID),
 				zap.Int("partner_track_id", partner),

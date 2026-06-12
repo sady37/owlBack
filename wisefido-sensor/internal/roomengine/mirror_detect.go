@@ -347,7 +347,8 @@ func (tm *TrackManager) scanMirrorGhostPairs(nowMs int64) {
 				if ghost.GhostPenalty > 100 {
 					ghost.GhostPenalty = 100
 				}
-				tm.logger.Info("mirror_pair_detected",
+				tm.logger.Info("ghost_veto",
+					zap.String("reason", "mirror_pair_l1"),
 					zap.Int("ghost_track_id", res.GhostTrackID),
 					zap.Int("real_track_id", res.RealTrackID),
 					zap.Int("penalty_added", mirrorGhostPenaltyAdd),

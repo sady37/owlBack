@@ -80,7 +80,7 @@ func TestRecallRealFall_201Handoff333B(t *testing.T) {
 
 	// 断言强化(委员会 Step 2):P(Fallen)≥0.3 + fire + reason==pose_lying + veto_ghost=0。
 	fired := logs.FilterMessage("belief_shadow_fall").Len()
-	vetoed := logs.FilterMessage("belief_dbn_veto_ghost").Len()
+	vetoed := logs.FilterMessage("ghost_veto").FilterField(zap.String("reason", "dbn_coexist")).Len()
 	var peak float64
 	var reason string
 	for _, le := range logs.All() {
@@ -178,7 +178,7 @@ func TestRecallManifestAll(t *testing.T) {
 			}
 
 			fired := logs.FilterMessage("belief_shadow_fall").Len()
-			vetoed := logs.FilterMessage("belief_dbn_veto_ghost").Len()
+			vetoed := logs.FilterMessage("ghost_veto").FilterField(zap.String("reason", "dbn_coexist")).Len()
 			var peak float64
 			var reason string
 			for _, le := range logs.All() {

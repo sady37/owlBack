@@ -114,7 +114,7 @@ type vetoEvidence struct {
 	argmax   string  // 诊断:ghost 证据来源（Artifact/TGhost）
 	frames   int
 
-	maxGhostness float64 // belief_shadow_veto_evidence 的 track_ghostness 峰值（诊断：实证不可作否决，真摔也→0.99）
+	maxGhostness float64 // ghost_veto(reason=shadow_realness_*)的 track_ghostness 峰值（诊断：实证不可作否决，真摔也→0.99）
 	verdictGhost bool    // veto_reason==production_verdict_ghost（信号级多径/RCS，唯一安全 ghost 否决源）
 
 	// 切窗双轴（委员会 85e41a1 钉档）：各**安全**否决证据的**最早到达 ts**（ms,0=未现）。窗内覆盖按
@@ -309,7 +309,7 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 				ev.argmax = "realness-ghost"
 				ev.ghostTsMs = minNonZero(ev.ghostTsMs, leTsMs(le))
 			}
-		case "belief_shadow_veto_evidence":
+		case "ghost_veto":
 			// R0 结构化否决证据(belief_shadow.go 生产 emit)。★实证铁律(本 harness 揭出):stillness-based
 			// frozenGhost/jumpGhost/track_ghostness **不可作否决证据**——真摔躺地不动 = frozen 伪迹同貌,
 			// 检测器在真摔上 fire(gn→0.99)、在真 sit-ghost 上反不 fire(反相关)。唯一安全 ghost 否决 =
@@ -317,7 +317,7 @@ func runDBNVeto(t *testing.T, vc vetoCase) vetoEvidence {
 			if gn, ok := le.ContextMap()["track_ghostness"].(float64); ok && gn > ev.maxGhostness {
 				ev.maxGhostness = gn
 			}
-			if r, _ := le.ContextMap()["veto_reason"].(string); r == "production_verdict_ghost" {
+			if r, _ := le.ContextMap()["reason"].(string); r == "production_verdict_ghost" {
 				ev.verdictGhost = true
 				ev.ghostTsMs = minNonZero(ev.ghostTsMs, leTsMs(le))
 			}

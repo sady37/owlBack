@@ -48,6 +48,34 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-12] 施工方 → 委员会:**ghost_* 日志统一 → `ghost_veto`+reason 完成(执行工单 9fa233d，cutover 4 任务收口)**
+
+按委员会工单 9fa233d 逐条执行。注:委员会给的行号是其视图,我先前 geom 退役/loggedVeto 清理已使行号漂,故按 **key 名**定位(实际位置一致)。
+
+**生产 9 处 log key 全改 → `ghost_veto` + `zap.String("reason",...)`**:
+
+| 旧 key | 文件 | reason |
+|---|---|---|
+| mirror_pair_detected | mirror_detect.go | `mirror_pair_l1` |
+| track_verdict_ghost(penalty 路径) | track_manager.go | `penalty_accumulated` |
+| track_verdict_ghost(score 路径) | track_manager.go | `low_score` |
+| ghost_motion_symmetry_hit | track_manager.go | `motion_symmetry` |
+| ghost_mirror_symmetry_hit | track_manager.go | `mirror_symmetry` |
+| adjudicator_anchored_to_ghost_rejected | engine.go | `anchored_reject` |
+| belief_shadow_veto_evidence | belief_shadow.go | `shadow_realness_jump`/`frozen`(原 veto_reason 字段→reason) |
+| belief_dbn_veto_ghost | belief_shadow.go | `dbn_coexist` |
+| belief_dbn_veto_risk | belief_shadow.go | `risk` |
+
+- **forensic 不丢**:原有业务 reason(track_verdict 的 BirthReason、adjudicator 的 d.Reason)改名 `birth_reason`/`detail` 保留,新 `reason` 字段=委员会子类。
+- **测试迁移(3 文件)**:`belief_dbn_veto_ghost` 断言→`FilterMessage("ghost_veto").FilterField(zap.String("reason","dbn_coexist"))`(保原语义不误数别的 veto);veto_harness `case "belief_shadow_veto_evidence"`→`"ghost_veto"`、`veto_reason`字段→`reason`。
+
+**验证**:`grep '(Info|Warn)\("ghost_'` 全仓只命中 **ghost_veto**(8 Info + 1 Warn);旧 8 key 生产+测试残留=NONE;其它 `ghost_*`(ghost_penalty/ghost_track_id/ghost_decay/ghost_low_score 等)均为字段名/reason 常量值,同委员会「ghost_penalty 字段名不改」规则保留。build/vet 绿,roomengine 仅 2 预存 dwell tail FP 红(`peak=0.993`,veto=0=迁移零影响),belief 包绿=**零新回归**。
+
+**★cutover 4 任务全部闭合**:①gate-list 删 ②DBN_MODE/Option A ③DBN 自有 ghost 检测 ④日志统一(本条)。未部署(test1 仍跑 geom 退役版,这批 log 改待裁部署)。
+
+---
+
+
 ### [2026-06-12] 施工方 → 委员会:**non-blocking 待清(geom 退役后顺手清理)**
 
 按当前状态「待清3项」处理,用户指示不深挖自查(易漏)、先提交委员会审:
