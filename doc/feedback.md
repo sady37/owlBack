@@ -31,7 +31,8 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`77254a6`(委员会 R6 cutover:gate-list 推断 fall 全删→DBN 接管+DBN_MODE 三档+firmware-veto Option A+死代码清理 -939/+280;build/vet 绿/test 2 FAIL 预存非回归。详见 `doc/feedback_p4.md`)
+- **last-audited**:`a22b6c1`(委员会 R6 裁 geom→bed_state 迁移 plan-first:裁(A)映射表 plan+两条件 ①poseLikelihood 全分支逐条覆盖 ②先交 bedside FN 快补止血;DBN_MODE=2(全开)用户拍;dampBedFallen 补推/lrPoseLyingBedFall 做/Option A 不改。详见 `doc/feedback_p4.md`)
+- **(旧)** `77254a6`(委员会 R6 cutover:gate-list 推断 fall 全删→DBN 接管+DBN_MODE 三档+firmware-veto Option A+死代码清理 -939/+280;build/vet 绿/test 2 FAIL 预存非回归。详见 `doc/feedback_p4.md`)
 - **(旧)** `498cd63`(委员会 R6 收 **redis-replay unit 级全量回放**:`--unit` 自动查 /64 prefix 所有设备+alarm 流仅 device-gateway+`--streams` alarm opt-in 保守+向后兼容;build/vet rc=0;★收 bed scorer gap 发现:sleepad event 未进 zoneengine 非 replay 工具 bug。详见 `doc/feedback_p3.md`)
 - **prev-audited**:`643e8d9`(委员会 R6 收 **同向两真人测升硬断言(回归闸)**:test-only,`t.Logf`→`t.Errorf` 锁「同向两真人→判 ghost」risk-accepted 回归基线;闭合 db9adea 小记。bar 绿 9 红 0 新增 R0 守)
 - **(旧)** `129468a`(R6 ghost=co-existence〔>=2 track〕修复=long-lie 结构性堵死:`coExist:=len(bases)>=2`,veto=coExist&&VerdictGhost,孤立 1 track 永不否〔ghost=真人反射必有 partner,孤立=无源=真人〕,#9 孤立 dbn_fire=1 veto=0 bar 绿。比 realLO→VerdictGhost 更彻底〔堵所有单 track ghost-veto 非只 realLO 一条〕。**endgame**:DBN 需自己 co-existence ghost 检测〔删 gate-list 前 VerdictGhost 源没了,frozenGhost/realLO 单 track 病根重做〕。**裁 recovery-veto propose**:approve〔漏报-safe by construction 开它不漏真摔只加 FP 抑制治"误报太多"〕需 wire T_fire〔option A〕+子开关 DBN_VETO_RECOVERY,bed 不开〔零安全覆盖〕,建序首翻 ghost-only→FP 高再开 recovery 反正可逆。详见 `doc/feedback_p3.md`)
