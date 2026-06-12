@@ -9,11 +9,11 @@
 
 ## 当前状态(2026-06-12)
 
-**主线**:geom→bed_state 迁移映射表(plan-first,委员会已裁走 plan-first)。
+**主线**:geom 全量退役 **已实施**(commit `8d5d2b4`,D1-D4 签字后施工)。
 
-- bedside FN 止血 `5ef9ede` **已部署 test1**(DBN_MODE=2;e2e 随批 4 补)。
-- 映射表 plan `a04a64c`(`doc/geom_retirement_mapping.md`)已交付,**待签字 D1–D4**(详见审查记录 [2026-06-12])。
-- 签字后按 §5 四批施工。
+- bedside FN 止血 `5ef9ede` 已部署 test1(DBN_MODE=2)。
+- geom 退役 `8d5d2b4`:删净 belief.Geom(grep=NONE),逐 tick 等价零新回归,红线回归 TestBedsideFallBedReleased 锁 D3。详 `doc/geom_retirement_mapping.md`§7 + 审查记录 [2026-06-12]。
+- **未部署**:test1 仍跑止血版 `5ef9ede`,`8d5d2b4` 等价重构待裁是否替换部署。
 
 **待清(non-blocking,与 geom 迁移并行,不挡签字)**:
 1. `ObsTimeContext` —— likelihood `case ObsTimeContext: return lk(nil)` 空发射(只调 prior/θ_fire,不在 diag 更新),确认归并/清理。
@@ -47,6 +47,21 @@
 ---
 
 ## 审查记录（倒序）
+
+### [2026-06-12] 施工方 → 委员会:**geom 全量退役实施完成（commit `8d5d2b4`，D1-D4 签字后施工）**
+
+承接 `a04a64c` 映射表 + 委员会签字 D1-D4。按 `doc/geom_retirement_mapping.md` 施工，详「实施记录」§7。
+
+- **范围**:删 `belief.Geom` 类型/常量、Observation/TObservation.Geom、geomFromArea/geomFromGrid、beliefShadow{geom,lastLostGeom} 字段、所有死 Geom 赋值/死参数;`GeomConf→AreaConf`、`geomConfFromGrid→areaConfFromGrid`(D4 保留 blend);日志 `last_geom→last_area`。代码 geom 残留 grep=**NONE**。
+- **D1-D4 全采纳推荐**:AreaCtx 结构体(精化为 `{AreaType,NearDoor,BedReleased}`,RoomType 不进——无分支用)/权威解析归构造层一次/止血换 BedReleased 载体不改阈值/保留 provenance blend。
+- **关键工程约束(主动标注)**:belief 分层不能 import roomengine.AreaType(dwell 既定),新建 `belief/area.go` 值契约镜像;门优先(Room 层 geomFromGrid 含门距→保留 NearDoor;Track 层 geomFromArea 无门距→TObsAbsent 不加 NearDoor)。
+- **批次微调**:发现真读 geom 仅 3 逻辑点 + 日志(余皆死字段),批1+2 合并为一次切换用 test 验等价;批3(删类型)放测试迁移后(删 Geom 类型前测试须先脱离常量)。
+- **等价验证**:全 sensor build/vet 绿,逐 tick 等价;仅 3 预存红(2 dwell tail FP + 1 sleepace,均与 geom 无关,git stash 验基线一致)=**零新回归**。
+- **红线回归**:新增 `TestBedsideFallBedReleased` 锁 D3(床区躺×bed_state:占用→SBedLying/离床→SFallen=开阔地躺;门优先)=承接止血缺的「床区躺+离床→fire」逻辑。
+- **待补 follow-up(non-blocking)**:engine 层 plumbing e2e(beliefShadowTick 由 bedReleased 设 obs.BedReleased)——机制层已锁 D3 核心,plumbing 3 行被现有 engine 测试路径执行(未断言),带 bed_state mock 的断言测试 setup 较重,留 follow-up。
+- **未部署**:test1 仍跑止血版 `5ef9ede`;`8d5d2b4` 等价重构待委员会/用户裁是否替换部署。
+
+---
 
 ### [2026-06-12] 施工方 → 委员会:**bedside FN 止血部署 test1 + geom 退役映射表交付（plan-first 待签字）**
 

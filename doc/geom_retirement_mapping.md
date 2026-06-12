@@ -1,6 +1,6 @@
-# geom 全量退役映射表（plan-first，待签字）
+# geom 全量退役映射表（plan-first）
 
-状态：**草案 / 待委员会签字**。本文件只列映射与改法，**不含代码改动**。签字后按"退役顺序"分批改。
+状态：**✅ 已实施（commit `8d5d2b4`，委员会签字 D1-D4 后施工）**。下文映射与改法已落地；实施差异见文末「实施记录」。
 
 ---
 
@@ -125,3 +125,20 @@
 - firmware 侧 geom（雷达 `radar.areas`）—— 不动。
 - bed scorer / bed_state 内部模型 —— 不动（本退役只是把它作为权威源**读**进 likelihood）。
 - DBN_MODE / ghost 检测数学 —— 不动。
+
+---
+
+## 7. 实施记录（commit `8d5d2b4`）
+
+**与 plan 的差异（均经工程判断，方向不变）**：
+- **批1+2 合并**：发现真读 geom 的逻辑点仅 3 个(poseLikelihood / TObsAbsent / toilet 守恒)+ 日志，其余「触点」全是死字段（sleepad/bed/neighbor/ZBand/Vital/TrackPresent/noDetectObs/reachableExitObs 的 Geom 填了从不读）。死字段无需双写，故批1(双写)与批2(切读)合并为一次完整切换，用 test 套件验证逐 tick 等价（批1 单独是空 plumbing 无法验证）。
+- **AreaCtx 精化**：`RoomType` 不进 AreaCtx——poseLikelihood/TObsAbsent 无任何分支用 roomType（已被 dwell 直接消费），且 adapter 无 roomType 入参。AreaCtx = `{AreaType, NearDoor, BedReleased}`。
+- **area_type 值契约**：belief 分层不能 import roomengine.AreaType（dwell 已迁的既定约束），新建 `belief/area.go` 镜像值契约常量（canonical 在 roomengine/cell.go，改枚举值须同步）+ `AreaTypeLabel` 给日志。
+- **Track 层无门距**：`tl.geom` 原用 `geomFromArea`(不查门距)，故 TObsAbsent 只看 `area==Enter`，TObservation **不加 NearDoor**。Room 层 ObsPose 用 `geomFromGrid`(含门距)→ 保留 `NearDoor`。
+- **顺序微调**：批3(删 geom)放在测试迁移之后——删 `belief.Geom` 类型前测试须先脱离 Geom 常量。
+
+**等价验证**：全 sensor build/vet 绿；belief 包 40+ geom 测试经 area 迁移后全绿；roomengine 仅 2 预存 dwell tail FP 红 + zoneengine 1 预存 sleepace 红（git stash 验证三者基线一致，**geom 退役零新回归**）。代码 geom 残留 grep=NONE。
+
+**红线回归**：新增 `TestBedsideFallBedReleased`（belief 机制层）锁 D3——床区躺×bed_state：占用→SBedLying 主导/SFallen 中性；离床(BedReleased)→SFallen 抬=开阔地躺；门优先(近门走 default)。承接止血缺的「床区躺+离床→fire」端到端逻辑。
+
+**待补 follow-up（non-blocking）**：engine 层 plumbing e2e（`beliefShadowTick` 由 `bedReleased` 正确设 `obs.BedReleased`）——机制层已锁 D3 核心，plumbing 是 3 行赋值且被现有 engine 测试路径执行（未断言）；补一个带 bed_state mock 的 engine 断言测试需较重 setup，留作 follow-up。
