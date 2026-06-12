@@ -1,6 +1,0 @@
-display
-{"updated_at":1779653287688,"section1_down_left":"Bathroom","section2_left_icon":0,"active_state":0,"scene_state":0,"visitor_state":0}
-bed_state
-{"bed_status":1}
-room_state
-{"room_id":"fd00:0:3:111:3:300::/88","total_people":0,"total_people_ts":1779652653269}

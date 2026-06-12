@@ -1,6 +1,0 @@
-{
-  "t_fire_ms": 1780817369000,
-  "t_fire_utc": "2026-06-07 07:29:29",
-  "source": "alarm_events",
-  "note": "alarm_events Fall;窗尾07:28在T_fire前1.5min→窗不含T_fire,需重导[T_fire-2min,T_fire+15min]"
-}

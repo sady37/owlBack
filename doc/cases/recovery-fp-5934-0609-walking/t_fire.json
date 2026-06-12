@@ -1,6 +1,0 @@
-{
-  "t_fire_ms": 1781043538000,
-  "t_fire_utc": "2026-06-09 22:18:58",
-  "source": "alarm_events/event_log",
-  "note": "recovery-FP:firmware误火Fall→人+8.7min Walking(event_log)自证活着;value段W-依赖案(W=5漏/W=10/15命中);warmup-10min尾+15min"
-}
