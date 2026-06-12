@@ -230,10 +230,6 @@ type Engine struct {
 	redisClient *redis.Client
 	logger      *zap.Logger
 
-	// weakBioSource: fall verifier "WeakBio≥80 force real" 短路；engine 持有 + RegisterRoom 时
-	// 转发给每个 TrackManager（默认 nil，verifier 走原三档评分）。详 fall_verify.go 注释。
-	weakBioSource WeakBioSource
-
 	onOutput func(roomID string, outputs []TrackOutput)
 
 	// sensor v2 PR-3 wiring：
@@ -715,17 +711,6 @@ func (e *Engine) publishEnabled() bool {
 // SetSuiteCensus 注入进程级共享 SuiteCensusManager（sensor_v2 PR-2 数据结构 + PR-3 publish 关联）。
 // nil = 禁用 PR-3 PersonID 关联（TrackStatus.PersonID 一律空）；
 // bootstrap 调用方负责生命周期（含 SaveToRedis 定时任务）。
-// SetWeakBioSource 注入 fall verifier 的 WeakBio 提级 source（A 风险放大消费者）。
-// 已注册的 TrackManager 同步转发；新 RegisterRoom 创建的 TrackManager 启动时同样注入。
-// nil 允许（短路 disable）。详 fall_verify.go §"WeakBioForceRealThreshold"。
-func (e *Engine) SetWeakBioSource(s WeakBioSource) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.weakBioSource = s
-	for _, tm := range e.rooms {
-		tm.SetWeakBioSource(s)
-	}
-}
 
 // OnDeviceUnfit 实现 DeviceFitnessTracker UnfitCallback —— device offline / SensorDetached
 // 等触发时清该 device 在 engine 内的所有 in-memory state（"device offline = 内存重启"原则，
@@ -1410,11 +1395,6 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetWallPolygon(cfg.WallPolygon) // 静止反射体检测判"近墙"
 	// PR-8: 注入 AI 派生事件 / 告警发布器（engine 实现 AIPublisher 接口）
 	tm.SetAIPublisher(e)
-	// A 风险放大消费者: WeakBio≥80 force real 短路 source（engine 在 SetWeakBioSource 时
-	// 同步转发给已注册 tm；新 RegisterRoom 在这里补设。nil 允许 — verifier 走原三档评分）
-	if e.weakBioSource != nil {
-		tm.SetWeakBioSource(e.weakBioSource)
-	}
 	// 注入 IANA 时区（IsNightTime 用）；空串保持 nil → IsNightTime 退化 UTC
 	if cfg.Timezone != "" {
 		if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
@@ -1540,6 +1520,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	// 后台定时任务
 	go e.decayLoop(ctx)
 	go e.beliefScanLoop(ctx)
+	go e.firmwarePendingDrainLoop(ctx) // 档 0/2:雷达静默时 force-forward 滞留的 firmware fall(fail-safe,不漏)
 	go e.winnerEvalLoop(ctx)
 	if e.persister != nil && e.snapshotInterval > 0 {
 		go e.snapshotLoop(ctx)
@@ -1673,9 +1654,16 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 		if m.Category == alarm.Fall || m.Category == alarm.SittingOnGround {
 			alarms := ParseRadarFallAlarm(m.DataValue, addrStr, m.Category, ts)
 			for _, a := range alarms {
-				tm.RecordRadarAlarm(a)
-				if m.Category == alarm.Fall {
-					e.recordBeliefShadowFirmwareFall(roomID, a.TMs) // P2:喂 firmware Fall T_fire 进 shadow(recovery 参考)
+				// DBN_MODE:档 0/2(dbnVetoFirmwareEnabled)→ 暂存,下一 belief tick 用 fresh bases 现算 co-existence
+				// 裁决放行/否决(option A,消除事件 vs tick 竞态,孤立必发)。档 1 → firmware 地板,立即转发。
+				deferred := dbnVetoFirmwareEnabled()
+				if deferred {
+					e.stashPendingFirmwareFall(roomID, a)
+				} else {
+					tm.RecordRadarAlarm(a)
+					if m.Category == alarm.Fall {
+						e.recordBeliefShadowFirmwareFall(roomID, a.TMs) // P2:喂 firmware Fall T_fire(recovery 参考)
+					}
 				}
 				e.logger.Info("radar_fall_received_via_event_stream",
 					zap.String("device_addr", addrStr),
@@ -1687,6 +1675,7 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 					zap.String("room_id", roomID),
 					zap.Int64("ts_ms", a.TMs),
 					zap.String("ts_human", time.UnixMilli(a.TMs).Format("15:04:05.000")),
+					zap.Bool("dbn_deferred", deferred), // 档 0/2:暂存待 tick 裁决;档 1:立即转发
 				)
 			}
 			tm.Tick(ts)

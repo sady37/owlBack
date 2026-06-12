@@ -85,11 +85,6 @@ type TrackManager struct {
 	// PR-Bootstrap: v1 stillFallReportCount 已删除（v1 fire path 同时删除）。
 	// PR-10 BathroomFallRules 的统计走 ai.log audit 路径。
 
-	// Firmware Fall verifier 累计（PR-5；仅打分，不否决 alarm）
-	fallVerifyGhostCount   int
-	fallVerifySuspectCount int
-	fallVerifyRealCount    int
-
 	sleepadInBedCount int
 
 	// moveSpeedCms：Kalman 速度阈值（cm/s）。> 此速度的帧即使 pose 不是 Walking 也算 Move。
@@ -127,10 +122,6 @@ type TrackManager struct {
 	recentRadarAlarms map[int64]*RadarFallAlarm  // key = TMs
 	recentRadarEvents map[int64]*RadarTrackEvent // key = TMs
 	recentBufferMs    int64                      // 默认 5 min
-
-	// weakBioSource: fall verifier "WeakBio≥80 force real" 短路用（A 风险放大消费者）。
-	// 默认 nil（verifier 走原三档评分）；engine.SetWeakBioSource 注入。
-	weakBioSource WeakBioSource
 
 	// logger：用于 ai.log 输出 ghost / fall 结构化事件。
 	// 默认 zap.NewNop()，engine.Run 会调 SetLogger 注入真 logger。
@@ -329,14 +320,6 @@ func (tm *TrackManager) SetRadarMount(m radarutils.RadarMount) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	tm.radarMount = m
-}
-
-// SetWeakBioSource 注入 fall verifier 的 WeakBio 提级 source（engine.SetWeakBioSource 转发）。
-// nil 允许（verifier 短路 disable，走原三档评分）。
-func (tm *TrackManager) SetWeakBioSource(s WeakBioSource) {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	tm.weakBioSource = s
 }
 
 // ClearDevice 清空 device 在本 tm 内的所有 in-memory state（"device offline = 内存重启"原则）。
@@ -587,30 +570,6 @@ func (tm *TrackManager) emitGhostVerdict(ts *TrackState, reason, context string,
 	tm.emitAIEvent(p, CategoryTrackVerdict, nowMs)
 }
 
-// emitDecision 发布一条 lost-fall 决策审计事件到 ai:track:verdict:stream（category=sensor_decision）。
-// iot 落 sensor_decision_log；cardagg 按 category 跳过（不污染 override cache）。旁路审计，不在热路径。
-// event=lostfall_pending/lostfall_cancel/lostfall_fire/lostfall_suppress；reason 机器可分类；ev 是全量特征。
-func (tm *TrackManager) emitDecision(deviceAddr, logicID string, trackID, rawH, rawV, rawZ int, event, reason string, ev map[string]interface{}, nowMs int64) {
-	if tm.aiPublisher == nil {
-		return
-	}
-	tm.emitAIEvent(AIPayload{
-		DeviceAddr: deviceAddr,
-		RoomID:     tm.roomID,
-		Track: observation.Track{
-			BedStatus: observation.BedStatusUnchanged,
-			TrackID:   trackID,
-			LogicID:   logicID,
-			PositionX: intPtr(rawH),
-			PositionY: intPtr(rawV),
-			PositionZ: intPtr(rawZ),
-		},
-		Event:    event,
-		Reason:   reason,
-		Evidence: ev,
-	}, CategorySensorDecision, nowMs)
-}
-
 // IsBathroomByRoomName 用 owl-common/roomutil.ClassifyRoomType 判定本房间是否 bathroom。
 // 与 cell.Belief[0].Type ∈ {AreaToilet, AreaShower} 取并集驱动 still fall。
 func (tm *TrackManager) IsBathroomByRoomName() bool {
@@ -620,13 +579,7 @@ func (tm *TrackManager) IsBathroomByRoomName() bool {
 }
 
 // ProcessSleepadBedEvent 接收 sleepad InBed/LeftBed 事件。
-// 维护 BedSession（silent fall 状态机入口）+ PR-14 双源入场门控。
-//
-// PR-9: v1 bedPersonCount + lastLeftBedAt 维护已删除。
-//   - 多人床场景由 SuiteCensus (PR-2) 在 person 维度处理，不再 per-bed-device counter
-//   - LeftBedMaxPeople latch 保留为字段但 PR-9 阶段无源（值固定 0）；
-//     PR-11 silent_fall 重写时改用 SuiteCensus.BathroomCount 或其它人维度信号
-//
+// 维护 BedSession（InBed/LeftBed 时刻,喂 BedOccupancyState→cardagg bed_state）。
 // 由 Engine 路由 iot:event:stream 中 device_type=Sleepad 时调用。
 func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
 	tm.mu.Lock()
@@ -643,68 +596,32 @@ func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
 			s = &BedSession{DeviceUID: evt.DeviceUID, InBedSinceMs: evt.TMs}
 			tm.bedSessions[evt.DeviceUID] = s
 		}
-		// 任意 InBed → 清掉之前的等待状态（视为新一轮上床）
-		s.LeftBedAtMs = 0
-		s.SilentFallAlerted = false
-		// PR-14：入场门控——若 radar InBed 在 ±15s 内已到，标记双源一致确认。
-		// PR-9: lastLeftBedAt 新鲜度守卫已删；delta ≤ 15s 隐式保证 radar InBed 是最近的。
-		if tm.lastRadarInBedMs > 0 {
-			delta := evt.TMs - tm.lastRadarInBedMs
-			if delta < 0 {
-				delta = -delta
-			}
-			if delta <= bedInBedConsistencyMs {
-				s.RadarInBedConfirmedMs = evt.TMs
-			}
-		}
+		s.LeftBedAtMs = 0 // 任意 InBed → 清掉离床态（视为新一轮上床）
 		return
 	}
 
-	// LeftBed：BedSession 进入「等待矛盾」状态，要求满足 5min precondition。
-	// PR-9: 删除多人床 c>0 guard（依赖 bedPersonCount）；任意 LeftBed event 都视作 session 终结。
+	// LeftBed：如实落 LeftBedAtMs（BedOccupancyState→cardagg bed_state）。
+	// 原 5min precondition 是 silent-fall 质量过滤,已随 gate-list 退役——真上床又下床如实报 LeftBed 才正确。
 	s := tm.bedSessions[evt.DeviceUID]
 	if s == nil || s.InBedSinceMs == 0 {
 		return // 没有有效 in-bed 历史
 	}
-	if evt.TMs-s.InBedSinceMs < int64(FallRulesParam.Silent.MinInBedSec)*1000 {
-		// 在床时间不足 5min，不进入等待；直接结束 session
-		s.InBedSinceMs = 0
-		s.HasHRRR = false
-		return
-	}
 	s.LeftBedAtMs = evt.TMs
-	s.LeftBedHadHRRR = s.HasHRRR
-	// LeftBedMaxPeople 在 PR-9 阶段无 source（bedPersonCount 已删），保留字段值 0；
-	// PR-11 silent_fall 重写时改用 SuiteCensus 派生
-	s.LeftBedMaxPeople = 0
-	// Layer-1：LeftBed 时 latch 上床置信（radar 印证度），供 vanish-fire 门控
-	s.InBedConfidence = bedInBedConfidence(s)
 }
 
 // ProcessSleepadObservation 接收 sleepad 一帧观测，按设备 UID 保留最新状态。
-// 由 Engine.handleMessage 路由 device_type=Sleepad 时调用；
-// silent fall 报警前会查询此状态做 short-circuit（"sleepad 确认在床有 vital 即不报"）。
-//
-// BedSession 钩子：在 in-bed 期间任意时刻观测到 HR/RR > 0 → HasHRRR=true（用于 LeftBed 时刻 latch）。
+// 由 Engine.handleMessage 路由 device_type=Sleepad 时调用。
 func (tm *TrackManager) ProcessSleepadObservation(obs SleepadObservation) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	cur, ok := tm.sleepadStates[obs.DeviceUID]
 	if !ok || obs.TMs > cur.TMs {
-		// PR-9: 状态转换 InBed=true → InBed=false 不再更新 lastLeftBedAt（字段已删）。
-		// BedSession.LeftBedAtMs latch 仍由 ProcessSleepadBedEvent event 路径维护；
-		// 仅 monitor 路径未带 LeftBed event 的 firmware 会 miss session 终结，
-		// PR-11 silent_fall 重写时如有需要再走 monitor→event 归一化。
 		copyObs := obs
 		tm.sleepadStates[obs.DeviceUID] = &copyObs
 	}
-	// BedSession：在 in-bed 期间见到 HR/RR > 0 → 打 vital flag
+	// 双方一致 InBed ±15s → sleepad HR/RR 可信，把 active radar track 当前 cell 学为 AreaBed
+	// （sleepad 不知坐标,但 radar 同报 InBed 且时间一致 → radar 当前 track 位置即床位）。
 	if obs.InBed && obs.HasVitalSign() {
-		if s := tm.bedSessions[obs.DeviceUID]; s != nil && s.InBedSinceMs > 0 {
-			s.HasHRRR = true
-		}
-		// PR-11: 双方一致 InBed ±15s → sleepad HR/RR 可信，refresh active radar track 当前 cell 为 AreaBed
-		// 设计：sleepad 不知坐标，但 radar 也报 InBed 且时间一致 → radar 当前 track 位置就是床位
 		if tm.consistentBedInBed(obs.TMs) {
 			for _, ts := range tm.tracks {
 				if ts.Verdict != VerdictReal {
@@ -730,10 +647,8 @@ const bedInBedConsistencyMs = int64(15_000)
 
 // 床态融合参数（2026-06-04，Layer-1）：sleepad 接触式为权威，radar 印证叠加，EMI 兜底地板。
 const (
-	bedConfSleepad   = 90 // 接触式上床基础置信
-	bedConfRadar     = 70 // radar InBed 印证增量 / radar 全程无 track 时的降权幅度
-	bedConfEMIFloor  = 30 // radar 全程无 track 时的置信地板（防震动/EMI 假上床；真人静卧雷达也可能无回波，故不归零）
-	bedVanishMinConf = 50 // vanish-fire 所需最低床态置信（低于此=可能假上床，不发跌倒）
+	bedConfSleepad = 90 // 接触式上床基础置信（BedOccupancyState→cardagg bed_state）
+	bedConfRadar   = 70 // radar-only InBed 降档幅度（BedOccupancyState）
 )
 
 // track 驱逐时间阈（2026-06-04，治 88 稀疏心跳下陈旧 track 拖 142s，Case2）：
@@ -745,35 +660,6 @@ const (
 	heartbeat88EvictMs = int64(6_000)
 )
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-// bedInBedConfidence Layer-1 三档融合（确认同一张床后，于 LeftBed 时算）：
-//
-//	radar 印证在床（±15s 同事件 或 单床房 session 内 InBed） → min(sleepad+radar,100) 双确认冲顶
-//	radar 看到人但不在床（session 内有 track，无 InBed）       → sleepad（接触式权威）
-//	radar 全程无 track                                       → max(sleepad-radar,30) 抗震动/EMI 降权不归零
-func bedInBedConfidence(s *BedSession) int {
-	switch {
-	case s.RadarInBedConfirmedMs > 0 || s.RadarInBedInSessionMs > 0:
-		return minInt(bedConfSleepad+bedConfRadar, 100)
-	case s.RadarSawTrackMs > 0:
-		return bedConfSleepad
-	default:
-		return maxInt(bedConfSleepad-bedConfRadar, bedConfEMIFloor)
-	}
-}
 
 // ghostJudgable ghost≥2 闸：ghost 是真 track 的镜像/反射，需 ≥2 条 track（至少 1 条作母体）才可判 ghost。
 // 仅 1 条 track 时不判 ghost——单 track 判 ghost 会压制从盲区返回的真人/真摔。调用方持锁。
@@ -920,41 +806,17 @@ func (tm *TrackManager) SetBedsideFallConfig(c BedsideFallConfig) {
 	}
 }
 
-// RecordRadarAlarm 落账 radar 来源的 alarm（当前阶段仅 Fall + SittingOnGround）+ 跑 verifier 评分
-// + 默认转发回 iot:alarm:stream（producer="wisefido-sensor"，让 cardagg 落库）。
-// 调用方（engine.handleEventMessage 的 radar Fall 分支 / handleAlarmMessage 兼容路径）
-// 应当紧跟 tm.Tick(alarm.TMs) 触发段 4-6 立即跑一次。
+// RecordRadarAlarm 落账 radar firmware Fall/SittingOnGround 并转发 iot:alarm:stream（producer="wisefido-sensor"，
+// cardagg 落库）。firmware 直发跌倒的 forward 原语:DBN_MODE 档 1 立即调;档 0/2 经 belief shadow 延迟裁决后调。
+// 调用方应紧跟 tm.Tick(alarm.TMs)。end status 让 cardagg AlarmRouter 按 EndPolicy 关 alarm。
 //
-// 2026-05-15 cardagg_sensor_split：firmware radar Fall 走 event stream → sensor 接管。
-// 当前阶段 verifier 仅 log（fake/suspect/real），不 gate；status="start" 时无条件转发到 alarm stream。
-// 转发后 cardagg.alarm_handler case alarm.Fall 自动落库；verifier verdict 进 Evidence.fall_verdict 供审计。
-//
-// 未来 PR-段7：verifier verdict="ghost" 时不转发（真正成为 fall gate）。
+// 2026-06: gate-list 时期的 verifier(verifyRadarFall,纯 informational 不 gate、读 gate-list 信号)已删;
+// firmware fall 的 ghost 否决归 DBN(dbnVetoFirmwareEnabled,co-existence 现算)。
 func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 	tm.mu.Lock()
 	cp := a
 	tm.recentRadarAlarms[a.TMs] = &cp
 	tm.evictOldRadarAlarms(a.TMs)
-
-	// start: 跑 fall verifier 评分；end: 跳过评分但仍转发（让 cardagg auto-resolve）
-	verdict := ""
-	score := 0
-	isStart := a.Status == "start" || a.Status == ""
-	if isStart {
-		result := tm.verifyRadarFall(a, a.TMs)
-		tm.logFallVerify(a, result)
-		verdict = result.Verdict
-		score = result.Score
-		switch result.Verdict {
-		case "ghost":
-			tm.fallVerifyGhostCount++
-		case "suspect":
-			tm.fallVerifySuspectCount++
-		case "real":
-			tm.fallVerifyRealCount++
-		}
-	}
-	// 解锁后 emit（emit 内部走 redis publish，不能持锁；tm.aiPublisher 自身 thread-safe）
 	tm.mu.Unlock()
 
 	if tm.aiPublisher == nil {
@@ -962,7 +824,6 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 	}
 
 	// emit status：start/instant 触发新 alarm；end 让 cardagg AlarmRouter 按 EndPolicy 关 alarm。
-	// qinglan 收到 firmware Initialization (last_pose=2/7) 时 forward status="end"，必须透传到 alarm stream。
 	emitStatus := a.Status
 	if emitStatus == "" {
 		emitStatus = "start"
@@ -982,8 +843,6 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 		Evidence: map[string]interface{}{
 			"context":         "qinglan_publisher_event_stream_passthrough",
 			"firmware_status": a.Status,
-			"fall_verdict":    verdict, // end 时为空（无评分）
-			"fall_score":      score,
 		},
 	}
 	// envelope.Category：Fall / SittingOnGround（qinglan 已 collapse Suspected→Confirmed）
@@ -1010,32 +869,7 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	tm.evictOldRadarEvents(e.TMs)
 	if e.EventName == alarm.InBed && e.TMs > tm.lastRadarInBedMs {
 		tm.lastRadarInBedMs = e.TMs
-		// PR-14 副作用 1：mark 当前 track 位置 cell 为 AreaBed
-		tm.markRadarInBedCell(e)
-		// PR-14 副作用 2 + Layer-0 床身份（2026-06-04）：
-		//   ±15s 同事件     → RadarInBedConfirmedMs（最高置信档；多床房=床身份关联器）
-		//   单床房 bedCount==1 → radar 与 sleepad 必同一张床，session 内 radar InBed 无视时差即记印证
-		within15s := false
-		if tm.lastSleepadInBedMs > 0 {
-			delta := e.TMs - tm.lastSleepadInBedMs
-			if delta < 0 {
-				delta = -delta
-			}
-			within15s = delta <= bedInBedConsistencyMs
-		}
-		for _, s := range tm.bedSessions {
-			if s.InBedSinceMs == 0 {
-				continue
-			}
-			if within15s {
-				if s.RadarInBedConfirmedMs == 0 {
-					s.RadarInBedConfirmedMs = e.TMs
-				}
-				s.RadarInBedInSessionMs = e.TMs
-			} else if tm.bedCount == 1 {
-				s.RadarInBedInSessionMs = e.TMs
-			}
-		}
+		tm.markRadarInBedCell(e) // radar InBed → 当前 track 位置 cell 学为 AreaBed（空间证据）
 	}
 	// number_people=0：固件「屋内空」断言。只落 ts，不直接驱动任何取消——
 	// count=0 不等于人离开（可能盲区/水气丢信号），须与门区空间证据合取才采信（见 bathroom_fall）。
@@ -1214,39 +1048,6 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		// PR-3 暂用 FrameCount 近似单调累计；PR-5 (BathroomGate) 接入后换实际 grid.MarkTraverse 计数。
 		base.TraverseDelta = 0 // 留待 PR-5 wire 精确 delta；当前阶段 SuiteCensus traverse 升格走 sleepad 强锚 + 时长门
 		out = append(out, base)
-	}
-	return out
-}
-
-// BedSessionLatch BedSession 状态对外快照（PR-11 BedroomFallRules 消费）。
-// 仅含 fall 决策必要字段，不暴露 BedSession 全部 internal 状态。
-type BedSessionLatch struct {
-	DeviceUID             string
-	InBedSinceMs          int64
-	LeftBedAtMs           int64
-	HasHRRR               bool
-	LeftBedHadHRRR        bool
-	RadarInBedConfirmedMs int64
-	SilentFallAlerted     bool
-}
-
-// SnapshotBedSessions BedSession 状态值拷贝快照。
-// 用途：PR-11 BedroomFallRules.Evaluate 读 LeftBedAtMs 作 bedside_fall 起点。
-// 锁语义：内部加 tm.mu；返回值是值拷贝，调用方可在锁外读。
-func (tm *TrackManager) SnapshotBedSessions() []BedSessionLatch {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	out := make([]BedSessionLatch, 0, len(tm.bedSessions))
-	for _, s := range tm.bedSessions {
-		out = append(out, BedSessionLatch{
-			DeviceUID:             s.DeviceUID,
-			InBedSinceMs:          s.InBedSinceMs,
-			LeftBedAtMs:           s.LeftBedAtMs,
-			HasHRRR:               s.HasHRRR,
-			LeftBedHadHRRR:        s.LeftBedHadHRRR,
-			RadarInBedConfirmedMs: s.RadarInBedConfirmedMs,
-			SilentFallAlerted:     s.SilentFallAlerted,
-		})
 	}
 	return out
 }
@@ -1606,20 +1407,6 @@ func (tm *TrackManager) GetOutputs() []TrackOutput {
 // PR-Bootstrap: StillFallStats + stillFallReportCount 已删除（v1 fire path 删除后无 source）。
 // PR-10 BathroomStillFall 的统计走 ai.log audit 路径，不再 per-TrackManager 计数。
 
-// FallVerifyStats firmware Fall verifier 三档累计（PR-5）
-type FallVerifyStats struct {
-	Ghost   int
-	Suspect int
-	Real    int
-}
-
-func (tm *TrackManager) FallVerifyStatsSnapshot() FallVerifyStats {
-	return FallVerifyStats{
-		Ghost:   tm.fallVerifyGhostCount,
-		Suspect: tm.fallVerifySuspectCount,
-		Real:    tm.fallVerifyRealCount,
-	}
-}
 
 // ========================================================================
 // 出生打分（PR-5.1+5.2+5.3 重写：累积 GhostPenalty 模式）

@@ -215,9 +215,9 @@ func TestDBNGeneratorScenarios(t *testing.T) {
 // TestDBNFireSwitch — cutover wire 验证（委员会 6c376e4）:开关 ON → DBN 真 fire/veto block 可达。
 // 喂 #9 真摔(present pose-lying)→ 应 belief_dbn_fire(real track 不被 ghost veto)。验 R0→production wire 通。
 func TestDBNFireSwitch(t *testing.T) {
-	old := dbnFireEnabled
-	dbnFireEnabled = true
-	defer func() { dbnFireEnabled = old }()
+	old := dbnMode
+	dbnMode = 2 // 全开:DBN 自发 + 可否决 firmware
+	defer func() { dbnMode = old }()
 	cfg, radarAddr, roomID := bLayout(t, "unit201-handoff-0609-bathroom-333B")
 	core, logs := observer.New(zapcore.DebugLevel)
 	e := NewEngine(nil, zap.New(core))

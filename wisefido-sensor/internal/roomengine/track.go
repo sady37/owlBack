@@ -200,43 +200,12 @@ const (
 	// 8 秒远小于其最小值，确保只捕获"雷达尚未升级为 Fall 就回撤"的误报。
 )
 
-// BedSession 单 sleepad 设备的"在床会话"状态机。
-//
-// 用途：实现 silent fall（基于 sleepad LeftBed 与 radar 仍在 bed 邻域的矛盾）。
-//
-// 入场门控（PR-14）：
-//
-//	只有当同房间 sleepad InBed 与 radar InBed 在 ±15s 内都到齐才会"成立"——
-//	RadarInBedConfirmedMs > 0 是 silent fall 触发先决条件；
-//	防止单源（仅 sleepad / 仅 radar）误报。
-//
-// 生命周期：
-//
-//	sleepad InBed 首次到达             → InBedSinceMs 记录起点；HasHRRR 重置
-//	radar InBed 同房间 ±15s 内到达     → RadarInBedConfirmedMs 标记
-//	sleepad observation 含 HR/RR > 0   → HasHRRR = true
-//	sleepad LeftBed 到达                → 若已满 MinInBedSec，进入「等待矛盾」状态
-//	每 tick 检查超时                     → 若 radar 仍在 Bed 邻域 → 报 silent fall
-//	重新 InBed                          → 重置 session
-//
-// LeftBedHadHRRR / LeftBedMaxPeople 在 LeftBed 时刻 latch，不受后续观测影响。
-// PR-9: MaxPeople 中间状态删除（依赖 bedPersonCount 已删）；LeftBedMaxPeople latch 字段保留
-// 但 PR-9 阶段无 source 值固定 0，PR-11 silent_fall 重写时改由 SuiteCensus 派生。
+// BedSession 单 sleepad 设备的"在床会话"。silent-fall（依赖 radar 印证/HR-RR latch 那套）随 gate-list 退役后,
+// 只保留 BedOccupancyState→cardagg bed_state 的存活三元组:身份 + InBed/LeftBed 时刻。
 type BedSession struct {
-	DeviceUID             string // sleepad device_uid
-	InBedSinceMs          int64  // 首次 InBed 到达的时间戳；0 = 未在床
-	RadarInBedConfirmedMs int64  // PR-14：sleepad+radar InBed ±15s 一致确认时刻；0 = 未双源确认
-	HasHRRR               bool   // in-bed 期间是否观测到 HR/RR > 0
-	LeftBedAtMs           int64  // 0 = 仍在床；>0 = 等待矛盾窗口
-	LeftBedHadHRRR        bool   // LeftBed 时刻的 HasHRRR latch
-	LeftBedMaxPeople      int    // LeftBed 时刻的"多人床"latch；PR-9 阶段无 source 固定 0，PR-11 重写
-	SilentFallAlerted     bool   // 防重复触发
-
-	// 床态融合 Layer-0/1（2026-06-04）：sleepad 接触式权威 + radar 印证叠加 + 抗 EMI 降权。
-	RadarInBedInSessionMs int64  // 本次在床 session 内 radar 报过 InBed 的时刻（床印证；单床房无视 ±15s，多床房需 ±15s 同事件）
-	RadarSawTrackMs       int64  // 本次 session 内 radar 有过 active(非 ghost) track 的最近时刻（区分"看到人但不在床" vs "全程无 track"）
-	RadarDeviceAddr       string // session 内监视本房的雷达 /128（vanish-fire 无 track 时的报警归因）
-	InBedConfidence       int    // Layer-1 融合上床置信，LeftBed 时 latch；< bedVanishMinConf 抑制 vanish-fire（防震动/EMI 假上床）
+	DeviceUID    string // sleepad device_uid
+	InBedSinceMs int64  // 首次 InBed 到达的时间戳；0 = 未在床
+	LeftBedAtMs  int64  // 0 = 仍在床；>0 = 已离床
 }
 
 // NewTrackState 新 track 出生

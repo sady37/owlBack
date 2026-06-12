@@ -172,10 +172,12 @@ func replay(t *testing.T, recs []fxRecord, grid *RoomGrid, mount radarutils.Rada
 					k.st.GhostPenalty = 80
 				}
 				// ghost-filter：impossible-speed 假跳（track-swap）剔除，不喂 still-box/belief。
-				// (P3.1 删 isGhostJump 生产 helper;replay emulate 生产 ghost-filter,内联用生产 ImpossibleSpeedCm。)
+				// 阈用本 replay 局部常量(原 FallRulesParam.Lost.ImpossibleSpeedCm,该生产字段随 gate-list lost 退役删除;
+				// 保留 200 维持本回放过滤行为不变)。
+				const replayImpossibleSpeedCmS = 200.0
 				if k.hasLast {
 					if dt := now - k.lastFrameTs; dt > 0 &&
-						math.Hypot(float64(x-k.lastX), float64(y-k.lastY))*1000/float64(dt) > float64(FallRulesParam.Lost.ImpossibleSpeedCm) {
+						math.Hypot(float64(x-k.lastX), float64(y-k.lastY))*1000/float64(dt) > replayImpossibleSpeedCmS {
 						continue
 					}
 				}

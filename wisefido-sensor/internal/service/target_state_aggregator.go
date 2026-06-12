@@ -254,12 +254,7 @@ func (a *TargetStateAggregator) ForgetDevice(deviceAddr string) {
 	)
 }
 
-// WeakBioScore 返回 spatial 实体当前 WeakBio 累加 score（0-100）。
-// 无 entry 返回 0；roomengine fall verifier "WeakBio≥80 force real" 提级路径用。
-//
-// 实现 roomengine.WeakBioSource interface（解耦：sensor service ← roomengine 单向消费 score；
-// 不引 service 类型，零 import cycle 风险）。
-//
+// WeakBioScore 返回 spatial 实体当前 WeakBio 累加 score（0-100）。无 entry 返回 0；喂 target.state 流。
 // expire-on-read：调用前先 lazy drop 窗外 events + 重算 score（防 score 卡老值）。
 func (a *TargetStateAggregator) WeakBioScore(spatialPrefix string) int {
 	if a == nil || spatialPrefix == "" {

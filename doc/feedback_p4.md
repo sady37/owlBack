@@ -72,3 +72,31 @@
 1. **radar vital +0.56 权重**→ **先按设计值跑,9e7 实证再调**。ln(1.75)≈0.56 是最弱正向腿,又是 radar 非接触式传感器,初始保守合理。专测有数据后再议。
 2. **source 命名**→ **用 `radar`**(施工方倾向)。同源命名一致(`radar:enter/leave/pose_lying/sustain`),且 doc 的 `vital_radar` 从未在代码里用(sleepad 也只用 `vital` 而非 `vital_sleepad`)。doc 后续更新即可。
 3. **另 2 死腿**→ **`sleepadAdapter` 保留待 wire**(同 radar-vital 是合法待设计,非 dead-on-arrival),**`ObsTimeContext` 可删**(likelihood 中性、效应走 prior、无 producer、无消费计划)。#1.2 删即删,不留 stub。
+
+### [2026-06-11] 施工方 → 委员会:**DBN cutover**(删 gate-list firing → DBN 接管 + DBN_MODE 三档 + firmware-veto Option A + 死代码清理)
+
+**性质**:把推断型 fall 从 gate-list 整体迁到 DBN(用户拍板 cutover)。gate-list 三类推断 fall(z_drop/silent_leftbed/lost_fall)firing 退役,DBN 接管(自发 + 可否决 firmware),配套清理 gate-list 时期死代码。
+
+**已做(分两段)**:
+- **已 push** `30a6c0b`:删 gate-list 推断 fall firing(`engine_z_drop`/`engine_silent_leftbed`(+vanished)/`lost_fall` 整套 pendingLostFalls 池+扫描+取消+`checkLostFall`/`lostFallWaitMs`+`PendingLostFall`/`LostFallStats`/`SilentFallLeftBedStats`+playback stats)。保留:firmware `radar_direct`(`RecordRadarAlarm`)、`AnomalyPathBreak`、`AnomalyStillTooLong`、DBN belief shadow。
+- **工作树未提交(本提交一起 commit)**:
+  - `DBN_MODE` 三档替换旧 `DBN_FIRE`:0=否决firmware+DBN不自发 / 1=不否决firmware+DBN自发(union地板) / 2=全开。`.env=2`,`run-service` 兜底 1。
+  - **firmware-veto = Option A(延 tick 现算,非缓存)**:档0/2 firmware fall 暂存 → 下一 `beliefShadowTick` 用**当帧 bases** 现算 co-existence/ghost/τ* 裁决(与 self-fire 同源,结构消竞态);孤立必发(铁律);雷达静默由 `firmwarePendingDrainLoop`(2s,服务器墙钟 age,5s 超时)force-forward fail-safe。
+  - 死代码清理:`emitDecision` 删;`fall_verify.go` **整删**(verifier 纯 informational 不 gate、读 gate-list 信号);`RecordRadarAlarm` 砍成纯 forward;`weakBioSource`/`SetWeakBioSource`/`WeakBioSource`/`FallVerifyStats` 删(`service.WeakBioScore` 保留喂 target.state);`BedSession` 砍到 {DeviceUID,InBedSinceMs,LeftBedAtMs}+死字段链(HasHRRR/LeftBedHadHRRR/LeftBedMaxPeople/SilentFallAlerted/RadarInBed*Ms/RadarSawTrackMs/RadarDeviceAddr/InBedConfidence)+`bedInBedConfidence`/`bedVanishMinConf`/`bedConfEMIFloor`/`minInt`/`maxInt`/`BedSessionLatch`/`SnapshotBedSessions`;删 LeftBed 5min gate(如实报 LeftBed);`silentFallParam` 整删、`lostFallParam` 11→5、`Still.StaticPosCm` 删;test helper(`newTestTM`/`newTestGrid`)迁 `test_helpers_test.go`。
+
+**验收 bar**:`go build ./...` ✅ `go vet ./...` ✅。`go test ./...` 只剩 **3 个 stash 基线确认的预存在红测**(`TestP4OpenFloorDwellToleranceGate` / `TestRecallManifestAll/case-5` / zoneengine `TestSleepaceAdapter_UnboundDeviceSkipped`,非本次引入)。`TestDBNFireSwitch` 过(dbn_fire=1/veto=0)。
+
+**in-session 对抗评审(Workflow committee)5 轮纪要(逐个 blocker→修)**:
+1. firmware-veto 缓存式 co-existence 竞态(cache-time 旧共存,partner 消失后误否孤立真摔)→ 重做 **Option A**(延 tick fresh bases 现算)。
+2. `tm==nil` 静默丢 firmware fall ×3 → 非 nil **by contract**(handler 顶 `if tm==nil return` 已 guard;stash 传参)+ `T_fire` 与转发**原子耦合**。
+3. orphan-on-radar-silence(暂存后雷达彻底静默→pending 永不裁决)→ **clock-based** `firmwarePendingDrainLoop`。
+4. `arrivedMs` 用 firmware 时钟(偏移算错 age)→ 改**服务器墙钟**;drain `tm==nil` 静默(rule 1.4)→ 去守卫(房从不注销→不可达)+ drain loop `recover` 兜响亮。
+（第 4 轮修复**未再 in-session 复审**,提交本委员会/实测裁。）
+
+**部署状态**:`30a6c0b` 已 live 在 test1(gate-list 删 + 旧 `DBN_FIRE=1` 语义);本批 DBN_MODE/Option A/清理**未部署**(待 commit+push+restart `DBN_MODE=2`)。test1 post-restart 日志:0 error/panic、gate-list 残留 0、`belief_dbn_fire` 11(dbn_silent/lost/moving)。
+
+**⚠️ 待裁(诚实列未决)**:
+1. **矩阵修 `lrPoseLyingBedFall`(床边 FN 红线)未做** —— `poseLikelihood` 的 lying@`GeomInBed` 仍零 `SFallen`;cutover 已 live 但 **DBN 接不住床边真摔**(原 silent_leftbed 兜底已删)。本轮做否?方案=几何降级(contact-authority:sleepad LeftBed 时床区躺按 OpenFloor 竞争 SFallen)还是别的?
+2. **`dampBedFallen` 本仓库是 `0.7`**(清单标 0.2 但**不在 origin**,origin=HEAD=`30a6c0b`,无改它的 commit)。要改 0.2 吗?
+3. **`DBN_MODE` 默认部署档**:`.env=2`(全开)。确认 2,还是先 1(保 firmware 地板)观察?
+4. **firmware-veto Option A 复杂度**(5 轮才收敛)→ 委员会要不要重估"是否值得"vs 仅 risk-veto / 暂 mode 1?

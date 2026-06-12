@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"os"
+	"time"
 
 	"owl-common/alarm"
 	"owl-common/card"
@@ -27,10 +28,32 @@ const beliefShadowEnabled = true
 
 const beliefShadowLostTTLMs = 60_000 // track 超此无帧 = 丢失（对齐 trackLostAnchorMs）
 
-// dbnFireEnabled cutover 可逆开关（委员会 6c376e4 安全包络④）。env DBN_FIRE=1 → DBN 真发推断 fall（union
-// firmware∨DBN）+ gate-list 推断 fall 短路；默认 OFF=现状（shadow log-only,gate-list 发）。秒翻回 gate-list。
-// 部署此 commit 行为零变化(默认 OFF),翻开关才进 production——第一个碰 alarm 路径的提交,R0 在开关 ON 时结束。
-var dbnFireEnabled = os.Getenv("DBN_FIRE") == "1"
+// dbnMode cutover 三档（用户拍板,可逆,运维 .env 翻 DBN_MODE）。两条正交轴=否决 firmware × DBN 自发:
+//
+//	0 = 否决 firmware fire + DBN 不自发（DBN 只当 firmware 的 ghost 过滤器）
+//	1 = 不否决 firmware fire + DBN 自发（firmware 地板不可挡,union；最不漏 firmware）
+//	2 = 否决 firmware fire + DBN 自发（全开）
+//
+// 否决 firmware 的依据三档统一 = 复用 DBN 自发的 co-existence ghost + 风险分层 τ*。
+// 未设/非法 → 1（保 firmware 地板不可挡,最保守不漏 firmware）。秒翻档回滚。
+var dbnMode = parseDBNMode(os.Getenv("DBN_MODE"))
+
+func parseDBNMode(s string) int {
+	switch s {
+	case "0":
+		return 0
+	case "2":
+		return 2
+	default:
+		return 1
+	}
+}
+
+// dbnSelfFireEnabled 档 1/2：DBN 自发推断 fall（其内部 ghost/risk 自否决照常）。
+func dbnSelfFireEnabled() bool { return dbnMode == 1 || dbnMode == 2 }
+
+// dbnVetoFirmwareEnabled 档 0/2：DBN 可否决 firmware fire（ghost/risk 命中 → 挡掉固件那条）。
+func dbnVetoFirmwareEnabled() bool { return dbnMode == 0 || dbnMode == 2 }
 
 // dbnVetoRecoveryEnabled P2 recovery-veto 独立子开关（委员会 6dafdc6,默认 OFF,可单独 live toggle）。
 // recovery-veto 漏报-safe by construction(同人+正向 up+track-loss 螺丝+self-rescue≥15s+默认放行)。
@@ -108,6 +131,17 @@ type beliefShadow struct {
 	firmwareFallTs      int64 // firmware Fall 事件 ts(0=未火);recovery 须 ts>此
 	recoveryGenuineFall bool  // firmware 火后摔者持续倒地≥阈=自救真摔→禁 recovery(不静默抹)
 	recoveryEmitted     bool  // 已 emit 本次 recovery(防重复)
+
+	// pendingFwFalls 档 0/2:firmware fall 异步到达时**不立即裁决**(那会用 cache-time 的旧 co-existence,
+	// partner 消失后误否孤立真摔=漏报)。暂存,到下一 beliefShadowTick 用**当帧 bases** 现算 co-existence+ghost
+	// 裁决(与 self-fire 同源同 tick,结构上消除"事件 vs tick"竞态)。孤立(当帧<2 track)→ 必发(铁律)。
+	pendingFwFalls []pendingFwFall
+}
+
+// pendingFwFall 档 0/2 暂存的 firmware fall:待下一 tick 用 fresh bases 裁决放行/否决。
+type pendingFwFall struct {
+	a         RadarFallAlarm
+	arrivedMs int64
 }
 
 // tLostLogThresh Track 层 P(TLost) 超此即 log（对照 gate-list lost_track 报警）。
@@ -200,6 +234,8 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		}
 	}
 	interferes := tm.GetInterferes() // P1-final 增量2:反射面快照(线程安全),算 mirror 静态对称
+	coExist := len(bases) >= 2                    // 共存 partner(ghost=真人反射必有共存 Real;孤立=real)
+	ghostTracks := make(map[int]bool, len(bases)) // per-track co-existence ghost(本 tick;firmware-veto 裁决用)
 	for i := range bases {
 		b := &bases[i]
 
@@ -260,9 +296,11 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		// 反射面镜像位静态 cd2b 冻结类)驱动,**不再读 gate-list b.Verdict**——删 gate-list 真前置(ghost 检测面)达成。
 		// 单 track frozenGhost/jumpGhost 不再驱动 Ghost 发射(realLO 仅留日志);配 P1① 耦合孤立 ρ=0→P(Ghost)=0。
 		ghostness := 0.15
-		if dbnMotionSymmetryGhost(b, bases, prevPos) || dbnMirrorSymmetryGhost(b, bases, interferes) {
+		symGhost := dbnMotionSymmetryGhost(b, bases, prevPos) || dbnMirrorSymmetryGhost(b, bases, interferes)
+		if symGhost {
 			ghostness = 0.9
 		}
+		ghostTracks[b.TrackID] = coExist && symGhost // firmware-veto 缓存:复用 self-fire 的 co-existence ghost 判据
 		// ★P1①(co-existence 耦合):进 Ghost 的转移 ×ρ,ρ=房内其它 track 的 P(Real) 峰。孤立 track ρ=0 →
 		// P(Ghost)→0(即使 Ghostness 高也救不回)→ long-lie 真受害者结构性安全。ghost=反射必有共存 Real partner。
 		rho := dbnCoExistRho(sh, b.TrackID)
@@ -690,6 +728,11 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		OthersPresent: len(bases) >= 2,
 	}
 	tauCtxDec, tauCtxHit := belief.DecideTauCtx(pFallen, tauCtx)
+	// ★档 0/2 firmware-veto 裁决(option A):用**当帧** bases 现算的 co-existence/ghost/τ* 裁决暂存的 firmware fall,
+	// 不用 cache-time 旧值(消除"事件 vs tick"竞态)。孤立(coExist=false)→ 必发(铁律:孤立 track 永不判 ghost)。
+	if len(sh.pendingFwFalls) > 0 {
+		e.resolvePendingFirmwareFalls(sh, tm, roomID, coExist, ghostTracks, pFallen, tauCtxHit, nowMs)
+	}
 	e.logger.Debug("belief_shadow_trace",
 		zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),
 		zap.Float64("p_fallen", pFallen),
@@ -732,9 +775,9 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			zap.Bool("p7_4_human_bed_veto", p7HumanBedVeto), // P7.4：Conf≥99 人工床 → 生产前置短路（R0 只读出）
 			zap.Int("p7_4_min_conf", humanBedExemptMinConfidence),
 		)
-		// ★cutover（委员会 6c376e4 envelope）:开关 ON → DBN 真发推断 fall（union firmware∨DBN）。
-		// 保守 ghost veto（envelope③）+ 默认放行;bed/recovery veto 暂不开。R0 在开关 ON 时结束(计划内)。
-		if dbnFireEnabled {
+		// ★cutover 三档:档 1/2(dbnSelfFireEnabled)→ DBN 自发推断 fall。保守 ghost veto + 风险分层 τ* + 默认放行。
+		// 档 0 = DBN 不自发(只当 firmware 过滤器,见 stashPendingFirmwareFall/resolvePendingFirmwareFalls)。
+		if dbnSelfFireEnabled() {
 			fb, ok := dbnFallerBase(bases, sh)
 			// ★★ghost 判据 = co-existence（用户铁律,安全包线）：ghost 是真人的反射 → 必有共存的真人 partner
 			// → 画面里 **≥2 track**;**孤立 1 track = 没有被反射的源 = 不可能是 ghost = 一定是真人 → 永远发,绝不否**
@@ -742,8 +785,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			// present-realness 单 track 判 ghost(那把躺地真受害者误判=灾难)。只 **≥2 track 且 faller 是 VerdictGhost**
 			// (gate-list 镜像/运动对称,触发即需另一 Real partner)才否。endgame:DBN 自己的 frozenGhost/realLO 是
 			// 单 track 病根,待重做成 co-existence(找 Real partner),不再依赖 gate-list VerdictGhost。
-			coExist := len(bases) >= 2 // 有共存的 partner(否则孤立 = real)
-			// ★P1-final 完成:DBN 自有 co-existence 对称(motion/mirror),不再读 b.Verdict。
+			// ★P1-final 完成:DBN 自有 co-existence 对称(motion/mirror),不再读 b.Verdict。coExist 用循环前算的房级值。
 			dbnGhost := coExist && (dbnMotionSymmetryGhost(&fb, bases, prevPos) || dbnMirrorSymmetryGhost(&fb, bases, interferes))
 			switch {
 			case ok && dbnGhost:
@@ -837,6 +879,128 @@ func (e *Engine) recordBeliefShadowFirmwareFall(roomID string, tMs int64) {
 		sh.recoveryGenuineFall = false
 		sh.recoveryEmitted = false
 	}
+}
+
+// dbnFwPendingTimeoutMs 暂存的 firmware fall 最久等待:超此仍没被 tick 裁决(雷达彻底静默,无帧无 88 心跳→无
+// beliefShadowTick)→ firmwarePendingDrainLoop **clock-based** force-forward(fail-safe 偏发不偏漏,不靠新事件触发)。
+// 雷达活着时每条 radar message 都跑 beliefShadowTick,正常 ≤1 帧即裁决,远不到此窗。
+const dbnFwPendingTimeoutMs = 5_000
+
+// dbnFwPendingDrainInterval firmwarePendingDrainLoop 扫描间隔(<timeout,使滞留 fall 在 ~timeout+interval 内必送出)。
+const dbnFwPendingDrainInterval = 2 * time.Second
+
+// stashPendingFirmwareFall 档 0/2:firmware fall 到达**不立即裁决**,仅暂存——待下一 beliefShadowTick 用 fresh bases
+// 现算 co-existence 裁决(resolvePendingFirmwareFalls),或雷达静默时由 firmwarePendingDrainLoop 超时 force-forward。
+// 档 1 不走此路(firmware 地板立即发)。
+func (e *Engine) stashPendingFirmwareFall(roomID string, a RadarFallAlarm) {
+	if !beliefShadowEnabled {
+		return
+	}
+	e.beliefShadowMu.Lock()
+	defer e.beliefShadowMu.Unlock()
+	sh := e.beliefShadowFor(roomID)
+	// arrivedMs 用**服务器墙钟**(非 a.TMs firmware event_since):drain 的超时按 time.Now() 比,
+	// 必须同钟,否则 firmware 时钟偏移会让 age 算错(慢→立即误触发 / 快→永不触发)。
+	sh.pendingFwFalls = append(sh.pendingFwFalls, pendingFwFall{a: a, arrivedMs: time.Now().UnixMilli()})
+}
+
+// firmwarePendingDrainLoop clock-based fail-safe:雷达静默(无帧→无 beliefShadowTick→pending 永不裁决)时,
+// 周期 force-forward 超时滞留的 firmware fall。闭合"暂存后雷达彻底失声→真摔静默丢"的漏报缺口(委员会终审 blocker)。
+func (e *Engine) firmwarePendingDrainLoop(ctx context.Context) {
+	if !beliefShadowEnabled {
+		return
+	}
+	ticker := time.NewTicker(dbnFwPendingDrainInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			func() {
+				defer func() { // 安全网:drain 内"不可能"的 nil-panic 响亮记录,不静默、不崩 goroutine(rule 1.4)
+					if r := recover(); r != nil {
+						e.logger.Error("firmware_pending_drain_panic", zap.Any("recover", r))
+					}
+				}()
+				e.drainStalePendingFirmwareFalls(time.Now().UnixMilli())
+			}()
+		}
+	}
+}
+
+// drainStalePendingFirmwareFalls force-forward 所有超时(雷达静默未被 tick 裁决)的 pending firmware fall。
+// 先在 e.mu 下快照 rooms(避免持 beliefShadowMu 再取 e.rooms 造成 e.mu↔beliefShadowMu 反向锁),
+// 再在 beliefShadowMu 下转发(锁序 beliefShadowMu→tm.mu,与 beliefShadowTick 一致)。
+func (e *Engine) drainStalePendingFirmwareFalls(nowMs int64) {
+	e.mu.RLock()
+	rooms := make(map[string]*TrackManager, len(e.rooms))
+	for id, tm := range e.rooms {
+		rooms[id] = tm
+	}
+	e.mu.RUnlock()
+
+	e.beliefShadowMu.Lock()
+	defer e.beliefShadowMu.Unlock()
+	for roomID, sh := range e.beliefShadows {
+		if len(sh.pendingFwFalls) == 0 {
+			continue
+		}
+		// tm 必非 nil:房间从不注销(全仓无 delete(e.rooms)),beliefShadow 只为已注册房懒建。
+		// 与 resolvePendingFirmwareFalls 一致信任非 nil;真 nil=wiring bug → forwardFirmwareFall 内 panic 暴露
+		// (上面 drain loop 的 recover 兜成响亮日志,不静默丢 rule 1.4)。
+		tm := rooms[roomID]
+		kept := sh.pendingFwFalls[:0]
+		for _, p := range sh.pendingFwFalls {
+			if nowMs-p.arrivedMs <= dbnFwPendingTimeoutMs {
+				kept = append(kept, p)
+				continue
+			}
+			e.forwardFirmwareFall(sh, tm, p.a)
+			e.logger.Info("belief_dbn_firmware_forward", zap.String("room_id", roomID),
+				zap.Int("track_id", p.a.TrackID), zap.String("reason", "radar_silent_drain"),
+				zap.Int64("pending_age_ms", nowMs-p.arrivedMs), zap.Int64("ts_ms", nowMs))
+		}
+		sh.pendingFwFalls = kept
+	}
+}
+
+// forwardFirmwareFall 放行一条 firmware fall:转发 cardagg + 喂 T_fire(recovery 参考),二者**原子耦合**——
+// 只在真转发后更新 T_fire(否则 recovery-veto 会基于一个从没发出去的 fall 误判)。调用方持 beliefShadowMu。
+// tm 必非 nil(调用点保证;rule 1.4:不写静默 nil 兜底——若真 nil 则 panic 暴露 wiring bug,beliefShadowTick recover 兜住)。
+// 直接改 sh.firmwareFallTs(已持锁,不走 recordBeliefShadowFirmwareFall 以免重入 beliefShadowMu 死锁)。
+func (e *Engine) forwardFirmwareFall(sh *beliefShadow, tm *TrackManager, a RadarFallAlarm) {
+	tm.RecordRadarAlarm(a)
+	if a.Category == alarm.Fall && a.TMs > sh.firmwareFallTs {
+		sh.firmwareFallTs = a.TMs
+		sh.recoveryGenuineFall = false
+		sh.recoveryEmitted = false
+	}
+}
+
+// resolvePendingFirmwareFalls 在 beliefShadowTick 末用**当帧** co-existence/ghost/τ* 裁决暂存的 firmware fall。
+// 调用方持 beliefShadowMu(且 ghostTracks/coExist/pFallen/tauCtxHit 均为本帧现算值)。
+// 孤立(coExist=false)→ 必发(铁律:孤立 track 永不判 ghost);共存成立 → 命中 ghost(faller 与 Real partner
+// 运动/镜像对称)或 risk(room P(Fallen)<context τ*,DBN 不佐证)→ 否决,否则放行。
+func (e *Engine) resolvePendingFirmwareFalls(sh *beliefShadow, tm *TrackManager, roomID string,
+	coExist bool, ghostTracks map[int]bool, pFallen, tauCtxHit float64, nowMs int64) {
+	for _, p := range sh.pendingFwFalls {
+		switch {
+		case coExist && ghostTracks[p.a.TrackID]:
+			e.logger.Info("belief_dbn_veto_firmware", zap.String("room_id", roomID),
+				zap.Int("track_id", p.a.TrackID), zap.String("veto_reason", "ghost"),
+				zap.Int("track_count", len(ghostTracks)), zap.Int64("ts_ms", nowMs))
+		case coExist && pFallen < tauCtxHit:
+			e.logger.Info("belief_dbn_veto_firmware", zap.String("room_id", roomID),
+				zap.Int("track_id", p.a.TrackID), zap.String("veto_reason", "risk"),
+				zap.Float64("p_fallen", pFallen), zap.Float64("tau_ctx", tauCtxHit), zap.Int64("ts_ms", nowMs))
+		default:
+			e.forwardFirmwareFall(sh, tm, p.a)
+			e.logger.Info("belief_dbn_firmware_forward", zap.String("room_id", roomID),
+				zap.Int("track_id", p.a.TrackID), zap.Bool("co_exist", coExist), zap.Int64("ts_ms", nowMs))
+		}
+	}
+	sh.pendingFwFalls = nil
 }
 
 // dbnMirrorSymmetryGhost P1-final 增量2:DBN **自有** mirror 静态对称 ghost(绕开 gate-list b.Verdict)。复刻

@@ -153,11 +153,6 @@ func main() {
 	zone.VitalSource.SetBedResolver(matrixCache)
 	zone.Start(ctx)
 
-	// 5.3.0 A 风险放大消费者: roomengine fall verifier 查 zone.TargetAggregator WeakBio≥80
-	// → 强制 verdict=real（短路三档评分）。WeakBio 30min 滑窗 score 由 S1 alarm consumer
-	// 累加；engine 转发给所有 TrackManager（已注册 + 新 RegisterRoom）。
-	engine.SetWeakBioSource(zone.TargetAggregator)
-
 	// room total_people 的 radar_np 用 roomengine 非 ghost track 数（去 owl 判出的 ghost），
 	// 替 firmware number_people（含 ghost，多人场景高估）。详 [[bed_presence_fusion]] max 公式。
 	zone.StreamPublisher.SetRealPeopleLookup(engine)
