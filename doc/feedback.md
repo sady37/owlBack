@@ -31,7 +31,8 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`6acdcfe`(🏁委员会 R6 收 ghost_*→ghost_veto 统一:9→1 key+reason;旧 key grep 零残留;cutover 4 任务全部闭合。详见 `doc/feedback_p4.md`)
+- **last-audited**:`d830222`(委员会 R6 收 三件套tools交付:export/simulate-make/replay 统一 fixture 契约;端到端验证通过;未涉 sensor 代码。详见 `doc/feedback_p4.md`)
+- **(旧)** `6acdcfe`(🏁委员会 R6 收 ghost_*→ghost_veto 统一:9→1 key+reason;cutover 4 任务全部闭合)
 - **(旧)** `51dbdd0`(委员会 R6 收 non-blocking 清理:删 ObsTimeContext+loggedVeto no-op 守卫;grep 零残留)
 - **(旧)** `7dd48de`(委员会 R6 收 geom 全量退役实施:D1-D4 签字后施工,删 belief.Geom 类型/字段/geomFrom*,代码残留 grep=NONE;已部署 test1 DBN_MODE=2。详见 `doc/geom_retirement_mapping.md`§7)
 - **(旧)** `d2c2197`(委员会 R6 收 **bedside FN 止血部署 test1 + geom 退役映射表交付**:止血 `5ef9ede` 已部署(DBN_MODE=2);映射表 plan(`doc/geom_retirement_mapping.md`)逐条覆盖四块,4 待签字 D1-D4。详见 `doc/feedback_p4.md`)
