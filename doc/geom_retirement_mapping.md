@@ -1,6 +1,6 @@
 # geom 全量退役映射表（plan-first）
 
-状态：**✅ 已实施（commit `8d5d2b4`，委员会签字 D1-D4 后施工）**。下文映射与改法已落地；实施差异见文末「实施记录」。
+状态：**✅ 已实施（commit `7dd48de`，委员会签字 D1-D4 后施工）**。下文映射与改法已落地；实施差异见文末「实施记录」。
 
 ---
 
@@ -128,7 +128,7 @@
 
 ---
 
-## 7. 实施记录（commit `8d5d2b4`）
+## 7. 实施记录（commit `7dd48de`）
 
 **与 plan 的差异（均经工程判断，方向不变）**：
 - **批1+2 合并**：发现真读 geom 的逻辑点仅 3 个(poseLikelihood / TObsAbsent / toilet 守恒)+ 日志，其余「触点」全是死字段（sleepad/bed/neighbor/ZBand/Vital/TrackPresent/noDetectObs/reachableExitObs 的 Geom 填了从不读）。死字段无需双写，故批1(双写)与批2(切读)合并为一次完整切换，用 test 套件验证逐 tick 等价（批1 单独是空 plumbing 无法验证）。

@@ -9,11 +9,11 @@
 
 ## 当前状态(2026-06-12)
 
-**主线**:geom 全量退役 **已实施**(commit `8d5d2b4`,D1-D4 签字后施工)。
+**主线**:geom 全量退役 **已实施**(commit `7dd48de`,D1-D4 签字后施工)。
 
 - bedside FN 止血 `5ef9ede` 已部署 test1(DBN_MODE=2)。
-- geom 退役 `8d5d2b4`:删净 belief.Geom(grep=NONE),逐 tick 等价零新回归,红线回归 TestBedsideFallBedReleased 锁 D3。详 `doc/geom_retirement_mapping.md`§7 + 审查记录 [2026-06-12]。
-- **已部署 test1**:`8d5d2b4` 09:24 重启上线(DBN_MODE=2,无 panic),替换止血版 `5ef9ede`。
+- geom 退役 `7dd48de`:删净 belief.Geom(grep=NONE),逐 tick 等价零新回归,红线回归 TestBedsideFallBedReleased 锁 D3。详 `doc/geom_retirement_mapping.md`§7 + 审查记录 [2026-06-12]。
+- **已部署 test1**:`7dd48de` 09:24 重启上线(DBN_MODE=2,无 panic),替换止血版 `5ef9ede`。
 
 **待清(non-blocking,与 geom 迁移并行,不挡签字)**:
 1. `ObsTimeContext` —— likelihood `case ObsTimeContext: return lk(nil)` 空发射(只调 prior/θ_fire,不在 diag 更新),确认归并/清理。
@@ -48,9 +48,9 @@
 
 ## 审查记录（倒序）
 
-### [2026-06-12] 施工方 → 委员会:**geom 全量退役实施完成（commit `8d5d2b4`，D1-D4 签字后施工）**
+### [2026-06-12] 施工方 → 委员会:**geom 全量退役实施完成（commit `7dd48de`，D1-D4 签字后施工）**
 
-承接 `a04a64c` 映射表 + 委员会签字 D1-D4。按 `doc/geom_retirement_mapping.md` 施工，详「实施记录」§7。
+承接 `d2c2197` 映射表 + 委员会签字 D1-D4。按 `doc/geom_retirement_mapping.md` 施工，详「实施记录」§7。
 
 - **范围**:删 `belief.Geom` 类型/常量、Observation/TObservation.Geom、geomFromArea/geomFromGrid、beliefShadow{geom,lastLostGeom} 字段、所有死 Geom 赋值/死参数;`GeomConf→AreaConf`、`geomConfFromGrid→areaConfFromGrid`(D4 保留 blend);日志 `last_geom→last_area`。代码 geom 残留 grep=**NONE**。
 - **D1-D4 全采纳推荐**:AreaCtx 结构体(精化为 `{AreaType,NearDoor,BedReleased}`,RoomType 不进——无分支用)/权威解析归构造层一次/止血换 BedReleased 载体不改阈值/保留 provenance blend。
@@ -59,7 +59,7 @@
 - **等价验证**:全 sensor build/vet 绿,逐 tick 等价;仅 3 预存红(2 dwell tail FP + 1 sleepace,均与 geom 无关,git stash 验基线一致)=**零新回归**。
 - **红线回归**:新增 `TestBedsideFallBedReleased` 锁 D3(床区躺×bed_state:占用→SBedLying/离床→SFallen=开阔地躺;门优先)=承接止血缺的「床区躺+离床→fire」逻辑。
 - **待补 follow-up(non-blocking)**:engine 层 plumbing e2e(beliefShadowTick 由 bedReleased 设 obs.BedReleased)——机制层已锁 D3 核心,plumbing 3 行被现有 engine 测试路径执行(未断言),带 bed_state mock 的断言测试 setup 较重,留 follow-up。
-- **已部署 test1**:用户裁立即部署,`8d5d2b4` 09:24 重启上线(新二进制+DBN_MODE=2+无 panic),替换止血版 `5ef9ede`。
+- **已部署 test1**:用户裁立即部署,`7dd48de` 09:24 重启上线(新二进制+DBN_MODE=2+无 panic),替换止血版 `5ef9ede`。
 
 ---
 
@@ -76,7 +76,7 @@
   1. **e2e 回归未补**:尚无"床区躺+离床→DBN fire"专用回归测(fixture 重)。止血当前靠逻辑 + bed_state 轴成立,端到端 fire 未实测。→ 随 geom 退役批 4 补。
   2. build/vet 绿,TestDBNFireSwitch 过,仅剩 2 预存在红测(非本次回归)。
 
-**② geom 退役映射表 plan `a04a64c`(`doc/geom_retirement_mapping.md`)— 只产出未动代码**
+**② geom 退役映射表 plan `d2c2197`(`doc/geom_retirement_mapping.md`)— 只产出未动代码**
 
 逐条覆盖委员会要求的四块,每条列"替代权威源 + 改法":poseLikelihood pose×geom 全分支(§3.A)/Track 层 TObsAbsent last-geom 分流(§3.B)/所有 obs.Geom 字段(§3.C)/geomFromGrid·geomFromArea·geomConfFromGrid 全调用点(§3.D)。
 
