@@ -286,3 +286,19 @@
 **要求**：cell engine 的 stillness 消费端（`MarkLongStill`/`MarkDwell`/`MarkToleratedStill`/stand-static 自学习）改为读 `StillBoxRunStart`（box 判据），删 `StillSince` 独立计算。DBN 侧不动（已在读 `StillBoxRunStart`）。规则 #1.3 单源真相。
 
 **验收**：build/vet ✅，cell engine 相关测试全绿，cell learning（LongStill/Dwell/ToleratedStill）行为等价。
+
+---
+
+### [2026-06-12] 项目组工单：replay case 排查 no-fire 根因（重点：co-existence ≥2 track 才有 ghost）
+
+**背景**：co-existence 铁律——`coExist = len(bases) >= 2`，孤立 1 track 永不判 ghost（ghost=真人反射必有共存 Real partner）。这护住了 long-lie 真受害者（越不动越像 frozen，但孤立证明真人），但同时也意味着：在单 track 场景下 DBN 没有 ghost veto 能力。
+
+**任务**：
+1. 用三件套 replay 回放已知 case（cd2b-0606 等），对 **no-fire** 的 case 逐案排查根因：
+   - 是孤立 track（coExist=false）→ 无 ghost 不否决 → **正确行为**（铁律）
+   - 还是 ≥2 track 但因其他原因未 fire（pFallen 不够 / ghost 误判 / risk veto / bed suppression）
+2. 重点排查 ≥2 track 场景下的 ghost 判定是否正确——motion/mirror 对称是否覆盖了真实多径场景
+3. 量化 **孤立 track 的 no-fire 占比**：如果大部分 no-fire 是正确孤立，铁律成立；如果 ≥2 track 也大量 no-fire → motion/mirror 对称覆盖率不够
+4. 产出一个表格：case / track count / coExist / ghost / pFallen / fire / 根因
+
+**产出**：no-fire 根因分析表 + 是否需调 motion/mirror 对称阈值的建议。
