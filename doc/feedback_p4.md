@@ -7,7 +7,22 @@
 
 ---
 
-## 当前状态(2026-06-11)
+## 当前状态(2026-06-12)
+
+**主线**:geom→bed_state 迁移映射表(plan-first,委员会已裁走 plan-first)。
+
+- bedside FN 止血 `5ef9ede` **已部署 test1**(DBN_MODE=2;e2e 随批 4 补)。
+- 映射表 plan `a04a64c`(`doc/geom_retirement_mapping.md`)已交付,**待签字 D1–D4**(详见审查记录 [2026-06-12])。
+- 签字后按 §5 四批施工。
+
+**待清(non-blocking,与 geom 迁移并行,不挡签字)**:
+1. `ObsTimeContext` —— likelihood `case ObsTimeContext: return lk(nil)` 空发射(只调 prior/θ_fire,不在 diag 更新),确认归并/清理。
+2. `loggedVeto` —— no-op 守卫待删(DBN cutover task② 遗留)。
+3. `ghost_*` log 统一 —— 9 种 `ghost_*` 收敛 `ghost_veto` + reason/veto_evidence(DBN cutover task② 遗留)。
+
+---
+
+### dwell 尾表 + K(历史,2026-06-11)
 
 **已建(项目组A,待委员会 R6 签字)**:
 - `ea459c9` feat(belief): `dwellTailFor`→roomType×areaType 尾表(60s/12min/20min/90min/排除)
@@ -32,6 +47,37 @@
 ---
 
 ## 审查记录（倒序）
+
+### [2026-06-12] 施工方 → 委员会:**bedside FN 止血部署 test1 + geom 退役映射表交付（plan-first 待签字）**
+
+承接 `a22b6c1` 委员会裁定(geom→bed_state 迁移 plan-first + 先交 bedside FN 快补止血)。本条记两件交付。
+
+**① bedside FN 止血 `5ef9ede` — 已部署 test1**
+
+- **改法**:beliefShadowTick 顶部取一次 bed_state;`lying@床区(area_type=Bed) 且 bed_state 有数据且离床(BedStatus≠0,conf>0) → 翻 geom InBed→OpenFloor`,让 SFallen:4 竞争(脱离睡觉豁免)。= 把 silent_leftbed 判据搬进 DBN、由 bed_state 驱动。**无 sleepad(无解)/床占用时不动**(防睡觉 FP)。配套 `dampBedFallen 0.7→0.2`。
+- **机理**:堵的是床边 FN 根因——`lying@残留 GeomInBed 盖掉 bed_state`,真摔倒在床边躺归 cell_area=Bed + in_bed_conf 高→判 SBedLying 非 SFallen。止血用 bed_state 轴翻 geom,孤立单 track 也能让 SFallen 浮出。
+- **部署**:test1 本机,`build-owlback.sh sensor` 绿 → `systemctl restart owlback.sensor`。新二进制 06:31 PDT,PID 1759653,`DBN_MODE=2`(全开)+ `DBN_VETO_RECOVERY=0` 注入进程确认,无 panic/fatal,shadow 日志正常。**床边 FN 红线在生产护上。**
+- **如实标注(2 项)**:
+  1. **e2e 回归未补**:尚无"床区躺+离床→DBN fire"专用回归测(fixture 重)。止血当前靠逻辑 + bed_state 轴成立,端到端 fire 未实测。→ 随 geom 退役批 4 补。
+  2. build/vet 绿,TestDBNFireSwitch 过,仅剩 2 预存在红测(非本次回归)。
+
+**② geom 退役映射表 plan `a04a64c`(`doc/geom_retirement_mapping.md`)— 只产出未动代码**
+
+逐条覆盖委员会要求的四块,每条列"替代权威源 + 改法":poseLikelihood pose×geom 全分支(§3.A)/Track 层 TObsAbsent last-geom 分流(§3.B)/所有 obs.Geom 字段(§3.C)/geomFromGrid·geomFromArea·geomConfFromGrid 全调用点(§3.D)。
+
+- **核心结论**:geom 在服务器侧 ≈ `cell.area_type + 门距` 的纯函数(`geomFromArea`/`geomFromGrid`);dwell 腿已迁完(`fallLRFromDwell` 已吃 RoomType/AreaType),残留即 pose / TObsAbsent / 一批 Geom 字段。退役 = 各触点直读已存在权威源。
+- **架构建议**:权威解析(含 bed_state 优先级 + 止血翻转)**只在观测构造处(adapter/shadowTick)做一次**,落成 Observation 字段;likelihood 改消费已解析的 `AreaCtx{AreaType,RoomType,NearDoor,BedReleased}`,保持纯函数。止血天然落在构造层。
+- **工程细节(主动标注)**:`GeomInEnter` 是**唯一无法由 area_type 独立编码**的 geom 值(来自动态门距≤30cm,非静态格类型),退役须保留独立 `NearDoor` 信号(PoseWalking + TObsAbsent 两处用)。
+
+**待委员会裁的 4 个决策点(§4,各附推荐)**:
+- **D1** likelihood 签名 → `poseLikelihood(pose, AreaCtx)` 结构体化(推荐:是)
+- **D2** 权威解析归位到构造层一次性做(推荐:是)
+- **D3** 床区躺睡/摔二义由 `BedReleased` 驱动 = 止血换载体不改阈值(推荐:保留现语义)
+- **D4 ⚠️风险最高** `GeomConf` provenance blend(FE画1.0/feedback0.6/学0.4)去留——推荐**保留**,删则自学床区全额抑制跌倒,与已签字 layout 权威模型冲突
+
+**施工序(签字后)**:§5 四批——批1 加字段双写/批2 切 likelihood 读侧 + shadow 比对等价/批3 删净 geom(规则#1.2 grep 自查)/批4 重写单测 + 补"床区躺+离床→fire" e2e 回归。
+
+---
 
 ### [2026-06-11] 施工方 → 委员会:**死源 #4 radar-vital 接通 bed scorer**（独立线程,非 dwell/K 主题;来自矩阵输入完整性审计）+ 3 个待裁
 
