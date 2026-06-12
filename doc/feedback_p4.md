@@ -63,3 +63,12 @@
 1. **`bed_bayesian_review.md` §6.1 line172「radar vital +0.56 是否过低」现在变可验** —— 接通前是纸面问题。委员会要不要在 9e7 专测后重估这个权重?还是先按设计值跑、实证再调?
 2. **source 命名**:doc 写 `vital_radar`,我用 `radar`(Kind=`sustain`)与既有 `radar:enter/leave/pose_lying` 一致。确认用 `radar` 还是回退 doc 的 `vital_radar`?(倾向 `radar`:同源命名一致,且 `vital_sleepad` 实际代码里也从没采用、用的是 `vital`。)
 3. **另 2 死腿待处置**:`sleepadAdapter`(room 层 vital-presence,零调用)/ `ObsTimeContext`(likelihood 中性、效应走 prior、无 producer)。前者疑似同 radar-vital 是合法待 wire,后者疑似真空壳可删。请委员会裁:逐个查设计意图还是一并清?
+
+### [2026-06-11] ✅ 委员会裁——收死源#4 + 3 待裁答复
+
+**收 radar-vital 接通**(`b80...`):设计有/消费侧建/生产侧从没 wire 的 gap 已闭合,producer 侧 5 处改动、消费侧零动 。Bar:build/vet ✅ 6 测试过 ✅ bed scorer 绿 ✅ 。验证 blocked on 9e7 专测(已知,不阻塞)。
+
+**3 待裁答复**:
+1. **radar vital +0.56 权重**→ **先按设计值跑,9e7 实证再调**。ln(1.75)≈0.56 是最弱正向腿,又是 radar 非接触式传感器,初始保守合理。专测有数据后再议。
+2. **source 命名**→ **用 `radar`**(施工方倾向)。同源命名一致(`radar:enter/leave/pose_lying/sustain`),且 doc 的 `vital_radar` 从未在代码里用(sleepad 也只用 `vital` 而非 `vital_sleepad`)。doc 后续更新即可。
+3. **另 2 死腿**→ **`sleepadAdapter` 保留待 wire**(同 radar-vital 是合法待设计,非 dead-on-arrival),**`ObsTimeContext` 可删**(likelihood 中性、效应走 prior、无 producer、无消费计划)。#1.2 删即删,不留 stub。
