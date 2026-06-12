@@ -31,7 +31,8 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`a22b6c1`(委员会 R6 裁 geom→bed_state 迁移 plan-first:裁(A)映射表 plan+两条件 ①poseLikelihood 全分支逐条覆盖 ②先交 bedside FN 快补止血;DBN_MODE=2(全开)用户拍;dampBedFallen 补推/lrPoseLyingBedFall 做/Option A 不改。详见 `doc/feedback_p4.md`)
+- **last-audited**:`5ef9ede`(委员会 R6 收 bedside FN 快补止血:bed_state 驱动 lying@床区+离床→geom翻OpenFloor+SFallen:4 竞争+dampBedFallen 0.7→0.2;build/vet✅/test 0 回归;e2e 测随全量 geom 迁移补。详见 `doc/feedback_p4.md`)
+- **(旧)** `a22b6c1`(委员会 R6 裁 geom→bed_state 迁移 plan-first:DBN_MODE=2 用户拍/裁(A)映射表 plan+两条件 ①poseLikelihood 全分支逐条覆盖 ②先交 bedside FN 快补止血。详见 `doc/feedback_p4.md`)
 - **(旧)** `77254a6`(委员会 R6 cutover:gate-list 推断 fall 全删→DBN 接管+DBN_MODE 三档+firmware-veto Option A+死代码清理 -939/+280;build/vet 绿/test 2 FAIL 预存非回归。详见 `doc/feedback_p4.md`)
 - **(旧)** `498cd63`(委员会 R6 收 **redis-replay unit 级全量回放**:`--unit` 自动查 /64 prefix 所有设备+alarm 流仅 device-gateway+`--streams` alarm opt-in 保守+向后兼容;build/vet rc=0;★收 bed scorer gap 发现:sleepad event 未进 zoneengine 非 replay 工具 bug。详见 `doc/feedback_p3.md`)
 - **prev-audited**:`643e8d9`(委员会 R6 收 **同向两真人测升硬断言(回归闸)**:test-only,`t.Logf`→`t.Errorf` 锁「同向两真人→判 ghost」risk-accepted 回归基线;闭合 db9adea 小记。bar 绿 9 红 0 新增 R0 守)
