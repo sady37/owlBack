@@ -255,3 +255,20 @@
 
 **bar**:build/vet ✅;`TestDBNFireSwitch` 过;roomengine 仅 2 预存在红测。
 **⚠️ 未补 e2e 测**:尚无"床区躺+离床→DBN fire"的专用回归测(fixture 重,需 bedroom+bed cell+sleepad LeftBed 事件)。本止血靠逻辑+bed_state 轴(委员会/用户多轮确认)成立,**端到端 fire 未实测**——请委员会裁:止血先收(测随全量迁移补)还是要先补 e2e 测再收?未部署(待 DBN_MODE=2 restart)。
+
+---
+
+### [2026-06-12] 项目组工单：still-box 单源对齐（cell engine 改读 StillBoxRunStart）
+
+**当前问题**：track 层有两个独立 stillness 计算：
+
+| 字段 | 用在哪 | 判据 |
+|------|--------|------|
+| `StillSince` | cell engine（`MarkLongStill`/`MarkDwell`/`MarkToleratedStill`） | 简单位移判断 |
+| `StillBoxRunStart` | DBN（`ObsDwellStill`/lost-fall precondition） | box 判据：30s 窗 50cm 方框 |
+
+**问题**：`belief_cell_contract.go:13` 宣称"双读同一个 StillBoxRunStart，谁都不重算"——但实际 cell engine 读的是 `StillSince`。两个计算并存 = drift 风险 + 双倍计算。
+
+**要求**：cell engine 的 stillness 消费端（`MarkLongStill`/`MarkDwell`/`MarkToleratedStill`/stand-static 自学习）改为读 `StillBoxRunStart`（box 判据），删 `StillSince` 独立计算。DBN 侧不动（已在读 `StillBoxRunStart`）。规则 #1.3 单源真相。
+
+**验收**：build/vet ✅，cell engine 相关测试全绿，cell learning（LongStill/Dwell/ToleratedStill）行为等价。
