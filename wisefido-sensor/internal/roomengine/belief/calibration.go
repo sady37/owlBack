@@ -24,7 +24,7 @@ const (
 	// ── ObsBedOccupied(嵌套 bed 贝叶斯 P(InBed)=p;对齐 bed_bayesian_scorer LR 表)──
 	gainBedLying     = 5.0 // 1+5p
 	gainBedRestless  = 3.0 // 1+3p
-	dampBedFallen    = 0.7 // 1−0.7p
+	dampBedFallen    = 0.2 // 1−0.2p（委员会裁 0.7→0.2:床占用对 fall 的压制减弱,配合 bedside FN 止血——床区躺也别把 fall 压死）
 	dampBedStandWalk = 0.6 // 1−0.6p
 	dampBedSit       = 0.5 // 1−0.5p
 	dampBedEmpty     = 0.5 // 1−0.5p

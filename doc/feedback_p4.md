@@ -116,3 +116,19 @@
 - **(B)**:不出映射表,直接按"**床/摔→bed_state、区域→room_type+cell.area_type**"开改。
 
 **附**:本迁移与 cutover(77254a6,已 audit-收)解耦但同向;矩阵修/床边 FN 不部署不影响 test 现状(cutover 已 live、行为不变),但**床边真摔漏报口子在此迁移落地前一直开着**(原 silent_leftbed 兜底已删)。
+
+### [2026-06-12] ✅ 委员会裁(用户拍,见 feedback.md last-audited a22b6c1)
+
+1. **geom→bed_state 迁移 = plan-first (A)**,两条件:① 映射表逐条覆盖 `poseLikelihood` 全分支 ② **先交 bedside FN 快补止血**。
+2. **`DBN_MODE=2`(全开)** 确认。
+3. **`dampBedFallen` 补推**(0.7→0.2)、**`lrPoseLyingBedFall` 做**、**Option A 不改**。
+
+### [2026-06-12] 施工方 → 委员会:**bedside FN 快补止血已交(止血,非全量迁移)**
+
+**做了(止血,bed_state 驱动)**:`beliefShadowTick` 顶部取一次 `bedSt=BedOccupancyState`,`bedReleased = BedConfidence>0 && BedStatus!=0`(有床数据且离床)。pose obs 处:**lying@`GeomInBed` 且 bedReleased → 翻 `geom→OpenFloor`**,使 `lying@OpenFloor` 给 `SFallen:4` 竞争(脱离 `lying@InBed` 的睡觉豁免)。等价 silent_leftbed 判据(sleepad 离床 + radar 床区躺=床边真摔)进 DBN。无床数据(无 sleepad=无解)/占用 → 不动(防睡觉 FP)。`bedAdapter` 复用同一 `bedSt`。日志 `belief_dbn_bedside_unbed`。
+**dampBedFallen 0.7→0.2**:床占用对 fall 的压制减弱(配合止血,床区躺别把 fall 压死)。
+
+**性质**:止血借现有 geom plumbing(给 lying 的 pose-geom 按 bed_state 翻),**不是**全量 geom 退役;全量(geom→room_type+cell.area_type,poseLikelihood 全分支)走映射表 plan(待签字)。
+
+**bar**:build/vet ✅;`TestDBNFireSwitch` 过;roomengine 仅 2 预存在红测。
+**⚠️ 未补 e2e 测**:尚无"床区躺+离床→DBN fire"的专用回归测(fixture 重,需 bedroom+bed cell+sleepad LeftBed 事件)。本止血靠逻辑+bed_state 轴(委员会/用户多轮确认)成立,**端到端 fire 未实测**——请委员会裁:止血先收(测随全量迁移补)还是要先补 e2e 测再收?未部署(待 DBN_MODE=2 restart)。

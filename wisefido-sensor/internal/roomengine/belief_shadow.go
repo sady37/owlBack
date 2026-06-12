@@ -223,6 +223,12 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 
 	night := IsNightTime(nowMs, tm.timezone) // P4.3 风险时段:夜间 dwell 生存尾缩短(久静更可疑)
 
+	// bedside FN 止血(委员会裁 a22b6c1,bed_state 驱动):床态取一次,供 pose-geom 翻转 + 下方 bedAdapter 复用。
+	// bedReleased = 有床数据且离床 → 床区里躺着的 track 不是睡觉而是床边真摔(等价 silent_leftbed 判据)。
+	// 无床数据(无 sleepad=无解,不强报防睡觉 FP)/ 占用 → 维持在床躺。
+	bedSt := tm.BedOccupancyState(nowMs)
+	bedReleased := bedSt.BedConfidence > 0 && bedSt.BedStatus != 0
+
 	var obs []belief.Observation
 	cur := make(map[int]struct{}, len(bases))
 	curTL := make(map[int]struct{}, len(bases))
@@ -353,6 +359,16 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				if o.Kind == belief.ObsDwellStill {
 					o.RoomType = roomType
 					o.AreaType = int(b.CellAreaType)
+				}
+				// ★bedside FN 止血:床区躺 + bed_state 离床 = 床边真摔,翻 geom→OpenFloor 让 SFallen 竞争
+				// (lying@OpenFloor 走倒地候选,而非 lying@InBed 的睡觉豁免)。床/摔判别由 bed_state 定,非几何。
+				// 注:止血借现有 geom plumbing;全量 geom 退役(geom→room_type+cell.area_type)走映射表 plan。
+				if o.Kind == belief.ObsPose && int(o.Value) == observation.PoseLying &&
+					o.Geom == belief.GeomInBed && bedReleased {
+					o.Geom = belief.GeomOpenFloor
+					e.logger.Info("belief_dbn_bedside_unbed", zap.String("room_id", roomID),
+						zap.Int("track_id", b.TrackID), zap.Int64("ts_ms", nowMs),
+						zap.Int("bed_status", bedSt.BedStatus), zap.Int("bed_conf", bedSt.BedConfidence))
 				}
 				obs = append(obs, o)
 			}
@@ -667,7 +683,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	// **无 radar-on-bed 要求**(治 0127:radar 误读 on-bed 人为 Floor-Fallen 时,可靠床占用仍压)。R5-clean
 	// (压走接触式占用概率非 pose/z);漏报-safe(any-source-OR LeftBed → BedOccupancyState 占用降 → 释放 → Fall 浮出)。
 	// = 一举两得:修 P5(退 radar-on-bed leg)+ wire 死源#1(BedOccupied)。retire bedLeakState/bedAuthorityObs(#1.2)。
-	bedObs := bedAdapter(tm.BedOccupancyState(nowMs), nowMs)
+	bedObs := bedAdapter(bedSt, nowMs) // 复用 tick 顶部已取的床态(同 nowMs,免重复 BedOccupancyState 锁)
 	obs = append(obs, bedObs...)
 
 	suppressActive := false
