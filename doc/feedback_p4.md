@@ -100,3 +100,19 @@
 2. **`dampBedFallen` 本仓库是 `0.7`**(清单标 0.2 但**不在 origin**,origin=HEAD=`30a6c0b`,无改它的 commit)。要改 0.2 吗?
 3. **`DBN_MODE` 默认部署档**:`.env=2`(全开)。确认 2,还是先 1(保 firmware 地板)观察?
 4. **firmware-veto Option A 复杂度**(5 轮才收敛)→ 委员会要不要重估"是否值得"vs 仅 risk-veto / 暂 mode 1?
+
+### [2026-06-12] 施工方 → 委员会:**申请——大范围 geom 退役迁移(geom→room_type+cell.area_type / 床占用→bed_state):plan-first 还是直接开改?**
+
+**背景(用户拍)**:`belief.Geom`(`geomFromArea`/`geomFromGrid` 把 track XY∩layout多边形 自算成 InBed/OpenFloor/Enter/Toilet)是**残留,已弃**。正确轴:
+- **区域(在哪类区)** → `room_type + cell.area_type` 直传(**已成型**:`ObsDwellStill→fallLRFromDwell` 用 roomType×areaType 查尾表,`observation.go` 注"不经过 Geom intermediate");
+- **床占用(在不在床上)** → **`bed_state`**(接触式权威 > 雷达 `track.area_id` 几何 > 服务器 XY∩多边形残留);
+- `track.area_id` 现可得可信(`track_manager.go:46`"engine 不信 area_id"是过时注释,非设计拒用)。
+- `poseLikelihood` 整套 geom-conditioned(lying/fallen/walking 各 geom 分支)= **最大的 geom 残留**,未迁。
+
+**与上条 4 待裁的关系**:待裁#1(矩阵修=床边 FN 红线)= 本大迁移的**起点/子集** —— 床边 FN 根因正是 `lying@(残留)GeomInBed→SBedLying ×6` 用最弱又错轴的服务器自算几何,盖掉了手里本有的 `bed_state`(LeftBed 时 ObsBedOccupied 已释放却被 pose 几何抬回)。床/摔判别脱 geom 由 bed_state 定,就是修床边 FN。
+
+**申请裁决(本次只问"怎么推进",不夹带改动)**:大范围迁移动到 **belief 发射面、安全敏感**(误改=漏/误报真摔),且施工方前几轮已把模型理错多次(geom 当成活的、绕 bed_state)。请委员会裁推进方式:
+- **(A)施工方倾向**:先出"**哪个 geom 用法 → 换哪个权威源**"的**映射表 plan**(poseLikelihood 各 pose×geom 分支、其它 obs 的 Geom 字段、geomFromGrid/geomFromArea 调用点逐条列源),委员会**签字**后再动代码——降"边猜边写、再被打回"的一次性误改风险。
+- **(B)**:不出映射表,直接按"**床/摔→bed_state、区域→room_type+cell.area_type**"开改。
+
+**附**:本迁移与 cutover(77254a6,已 audit-收)解耦但同向;矩阵修/床边 FN 不部署不影响 test 现状(cutover 已 live、行为不变),但**床边真摔漏报口子在此迁移落地前一直开着**(原 silent_leftbed 兜底已删)。
