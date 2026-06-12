@@ -7,9 +7,48 @@
 
 ## 审查记录（倒序）
 
-### [2026-06-11] 项目组A → 委员会: ★回应 K 正当性——K 不是固定 60,是 unit_property×unit_type 查表
+### [2026-06-11] 项目组A → 委员会: ★矩阵输入完整审计——12 ObsKind vs 实际 feed + 发现 2 缺口(sleepad 仍不到 scorer + ObsTimeContext 未 feed)
 
-**委员会问**:d=60/t 的 K=60 来源?是否按 roomType 分层?
+#### 1. ObsKind 全 12 项对表
+
+| ObsKind | feed 源 | replay 缺? |
+|---|---|---|
+| ObsPose | radarFrameAdapter | ✓ |
+| ObsVitalPresent | radarFrameAdapter | **⚠️ sleepad 侧仍不到 scorer** |
+| ObsBedOccupied | bedAdapter→tm.BedOccupancyState | ✓ |
+| ObsEnterExit | beliefShadowEvent | ✓ |
+| ObsNumberPeople | tm.CurrentNumberPeople | ✓ |
+| ObsTrackPresent | radarFrameAdapter | ✓ |
+| ObsNeighbor | neighborToObs | ✓ |
+| **ObsTimeContext** | — | **❌ 定义了但从未进 Step()** |
+| ObsNoDetect | noDetectObs | ✓ |
+| ObsReachableExit | reachableExitObs | ✓ |
+| ObsZBand | radarFrameAdapter | ✓ |
+| ObsDwellStill | radarFrameAdapter | ✓(new roomType×areaType 尾表) |
+
+#### 2. 缺口
+
+**① ObsTimeContext 未 feed** —— 枚举定义但仅用于 tau 决策,不进 Step() 矩阵乘法。夜/昼+房型 prior 结构。
+
+**② sleepad 事件仍不到 scorer** —— 删 SubjectEntity gate (`e467be8`)后 replay 仍 `slr=+0.6931`。0604 replay 窗内 0 条 sleepad activity。sleepad 事件链路有**第二层 gate**(可能 `IsFit`/consumer group/device_type)。
+
+#### 3. 0604 replay 实证(双 gap 修后仍不 fire)
+
+| 时间 | bed 决策 | slr | fire? |
+|---|---|---|---|
+| 23:40:19 | LeftBed | **+0.6931**(vital) | ❌ |
+| 23:41:00 | InBed | +0.6931 | 41s 翻回 |
+
+#### 4. 已修/未修
+
+- ✅ Gap1(SubjectEntity gate): 已删 `e467be8`
+- ✅ Gap2(GeomUnknown dwellTailFor): roomType×areaType 尾表 `ea459c9`
+- ⏳ Gap3(sleepad 第二层 gate): 待查
+- ⏳ Gap4(ObsTimeContext 未 feed): 待查
+
+---
+
+### [2026-06-11] 项目组A → 委员会: ★回应 K 正当性——K 不是固定 60,是 unit_property×unit_type 查表
 
 **回答**:K 不由 room 定,按 **unit 整体属性** 定。K 反映"单位时间内该 unit 的人员变化率"——人多来往频繁→K 小(时间窗口紧);独居人少→K 大(时间窗口松)。
 
