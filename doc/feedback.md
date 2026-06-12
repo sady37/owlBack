@@ -31,7 +31,7 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`8d5d2b4`(委员会 R6 收 **geom 全量退役实施**:D1-D4 签字后施工,删 belief.Geom 类型/字段/geomFrom*、GeomConf→AreaConf,代码残留 grep=NONE;逐 tick 等价零新回归(仅 3 预存红 dwell+sleepace 无关);新增 TestBedsideFallBedReleased 锁床边 FN 红线;未部署 test1 待裁。详见 `doc/geom_retirement_mapping.md`§7 + `doc/feedback_p4.md`)
+- **last-audited**:`8d5d2b4`(委员会 R6 收 **geom 全量退役实施**:D1-D4 签字后施工,删 belief.Geom 类型/字段/geomFrom*、GeomConf→AreaConf,代码残留 grep=NONE;逐 tick 等价零新回归(仅 3 预存红 dwell+sleepace 无关);新增 TestBedsideFallBedReleased 锁床边 FN 红线;已部署 test1(09:24,DBN_MODE=2)。详见 `doc/geom_retirement_mapping.md`§7 + `doc/feedback_p4.md`)
 - **(旧)** `a04a64c`(委员会 R6 收 **bedside FN 止血部署 test1 + geom 退役映射表交付**:止血 `5ef9ede` 已部署(DBN_MODE=2);映射表 plan(`doc/geom_retirement_mapping.md`)逐条覆盖四块,4 待签字 D1-D4。详见 `doc/feedback_p4.md`)
 - **(旧)** `5ef9ede`(委员会 R6 收 bedside FN 快补止血:bed_state 驱动 lying@床区+离床→geom翻OpenFloor+SFallen:4 竞争+dampBedFallen 0.7→0.2;build/vet✅/test 0 回归。详见 `doc/feedback_p4.md`)
 - **(旧)** `a22b6c1`(委员会 R6 裁 geom→bed_state 迁移 plan-first:裁(A)映射表 plan+两条件 ①poseLikelihood 全分支逐条覆盖 ②先交 bedside FN 快补止血;DBN_MODE=2(全开)用户拍;dampBedFallen 补推/lrPoseLyingBedFall 做/Option A 不改。详见 `doc/feedback_p4.md`)

@@ -13,7 +13,7 @@
 
 - bedside FN 止血 `5ef9ede` 已部署 test1(DBN_MODE=2)。
 - geom 退役 `8d5d2b4`:删净 belief.Geom(grep=NONE),逐 tick 等价零新回归,红线回归 TestBedsideFallBedReleased 锁 D3。详 `doc/geom_retirement_mapping.md`§7 + 审查记录 [2026-06-12]。
-- **未部署**:test1 仍跑止血版 `5ef9ede`,`8d5d2b4` 等价重构待裁是否替换部署。
+- **已部署 test1**:`8d5d2b4` 09:24 重启上线(DBN_MODE=2,无 panic),替换止血版 `5ef9ede`。
 
 **待清(non-blocking,与 geom 迁移并行,不挡签字)**:
 1. `ObsTimeContext` —— likelihood `case ObsTimeContext: return lk(nil)` 空发射(只调 prior/θ_fire,不在 diag 更新),确认归并/清理。
@@ -59,7 +59,7 @@
 - **等价验证**:全 sensor build/vet 绿,逐 tick 等价;仅 3 预存红(2 dwell tail FP + 1 sleepace,均与 geom 无关,git stash 验基线一致)=**零新回归**。
 - **红线回归**:新增 `TestBedsideFallBedReleased` 锁 D3(床区躺×bed_state:占用→SBedLying/离床→SFallen=开阔地躺;门优先)=承接止血缺的「床区躺+离床→fire」逻辑。
 - **待补 follow-up(non-blocking)**:engine 层 plumbing e2e(beliefShadowTick 由 bedReleased 设 obs.BedReleased)——机制层已锁 D3 核心,plumbing 3 行被现有 engine 测试路径执行(未断言),带 bed_state mock 的断言测试 setup 较重,留 follow-up。
-- **未部署**:test1 仍跑止血版 `5ef9ede`;`8d5d2b4` 等价重构待委员会/用户裁是否替换部署。
+- **已部署 test1**:用户裁立即部署,`8d5d2b4` 09:24 重启上线(新二进制+DBN_MODE=2+无 panic),替换止血版 `5ef9ede`。
 
 ---
 

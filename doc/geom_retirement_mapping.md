@@ -141,4 +141,6 @@
 
 **红线回归**：新增 `TestBedsideFallBedReleased`（belief 机制层）锁 D3——床区躺×bed_state：占用→SBedLying 主导/SFallen 中性；离床(BedReleased)→SFallen 抬=开阔地躺；门优先(近门走 default)。承接止血缺的「床区躺+离床→fire」端到端逻辑。
 
+**已部署 test1**（09:24，新二进制 + DBN_MODE=2 + 无 panic，替换止血版 5ef9ede）。
+
 **待补 follow-up（non-blocking）**：engine 层 plumbing e2e（`beliefShadowTick` 由 `bedReleased` 正确设 `obs.BedReleased`）——机制层已锁 D3 核心，plumbing 是 3 行赋值且被现有 engine 测试路径执行（未断言）；补一个带 bed_state mock 的 engine 断言测试需较重 setup，留作 follow-up。
