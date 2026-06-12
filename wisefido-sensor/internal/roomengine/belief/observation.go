@@ -13,7 +13,6 @@ const (
 	ObsNumberPeople                 // 房间人数 0-8
 	ObsTrackPresent                 // track Verdict/GhostPenalty 合成 ghost-ness [0,1]
 	ObsNeighbor                     // §5.5.2 弱耦合：邻居 room P(占用) [0,1]
-	ObsTimeContext                  // 夜/昼 + 房型，调 prior 非硬观测
 	ObsNoDetect                     // P(no-detect|s)：本 tick 看了没测到（前置=消失前60s在走动）。状态条件似然=可检测态压低/可合理消失态保留；时长→P3，非斜坡
 	ObsReachableExit                // 丢失点可达退场证据 e=f_dist·f_reach [0,1]（P2 软门：近门+单帧可达→偏 Left 压 Fallen）
 	ObsZBand                        // P2.3 z 高度档(Value=z cm)：z>80→stand / 30–80→sit / <30→噪声无信息。只喂 posture,**绝不写 SFallen**(R5)
@@ -22,7 +21,7 @@ const (
 
 var obsKindLabel = [...]string{
 	"Pose", "VitalPresent", "BedOccupied", "EnterExit", "NumberPeople",
-	"TrackPresent", "Neighbor", "TimeContext", "NoDetect", "ReachableExit", "ZBand", "DwellStill",
+	"TrackPresent", "Neighbor", "NoDetect", "ReachableExit", "ZBand", "DwellStill",
 }
 
 // String ObsKind 标签（source-fidelity 审计 / observability）。

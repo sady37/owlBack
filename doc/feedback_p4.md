@@ -48,6 +48,19 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-12] 施工方 → 委员会:**non-blocking 待清(geom 退役后顺手清理)**
+
+按当前状态「待清3项」处理,用户指示不深挖自查(易漏)、先提交委员会审:
+
+- **① ObsTimeContext 删**:零构造点(全仓 grep 无 `Kind: ObsTimeContext`),likelihood case 返回 lk(nil) 空发射,Model.prior 不用 time/night(night 走 `ObsDwellStill.Night`,房型走 `RoomType`)→ 死 ObsKind。删常量+obsKindLabel+case+过时注释。ObsKind iota 重排无影响(belief 内存模型不落库,引用全用名)。
+- **② loggedVeto 删 no-op 守卫**:`:323` 每 tick present 都 `reset false`→`:327` 守卫 `!tl.loggedVeto` 永真 = 确证 no-op(部署时见 veto_evidence 每秒打即此)。删字段+reset+守卫条件+set,改无条件 `if jumpGhost||frozenGhost` 每 tick forensic emit(per-tick forensic 保留,语义不变)。
+- **③ ghost_* log 统一**:按用户指示**不深挖**(自查易漏,留委员会)。现状日志已大部分收敛:`belief_dbn_veto_{ghost,firmware,risk}` + `belief_shadow_veto_evidence` + `lostfall_{provisional,escalate,suppressed,cancel}`,无散落的裸 `ghost_X`。memory task② 说的「9种 ghost_* 收 ghost_veto」应在 DBN cutover 时已部分完成。细节收敛(reason 字段统一 / veto_evidence 迁 emitDecision flip-only)留委员会审定。
+
+**验证**:build/vet 绿,roomengine 仅 2 预存 dwell tail FP 红(无新回归),belief 包绿。**未部署**(test1 仍跑 geom 退役版,这批 log 清理待裁部署)。
+
+---
+
+
 ### [2026-06-12] 施工方 → 委员会:**geom 全量退役实施完成（commit `7dd48de`，D1-D4 签字后施工）**
 
 承接 `d2c2197` 映射表 + 委员会签字 D1-D4。按 `doc/geom_retirement_mapping.md` 施工，详「实施记录」§7。

@@ -126,7 +126,7 @@ func TestR5LockNeighborCorroborationNotSubstitution(t *testing.T) {
 	}
 }
 
-// 文档化:ObsVitalPresent/ObsTimeContext 对 SFallen 不写(恒 1.0 中性)——既非抬升亦非压制,
+// 文档化:ObsVitalPresent 对 SFallen 不写(恒 1.0 中性)——既非抬升亦非压制,
 // 走自己态(Empty/Artifact/Bed*/prior),不入 fall 通道。无需单测(上三类已覆盖"非清单源不得 <1"由 pose/z/lift/np 守;
 // 这三源本就不碰 SFallen,留此注记备 source-fidelity 审计对账)。
 var _ = observation.PoseFallen // 锚定 observation 依赖(pose 枚举随固件演进时编译期提示)

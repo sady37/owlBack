@@ -121,8 +121,6 @@ func rawLikelihood(o Observation) Vector {
 			SEmpty:  1 + gainReachEmpty*e,
 			SFallen: 1 - dampReachFallen*e,
 		})
-	case ObsTimeContext:
-		return lk(nil) // 调 prior / θ_fire，不在 diag 更新（见 Model.prior）
 	}
 	return lk(nil)
 }
