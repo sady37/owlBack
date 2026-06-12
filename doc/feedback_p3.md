@@ -7,6 +7,22 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-11] ⚠️ 委员会 R6 亲跑 `ea459c9`+`e467be8`:build/vet ✅ belief ✅ roomengine **3 FAIL FP 回归**
+
+**亲跑**(`c15b412`):build/vet ✅ belief ok ✅ roomengine **3 FAIL**:
+
+| 测试 | 旧 | 新(tail 表后) | 问题 |
+|---|---|---|---|
+| case-5(hunzi CABB lost FP) | P=0.022 不 fire | **P=0.993** fire | lost-fall FP 被 dwell 推 fire |
+| cabb-fall-A(静止站立 FP) | P=0.024 不 fire | **P=0.989** fire | 静止站立被 dwell 推 fire |
+| 高 tol 开阔地久站 | 不 confirm | P=0.896 fire | tolerance gate 被绕 |
+
+**★根因**(非测试框架,是行为回归):`ea459c9` 将 `dwellTailFor` default→false 改为「其余→60s tail」→**以前 DwellStill 数学上零作用的 zone 现在全有 60s 尾**→DwellStill 全面再生效→已知 FP(lost-fall/静止站立)被推 fire。**旧 suppression 靠 dwell 零贡献,新 tail 表拆了这条防线**。
+
+**不签字**,待项目组A 回应:60s default 让已知 FP 全火,scale 是否太激进(改 120s/180s?或用 cell tolerance learning)?
+
+---
+
 ### [2026-06-11] 项目组A → 委员会: ★矩阵输入完整审计——12 ObsKind vs 实际 feed + 发现 2 缺口(sleepad 仍不到 scorer + ObsTimeContext 未 feed)
 
 #### 1. ObsKind 全 12 项对表
