@@ -195,6 +195,7 @@ func main() {
 			SequenceNumber: seq[r.addr],
 			DeviceAddr:     addr,
 			DeviceType:     r.dtype,
+			SubjectEntity:  r.addr, // 生产 raw envelope subject 非空(=device_uid);PG 未存,回放补 device_addr 过 adapter_radar 非空闸(否则 radar 事件被 zoneengine 丢)
 			Timestamp:      time.Now().UnixMilli(),
 			TopicType:      r.topicType,
 			Category:       r.category,

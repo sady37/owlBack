@@ -362,6 +362,8 @@ func TestReplayOracle(t *testing.T) {
 		{"D5F7浴室FP(0601+ghost verdict)", "d5f7-bathroom-fp-0601/window_ghostadj.json", "d5f7-bathroom-fp-0601/room_layout.json", false, true},
 		{"cabb-fall-A(实FP,静止站立)", "cabb-fall-A-frozen-0016/2026-05-04_00-05_to_00-20_MDT.json", "cabb-fall-A-frozen-0016/room_layout.json", false, true},
 		{"cd2b(人返回)", "case_lostfall_cd2b_11351148/2026-04-27_11-35_to_11-48_MDT.json", "case_lostfall_cd2b_11351148/room_layout.json", false, true},
+		// 被子床边真摔 FN(真摔无报警);roomengine-only 诊断——不含 zoneengine bed scorer 抑制,仅看 DBN 原生 fall 信号。
+		{"cd2b-0604(被子床边真摔FN,roomengine-only)", "case-cd2b-0604-16141631/2026-06-04_16-14_to_16-31_MDT.json", "case-cd2b-0604-16141631/room_layout.json", true, false},
 		{"MoM浴室FP(走出exit)", "mom-bathroom-lost-0953/window.json", "mom-bathroom-lost-0953/room_layout.json", false, true},
 		{"D523卧室FP(9h同型,静止)", "d523-bedroom-lost-0933/window.json", "d523-bedroom-lost-0933/room_layout.json", false, true},
 		{"Hunzi-CABB-0529FP(站立静止)", "hunzi-cabb-lost-0529-FP/window.json", "hunzi-cabb-lost-0529-FP/room_layout.json", false, true},
