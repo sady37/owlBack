@@ -46,7 +46,7 @@ func mkP61bEngine(t *testing.T, nowMs int64, rich bool, census *SuiteCensusManag
 	sh.tracks[7] = &beliefShadowTrack{
 		lastSeenMs:    nowMs - 70_000, // > 60s TTL = lost
 		stillBoxAgeMs: 0,              // moving→lost
-		geom:          belief.GeomInToilet,
+		lastAreaType:  int(AreaToilet),
 		lastX:         50, lastY: 50,
 		lostAnchor: nowMs - 70_000,
 	}
@@ -165,9 +165,10 @@ func TestP61bCABBRealLayoutEngagesDPath(t *testing.T) {
 	grid, _ := buildGridFromLayout(t, "hunzi-cabb-lost-0601-2247-FP/room_layout.json")
 	const room, suite, dev = "fd00:0:3:411::/88", "fd00:0:3:411::/80", "fd00:0:3:411:1:200:10d5:cabb"
 	lostX, lostY := -50, 250 // CABB 浴室内部(radar 处),真 grid geom
-	g := geomFromGrid(grid, lostX, lostY)
-	if g == belief.GeomInToilet || g == belief.GeomInEnter {
-		t.Logf("注:CABB 内部 geom=%v(若是门区则旧窄条件也接;本测专证非门区也 engage)", g)
+	areaT, _ := grid.AreaTypeAt(lostX, lostY)
+	nearD := grid.NearestEntryDistCm(lostX, lostY) <= beliefEnterMarginCm
+	if areaT == AreaToilet || areaT == AreaShower || nearD {
+		t.Logf("注:CABB 内部 area=%v nearDoor=%v(若是门区则旧窄条件也接;本测专证非门区也 engage)", areaT, nearD)
 	}
 	nowMs := int64(10_000_000)
 	core, logs := observer.New(zapcore.InfoLevel)
@@ -186,11 +187,11 @@ func TestP61bCABBRealLayoutEngagesDPath(t *testing.T) {
 		t.Fatalf("真 CABB layout 应判小卫生间(gate fire);否则 D-path 不 engage=silent-miss")
 	}
 	sh := e.beliefShadowFor(room)
-	sh.tracks[7] = &beliefShadowTrack{lastSeenMs: nowMs - 70_000, stillBoxAgeMs: 0, geom: g, lastX: lostX, lastY: lostY, lostAnchor: nowMs - 70_000}
+	sh.tracks[7] = &beliefShadowTrack{lastSeenMs: nowMs - 70_000, stillBoxAgeMs: 0, lastAreaType: int(areaT), lastX: lostX, lastY: lostY, lostAnchor: nowMs - 70_000}
 	sh.tlayer[7] = &beliefShadowTLayer{tb: belief.NewTrackBelief(), device: dev, realLO: 2.0}
 	e.beliefShadowTick(room, nil, nowMs)
 	if !hasMsg(logs, "belief_shadow_lostfall_provisional") {
-		t.Fatalf("真 CABB lost track(geom=%v)应进 D-branch → provisional(广义 geom 条件接住非门区)", g)
+		t.Fatalf("真 CABB lost track(area=%v)应进 D-branch → provisional(广义 area 条件接住非门区)", areaT)
 	}
 	e.beliefShadowTick(room, nil, nowMs+beliefProvisionalRichWindowMs+2000)
 	if !hasMsg(logs, "belief_shadow_lostfall_escalate") {
@@ -227,8 +228,8 @@ func TestP61bCABBPoorSuppresses(t *testing.T) {
 		suiteCensus:   NewSuiteCensusManager(nil, DefaultSuiteCensusConfig(), nil),
 	}
 	sh := e.beliefShadowFor(room)
-	g := geomFromGrid(grid, -50, 250)
-	sh.tracks[7] = &beliefShadowTrack{lastSeenMs: nowMs - 70_000, stillBoxAgeMs: 0, geom: g, lastX: -50, lastY: 250, lostAnchor: nowMs - 70_000}
+	areaT, _ := grid.AreaTypeAt(-50, 250)
+	sh.tracks[7] = &beliefShadowTrack{lastSeenMs: nowMs - 70_000, stillBoxAgeMs: 0, lastAreaType: int(areaT), lastX: -50, lastY: 250, lostAnchor: nowMs - 70_000}
 	sh.tlayer[7] = &beliefShadowTLayer{tb: belief.NewTrackBelief(), device: dev, realLO: 2.0}
 	e.beliefShadowTick(room, nil, nowMs)
 	e.beliefShadowTick(room, nil, nowMs+beliefProvisionalPoorWindowMs+2000)

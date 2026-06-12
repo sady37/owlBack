@@ -4,7 +4,7 @@ import "math"
 
 // State 隐状态 S（owlBack/doc/room_belief_state_machine.md §3）。
 // S0 Empty + S7 Left 是第一类公民——9h person_silent 的直接缺失态。
-// 位置语义不进 S，由 Observation.Geom 作 P(o|s) 条件（§3 设计要点）。
+// 位置语义不进 S，由 Observation.AreaType/NearDoor/BedReleased 作 P(o|s) 条件（§3 设计要点）。
 type State int
 
 const (

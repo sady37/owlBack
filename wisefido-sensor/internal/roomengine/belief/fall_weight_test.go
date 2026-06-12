@@ -11,7 +11,7 @@ func TestFallEvidenceWeightedByReal(t *testing.T) {
 		ts := int64(1000)
 		for i := 0; i < 60; i++ {
 			b.Step(ts, []Observation{{
-				Kind: ObsDwellStill, Value: float64(60 + i*5), Conf: conf, Geom: GeomOpenFloor, Ts: ts, Fresh: true,
+				Kind: ObsDwellStill, Value: float64(60 + i*5), Conf: conf, AreaType: areaActive, Ts: ts, Fresh: true,
 			}})
 			ts += 1000
 		}

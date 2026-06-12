@@ -76,11 +76,11 @@ const (
 	TObsLogicAlive                    // 本 track 失锁但同 logic_id 仍活在另一条 live track（firmware 换 ID，数量守恒）→ 非独自倒地，压 Lost
 )
 
-// TObservation track 层观测。Ghostness/Geom 仅对 TObsPresent；Geom（last）对 TObsAbsent；Value=e 仅对 TObsReachableExit。
+// TObservation track 层观测。Ghostness 仅对 TObsPresent；AreaType（消失前 last cell.area_type）对 TObsAbsent 分流去向；Value=e 仅对 TObsReachableExit。
 type TObservation struct {
 	Kind      TObsKind
 	Ghostness float64 // [0,1]，仅 TObsPresent：0=纯真人 1=纯 ghost
-	Geom      Geom    // TObsPresent=当前 geom；TObsAbsent=消失前 last geom
+	AreaType  int     // 仅 TObsAbsent：消失前 last cell.area_type 分流去向（Track 层无门距，只看 area==Enter/Bed）
 	Value     float64 // 仅 TObsReachableExit：可达退场分 e ∈ [0,1]
 	Conf      float64
 	Ts        int64
@@ -167,14 +167,15 @@ func rawTLikelihood(o TObservation) TVector {
 		// 二者都是"无检出"，P(absent|Lost)≈P(absent|None)≈P(absent|JustLeft)，发射对它们等价。
 		// 谁该是 Lost 谁该是 None **只由消失前 T 先验经 A_T 决定**（Ghost 先验→A_T 通 None，
 		// 不通 Lost；Real 先验→A_T 通 Lost/JustLeft，不通 None）= 缺失段①的结构判别。
-		// last-geom 只用来在两个"真人离场"去向间分流：门区→JustLeft，开阔地板→Lost。
-		switch o.Geom {
-		case GeomInEnter:
+		// last cell.area_type 在两个"真人离场"去向间分流：门区→JustLeft，开阔地板→Lost。
+		// Track 层无门距（last area 来自 cell.area_type，非 geomFromGrid 门优先）→ 门区只看 area==Enter。
+		switch {
+		case o.AreaType == areaEnter:
 			return tlk(map[TState]float64{
 				TJustLeft: 3, TNone: 3, TLost: 0.4,
 				TReal: 0.2, TGhost: 0.3,
 			})
-		case GeomInBed:
+		case o.AreaType == areaBed:
 			// 床区消失（被遮挡/躺下）：偏 None，绝不 Lost（床上不是倒地候选）。
 			return tlk(map[TState]float64{
 				TNone: 3, TJustLeft: 1, TLost: 0.2,

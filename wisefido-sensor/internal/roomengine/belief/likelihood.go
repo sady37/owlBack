@@ -8,13 +8,15 @@ import "owl-common/observation"
 func rawLikelihood(o Observation) Vector {
 	switch o.Kind {
 	case ObsPose:
-		// provenance 加权：GeomConf<1 时把 geom 条件似然向 geom-中性(Unknown) blend。
-		// = 暂定 rest-zone 的跌倒抑制按信任打折(软先验替硬 exempt 闸)；FE 画 bed(GeomConf=1)全抑制不变。
-		gc := o.GeomConf
+		// provenance 加权：AreaConf<1 时把 area 条件似然向中性(area-unknown) blend。
+		// = 暂定 rest-zone 的跌倒抑制按信任打折(软先验替硬 exempt 闸)；FE 画 bed(AreaConf=1)全抑制不变。
+		ctx := AreaCtx{AreaType: o.AreaType, NearDoor: o.NearDoor, BedReleased: o.BedReleased}
+		gc := o.AreaConf
 		if gc <= 0 || gc >= 1 {
-			return poseLikelihood(int(o.Value), o.Geom)
+			return poseLikelihood(int(o.Value), ctx)
 		}
-		return lerpVec(poseLikelihood(int(o.Value), GeomUnknown), poseLikelihood(int(o.Value), o.Geom), gc)
+		neutral := AreaCtx{AreaType: areaUnknown}
+		return lerpVec(poseLikelihood(int(o.Value), neutral), poseLikelihood(int(o.Value), ctx), gc)
 	case ObsZBand:
 		// P2.3 z 三档 posture(A类round-z3 / feedback 原则#2)。z 只喂 posture,**绝不写 SFallen**
 		// (R5:z 不确认不否决 fall)。与 pose=standing→SStandWalk 同型(P2.2 认可的 posture 通道,非 fall 压制)。
@@ -125,15 +127,17 @@ func rawLikelihood(o Observation) Vector {
 	return lk(nil)
 }
 
-// poseLikelihood radar pose × Geom 条件似然。
-// 关键二义性：pose=Lying 在 InBed → Bed-Lying；在 OpenFloor → 倒地候选。Geom 是命门。
-func poseLikelihood(pose int, g Geom) Vector {
+// poseLikelihood radar pose × 位置上下文条件似然。位置语义直读权威源：cell.area_type + 门距(NearDoor) + bed_state(BedReleased)。
+// 关键二义性：pose=Lying 在床区(area=Bed 且床态未释放) → Bed-Lying；床态已释放(bed_state 离床) 或开阔地 → 倒地候选。
+// 门优先：NearDoor∨area==Enter 视为门区（位置二义性命门），压过 area==Bed/OpenFloor。
+func poseLikelihood(pose int, c AreaCtx) Vector {
+	inEnter := c.NearDoor || c.AreaType == areaEnter
 	switch pose {
 	case observation.PoseWalking, observation.PoseRunning:
 		// P2.2(R5):pose 对 fall 只正向 —— 删 SFallen 压制(firmware 误把摔后标 walk 不得抹 fall)。
 		// 保留 SStandWalk/SBedLying(posture 区分,非 fall 压制)。
 		m := map[State]float64{SStandWalk: lrPoseWalkStandWalk, SBedLying: dampPoseWalkBed}
-		if g == GeomInEnter {
+		if inEnter {
 			m[SLeft] = lrPoseWalkEnterLeft // 门口走动 → 可能正离场
 		}
 		return lk(m)
@@ -146,20 +150,22 @@ func poseLikelihood(pose int, g Geom) Vector {
 		return lk(map[State]float64{SStandWalk: lrPoseStand, SSit: lrPoseStandSit})
 	case observation.PoseFallen:
 		m := map[State]float64{SFallen: lrPoseFallenBase, SStandWalk: dampPoseFallenStand, SSit: dampPoseFallenSit}
-		if g == GeomInBed {
+		if !inEnter && c.AreaType == areaBed {
 			m[SFallen] = lrPoseFallenInBed // 床上 pose=fallen 多是躺姿误读，降权
 			m[SBedLying] = lrPoseFallenBedLy
-		} else if g == GeomOpenFloor {
+		} else if !inEnter && isOpenFloor(c.AreaType) {
 			m[SFallen] = lrPoseFallenOpen // 开阔地板确认倒地，升权
 		}
 		return lk(m)
 	case observation.PoseLying:
-		switch g {
-		case GeomInBed:
+		inBed := !inEnter && c.AreaType == areaBed
+		switch {
+		case inBed && !c.BedReleased:
 			// P2.2(R5):删 SFallen:0.3 压制 —— 床上不报跌倒走 cell rest-zone/human-bed 豁免(P7.4),
 			// 不靠 pose 压 fall。SBedLying:6 强抬床态自然主导。
 			return lk(map[State]float64{SBedLying: lrPoseLyingBedLying, SBedRestless: lrPoseLyingBedRest})
-		case GeomOpenFloor:
+		case (!inEnter && isOpenFloor(c.AreaType)) || (inBed && c.BedReleased):
+			// 开阔地躺=倒地候选；床区躺但 bed_state 离床(BedReleased)=床边真摔,同走倒地候选(bed_state 权威>几何)。
 			return lk(map[State]float64{SFallen: lrPoseLyingOpenFall, SBedLying: dampPoseLyingOpenBed, SStandWalk: dampPoseLyingOpenSW})
 		default:
 			return lk(map[State]float64{SBedLying: lrPoseLyingDefBed, SFallen: lrPoseLyingDefFall})

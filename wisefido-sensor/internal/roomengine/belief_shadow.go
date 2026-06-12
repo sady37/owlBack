@@ -82,7 +82,7 @@ const (
 type beliefShadowTrack struct {
 	lastSeenMs       int64
 	stillBoxAgeMs    int64 // 最后一帧时的 still-box 时长（消失前是否走动的依据）
-	geom             belief.Geom
+	lastAreaType     int   // 消失前 last cell.area_type：toilet 守恒判定 + 诊断日志
 	lastX, lastY     int     // 最后一帧位置 → 算丢失点离门距离 d（P2 reachable-exit）
 	lastRawDistCm    int     // P2 距离闸：最后一帧距雷达（raw 本地系原点）平面距 → 超 d_fall=贴地弱回波区
 	approachSpeedCmS float64 // A：丢失前朝门定向逼近速度（在 track 仍活时算好 stash，丢失后 ts 可能已销毁）
@@ -98,7 +98,7 @@ type beliefShadowTrack struct {
 type beliefShadowTLayer struct {
 	tb           *belief.TrackBelief
 	lastSeen     int64
-	geom         belief.Geom
+	lastAreaType int    // 消失前 last cell.area_type：TObsAbsent 分流去向
 	device       string // 源雷达 device_addr（同房对等雷达占用对账排除自身用）
 	logicID      string // 出生锚定的稳定逻辑身份（G-1 id-swap 守恒：失锁后查 logic_id 是否仍活在别 track）
 	loggedLo     bool   // 已 log 过本次 Lost 峰（防重复）
@@ -125,7 +125,7 @@ type beliefShadow struct {
 	loggedBedSuppress bool // 已 log 过本次 bed_occupied_suppress（防重复）
 	tlayer       map[int]*beliefShadowTLayer // DBN P1 Track 层
 	deviceSpeed  map[string]*deviceSpeedStat // P2.1：per-device 学习走速封顶（device→room 稳定，跨 track 累积）
-	lastLostGeom belief.Geom                 // #3：最近一次丢失点 geom（fall log 辨床/桶区误报用）
+	lastLostArea int                         // #3：最近一次丢失点 cell.area_type（fall log 辨床/桶区误报用）
 
 	// P2 recovery-veto:firmware Fall 时刻(T_fire)= post-fire 倒地时长/recovery 窗的参考(engine hook 喂)。
 	firmwareFallTs      int64 // firmware Fall 事件 ts(0=未火);recovery 须 ts>此
@@ -176,7 +176,7 @@ func (e *Engine) beliefShadowEvent(roomID, eventName string, nowMs int64) {
 		return
 	}
 	defer func() { _ = recover() }()
-	o, ok := radarEventToObs(eventName, nowMs, belief.GeomInEnter)
+	o, ok := radarEventToObs(eventName, nowMs)
 	if !ok {
 		return
 	}
@@ -297,7 +297,6 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		default: // 坐/未知:两者都清(不累计)
 			tl.uprightSince, tl.fallenSince = 0, 0
 		}
-		tlGeom := geomFromArea(b.CellAreaType)
 		// ★P1-final 完成(发射换源):Ghostness 全由 **DBN 自有 co-existence 对称**(motion 紧贴同向多径 + mirror
 		// 反射面镜像位静态 cd2b 冻结类)驱动,**不再读 gate-list b.Verdict**——删 gate-list 真前置(ghost 检测面)达成。
 		// 单 track frozenGhost/jumpGhost 不再驱动 Ghost 发射(realLO 仅留日志);配 P1① 耦合孤立 ρ=0→P(Ghost)=0。
@@ -311,11 +310,11 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		// P(Ghost)→0(即使 Ghostness 高也救不回)→ long-lie 真受害者结构性安全。ghost=反射必有共存 Real partner。
 		rho := dbnCoExistRho(sh, b.TrackID)
 		tl.tb.StepCoupled(nowMs, []belief.TObservation{{
-			Kind: belief.TObsPresent, Ghostness: ghostness, Geom: tlGeom,
+			Kind: belief.TObsPresent, Ghostness: ghostness,
 			Conf: 0.9, Ts: nowMs, Fresh: true,
 		}}, rho)
 		tl.lastSeen = nowMs
-		tl.geom = tlGeom
+		tl.lastAreaType = int(b.CellAreaType)
 		tl.device = b.DeviceAddr
 		if ts := tm.tracks[b.TrackID]; ts != nil {
 			tl.logicID = ts.LogicID // G-1：趁活时 stash logic_id，失锁 sweep 查身份守恒
@@ -360,15 +359,16 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 					o.RoomType = roomType
 					o.AreaType = int(b.CellAreaType)
 				}
-				// ★bedside FN 止血:床区躺 + bed_state 离床 = 床边真摔,翻 geom→OpenFloor 让 SFallen 竞争
-				// (lying@OpenFloor 走倒地候选,而非 lying@InBed 的睡觉豁免)。床/摔判别由 bed_state 定,非几何。
-				// 注:止血借现有 geom plumbing;全量 geom 退役(geom→room_type+cell.area_type)走映射表 plan。
-				if o.Kind == belief.ObsPose && int(o.Value) == observation.PoseLying &&
-					o.Geom == belief.GeomInBed && bedReleased {
-					o.Geom = belief.GeomOpenFloor
-					e.logger.Info("belief_dbn_bedside_unbed", zap.String("room_id", roomID),
-						zap.Int("track_id", b.TrackID), zap.Int64("ts_ms", nowMs),
-						zap.Int("bed_status", bedSt.BedStatus), zap.Int("bed_conf", bedSt.BedConfidence))
+				// ★bedside FN 止血(D3):bed_state 离床 → 标 BedReleased,poseLikelihood 据此把床区(area=Bed)躺
+				// 翻成倒地候选(取代旧 geom 翻转;门优先在 poseLikelihood 内复刻)。床/摔判别由 bed_state 定,非几何。
+				if bedReleased {
+					o.BedReleased = true
+					if o.Kind == belief.ObsPose && int(o.Value) == observation.PoseLying &&
+						o.AreaType == int(AreaBed) && !o.NearDoor {
+						e.logger.Info("belief_dbn_bedside_unbed", zap.String("room_id", roomID),
+							zap.Int("track_id", b.TrackID), zap.Int64("ts_ms", nowMs),
+							zap.Int("bed_status", bedSt.BedStatus), zap.Int("bed_conf", bedSt.BedConfidence))
+					}
 				}
 				obs = append(obs, o)
 			}
@@ -388,12 +388,12 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				zap.Int64("p3_4_recapture_ms", nowMs-st.lastSeenMs), // 丢失多久后返回(cd2b≈5.85min)
 				zap.Bool("p3_4_would_cancel", true),                 // production 会硬 cancel pending lost-fall
 				zap.Bool("p3_4_self_rescue_candidate", true),        // → shadow 标低 severity 非抹掉
-				zap.String("last_geom", st.geom.String()),
+				zap.String("last_area", belief.AreaTypeLabel(st.lastAreaType)),
 			)
 		}
 		st.lastSeenMs = nowMs
 		st.lostAnchor = 0
-		st.geom = geomFromArea(b.CellAreaType)
+		st.lastAreaType = int(b.CellAreaType)
 		st.lastX, st.lastY = b.X, b.Y
 		if ts != nil { // P2 距离闸：stash 距雷达 raw 平面距（丢失后 ts 可能销毁，趁活时算）
 			st.lastRawDistCm = distInt(ts.LastRawH, ts.LastRawV, 0, 0)
@@ -485,7 +485,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				st.provisionalSince = nowMs
 				e.logger.Info("belief_shadow_lostfall_provisional", // provisional-now 低 sev(真摔即时有声,不静默 5.5min)
 					zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
-					zap.String("last_geom", st.geom.String()),
+					zap.String("last_area", belief.AreaTypeLabel(st.lastAreaType)),
 					zap.Int64("still_box_age_ms", st.stillBoxAgeMs))
 			}
 			// cancel 佐证 = recapture ONLY(审查㉝:正向重现,过 attribution-safe + leave-discriminating 两条)
@@ -510,7 +510,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			rich := e.SuiteHasOtherDevice(suiteID, lostDevice) // 设备密度=机构资源代理(v3)
 			elapsed := nowMs - st.provisionalSince
 			if rich {
-				obs = append(obs, noDetectObs(st.geom, realnessP, 0, nowMs)) // dx=0 干净 ramp(门距退化,disambiguation 交 cancel 窗)
+				obs = append(obs, noDetectObs(realnessP, 0, nowMs)) // dx=0 干净 ramp(门距退化,disambiguation 交 cancel 窗)
 				if elapsed >= beliefProvisionalRichWindowMs && !st.provisionalResolved {
 					e.logger.Info("belief_shadow_lostfall_escalate", // 窗到未佐证 → 全 sev 真摔(延迟但不漏)
 						zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
@@ -519,7 +519,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				}
 			} else { // 设备贫(浴室独苗):无跨设备 cancel 可能 → 短窗早决断
 				if elapsed < beliefProvisionalPoorWindowMs {
-					obs = append(obs, noDetectObs(st.geom, realnessP, 0, nowMs)) // 短窗内仍 ramp(provisional)
+					obs = append(obs, noDetectObs(realnessP, 0, nowMs)) // 短窗内仍 ramp(provisional)
 				} else if !st.provisionalResolved {
 					e.logger.Info("belief_shadow_lostfall_suppressed", // 设备贫→压制不 page,但 LOG 疑似摔(no-silent-caps,机构可回看)
 						zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
@@ -535,7 +535,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		// 不喂 lost-fall 发射(shadow 抑制,只 log 不 fire,R1;自洽 P3.4 超窗重现=自救)。
 		// per-identity 绑 sole resident(census 只读 accessor 锁内读,visitor 不计);**多 resident → gate OFF**
 		// (census 决定19 跳过 anchor-flip → 无人带 Bathroom anchor → 无法 per-identity)= 漏报-safe 保留告警 + skip LOG(数据闸)。
-		if st.geom == belief.GeomInToilet && e.suiteCensus != nil {
+		if (st.lastAreaType == int(AreaToilet) || st.lastAreaType == int(AreaShower)) && e.suiteCensus != nil {
 			residentCount, recaptured := e.suiteCensus.SoleResidentRecaptureState(e.SuiteIDForRoom(roomID))
 			switch {
 			case residentCount == 1 && recaptured:
@@ -547,7 +547,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 					zap.Int64("p6_5_gap_ms", nowMs-st.lastSeenMs),
 					zap.Bool("p6_5_exit_confirmed", true),          // track 守恒:sole resident 重现别处 = exit 非 fall
 					zap.Bool("p6_5_would_suppress_lostfall", true), // shadow 会抑制此 lost-fall(production 不动,R0)
-					zap.String("last_geom", st.geom.String()),
+					zap.String("last_area", belief.AreaTypeLabel(st.lastAreaType)),
 				)
 				continue // exit 确认 → 不喂 lost-fall 发射(shadow 抑制)
 			case residentCount > 1:
@@ -594,7 +594,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			effRealnessP = 0 // 距离盲区 ∨ 房已空 → no-detect 完全中性化（factor→1）
 		}
 		// P2：门区不再硬 continue；改软门——no-detect(R_i+door-exit 门控抬 Fallen) 与 reachable-exit(压 Fallen) 同 tick 对冲。
-		obs = append(obs, noDetectObs(st.geom, effRealnessP, doorExitP, nowMs))
+		obs = append(obs, noDetectObs(effRealnessP, doorExitP, nowMs))
 		if realnessP < 0.5 || doorExitP > 0.5 || distSuppress > 0 || roomEmptySuppress > 0 { // 门控生效→ 弱抬/不抬
 			e.logger.Info("belief_shadow_nodetect_gated", // observability:量 no-detect 被 R_i/door-exit/dist/room-empty 压的频率
 				zap.String("room_id", roomID),
@@ -605,12 +605,12 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				zap.Float64("p2_dist_suppress", distSuppress), zap.Int("p2_lost_dist_cm", st.lastRawDistCm), // P2 距离闸:1=远距全压
 				zap.Float64("p2_room_empty_suppress", roomEmptySuppress), // G-2 空房账:1=房空残影全压
 				zap.Bool("p6_1a_nodetect_gated", true),
-				zap.String("last_geom", st.geom.String()),
+				zap.String("last_area", belief.AreaTypeLabel(st.lastAreaType)),
 			)
 		}
-		sh.lastLostGeom = st.geom // #3：记最近丢失点 geom，供 fall log 辨别床/桶区
+		sh.lastLostArea = st.lastAreaType // #3：记最近丢失点 area，供 fall log 辨别床/桶区
 		if grid != nil {
-			obs = append(obs, reachableExitObs(exitDist, st.approachSpeedCmS, st.geom, nowMs))
+			obs = append(obs, reachableExitObs(exitDist, st.approachSpeedCmS, nowMs))
 		}
 	}
 
@@ -624,7 +624,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			continue
 		}
 		tobs := []belief.TObservation{{
-			Kind: belief.TObsAbsent, Geom: tl.geom, Conf: 0.9, Ts: nowMs, Fresh: true,
+			Kind: belief.TObsAbsent, AreaType: tl.lastAreaType, Conf: 0.9, Ts: nowMs, Fresh: true,
 		}}
 		// 同房多雷达占用对账（仅单床房）：本台丢失，但同房别台此刻仍见真人 → 本 track 更可能是
 		// 别台真人的重影/重复 → 喂 TObsPeerLive 压 TLost（与生产 gate-list 守卫同构；单床闸在此把关）。
@@ -669,7 +669,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				zap.Float64("p_tlost", pLost),
 				zap.String("argmax_tstate", argT.String()),
 				zap.Float64("argmax_p", argP),
-				zap.String("last_geom", tl.geom.String()),
+				zap.String("last_area", belief.AreaTypeLabel(tl.lastAreaType)),
 				zap.Int("exit_dist_cm", exitDist),        // P2 诊断：丢失点离最近门距离
 				zap.Float64("approach_v_cms", approachV), // A：实测朝门定向逼近速度（0=未逼近/测不出）
 				zap.Float64("reach_cap_cms", reachCap),   // P2.1：本设备学习封顶（学习未足=全局 60）
@@ -708,7 +708,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	if npCount, npFresh := tm.CurrentNumberPeople(nowMs); npFresh {
 		obs = append(obs, belief.Observation{
 			Kind: belief.ObsNumberPeople, Value: float64(npCount), Conf: 0.8,
-			Ts: nowMs, Fresh: true, Geom: belief.GeomUnknown,
+			Ts: nowMs, Fresh: true,
 		})
 	}
 
@@ -753,7 +753,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),
 		zap.Float64("p_fallen", pFallen),
 		zap.String("argmax_state", argTraceS.String()), zap.Float64("argmax_p", argTraceP),
-		zap.String("last_lost_geom", sh.lastLostGeom.String()),
+		zap.String("last_lost_area", belief.AreaTypeLabel(sh.lastLostArea)),
 		zap.String("p7_1_tau_decision", tauDec.String()), zap.Float64("p7_1_tau", tauHit),
 		zap.Bool("p7_2_bathroom", tauCtx.Bathroom), zap.Bool("p7_2_night", tauCtx.Night),
 		zap.String("p7_2_tau_decision", tauCtxDec.String()), zap.Float64("p7_2_tau", tauCtxHit))
@@ -781,7 +781,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			zap.Float64("p_fallen", pFallen),
 			zap.String("argmax_state", argS.String()),
 			zap.Float64("argmax_p", argP),
-			zap.String("last_lost_geom", sh.lastLostGeom.String()), // #3：InBed/InToilet=床/桶区误确认嫌疑
+			zap.String("last_lost_area", belief.AreaTypeLabel(sh.lastLostArea)), // #3：InBed/InToilet=床/桶区误确认嫌疑
 			zap.String("p7_1_tau_decision", tauDec.String()),       // P7.1：base confirm（τ*=0.55，等价历史 θ_fire）
 			zap.Float64("p7_1_tau_confirm", belief.TauConfirm.Tau()),
 			zap.Bool("p7_2_bathroom", tauCtx.Bathroom), zap.Bool("p7_2_night", tauCtx.Night), // P7.2：context

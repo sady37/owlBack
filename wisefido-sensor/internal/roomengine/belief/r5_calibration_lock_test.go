@@ -21,8 +21,8 @@ import (
 
 const r5Eps = 1e-9
 
-// allGeoms — 枚举全部 Geom,确保 pose/z 锁覆盖每种位置条件(InBed 降权后仍须 ≥1)。
-var allGeoms = []Geom{GeomUnknown, GeomInBed, GeomInEnter, GeomOpenFloor, GeomInToilet}
+// allAreas — 枚举全部 area_type,确保 pose/z 锁覆盖每种位置条件(Bed 降权后仍须 ≥1)。
+var allAreas = []int{areaUnknown, areaBed, areaEnter, areaActive, areaToilet}
 
 // TestR5LockPoseZNeverSuppressFall — pose/z 是 R5 铁律核心:任何 pose 值 × 任何 geom,SFallen-LR 永不 <1
 // (lrPoseFallenInBed=1.5 降权仍 >1;无 SFallen 项的 pose=1.0 中性;ZBand 绝不写 SFallen)。
@@ -30,20 +30,20 @@ var allGeoms = []Geom{GeomUnknown, GeomInBed, GeomInEnter, GeomOpenFloor, GeomIn
 func TestR5LockPoseZNeverSuppressFall(t *testing.T) {
 	// 枚举固件全 pose(0..12,含 Unknown/未来越界值 13..15 防御),× 全 geom。
 	for pose := 0; pose <= 15; pose++ {
-		for _, g := range allGeoms {
-			v := rawLikelihood(Observation{Kind: ObsPose, Value: float64(pose), Conf: 1, Fresh: true, Geom: g})
+		for _, g := range allAreas {
+			v := rawLikelihood(Observation{Kind: ObsPose, Value: float64(pose), Conf: 1, Fresh: true, AreaType: g})
 			if v[SFallen] < 1.0-r5Eps {
-				t.Fatalf("R5 核心违规:ObsPose pose=%d geom=%s 的 SFallen-LR=%.4f <1 = 用 pose 压 fall(制造 FN)",
-					pose, g, v[SFallen])
+				t.Fatalf("R5 核心违规:ObsPose pose=%d area=%s 的 SFallen-LR=%.4f <1 = 用 pose 压 fall(制造 FN)",
+					pose, AreaTypeLabel(g), v[SFallen])
 			}
 		}
 	}
 	// ZBand 三档(低/坐/直立)× 全 geom:绝不写 SFallen → 恒 1.0(≥1)。
 	for _, z := range []float64{10, 50, 100} {
-		for _, g := range allGeoms {
-			v := rawLikelihood(Observation{Kind: ObsZBand, Value: z, Conf: 1, Fresh: true, Geom: g})
+		for _, g := range allAreas {
+			v := rawLikelihood(Observation{Kind: ObsZBand, Value: z, Conf: 1, Fresh: true, AreaType: g})
 			if v[SFallen] < 1.0-r5Eps {
-				t.Fatalf("R5 核心违规:ObsZBand z=%.0f geom=%s 的 SFallen-LR=%.4f <1 = 用 z 压 fall", z, g, v[SFallen])
+				t.Fatalf("R5 核心违规:ObsZBand z=%.0f area=%s 的 SFallen-LR=%.4f <1 = 用 z 压 fall", z, AreaTypeLabel(g), v[SFallen])
 			}
 		}
 	}
@@ -53,7 +53,7 @@ func TestR5LockPoseZNeverSuppressFall(t *testing.T) {
 // 红 = lrNp0Fallen 被调离 1.0 → np 进 SFallen 决策(㉝:np=0 压 fall 漏真摔 / np>0 抬 fall 无依据)。
 func TestR5LockNumberPeopleNeutral(t *testing.T) {
 	for _, np := range []float64{0, 1, 2, 5} {
-		v := rawLikelihood(Observation{Kind: ObsNumberPeople, Value: np, Conf: 0.8, Fresh: true, Geom: GeomUnknown})
+		v := rawLikelihood(Observation{Kind: ObsNumberPeople, Value: np, Conf: 0.8, Fresh: true, AreaType: areaUnknown})
 		if d := v[SFallen] - 1.0; d < -r5Eps || d > r5Eps {
 			t.Fatalf("R5 违规:ObsNumberPeople np=%.0f 的 SFallen-LR=%.4f ≠1.0(中性) → np 入 fall 决策", np, v[SFallen])
 		}
@@ -64,18 +64,18 @@ func TestR5LockNumberPeopleNeutral(t *testing.T) {
 // 红 = 谁把抬升源的 SFallen 调 <1(把"久驻/消失"算成 fall 的反证,语义颠倒)。
 func TestR5LockLiftSourcesNeverSuppressFall(t *testing.T) {
 	cases := []Observation{
-		{Kind: ObsDwellStill, Value: 600, Conf: 1, Fresh: true, Geom: GeomInToilet},
-		{Kind: ObsDwellStill, Value: 600, Conf: 1, Fresh: true, Geom: GeomOpenFloor, ToleranceFactor: 1.0},
-		{Kind: ObsDwellStill, Value: 600, Conf: 1, Fresh: true, Geom: GeomInBed}, // rest → lk(nil) → 1.0
-		{Kind: ObsNoDetect, Value: 0, Conf: 1, Fresh: true, Geom: GeomOpenFloor, RealnessP: 1, DoorExitP: 0},
-		{Kind: ObsNoDetect, Value: 0, Conf: 1, Fresh: true, Geom: GeomOpenFloor, RealnessP: 1, DoorExitP: 1}, // door-exit 仍留 floor ≥1
-		{Kind: ObsNoDetect, Value: 0, Conf: 1, Fresh: true, Geom: GeomOpenFloor, RealnessP: 0, DoorExitP: 0}, // ghost 消失 → 中性 1.0
+		{Kind: ObsDwellStill, Value: 600, Conf: 1, Fresh: true, AreaType: areaToilet},
+		{Kind: ObsDwellStill, Value: 600, Conf: 1, Fresh: true, AreaType: areaActive, ToleranceFactor: 1.0},
+		{Kind: ObsDwellStill, Value: 600, Conf: 1, Fresh: true, AreaType: areaBed}, // rest → lk(nil) → 1.0
+		{Kind: ObsNoDetect, Value: 0, Conf: 1, Fresh: true, AreaType: areaActive, RealnessP: 1, DoorExitP: 0},
+		{Kind: ObsNoDetect, Value: 0, Conf: 1, Fresh: true, AreaType: areaActive, RealnessP: 1, DoorExitP: 1}, // door-exit 仍留 floor ≥1
+		{Kind: ObsNoDetect, Value: 0, Conf: 1, Fresh: true, AreaType: areaActive, RealnessP: 0, DoorExitP: 0}, // ghost 消失 → 中性 1.0
 	}
 	for _, o := range cases {
 		v := rawLikelihood(o)
 		if v[SFallen] < 1.0-r5Eps {
-			t.Fatalf("R5 违规:抬升源 %s(geom=%s,real=%.0f,dx=%.0f)的 SFallen-LR=%.4f <1(只抬不压)",
-				o.Kind, o.Geom, o.RealnessP, o.DoorExitP, v[SFallen])
+			t.Fatalf("R5 违规:抬升源 %s(area=%s,real=%.0f,dx=%.0f)的 SFallen-LR=%.4f <1(只抬不压)",
+				o.Kind, AreaTypeLabel(o.AreaType), o.RealnessP, o.DoorExitP, v[SFallen])
 		}
 	}
 }
@@ -90,11 +90,11 @@ type permittedFallSuppressor struct {
 }
 
 var permittedFallSuppressors = []permittedFallSuppressor{
-	{"BedOccupied", "接触式床占用概率(sleepad/human-bed,P7.4 豁免;非 pose/z)", Observation{Kind: ObsBedOccupied, Value: 1, Conf: 1, Fresh: true, Geom: GeomInBed}},
-	{"TrackPresent-Ghost", "realness/ghost-ness 运动学(R5 #4:镜面/反射伪迹非真倒地)", Observation{Kind: ObsTrackPresent, Value: 1, Conf: 1, Fresh: true, Geom: GeomOpenFloor}},
-	{"Neighbor", "§5.5.2 弱耦合:邻房占用→本房更可能空/离(非 pose/z)", Observation{Kind: ObsNeighbor, Value: 1, Conf: 1, Fresh: true, Geom: GeomUnknown}},
-	{"ReachableExit", "近门单帧可达→从门走出(Left),替 30cm 硬门闸(非 pose/z)", Observation{Kind: ObsReachableExit, Value: 1, Conf: 1, Fresh: true, Geom: GeomInEnter}},
-	{"EnterExit-Exit", "ExitRoom 事件正向退场(R5 #3 event present;事件非 pose/z)", Observation{Kind: ObsEnterExit, Value: -1, Conf: 1, Fresh: true, Geom: GeomInEnter}},
+	{"BedOccupied", "接触式床占用概率(sleepad/human-bed,P7.4 豁免;非 pose/z)", Observation{Kind: ObsBedOccupied, Value: 1, Conf: 1, Fresh: true, AreaType: areaBed}},
+	{"TrackPresent-Ghost", "realness/ghost-ness 运动学(R5 #4:镜面/反射伪迹非真倒地)", Observation{Kind: ObsTrackPresent, Value: 1, Conf: 1, Fresh: true, AreaType: areaActive}},
+	{"Neighbor", "§5.5.2 弱耦合:邻房占用→本房更可能空/离(非 pose/z)", Observation{Kind: ObsNeighbor, Value: 1, Conf: 1, Fresh: true, AreaType: areaUnknown}},
+	{"ReachableExit", "近门单帧可达→从门走出(Left),替 30cm 硬门闸(非 pose/z)", Observation{Kind: ObsReachableExit, Value: 1, Conf: 1, Fresh: true, AreaType: areaEnter}},
+	{"EnterExit-Exit", "ExitRoom 事件正向退场(R5 #3 event present;事件非 pose/z)", Observation{Kind: ObsEnterExit, Value: -1, Conf: 1, Fresh: true, AreaType: areaEnter}},
 }
 
 // TestR5LockPermittedSuppressionRegistry — 「许可压制清单」机械化:每条满证据时 SFallen 必 <1
@@ -116,11 +116,11 @@ func TestR5LockPermittedSuppressionRegistry(t *testing.T) {
 // (gate 层"多resident→不发 ObsNeighbor"的漏报方向锁在 roomengine/belief_neighbor_test.go ⑤——
 //  census 在 roomengine 包,belief 包看不到,故 gate 锁落 roomengine,似然锁落此。)
 func TestR5LockNeighborCorroborationNotSubstitution(t *testing.T) {
-	v0 := rawLikelihood(Observation{Kind: ObsNeighbor, Value: 0, Conf: 1, Fresh: true, Geom: GeomUnknown})
+	v0 := rawLikelihood(Observation{Kind: ObsNeighbor, Value: 0, Conf: 1, Fresh: true, AreaType: areaUnknown})
 	if d := v0[SFallen] - 1.0; d < -r5Eps || d > r5Eps {
 		t.Fatalf("R5 违规:ObsNeighbor occ=0 应不压 fall(SFallen-LR=1.0)却得 %.4f → 裸 absence 压 fall=漏报", v0[SFallen])
 	}
-	v1 := rawLikelihood(Observation{Kind: ObsNeighbor, Value: 1, Conf: 1, Fresh: true, Geom: GeomUnknown})
+	v1 := rawLikelihood(Observation{Kind: ObsNeighbor, Value: 1, Conf: 1, Fresh: true, AreaType: areaUnknown})
 	if v1[SFallen] >= 1.0-r5Eps {
 		t.Fatalf("R5 违规:ObsNeighbor occ=1 应压 fall(SFallen-LR<1)却得 %.4f → 真占用证据被误中性化", v1[SFallen])
 	}

@@ -14,8 +14,8 @@ import (
 // Markov(bedAdapter→ObsBedOccupied,占用概率压 SFallen,**无 radar-on-bed 要求**;R5-clean 接触占用非 pose/z;
 // any-source-OR LeftBed → BedOccupancyState 占用降 → 释放 → Fall 浮出,漏报-safe)。
 
-func p5ob(ts int64, kind belief.ObsKind, val, conf float64, g belief.Geom) belief.Observation {
-	return belief.Observation{Kind: kind, Value: val, Conf: conf, Ts: ts, Fresh: true, Geom: g}
+func p5ob(ts int64, kind belief.ObsKind, val, conf float64, area int) belief.Observation {
+	return belief.Observation{Kind: kind, Value: val, Conf: conf, Ts: ts, Fresh: true, AreaType: area}
 }
 
 // TestP5BedOccupancySuppressesRadarFloor — 治 0127:sleepad InBed 占用概率压 radar 误读 Floor-Fallen,
@@ -26,7 +26,7 @@ func TestP5BedOccupancySuppressesRadarFloor(t *testing.T) {
 		tt := int64(1000)
 		for i := 0; i < 8; i++ {
 			tt += 1000
-			o := []belief.Observation{p5ob(tt, belief.ObsPose, observation.PoseFallen, 0.8, belief.GeomOpenFloor)} // radar 把床上人误读 Floor-Fallen
+			o := []belief.Observation{p5ob(tt, belief.ObsPose, observation.PoseFallen, 0.8, int(AreaActive))} // radar 把床上人误读 Floor-Fallen
 			if withBed {
 				o = append(o, bedAdapter(card.BedState{BedStatus: 0, BedConfidence: 90, BedStatusTs: tt}, tt)...) // InBed 占用概率
 			}
@@ -48,7 +48,7 @@ func TestP5LeftBedReleases(t *testing.T) {
 	fired := false
 	for i := 0; i < 8 && !fired; i++ {
 		tt += 1000
-		o := []belief.Observation{p5ob(tt, belief.ObsPose, observation.PoseFallen, 0.8, belief.GeomOpenFloor)}
+		o := []belief.Observation{p5ob(tt, belief.ObsPose, observation.PoseFallen, 0.8, int(AreaActive))}
 		o = append(o, bedAdapter(card.BedState{BedStatus: 1, BedConfidence: 90, BedStatusTs: tt}, tt)...) // LeftBed → bedVal=0 不压
 		be.Step(tt, o)
 		fired = be.Decide() == belief.DecisionFall
@@ -66,8 +66,8 @@ func TestP5BedSuppressIgnoresZ(t *testing.T) {
 		for i := 0; i < 8; i++ {
 			tt += 1000
 			o := []belief.Observation{
-				p5ob(tt, belief.ObsPose, observation.PoseFallen, 0.8, belief.GeomOpenFloor),
-				p5ob(tt, belief.ObsZBand, z, 0.7, belief.GeomOpenFloor),
+				p5ob(tt, belief.ObsPose, observation.PoseFallen, 0.8, int(AreaActive)),
+				p5ob(tt, belief.ObsZBand, z, 0.7, int(AreaActive)),
 			}
 			o = append(o, bedAdapter(card.BedState{BedStatus: 0, BedConfidence: 90, BedStatusTs: tt}, tt)...)
 			be.Step(tt, o)

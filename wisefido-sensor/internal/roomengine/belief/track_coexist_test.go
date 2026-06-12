@@ -15,7 +15,7 @@ func TestCoExistGhostCoupling(t *testing.T) {
 		ts := int64(1000)
 		for i := 0; i < 40; i++ {
 			tb.StepCoupled(ts, []TObservation{{
-				Kind: TObsPresent, Ghostness: ghostness, Geom: GeomOpenFloor, Conf: 0.9, Ts: ts, Fresh: true,
+				Kind: TObsPresent, Ghostness: ghostness, AreaType: areaActive, Conf: 0.9, Ts: ts, Fresh: true,
 			}}, rho)
 			ts += 1000
 		}

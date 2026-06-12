@@ -8,7 +8,6 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 
 	"owl-common/card"
-	"wisefido-sensor/internal/roomengine/belief"
 )
 
 // belief_neighbor_test.go — 死源#3 Neighbor hand-off：synthetic 2-room（同 unit 本房+邻房）。
@@ -55,7 +54,6 @@ func TestNeighborHandoffSuppress(t *testing.T) {
 		sh.tracks[7] = &beliefShadowTrack{
 			lastSeenMs:    lostSeenMs,
 			stillBoxAgeMs: 0, // moving→lost（进 lost-fall 域）
-			geom:          belief.GeomOpenFloor,
 			lastX:         50, lastY: 50,
 			lostAnchor: lostSeenMs,
 		}

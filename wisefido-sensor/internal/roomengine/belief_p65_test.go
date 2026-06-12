@@ -8,7 +8,6 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 
 	"owl-common/card"
-	"wisefido-sensor/internal/roomengine/belief"
 )
 
 // belief_p65_test.go — P6.5①(审查㉑批准)跨设备 track 守恒 per-identity recapture。
@@ -92,7 +91,7 @@ func TestP6ExitRecaptureLostSweep(t *testing.T) {
 		sh.tracks[7] = &beliefShadowTrack{
 			lastSeenMs:    nowMs - 70_000, // > 60s TTL = lost
 			stillBoxAgeMs: 0,              // < MovingPrecondition → moving→lost(进 lost-fall 域)
-			geom:          belief.GeomInToilet,
+			lastAreaType:  int(AreaToilet), // toilet 守恒判定读 lastAreaType(生产路径 :396 填,测试 seed 须显式)
 			lastX:         50, lastY: 50,
 			lostAnchor: nowMs - 70_000,
 		}

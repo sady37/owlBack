@@ -56,28 +56,11 @@ func TestAdapterFreshTrackPassesPose(t *testing.T) {
 	}
 }
 
-// AreaType → Geom 映射（纯函数，不需 grid）。
-func TestGeomFromArea(t *testing.T) {
-	cases := map[AreaType]belief.Geom{
-		AreaBed:    belief.GeomInBed,
-		AreaEnter:  belief.GeomInEnter,
-		AreaToilet: belief.GeomInToilet,
-		AreaShower: belief.GeomInToilet,
-		AreaActive: belief.GeomOpenFloor,
-		AreaSit:    belief.GeomOpenFloor,
-	}
-	for a, want := range cases {
-		if got := geomFromArea(a); got != want {
-			t.Fatalf("geomFromArea(%v)=%v want %v", a, got, want)
-		}
-	}
-}
-
 // 真跌倒：adapter → belief 端到端。开阔地板行走 → z 骤降 pose=fallen + firmware Fall 事件。
 func TestAdapterGenuineFallFires(t *testing.T) {
 	be := belief.New(belief.DefaultModel())
 	now := int64(1_000)
-	be.Step(now, []belief.Observation{{Kind: belief.ObsEnterExit, Value: 1, Conf: 0.9, Ts: now, Fresh: true, Geom: belief.GeomInEnter}})
+	be.Step(now, []belief.Observation{{Kind: belief.ObsEnterExit, Value: 1, Conf: 0.9, Ts: now, Fresh: true}})
 
 	z := 165
 	for i := 0; i < 5; i++ {
@@ -112,7 +95,7 @@ func TestAdapterGenuineFallFires(t *testing.T) {
 func TestAdapterJohnY9hNoFalseFire(t *testing.T) {
 	be := belief.New(belief.DefaultModel())
 	now := int64(1_000)
-	be.Step(now, []belief.Observation{{Kind: belief.ObsEnterExit, Value: 1, Conf: 0.9, Ts: now, Fresh: true, Geom: belief.GeomInEnter}})
+	be.Step(now, []belief.Observation{{Kind: belief.ObsEnterExit, Value: 1, Conf: 0.9, Ts: now, Fresh: true}})
 	// 走向床区边界
 	for i := 0; i < 4; i++ {
 		now += 1000
@@ -152,7 +135,7 @@ const thFireProbe = 0.55
 func TestMoMLostTrackVanishNoFire(t *testing.T) {
 	be := belief.New(belief.DefaultModel())
 	now := int64(1_000)
-	be.Step(now, []belief.Observation{{Kind: belief.ObsEnterExit, Value: 1, Conf: 0.9, Ts: now, Fresh: true, Geom: belief.GeomInEnter}})
+	be.Step(now, []belief.Observation{{Kind: belief.ObsEnterExit, Value: 1, Conf: 0.9, Ts: now, Fresh: true}})
 	// 浴室内行走几帧
 	for i := 0; i < 5; i++ {
 		now += 1000
@@ -336,8 +319,8 @@ func TestP4OpenFloorDwellToleranceGate(t *testing.T) {
 		return g
 	}
 	// 前置:坐标须判为开阔地,否则测的不是开阔地 dwell。
-	if g := geomFromGrid(mkGrid(0), px, py); g != belief.GeomOpenFloor {
-		t.Fatalf("前置失败:(%d,%d) geom=%v 期望 OpenFloor", px, py, g)
+	if a, _ := mkGrid(0).AreaTypeAt(px, py); !isOpenFloorArea(a) {
+		t.Fatalf("前置失败:(%d,%d) area=%v 期望 OpenFloor", px, py, a)
 	}
 
 	run := func(tolCount int) (belief.Vector, bool) {
@@ -383,8 +366,8 @@ func TestP4OpenFloorDwellToleranceGate(t *testing.T) {
 func TestP4ToiletDwellFires(t *testing.T) {
 	g := NewRoomGrid(800, 400, 0)
 	g.CellAt(50, 200).Belief[0].Type = AreaToilet // → GeomInToilet
-	if got := geomFromGrid(g, 50, 200); got != belief.GeomInToilet {
-		t.Fatalf("前置:(50,200) geom=%v 期望 InToilet", got)
+	if a, _ := g.AreaTypeAt(50, 200); a != AreaToilet {
+		t.Fatalf("前置:(50,200) area=%v 期望 Toilet", a)
 	}
 	be := belief.New(belief.DefaultModel())
 	now := int64(10_000_000)

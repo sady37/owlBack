@@ -72,38 +72,14 @@ const (
 	beliefNumberPeopleTTLMs = 70_000 // 审查51:number_people event 新鲜窗(firmware 分钟级 push,>1min stale 不喂 ObsNumberPeople)
 )
 
-// geomFromArea cell AreaType → belief.Geom。
-func geomFromArea(a AreaType) belief.Geom {
-	switch a {
-	case AreaBed:
-		return belief.GeomInBed
-	case AreaEnter:
-		return belief.GeomInEnter
-	case AreaToilet, AreaShower:
-		return belief.GeomInToilet
-	case AreaSit, AreaActive, AreaDeny:
-		return belief.GeomOpenFloor
-	default:
-		return belief.GeomUnknown
-	}
+// isOpenFloorArea cell area∈{Sit,Active,Deny} = 开阔地板（非 rest-zone 非门）。
+func isOpenFloorArea(a AreaType) bool {
+	return a == AreaSit || a == AreaActive || a == AreaDeny
 }
 
-// geomFromGrid device 坐标 ∩ layout → belief.Geom。近门优先判 Enter（离场二义性命门）。
-// P0:经 CellPrior 只读 accessor 取 cell 结果，不裸取 c.Belief[0]（§9 唯一耦合边）。
-func geomFromGrid(g *RoomGrid, x, y int) belief.Geom {
-	// nil-safety 收敛进 CellPrior accessor(g==nil → 门距 maxint / AreaTypeAt ok=false),此处不再重复。
-	if g.NearestEntryDistCm(x, y) <= beliefEnterMarginCm {
-		return belief.GeomInEnter
-	}
-	if a, ok := g.AreaTypeAt(x, y); ok {
-		return geomFromArea(a)
-	}
-	return belief.GeomUnknown
-}
-
-// geomTrustFromSource cell Source → geom 信任权重（provenance）。只对抑制跌倒的 rest geom 有意义。
+// areaConfFromSource cell Source → area provenance 信任权重。只对抑制跌倒的 rest-zone 有意义。
 // FE 画(SourceHuman)=1.0 全信(保现有 full 抑制)；feedback=0.6；纯自学=0.4 —— 越暂定抑制越弱。
-func geomTrustFromSource(s Source) float64 {
+func areaConfFromSource(s Source) float64 {
 	switch s {
 	case SourceFeedback:
 		return 0.6
@@ -114,9 +90,9 @@ func geomTrustFromSource(s Source) float64 {
 	}
 }
 
-// geomConfFromGrid 该 (x,y) geom 的 provenance 信任 [0,1]，喂 belief Observation.GeomConf。
-// 仅 rest-suppress geom(InBed/InToilet)按 cell Source 打折；Enter/开阔地板/Unknown 全信(1.0)。
-func geomConfFromGrid(g *RoomGrid, x, y int) float64 {
+// areaConfFromGrid 该 (x,y) area 的 provenance 信任 [0,1]，喂 belief Observation.AreaConf。
+// 仅 rest-suppress area(Bed/Toilet/Shower)按 cell Source 打折；Enter/开阔地板/Unknown 全信(1.0)。
+func areaConfFromGrid(g *RoomGrid, x, y int) float64 {
 	// nil-safety 收敛进 CellPrior accessor;g==nil → AreaTypeAt ok=false → 落 default 全信 1.0。
 	if g.NearestEntryDistCm(x, y) <= beliefEnterMarginCm {
 		return 1.0 // Enter 是几何，全信
@@ -126,9 +102,9 @@ func geomConfFromGrid(g *RoomGrid, x, y int) float64 {
 		return 1.0
 	}
 	switch a {
-	case AreaBed, AreaToilet, AreaShower: // 抑制跌倒的 rest geom → 按 provenance 给信任
+	case AreaBed, AreaToilet, AreaShower: // 抑制跌倒的 rest-zone → 按 provenance 给信任
 		s, _ := g.SourceAt(x, y)
-		return geomTrustFromSource(s)
+		return areaConfFromSource(s)
 	default:
 		return 1.0
 	}
@@ -148,8 +124,14 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 	if t.PositionZ != nil {
 		z = *t.PositionZ // P2.3:z 喂 ObsZBand posture(高度档),非 fall(R5)
 	}
-	g := geomFromGrid(grid, x, y)
-	gc := geomConfFromGrid(grid, x, y) // geom provenance 信任（FE 画=1 / feedback=.6 / 自学=.4）
+	// 权威源直填 ObsPose（取代 geom intermediate）：门距几何 + cell.area_type。门优先在 poseLikelihood 内复刻。
+	ac := areaConfFromGrid(grid, x, y) // area provenance 信任（FE 画=1 / feedback=.6 / 自学=.4）
+	nearDoor := grid.NearestEntryDistCm(x, y) <= beliefEnterMarginCm
+	var area AreaType
+	if a, ok := grid.AreaTypeAt(x, y); ok {
+		area = a
+	}
+	areaTypeAt := int(area)
 
 	tsFresh := nowMs-ts.LastObservedMs <= beliefRadarTTLMs
 	stillBox := ts.StillBoxRunStart > 0 && nowMs-ts.StillBoxRunStart >= beliefStillBoxStaleMs
@@ -182,16 +164,16 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 	// P4.4(裁决⑱ B2):开阔地 dwell 生存尾按 cell tolerance 拉长(被容忍久站→尾长→不报)。
 	// 只读 CellPrior(R3),不触学习;非开阔地不消费此值(toilet Z_cell-无关 / rest 不报)。
 	dwellTol := 1.0
-	if g == belief.GeomOpenFloor {
+	if !nearDoor && isOpenFloorArea(area) {
 		dwellTol = grid.ToleranceFactorAt(x, y)
 	}
 
 	out := []belief.Observation{
-		{Source: t.LogicID, Kind: belief.ObsPose, Value: float64(t.Pose), Conf: poseConf, Ts: nowMs, Fresh: motionFresh, Geom: g, GeomConf: gc},
-		{Source: t.LogicID, Kind: belief.ObsZBand, Value: float64(z), Conf: 0.7, Ts: nowMs, Fresh: motionFresh, Geom: g},                                         // P2.3 z 高度档 posture(不进 fall,R5)
-		{Source: t.LogicID, Kind: belief.ObsDwellStill, Value: dwellSec, Conf: 0.7, Ts: nowMs, Fresh: tsFresh, Geom: g, ToleranceFactor: dwellTol, Night: night}, // P4.1+P4.4 dwell 生存 ramp(开阔地带 tol gate)+P4.3 夜尾
-		{Source: t.LogicID, Kind: belief.ObsVitalPresent, Value: vitalVal, Conf: 0.6, Ts: nowMs, Fresh: motionFresh, Geom: g},
-		{Source: t.LogicID, Kind: belief.ObsTrackPresent, Value: ghost, Conf: 0.8, Ts: nowMs, Fresh: tsFresh, Geom: g},
+		{Source: t.LogicID, Kind: belief.ObsPose, Value: float64(t.Pose), Conf: poseConf, Ts: nowMs, Fresh: motionFresh, AreaConf: ac, AreaType: areaTypeAt, NearDoor: nearDoor},
+		{Source: t.LogicID, Kind: belief.ObsZBand, Value: float64(z), Conf: 0.7, Ts: nowMs, Fresh: motionFresh},                                         // P2.3 z 高度档 posture(不进 fall,R5)
+		{Source: t.LogicID, Kind: belief.ObsDwellStill, Value: dwellSec, Conf: 0.7, Ts: nowMs, Fresh: tsFresh, ToleranceFactor: dwellTol, Night: night}, // P4.1+P4.4 dwell 生存 ramp(开阔地带 tol gate)+P4.3 夜尾
+		{Source: t.LogicID, Kind: belief.ObsVitalPresent, Value: vitalVal, Conf: 0.6, Ts: nowMs, Fresh: motionFresh},
+		{Source: t.LogicID, Kind: belief.ObsTrackPresent, Value: ghost, Conf: 0.8, Ts: nowMs, Fresh: tsFresh},
 	}
 
 	// 注：no-detect **不在逐帧 adapter 里发**。它是「走动中突然消失」的**消失事件**，由 engine/replay
@@ -295,8 +277,8 @@ func isSelfRescueRecapture(lostAnchor, lastSeenMs, nowMs int64) bool {
 // exit/返回/reachableExit/np=0 经各自似然仲裁方向。geom 留作未来 geom 条件 no-detect（床/桶遮挡）扩展位。
 // noDetectObs P6.1a:no-detect 抬 Fallen 须门控。realnessP=P(R_i=real)(shadow realness σ(LO))、
 // doorExitP=P(door-exit)(reachableExitScore)——经 Observation 显式字段入 likelihood(1+gain·Ri·(1−doorExit))。
-func noDetectObs(g belief.Geom, realnessP, doorExitP float64, nowMs int64) belief.Observation {
-	return belief.Observation{Kind: belief.ObsNoDetect, Conf: 0.8, Ts: nowMs, Fresh: true, Geom: g, RealnessP: realnessP, DoorExitP: doorExitP}
+func noDetectObs(realnessP, doorExitP float64, nowMs int64) belief.Observation {
+	return belief.Observation{Kind: belief.ObsNoDetect, Conf: 0.8, Ts: nowMs, Fresh: true, RealnessP: realnessP, DoorExitP: doorExitP}
 }
 
 // deviceSpeedStat per-device 走速学习（P2.1）。雷达自测本住户走动段速度的 EWMA → 个性化封顶。
@@ -410,19 +392,19 @@ func reachableExitScore(distCm int, approachSpeedCmS float64) float64 {
 }
 
 // reachableExitObs Room 层（S）可达退场观测，与 noDetectObs 同 tick 对冲。
-func reachableExitObs(distCm int, approachSpeedCmS float64, g belief.Geom, nowMs int64) belief.Observation {
-	return belief.Observation{Kind: belief.ObsReachableExit, Value: reachableExitScore(distCm, approachSpeedCmS), Conf: 0.8, Ts: nowMs, Fresh: true, Geom: g}
+func reachableExitObs(distCm int, approachSpeedCmS float64, nowMs int64) belief.Observation {
+	return belief.Observation{Kind: belief.ObsReachableExit, Value: reachableExitScore(distCm, approachSpeedCmS), Conf: 0.8, Ts: nowMs, Fresh: true}
 }
 
 // radarEventToObs 离散 radar 事件 → Observation（EnterRoom/ExitRoom）。
 // WF-b(委员会 2026-06-08):firmware Fall **不进 shadow**——shadow 独立白盒由 pose/dwell/nodetect 自判
 // (R5-纯,不可信 firmware pose 不污染 belief);firmware Fall 事件仅留生产 gate/RecordRadarAlarm 路径。
-func radarEventToObs(eventName string, nowMs int64, g belief.Geom) (belief.Observation, bool) {
+func radarEventToObs(eventName string, nowMs int64) (belief.Observation, bool) {
 	switch eventName {
 	case alarm.EnterRoom:
-		return belief.Observation{Kind: belief.ObsEnterExit, Value: +1, Conf: 0.9, Ts: nowMs, Fresh: true, Geom: g}, true
+		return belief.Observation{Kind: belief.ObsEnterExit, Value: +1, Conf: 0.9, Ts: nowMs, Fresh: true}, true
 	case alarm.ExitRoom:
-		return belief.Observation{Kind: belief.ObsEnterExit, Value: -1, Conf: 0.9, Ts: nowMs, Fresh: true, Geom: g}, true
+		return belief.Observation{Kind: belief.ObsEnterExit, Value: -1, Conf: 0.9, Ts: nowMs, Fresh: true}, true
 	}
 	return belief.Observation{}, false
 }
@@ -439,8 +421,8 @@ func sleepadAdapter(o SleepadObservation, nowMs int64) []belief.Observation {
 		bedVal = 1
 	}
 	return []belief.Observation{
-		{Source: o.DeviceAddr, Kind: belief.ObsVitalPresent, Value: vitalVal, Conf: 0.9, Ts: o.TMs, Fresh: fresh, Geom: belief.GeomInBed},
-		{Source: o.DeviceAddr, Kind: belief.ObsBedOccupied, Value: bedVal, Conf: 0.9, Ts: o.TMs, Fresh: fresh, Geom: belief.GeomInBed},
+		{Source: o.DeviceAddr, Kind: belief.ObsVitalPresent, Value: vitalVal, Conf: 0.9, Ts: o.TMs, Fresh: fresh},
+		{Source: o.DeviceAddr, Kind: belief.ObsBedOccupied, Value: bedVal, Conf: 0.9, Ts: o.TMs, Fresh: fresh},
 	}
 }
 
@@ -452,14 +434,14 @@ func bedAdapter(b card.BedState, nowMs int64) []belief.Observation {
 		bedVal = 1
 	}
 	return []belief.Observation{
-		{Source: "bed", Kind: belief.ObsBedOccupied, Value: bedVal, Conf: float64(b.BedConfidence) / 100, Ts: b.BedStatusTs, Fresh: b.BedConfidence > 0, Geom: belief.GeomInBed},
+		{Source: "bed", Kind: belief.ObsBedOccupied, Value: bedVal, Conf: float64(b.BedConfidence) / 100, Ts: b.BedStatusTs, Fresh: b.BedConfidence > 0},
 	}
 }
 
 // neighborToObs §5.5.2 弱耦合：邻居 room 占用信念 → 本房 ObsNeighbor。
 // occ = 邻居 P(占用) [0,1]；conf = 邻居 belief 确定度。9h 治本近似：sleepad InBed 当 occ。
 func neighborToObs(occ, conf float64, nowMs int64) belief.Observation {
-	return belief.Observation{Kind: belief.ObsNeighbor, Value: clampUnit(occ), Conf: conf, Ts: nowMs, Fresh: true, Geom: belief.GeomUnknown}
+	return belief.Observation{Kind: belief.ObsNeighbor, Value: clampUnit(occ), Conf: conf, Ts: nowMs, Fresh: true}
 }
 
 // logBeliefObservations shadow 接线前的 log-only 出口：打一行 Observation 序列。

@@ -100,7 +100,7 @@ const (
 	dampPoseSitStand     = 0.8
 	lrPoseStand          = 6.0 // pose=standing → StandWalk(P9.6:z>80 权应 ≥ 此)
 	lrPoseStandSit       = 1.5
-	lrPoseFallenBase     = 8.0  // geom 未知
+	lrPoseFallenBase     = 8.0  // area 未知
 	lrPoseFallenInBed    = 1.5  // 床上 fallen 多躺姿误读,降权(仍 >1 正向)
 	lrPoseFallenOpen     = 10.0 // 开阔地板确认倒地,升权
 	dampPoseFallenStand  = 0.3
