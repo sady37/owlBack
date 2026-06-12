@@ -30,7 +30,7 @@ type TrackOutput struct {
 	X, Y, Z    int // 当前估计位置（画布坐标 cm）
 	VX, VY     int // cm/s
 	StillSec   int
-	Source     string // "radar_direct" / "engine_silent_leftbed" / "engine_lost" / "engine_still_fall" / ...
+	Source     string // 当前仅 "radar_direct"（firmware 直发 track）；推断型 fall 已迁出 gate-list → DBN belief shadow
 }
 
 // TrackFrame 一帧输入。X/Y/Z 是 engine 层 RadarToCanvas 转换后的画布坐标，供
@@ -60,11 +60,6 @@ type TrackManager struct {
 	tracks  map[int]*TrackState
 	outputs map[int]*TrackOutput
 
-	// pendingLostFalls：lost-fall 规则的挂起池。
-	// 时长按消失点 cell areaType（5min walkway / 60min bed / ...），含 StillBox 静止 credit；
-	// 取消条件：新 track 出生 / ExitRoom 事件 / room.NumberPeople ≥ 2。
-	pendingLostFalls map[int]*PendingLostFall
-
 	// lastRealTrackByDevice：每雷达设备最近一次本房观测到"真 track"的 ms（key=源 device_addr）。
 	// 同房多雷达占用对账：lost-fall fire 前若**另一台**雷达近期仍见真人 → 人还在房里被别台看着 → 抑制。
 	// 按"批次源设备"(frames[0].DeviceAddr) 记，绕开 tracks[trackID] 在多雷达房的 trackID 碰撞
@@ -86,15 +81,6 @@ type TrackManager struct {
 
 	// PR-9: v1 4 fall 计数器全部删除（bathroomRealCount / bedPersonCount / lastLeftBedAt / lastNumberPeopleZeroMs）。
 	// Phase C (PR-10/11) 用 SuiteCensus.BathroomCount + SuitePerson.AnchorRoomType + BedSession 重写。
-
-	// Lost fall 统计
-	lostFallPendingCreated   int
-	lostFallPendingCancelled int // 含 birth-recovery / ExitRoom 两类取消（PR-9 删除 NumberPeople 路径）
-	lostFallReported         int
-
-	// Silent fall（LeftBed 矛盾路径）统计
-	silentFallLeftbedReported  int
-	silentFallLeftbedCancelled int // wait 满但 radar 已离开 Bed 邻域 → 取消（人正常起床）
 
 	// PR-Bootstrap: v1 stillFallReportCount 已删除（v1 fire path 同时删除）。
 	// PR-10 BathroomFallRules 的统计走 ai.log audit 路径。
@@ -314,7 +300,6 @@ func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 		grid:                    grid,
 		tracks:                  make(map[int]*TrackState),
 		outputs:                 make(map[int]*TrackOutput),
-		pendingLostFalls:        make(map[int]*PendingLostFall),
 		lastRealTrackByDevice:   make(map[string]int64),
 		bedSessions:             make(map[string]*BedSession),
 		sleepadStates:           make(map[string]*SleepadObservation),
@@ -796,41 +781,6 @@ func (tm *TrackManager) ghostJudgable() bool {
 	return len(tm.tracks) >= 2
 }
 
-// anyActiveTrack 房内是否有任一 active（非 ghost）track。调用方持锁。
-func (tm *TrackManager) anyActiveTrack() bool {
-	for _, ts := range tm.tracks {
-		if ts.Verdict != VerdictGhost {
-			return true
-		}
-	}
-	return false
-}
-
-// latchRadarTrackForBedSessions 每 Tick：对仍在床（未 LeftBed）的 session，
-// 若 radar 当前有 active（非 ghost）track，latch RadarSawTrackMs + 该雷达 addr。
-// 供 Layer-1 区分"看到人" vs "全程无 track"，并给 vanish-fire 提供报警归因。调用方持锁。
-func (tm *TrackManager) latchRadarTrackForBedSessions(nowMs int64) {
-	if len(tm.bedSessions) == 0 {
-		return
-	}
-	addr := ""
-	for _, ts := range tm.tracks {
-		if ts.Verdict != VerdictGhost {
-			addr = ts.DeviceAddr
-			break
-		}
-	}
-	if addr == "" {
-		return
-	}
-	for _, s := range tm.bedSessions {
-		if s.InBedSinceMs > 0 && s.LeftBedAtMs == 0 {
-			s.RadarSawTrackMs = nowMs
-			s.RadarDeviceAddr = addr
-		}
-	}
-}
-
 // markRadarInBedCell PR-14：radar 报 InBed 事件时，把对应 track 当前位置 cell 锁为 AreaBed。
 // 设计：radar 事件本身就是空间证据，不再依赖 sleepad+HR/RR 一致期；
 // 双源一致只是 BedSession 触发条件，与"标床区"独立。
@@ -1104,28 +1054,6 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	if e.EventName == alarm.ExitRoom && e.TMs > tm.lastExitMs {
 		tm.lastExitMs = e.TMs
 	}
-	// ExitRoom 事件 → 取消所有挂起的 lost-fall（人正常走出房间，不再悬念）
-	// 注：silent fall 不取消（其语义是床上方遮挡，与 ExitRoom 无关）
-	if e.EventName == alarm.ExitRoom && len(tm.pendingLostFalls) > 0 {
-		for pid, p := range tm.pendingLostFalls {
-			tm.lostFallPendingCancelled++
-			tm.logger.Info("lost_fall_cancelled_by_exit_room",
-				zap.String("device_uid", p.DeviceAddr),
-				zap.Int("track_id", p.OriginalTrackID),
-				zap.String("room_id", p.RoomID),
-				zap.Int64("pending_age_ms", e.TMs-p.DisappearMs),
-				zap.Int64("exit_room_ms", e.TMs),
-			)
-			tm.emitDecision(p.DeviceAddr, p.LogicID, p.OriginalTrackID, p.LastRawH, p.LastRawV, p.LastRawZ,
-				"lostfall_cancel", "exit_room", map[string]interface{}{
-					"pending_age_ms": e.TMs - p.DisappearMs, "exit_room_ms": e.TMs,
-				}, e.TMs)
-			delete(tm.pendingLostFalls, pid)
-		}
-	}
-	// pendingLostFall 取消仅依赖 ExitRoom event / 多人入屋 / birth-recovery 三路径——
-	// 裸 np=0 永不取消（盲区/水气丢信号会假报 np=0）。np=0 仅在 bathroom_fall 里
-	// 与「最后帧在门区」合取后推断离开（见 evaluateLostFallStrong），不在此单独成立。
 }
 
 // LastNumberPeopleZeroMs 固件最近一次 number_people=0 的 ts（0 = 从未上报/最近 count≠0）。
@@ -1358,9 +1286,6 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		var quality, vx, vy, dtSec int
 
 		if !exists {
-			// 新 track 出生 — 是否有 pending lost-fall 在等候 → 人从盲区返回；取消 + 学习盲区出口
-			recoveredFromLost := tm.cancelPendingLostFallByBirth(f.X, f.Y, f.TMs)
-
 			ts = NewTrackState(f.TrackID, f.DeviceAddr, tm.roomID, f.X, f.Y, f.Z, f.TMs)
 			// logic_id：有 EnterRoom 配对 = 真新人进门 → 全新身份；无 enter = firmware
 			// 重用/跳变/分裂 → 继承最近存活 track 的 logic_id（跨 track_id 数据关联，
@@ -1397,16 +1322,6 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				ts.Score = ts.BirthScore
 				ts.GhostPenalty = b.penalty
 			}
-			// 盲区返回路径：直接给 Real verdict，绕过 ghost 检查
-			// （这是漏报场景下人从盲区返回的预期行为：track 看似凭空出现但实为真人）
-			if recoveredFromLost {
-				ts.Verdict = VerdictReal
-				ts.Score = ScoreConfirmTh
-				ts.BirthScore = ScoreConfirmTh
-				ts.BirthReason = "recovered_from_lost_fall"
-				ts.GhostPenalty = 0
-				ts.ConfirmedAtMs = f.TMs
-			}
 			tm.tracks[f.TrackID] = ts
 			ts.PrevCore = RadarPoseToCore(f.Pose)
 			ts.LastPose = f.Pose
@@ -1440,7 +1355,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			tm.scoreMovement(ts, f.X, f.Y, nowMs, f.Pose)
 			tm.detectZNoise(ts, f.Z)
 			tm.detectPoseMismatch(ts, f.Pose)
-			tm.updateLieStateMachine(ts, f.Pose, f.X, f.Y, f.Z, nowMs)
+			tm.updateLieStateMachine(ts, f.Pose, f.X, f.Y, nowMs)
 
 			quality = ts.Score
 			vxF, vyF := ts.Kalman.Velocity()
@@ -1498,86 +1413,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		if ts.Kalman.MissCount > MaxMissCount ||
 			unseenMs > trackEvictMaxMs ||
 			(noTargetSustained && unseenMs >= heartbeat88EvictMs) {
-			// 消失判定：lost fall（按 cell areaType 分时长，verdict 未定也算）
-			// PR-14：旧 Path 1（track 消失 + 60s 复现窗口）已删除——
-			// silent fall 仅由 BedSession LeftBed 矛盾路径触发（见 scanSilentFallLeftBed）。
-			//
-			// dedup：若该 track 已报过 bedside_fall（R4 床边晕倒，track 仍活时报），
-			// 跳过 lost_fall pending 入池——避免"15min static→bedside_fall fire→track
-			// 失锁→lost_fall 又 fire"的同事件双报。
-			if ts.BedsideFallReported {
-				tm.logger.Info("lost_fall_pending_skipped_after_bedside_fall",
-					zap.String("device_uid", ts.DeviceAddr),
-					zap.Int("track_id", ts.TrackID),
-					zap.Int64("ts_ms", nowMs),
-				)
-			} else if tm.hasOtherLiveTrackWithLogicID(ts.LogicID, id) {
-				// 换ID守恒闸：该 track_id 失锁，但其 logic_id 仍活在另一条 track 上 =
-				// 同一逻辑目标被 firmware 换了 ID（数量守恒，无人真消失，且非进出事件）→ 不入 pending。
-				// 铁律：不读 ghost verdict，纯靠身份连续性判"换ID游戏 vs 真消失"。
-				tm.lostFallPendingCancelled++
-				tm.logger.Info("lost_fall_skipped_id_swap",
-					zap.String("device_uid", ts.DeviceAddr),
-					zap.Int("track_id", ts.TrackID),
-					zap.String("logic_id", ts.LogicID),
-					zap.Int64("ts_ms", nowMs),
-				)
-				tm.emitDecision(ts.DeviceAddr, ts.LogicID, id, ts.LastRawH, ts.LastRawV, ts.LastRawZ,
-					"lostfall_suppress", "id_swap_logicid_alive", nil, nowMs)
-			} else if tm.roomLedgerEmpty() {
-				// 空房账闸：enter/exit 守恒下房间已空（最近 ExitRoom/np=0 晚于 EnterRoom）→
-				// 此刻失锁的 track 是"人走后残影"（如冻住的镜面反射）→ 抑制。治 D5F7 残影 ExitRoom 后才消失漏 cancel。
-				tm.lostFallPendingCancelled++
-				tm.logger.Info("lost_fall_skipped_room_empty",
-					zap.String("device_uid", ts.DeviceAddr),
-					zap.Int("track_id", ts.TrackID),
-					zap.String("logic_id", ts.LogicID),
-					zap.Int64("last_enter_ms", tm.lastEnterMs),
-					zap.Int64("last_exit_ms", tm.lastExitMs),
-					zap.Int("last_np", tm.lastNumberPeople), zap.Int64("last_np_ms", tm.lastNumberPeopleTs),
-					zap.Int64("ts_ms", nowMs),
-				)
-				tm.emitDecision(ts.DeviceAddr, ts.LogicID, id, ts.LastRawH, ts.LastRawV, ts.LastRawZ,
-					"lostfall_suppress", "room_ledger_empty", nil, nowMs)
-			} else if (ts.Verdict == VerdictReal || ts.Verdict == VerdictPending) && tm.checkLostFall(ts) {
-				// PR-9: v1 NumberPeople=0 ExitRoom 兜底（依赖 lastNumberPeopleZeroMs）已删除。
-				// PR-10 BathroomLostFall + PR-11 bedroom lost_fall 将以 SuiteCensus.BathroomCount
-				// + SuitePerson.AnchorRoomType 作离场判定主源；D523 firmware-specific 兜底（如仍需）
-				// 走 cardagg ExitRoom event 路径（不再 sensor 内置）。
-				pxF, pyF := ts.Kalman.Position()
-				px := int(math.Round(pxF))
-				py := int(math.Round(pyF))
-				cell := tm.grid.CellAt(px, py)
-				cellArea := AreaUnknown
-				if cell != nil {
-					cellArea = cell.Belief[0].Type
-				}
-				spatialJump := ts.MaxImpliedSpeedFromBirth > FallRulesParam.Lost.SuspectSpeedCm
-				tm.pendingLostFalls[id] = &PendingLostFall{
-					OriginalTrackID: id,
-					DeviceAddr:      ts.DeviceAddr,
-					RoomID:          ts.RoomID,
-					LogicID:         ts.LogicID,
-					LastX:           px,
-					LastY:           py,
-					LastZ:           ts.LastZ,
-					LastRawH:        ts.LastRawH,
-					LastRawV:        ts.LastRawV,
-					LastRawZ:        ts.LastRawZ,
-					LastScore:       ts.Score,
-					LastVerdict:     ts.Verdict,
-					LastCellArea:    cellArea,
-					DisappearMs:     nowMs,
-					StillBoxStartMs: ts.StillBoxRunStart,
-					SpatialJump:     spatialJump,
-				}
-				tm.lostFallPendingCreated++
-				tm.emitDecision(ts.DeviceAddr, ts.LogicID, id, ts.LastRawH, ts.LastRawV, ts.LastRawZ,
-					"lostfall_pending", "track_lost", map[string]interface{}{
-						"verdict": int(ts.Verdict), "score": ts.Score, "cell_area": int(cellArea),
-						"spatial_jump": spatialJump, "still_box_start_ms": ts.StillBoxRunStart,
-					}, nowMs)
-			} else if ts.Verdict == VerdictReal {
+			// track 消失：lost-fall 判定已迁出 gate-list（DBN belief shadow lost-track 路径）。
+			// 此处仅保留 PathBreak——非门区 Real track 突然消失的非 fall 异常标记。
+			if ts.Verdict == VerdictReal {
 				pxF, pyF := ts.Kalman.Position()
 				px := int(math.Round(pxF))
 				py := int(math.Round(pyF))
@@ -1688,9 +1526,8 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		}
 	}
 
-	// PR-14: 旧 Path 1（pendingSilentFalls 60s 超时报警）已删除。
-	// silent fall 现在仅通过 BedSession LeftBed 矛盾路径触发（scanSilentFallLeftBed）。
-	results := make([]TrackOutput, 0, len(tm.tracks)+len(tm.pendingLostFalls))
+	// 推断型 fall（lost / silent-leftbed / z-drop）已迁出 gate-list → DBN belief shadow。
+	results := make([]TrackOutput, 0, len(tm.tracks))
 
 	// 同房多雷达占用对账：记录本批次源设备本帧是否见到真 track（按批次设备记，绕 trackID 碰撞）。
 	if len(frames) > 0 {
@@ -1702,156 +1539,6 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			}
 		}
 	}
-
-	// ========== 段 4b: 扫挂起的 lost fall，按 cell-area-typed wait + StillBox 静止 credit 超时即报 ==========
-	// 取消条件已在他处处理（cancelPendingByBirth / handleExitRoom / numberPeopleCancel）。
-	// 此处仅扫超时触发：等待时间到达且未被取消 → 报 lost fall。
-	isRiskTime := IsNightTime(nowMs, tm.timezone)
-	for pid, p := range tm.pendingLostFalls {
-		waitMs := tm.lostFallWaitMs(p, isRiskTime)
-		if nowMs-p.DisappearMs < waitMs {
-			continue
-		}
-		// 实时再检多人入屋（与 birth/event 触发的取消互补；保 segment 4b 兜底）
-		if tm.realTrackCount() >= 2 {
-			tm.lostFallPendingCancelled++
-			tm.logger.Info("lost_fall_cancelled_by_multiple_real",
-				zap.String("device_uid", p.DeviceAddr),
-				zap.Int("track_id", p.OriginalTrackID),
-				zap.String("room_id", p.RoomID),
-				zap.Int64("nowMs", nowMs),
-			)
-			tm.emitDecision(p.DeviceAddr, p.LogicID, p.OriginalTrackID, p.LastRawH, p.LastRawV, p.LastRawZ,
-				"lostfall_cancel", "multiple_real", nil, nowMs)
-			delete(tm.pendingLostFalls, pid)
-			continue
-		}
-		// 同房多雷达占用对账（**仅单床房 bedCount==1**）：另一台雷达近期仍见真人 → 人还在房
-		// （被别台看着，本台只是丢/幻影）→ 抑制。治 D523 无床雷达持幻影、09E7 同房看到真人那类 lost_track FP。
-		// 双床房不启用：可能两位老人，A 摔(lost)+B 在场会被误压成漏报（宁报勿漏；固件确认跌倒不受此守卫影响）。
-		if tm.bedCount == 1 && tm.otherDeviceRealTrackRecent(p.DeviceAddr, nowMs) {
-			tm.lostFallPendingCancelled++
-			tm.logger.Info("lost_fall_cancelled_by_other_radar_in_room",
-				zap.String("device_uid", p.DeviceAddr),
-				zap.Int("track_id", p.OriginalTrackID),
-				zap.String("room_id", p.RoomID),
-				zap.Int64("nowMs", nowMs),
-			)
-			tm.emitDecision(p.DeviceAddr, p.LogicID, p.OriginalTrackID, p.LastRawH, p.LastRawV, p.LastRawZ,
-				"lostfall_cancel", "other_radar", nil, nowMs)
-			delete(tm.pendingLostFalls, pid)
-			continue
-		}
-		// 距离闸：丢轨点距雷达 > d_fall（≈500cm）→ 抑制。贴地/躺姿目标回波弱（加特兰 4T4R），
-		// 跌倒有效检测半径远小于人员检测半径；超出 d_fall 处即便真摔，firmware 也读不出地面态、
-		// 发不出 pose=5，lost_track 凭"消失"反推退化为结构性盲猜（治 D523 边缘 ~5.8m 丢轨误报）。
-		// 平面距 = √(LastRawH²+LastRawV²)（raw 雷达本地坐标，雷达在本地系原点）。依据 doc/AI_fall_detect.md §3.7。
-		if gate := FallRulesParam.Lost.DistanceGateCm; gate > 0 {
-			if distCm := distInt(p.LastRawH, p.LastRawV, 0, 0); distCm > gate {
-				tm.lostFallPendingCancelled++
-				tm.logger.Info("lost_fall_suppressed_by_distance_gate",
-					zap.String("device_uid", p.DeviceAddr),
-					zap.Int("track_id", p.OriginalTrackID),
-					zap.String("room_id", p.RoomID),
-					zap.Int("dist_cm", distCm),
-					zap.Int("gate_cm", gate),
-					zap.Int64("nowMs", nowMs),
-				)
-				tm.emitDecision(p.DeviceAddr, p.LogicID, p.OriginalTrackID, p.LastRawH, p.LastRawV, p.LastRawZ,
-					"lostfall_suppress", "distance_gate", map[string]interface{}{
-						"dist_cm": distCm, "gate_cm": gate,
-					}, nowMs)
-				delete(tm.pendingLostFalls, pid)
-				continue
-			}
-		}
-		// 超时 → MarkFallEvent + 写输出（kind=engine_lost_fall）
-		tm.lostFallReported++
-		tm.emitDecision(p.DeviceAddr, p.LogicID, p.OriginalTrackID, p.LastRawH, p.LastRawV, p.LastRawZ,
-			"lostfall_fire", "lost_track", map[string]interface{}{
-				"verdict": int(p.LastVerdict), "fall_score": p.LastScore, "cell_area": int(p.LastCellArea),
-				"spatial_jump": p.SpatialJump, "wait_ms": waitMs, "still_box_start_ms": p.StillBoxStartMs,
-			}, nowMs)
-		tm.grid.MarkFallEvent(p.LastX, p.LastY, nowMs)
-		// PR5c: 发布到 iot:alarm:stream，category=alarm.Fall（cardagg 现有 Fall handler 接管）。
-		// fall alarm 已是确认态——不再发 track_confidence/score（确信值无需信号），
-		// 子类型通过 Reason 区分（"lost_track"），fall 严重度进 Evidence.fall_score。
-		//
-		// engine_lost_fall 的 nowMs 是"engine 推断时刻"（= 实际跌倒后 wait_ms 才确认）。
-		// alarm.triggered_at 必须用"实际发生时刻"才能让用户在列表按时间找到这条 fall，
-		// 否则列表显示 08:35 / replay 中心 08:30 二者对不上。
-		// anchor：still_box_start_ms 优先（track 静止 ≈ 跌倒邻近时刻），
-		// 否则 nowMs - waitMs - 30s（最后活跃时刻 -30s 给 context）。
-		// engine 推断时刻 nowMs 作 envelope.Timestamp → alarm.alerted_at；anchor 作 IncidentMs → triggered_at。
-		replayAnchorMs := p.StillBoxStartMs
-		if replayAnchorMs <= 0 {
-			replayAnchorMs = nowMs - waitMs - 30_000
-		}
-		tm.emitAIAlarm(AIPayload{
-			DeviceAddr: p.DeviceAddr,
-			RoomID:     p.RoomID,
-			IncidentMs: replayAnchorMs,
-			Track: observation.Track{
-				BedStatus: observation.BedStatusUnchanged,
-				TrackID:   p.OriginalTrackID,
-				PositionX: intPtr(p.LastRawH),
-				PositionY: intPtr(p.LastRawV),
-				PositionZ: intPtr(p.LastRawZ),
-			},
-			Reason: ReasonLostTrack,
-			Evidence: map[string]interface{}{
-				"context":            "track_lost_no_exit_room_no_recovery",
-				"fall_score":         p.LastScore,
-				"still_box_start_ms": p.StillBoxStartMs,
-				"spatial_jump":       p.SpatialJump,
-				"cell_area_type":     int(p.LastCellArea),
-				"wait_ms":            waitMs,
-				"last_verdict":       int(p.LastVerdict),
-				"replay_anchor_ms":   replayAnchorMs,
-				"engine_fire_ms":     nowMs, // 引擎推断时刻（审计）
-			},
-		}, alarm.Fall, nowMs) // envelope.Timestamp = 决策时刻 → alerted_at；IncidentMs = anchor → triggered_at
-		tm.logger.Info("real_fall",
-			zap.String("device_uid", p.DeviceAddr),
-			zap.String("device_uid_hex", tm.devUIDHex(p.DeviceAddr)),
-			zap.Int("track_id", p.OriginalTrackID),
-			zap.String("kind", "engine_lost_fall"),
-			zap.Int("score", p.LastScore),
-			zap.Int("risk", 100),
-			zap.String("reason", "track_lost_no_exit_room_no_recovery"),
-			zap.Int("cell_area_type", int(p.LastCellArea)),
-			zap.Int64("still_box_start_ms", p.StillBoxStartMs),
-			zap.Bool("spatial_jump", p.SpatialJump),
-			zap.Int64("wait_ms", waitMs),
-			zap.Int("x", p.LastX), zap.Int("y", p.LastY), zap.Int("z", p.LastZ),
-			zap.Int64("anchor_ms", replayAnchorMs), // = alarm.triggered_at
-			zap.Int64("ts_ms", nowMs),              // engine 推断时刻
-			zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
-		)
-		out := TrackOutput{
-			TrackID:    p.OriginalTrackID,
-			DeviceAddr: p.DeviceAddr,
-			RoomID:     p.RoomID,
-			Verdict:    p.LastVerdict,
-			Score:      p.LastScore,
-			Risk:       100,
-			Anomaly:    AnomalyFall,
-			X:          p.LastX,
-			Y:          p.LastY,
-			Z:          p.LastZ,
-			Source:     "engine_lost",
-		}
-		results = append(results, out)
-		tm.outputs[p.OriginalTrackID] = &out
-		delete(tm.pendingLostFalls, pid)
-	}
-
-	// ========== 段 4c: 新版 Silent Fall（sleepad LeftBed + radar 仍在 Bed 邻域） ==========
-	// 触发：bedSession.LeftBedAtMs > 0，等待 60s（vital + 单人）/ 120s（其它），
-	//       超时仍有任一活 track 在 AreaBed ±BedNeighborhood cm 内 → 矛盾报警。
-	// 否则取消（人正常起床，radar 也离床区）。
-	tm.latchRadarTrackForBedSessions(nowMs) // Layer-1：在床期间持续记录 radar 是否看到人
-	results = append(results, tm.scanSilentFallLeftBed(nowMs)...)
 
 	// ========== 段 4d: L1 mirror pair 检测 + 自学习 ==========
 	// 跨 track 几何对称检测（无 layout 镜面坐标先验），命中 → ghost 端 GhostPenalty +50
@@ -1914,288 +1601,6 @@ func (tm *TrackManager) GetOutputs() []TrackOutput {
 		out = append(out, *o)
 	}
 	return out
-}
-
-// hasPendingLostFallInRoom 当前房间是否有挂起的 lost-fall（与 RoomID 等价于 tm.roomID）。
-// 用于 birth verdict bypass：人从盲区返回时新 track 不该被判 ghost。
-// 调用方持锁。
-func (tm *TrackManager) hasPendingLostFallInRoom() bool {
-	return len(tm.pendingLostFalls) > 0
-}
-
-// cancelPendingLostFallByBirth 新 track 出生时尝试取消挂起的 lost-fall。
-//
-// 不限位置 + 不限 birth pose（人从盲区任何角度返回都算）。
-// 命中时：① 取消 pending ② cell.IncrBlindSpotRecovery（学习盲区出口） ③ 累计 cancelled 统计。
-//
-// 返回是否命中（调用方据此决定是否给新 track verdict 直接 Real / 加分）。
-func (tm *TrackManager) cancelPendingLostFallByBirth(birthX, birthY int, nowMs int64) bool {
-	if len(tm.pendingLostFalls) == 0 {
-		return false
-	}
-	// 单房间一般只有 1 个 pending；遍历全部，全部取消（人回来 = 所有 lost 候选都解除）
-	hit := false
-	for pid, p := range tm.pendingLostFalls {
-		hit = true
-		tm.lostFallPendingCancelled++
-		tm.logger.Info("lost_fall_cancelled_by_recovery",
-			zap.String("device_uid", p.DeviceAddr),
-			zap.Int("track_id", p.OriginalTrackID),
-			zap.String("room_id", p.RoomID),
-			zap.Int64("pending_age_ms", nowMs-p.DisappearMs),
-			zap.Int("recovered_at_x", birthX), zap.Int("recovered_at_y", birthY),
-		)
-		delete(tm.pendingLostFalls, pid)
-	}
-	if hit {
-		// 学习盲区出口：人在新 track 出生位置 cell 累计一个 BlindSpotRecovery
-		tm.grid.MarkBlindSpotRecovery(birthX, birthY, nowMs)
-	}
-	return hit
-}
-
-// scanSilentFallLeftBed 扫描所有 BedSession，对到达等待窗的 LeftBed 进行裁决：
-//
-//	radar 仍在 Bed 邻域 → silent fall（矛盾，疑似跌倒地面 / 床边）
-//	radar 已离开 Bed 邻域 → 取消（人正常起床走开）
-//
-// Bed 邻域定义：任一 active track 距离最近 AreaBed cell ≤ FallRulesParam.Silent.BedNeighborhood cm。
-// 调用方持锁。
-func (tm *TrackManager) scanSilentFallLeftBed(nowMs int64) []TrackOutput {
-	if len(tm.bedSessions) == 0 {
-		return nil
-	}
-	param := FallRulesParam.Silent
-	var out []TrackOutput
-	for _, s := range tm.bedSessions {
-		if s.LeftBedAtMs == 0 || s.SilentFallAlerted {
-			continue
-		}
-		// 武装放宽（2026-06-04）：sleepad InBed 单独即可进入等待窗（接触式正向证据，
-		// "sleepad 未报上床不否定上床"）。radar 印证度不再作硬闸，改由 InBedConfidence
-		// 在 vanish-fire 分支门控（radar 全程无 track 的低置信=可能 EMI 假上床 → 不发）。
-		waitSec := param.WaitNoVitalSec
-		if s.LeftBedHadHRRR && s.LeftBedMaxPeople == 1 {
-			waitSec = param.WaitVitalSec
-		}
-		if nowMs-s.LeftBedAtMs < int64(waitSec)*1000 {
-			continue
-		}
-		// 等待窗满 — 检查 radar 是否仍在 Bed 邻域
-		if tm.anyActiveTrackNearBed(param.BedNeighborhood) {
-			// 矛盾 → 候选 silent fall；但需先过 AreaBed 人工标定躺区豁免（详 fall_exempt.go）
-			x, y, z, rawH, rawV, rawZ, scoreVal, verdict, deviceAddr := tm.pickActiveTrackNearBed(param.BedNeighborhood)
-			if isHumanBedAt(tm.grid, x, y) {
-				// 人就在人工标定的床上 — 不报；按 cancel 路径收尾（sleepad miscalibration 假阳）
-				tm.silentFallLeftbedCancelled++
-				tm.logger.Info("silent_fall_leftbed_exempt_human_bed",
-					zap.String("sleepad_uid", s.DeviceUID),
-					zap.String("device_uid", deviceAddr),
-					zap.Int64("leftbed_ms", s.LeftBedAtMs),
-					zap.Int("x", x), zap.Int("y", y),
-				)
-				s.SilentFallAlerted = true
-				s.InBedSinceMs = 0
-				continue
-			}
-			// 矛盾 → 报 silent fall
-			s.SilentFallAlerted = true
-			tm.silentFallLeftbedReported++
-			tm.grid.MarkFallEvent(x, y, nowMs)
-			// PR5c: alarm.Fall + Reason 区分子类型；BedStatus=1 反映 sleepad LeftBed 触发。
-			// fall 已确认，不发 track_confidence；fall 严重度进 Evidence.fall_score。
-			tm.emitAIAlarm(AIPayload{
-				DeviceAddr: deviceAddr,
-				RoomID:     tm.roomID,
-				IncidentMs: s.LeftBedAtMs,
-				Track: observation.Track{
-					PositionX: intPtr(rawH),
-					PositionY: intPtr(rawV),
-					PositionZ: intPtr(rawZ),
-					BedStatus: observation.BedStatusLeftBed, // sleepad 报 LeftBed
-				},
-				Reason: ReasonSleepadRadarConflict,
-				Evidence: map[string]interface{}{
-					"context":          "sleepad_leftbed_radar_still_on_bed",
-					"fall_score":       scoreVal,
-					"radar_verdict":    int(verdict),
-					"sleepad_uid":      s.DeviceUID,
-					"had_hr_rr":        s.LeftBedHadHRRR,
-					"max_people":       s.LeftBedMaxPeople,
-					"wait_sec":         waitSec,
-					"leftbed_ms":       s.LeftBedAtMs,
-					"replay_anchor_ms": s.LeftBedAtMs, // sleepad LeftBed 时刻 = 跌倒矛盾起点
-					"engine_fire_ms":   nowMs,         // 引擎确认时刻（审计）
-				},
-			}, alarm.Fall, nowMs) // envelope.Timestamp = 决策时刻 → alerted_at；IncidentMs = LeftBed → triggered_at
-			tm.logger.Info("real_fall",
-				zap.String("device_uid", deviceAddr),
-				zap.String("device_uid_hex", tm.devUIDHex(deviceAddr)),
-				zap.String("kind", "engine_silent_leftbed"),
-				zap.String("sleepad_uid", s.DeviceUID),
-				zap.Int("score", scoreVal),
-				zap.Int("risk", 100),
-				zap.String("reason", "sleepad_leftbed_radar_still_on_bed"),
-				zap.Bool("had_hr_rr", s.LeftBedHadHRRR),
-				zap.Int("max_people", s.LeftBedMaxPeople),
-				zap.Int("wait_sec", waitSec),
-				zap.Int64("leftbed_ms", s.LeftBedAtMs),
-				zap.Int("x", x), zap.Int("y", y), zap.Int("z", z),
-				zap.Int64("anchor_ms", s.LeftBedAtMs), // = alarm.triggered_at
-				zap.Int64("ts_ms", nowMs),             // engine 推断时刻
-				zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
-			)
-			out = append(out, TrackOutput{
-				DeviceAddr: deviceAddr,
-				RoomID:     tm.roomID,
-				Verdict:    verdict,
-				Score:      scoreVal,
-				Risk:       100,
-				Anomaly:    AnomalyFall,
-				X:          x,
-				Y:          y,
-				Z:          z,
-				Source:     "engine_silent_leftbed",
-			})
-		} else if tm.anyActiveTrack() {
-			// 人起身在房内走动，radar 看得见 = 已交代 → 取消
-			tm.silentFallLeftbedCancelled++
-			tm.logger.Info("silent_fall_leftbed_cancelled",
-				zap.String("reason", "active_track_in_room"),
-				zap.String("sleepad_uid", s.DeviceUID),
-				zap.Int64("leftbed_ms", s.LeftBedAtMs),
-			)
-			s.SilentFallAlerted = true
-			s.InBedSinceMs = 0
-		} else if tm.roomLedgerEmpty() {
-			// 人过门走了（ExitRoom 空间证据）= 正常离开 → 取消
-			tm.silentFallLeftbedCancelled++
-			tm.logger.Info("silent_fall_leftbed_cancelled",
-				zap.String("reason", "exited_room"),
-				zap.String("sleepad_uid", s.DeviceUID),
-				zap.Int64("leftbed_ms", s.LeftBedAtMs),
-			)
-			s.SilentFallAlerted = true
-			s.InBedSinceMs = 0
-		} else if s.InBedConfidence >= bedVanishMinConf && s.RadarDeviceAddr != "" {
-			// vanish-fire：sleepad 证明离床 + 房内无 track + 未过门 + 床态置信足够
-			//   = 人离床后在房内消失（既没走出门、雷达也找不到）→ 摔进遮挡死角（床后/床下）。
-			// 治本 Case1 那类"干净摔进死角"：lost_fall 被静止前置守卫挡掉，唯有 sleepad
-			// LeftBed 正向证据能锚定。低置信（radar 全程没看到人=可能 EMI 假上床）走 else 不发。
-			s.SilentFallAlerted = true
-			tm.silentFallLeftbedReported++
-			tm.emitAIAlarm(AIPayload{
-				DeviceAddr: s.RadarDeviceAddr,
-				RoomID:     tm.roomID,
-				IncidentMs: s.LeftBedAtMs,
-				Track:      observation.Track{BedStatus: observation.BedStatusLeftBed},
-				Reason:     ReasonSleepadRadarConflict,
-				Evidence: map[string]interface{}{
-					"context":           "sleepad_leftbed_vanished_no_exit",
-					"in_bed_confidence": s.InBedConfidence,
-					"sleepad_uid":       s.DeviceUID,
-					"had_hr_rr":         s.LeftBedHadHRRR,
-					"wait_sec":          waitSec,
-					"leftbed_ms":        s.LeftBedAtMs,
-					"replay_anchor_ms":  s.LeftBedAtMs,
-					"engine_fire_ms":    nowMs,
-				},
-			}, alarm.Fall, nowMs)
-			tm.logger.Info("real_fall",
-				zap.String("device_uid", s.RadarDeviceAddr),
-				zap.String("kind", "engine_silent_leftbed_vanished"),
-				zap.String("sleepad_uid", s.DeviceUID),
-				zap.Int("in_bed_confidence", s.InBedConfidence),
-				zap.Int("risk", 100),
-				zap.String("reason", "sleepad_leftbed_vanished_no_exit"),
-				zap.Bool("had_hr_rr", s.LeftBedHadHRRR),
-				zap.Int("wait_sec", waitSec),
-				zap.Int64("leftbed_ms", s.LeftBedAtMs),
-				zap.Int64("anchor_ms", s.LeftBedAtMs),
-				zap.Int64("ts_ms", nowMs),
-				zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
-			)
-			out = append(out, TrackOutput{
-				DeviceAddr: s.RadarDeviceAddr,
-				RoomID:     tm.roomID,
-				Verdict:    VerdictReal,
-				Risk:       100,
-				Anomaly:    AnomalyFall,
-				Source:     "engine_silent_leftbed_vanished",
-			})
-			s.InBedSinceMs = 0
-		} else {
-			// 床态置信不足（radar 全程没看到人=可能震动/EMI 假上床）或无雷达归因 → 不发，取消
-			tm.silentFallLeftbedCancelled++
-			tm.logger.Info("silent_fall_leftbed_cancelled",
-				zap.String("reason", "low_confidence_or_no_radar"),
-				zap.Int("in_bed_confidence", s.InBedConfidence),
-				zap.String("sleepad_uid", s.DeviceUID),
-				zap.Int64("leftbed_ms", s.LeftBedAtMs),
-			)
-			s.SilentFallAlerted = true
-			s.InBedSinceMs = 0
-		}
-	}
-	return out
-}
-
-// anyActiveTrackNearBed 是否有任一 active track 距 AreaBed cell ≤ marginCm。
-// 调用方持锁。
-func (tm *TrackManager) anyActiveTrackNearBed(marginCm int) bool {
-	for _, t := range tm.tracks {
-		pxF, pyF := t.Kalman.Position()
-		px, py := int(math.Round(pxF)), int(math.Round(pyF))
-		if tm.grid.IsNearPriorType(px, py, AreaBed, marginCm) {
-			return true
-		}
-	}
-	return false
-}
-
-// pickActiveTrackNearBed 取最近 Bed 的 active track 信息（用于告警坐标）。
-// 找不到时返回 (0,0,0, 0, VerdictReal, "")（此时调用方已确认 anyActiveTrackNearBed=true，理论上不会走 fallback）。
-// 返回 canvas 坐标（x/y 给 grid 用）+ raw radar 坐标（rawH/rawV/rawZ 给 alarm publish 用，对外契约不变）。
-func (tm *TrackManager) pickActiveTrackNearBed(marginCm int) (x, y, z, rawH, rawV, rawZ, score int, verdict TrackVerdict, deviceAddr string) {
-	for _, t := range tm.tracks {
-		pxF, pyF := t.Kalman.Position()
-		px, py := int(math.Round(pxF)), int(math.Round(pyF))
-		if tm.grid.IsNearPriorType(px, py, AreaBed, marginCm) {
-			return px, py, t.LastZ, t.LastRawH, t.LastRawV, t.LastRawZ, t.Score, t.Verdict, t.DeviceAddr
-		}
-	}
-	return 0, 0, 0, 0, 0, 0, 0, VerdictReal, ""
-}
-
-// LostFallStats lost-fall 统计快照（含三类 cancel 来源汇总）
-type LostFallStats struct {
-	PendingCreated   int // 进入挂起的总数
-	PendingCancelled int // 取消累计（含 birth-recovery / ExitRoom / 多人入屋）
-	Reported         int // 超时真报的 lost fall 数量
-	Outstanding      int // 当前仍在挂起池中
-}
-
-// LostFallStatsSnapshot 返回 lost-fall 累计统计
-func (tm *TrackManager) LostFallStatsSnapshot() LostFallStats {
-	return LostFallStats{
-		PendingCreated:   tm.lostFallPendingCreated,
-		PendingCancelled: tm.lostFallPendingCancelled,
-		Reported:         tm.lostFallReported,
-		Outstanding:      len(tm.pendingLostFalls),
-	}
-}
-
-// SilentFallLeftBedStats 新版 silent fall（sleepad LeftBed + radar 仍在 bed）统计
-type SilentFallLeftBedStats struct {
-	Reported  int // 报警次数
-	Cancelled int // 等待窗满但 radar 也离床 → 取消
-}
-
-func (tm *TrackManager) SilentFallLeftBedStatsSnapshot() SilentFallLeftBedStats {
-	return SilentFallLeftBedStats{
-		Reported:  tm.silentFallLeftbedReported,
-		Cancelled: tm.silentFallLeftbedCancelled,
-	}
 }
 
 // PR-Bootstrap: StillFallStats + stillFallReportCount 已删除（v1 fire path 删除后无 source）。
@@ -3020,7 +2425,7 @@ func (tm *TrackManager) detectPoseMismatch(ts *TrackState, pose int) {
 //                    Stand/Move → Lie + Z 骤降 = FallEvent
 // ========================================================================
 
-func (tm *TrackManager) updateLieStateMachine(ts *TrackState, pose, x, y, z int, nowMs int64) {
+func (tm *TrackManager) updateLieStateMachine(ts *TrackState, pose, x, y int, nowMs int64) {
 	curCore := RadarPoseToCore(pose)
 	prevCore := ts.PrevCore
 
@@ -3029,25 +2434,6 @@ func (tm *TrackManager) updateLieStateMachine(ts *TrackState, pose, x, y, z int,
 		ts.LieEnteredAt = nowMs
 		ts.LieEnteredX = x
 		ts.LieEnteredY = y
-
-		// 自推 Fall：前姿态是 Stand/Move 且 Z 骤降
-		if (prevCore == CorePoseStand || prevCore == CorePoseMove) &&
-			ts.LastZ > 50 && z < 20 {
-			tm.grid.MarkFallEvent(x, y, nowMs)
-			ts.CurrentAnomaly = AnomalyFall
-			tm.logger.Info("real_fall",
-				zap.String("device_uid", ts.DeviceAddr),
-				zap.String("device_uid_hex", tm.devUIDHex(ts.DeviceAddr)),
-				zap.Int("track_id", ts.TrackID),
-				zap.String("kind", "engine_z_drop"),
-				zap.Int("score", ts.Score),
-				zap.Int("risk", 100),
-				zap.String("reason", "stand_or_move_to_lie_with_z_drop"),
-				zap.Int("x", x), zap.Int("y", y), zap.Int("z", z),
-				zap.Int("prev_z", ts.LastZ),
-				zap.Int64("ts_ms", nowMs),
-			)
-		}
 	}
 
 	// 退出 Lie 态
@@ -3064,103 +2450,6 @@ func (tm *TrackManager) updateLieStateMachine(ts *TrackState, pose, x, y, z int,
 	}
 
 	ts.PrevCore = curCore
-}
-
-// ========================================================================
-// Lost Fall（cell-area-typed wait + ExitRoom + NumberPeople 兜底）
-// ========================================================================
-
-// checkLostFall 判断 track 消失是否符合 lost-fall 触发条件。
-//
-//	Real/Pending verdict + age≥5s + 离任一出口 > ExitDistMinCm（全屋通用）
-//
-// PR-14：旧 silent fall path（消失 + 60s 复现窗口）已删除；
-// silent fall 现在仅通过 BedSession LeftBed 矛盾路径触发（scanSilentFallLeftBed）。
-func (tm *TrackManager) checkLostFall(ts *TrackState) bool {
-	if ts.AgeSec() < 5 {
-		return false
-	}
-	// 走动前置（2026-06-01）：lost-fall 仅认"走动中突然消失"。消失前若已 settle 进长静止
-	// （still-box 持续 ≥ MovingPreconditionMs）= 站洗手台/坐马桶/卧床不动 = 正常静止态，
-	// 归 Still-fall 域（长阈值兜底），不进 lost-fall。box-based still-box 抗坐姿 jitter。
-	// 治本：CABB/MoM 多条冻结站/坐 lost_track FP（无真跌倒）。
-	if ts.StillBoxRunStart > 0 &&
-		ts.LastObservedMs-ts.StillBoxRunStart >= int64(FallRulesParam.Lost.MovingPreconditionMs) {
-		return false
-	}
-	pxF, pyF := ts.Kalman.Position()
-	px := int(math.Round(pxF))
-	py := int(math.Round(pyF))
-	cell := tm.grid.CellAt(px, py)
-	if cell == nil {
-		return false
-	}
-	// 出门正常 — 在 Enter 区消失合法
-	if cell.Belief[0].Type == AreaEnter {
-		return false
-	}
-	// 离最近门 ≤ ExitDistMinCm（30cm）视为「贴在门口正常通过」；>30cm 即使无
-	// ExitRoom 事件也进 lost-fall pending（elder care 宁可误报）。
-	if tm.grid.NearestEntryDist(px, py) <= FallRulesParam.Lost.ExitDistMinCm {
-		return false
-	}
-	return true
-}
-
-// lostFallWaitMs 计算 lost-fall pending 的等待时长（毫秒）。
-//
-// 基线按消失点 cell areaType：
-//   - AreaBed / AreaSit：60min（睡觉/坐着雷达丢 track 常见）
-//   - AreaToilet / AreaShower：与 still fall 同（risk-time / non-risk-time）
-//   - AreaDeny / 其它：5min
-//
-// StillBox 静止 credit（box 判据）：失锁前 30s 内位移 box <= StillBoxCm 视为 still，
-//
-//	StillBoxStartMs 是该 still box run 起点，stillDur = DisappearMs - StillBoxStartMs，
-//	credit = stillDur / 2 半计入等待。
-//
-// SpatialJump factor：track 表现过空间跳跃 → 等待时间 ×0.5（更敏感）
-// 兜底：min EffectiveWaitFloorSec
-func (tm *TrackManager) lostFallWaitMs(p *PendingLostFall, isRiskTime bool) int64 {
-	pl := FallRulesParam.Lost
-	var base int
-	// bathroom 长档判据（与 bathroom still-fall 同时长）：
-	//   ① 整房 room_type==Bathroom（权威标志，即便未画 Toilet/Shower 子区、cell_area=0 也放宽）；
-	//   ② 否则按消失点 cell areaType ∈ {Toilet, Shower}。
-	// 治本：CABB「叫 Bathroom 但无声明子区」lost_track FP——原 cell_area=0 落 Walkway 5min 误报。
-	bathroomStd := tm.roomType == card.RoomTypeBathroom || p.LastCellArea == AreaToilet || p.LastCellArea == AreaShower
-	switch {
-	case bathroomStd:
-		if isRiskTime {
-			base = FallRulesParam.Still.ToiletShowerSec
-		} else {
-			base = int(float64(FallRulesParam.Still.ToiletShowerSec) * FallRulesParam.Still.NonRiskTimeFactor)
-		}
-	case p.LastCellArea == AreaBed || p.LastCellArea == AreaSit:
-		base = pl.RestZoneWaitSec
-	case p.LastCellArea == AreaDeny:
-		base = pl.DenyZoneWaitSec
-	default:
-		base = pl.WalkwayWaitSec
-	}
-
-	// StillBox 静止 credit：half of still box duration counted toward wait
-	if p.StillBoxStartMs > 0 {
-		stillDurMs := p.DisappearMs - p.StillBoxStartMs
-		if stillDurMs > 0 {
-			base -= int(stillDurMs / 2 / 1000)
-		}
-	}
-
-	// Spatial jump factor
-	if p.SpatialJump {
-		base = int(float64(base) * pl.SpatialJumpFactor)
-	}
-
-	if base < pl.EffectiveWaitFloorSec {
-		base = pl.EffectiveWaitFloorSec
-	}
-	return int64(base) * 1000
 }
 
 // ========================================================================

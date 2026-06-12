@@ -1079,8 +1079,8 @@ func (e *Engine) PublishAIEvent(ctx context.Context, p AIPayload, category strin
 		streamDef.Name, streamDef.MaxLen, streamDef.RetentionSeconds, nowMs)
 }
 
-// PublishAIAlarm 发布 AI 派生 alarm 到 iot:alarm:stream。
-// category ∈ {"silent_fall", "still_fall", "lost_fall", "silent_leftbed_fall", "bedside_fall"}
+// PublishAIAlarm 发布 AI 派生 alarm 到 iot:alarm:stream。category = alarm 类别常量（alarm.Fall 等）；
+// fall 子类型成因走 AIPayload.Reason（DBN belief shadow 的 dbn_* reason 词表）。
 //
 // alarm 路径不受 mode 影响 fire 决策（"宁可误报不可漏报"），mode 仅控制是否推到 stream。
 func (e *Engine) PublishAIAlarm(ctx context.Context, p AIPayload, category string, nowMs int64) {

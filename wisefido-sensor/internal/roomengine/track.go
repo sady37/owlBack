@@ -100,9 +100,6 @@ type TrackState struct {
 	StillX, StillY    int
 	LongStillReported bool // 防 LongStill 重复上报
 	StillFallReported bool // 防 still-fall 重复上报（bathroom + pose=Stand + 15/18min）
-	// BedsideFallReported R4 床边晕倒已报过 → lost_fall pending 入池跳过该 track，
-	// 防双报（track 仍活时报 bedside_fall，后续 firmware 丢失 track 又触发 lost_fall）
-	BedsideFallReported bool
 
 	// ---- PR-7.2 stand-static 自学习 → AreaSit 强化 ----
 	// StandStaticSince：pose=Stand 且静止的起点 ms（0 = 不在 stand-static 状态）。
@@ -240,28 +237,6 @@ type BedSession struct {
 	RadarSawTrackMs       int64  // 本次 session 内 radar 有过 active(非 ghost) track 的最近时刻（区分"看到人但不在床" vs "全程无 track"）
 	RadarDeviceAddr       string // session 内监视本房的雷达 /128（vanish-fire 无 track 时的报警归因）
 	InBedConfidence       int    // Layer-1 融合上床置信，LeftBed 时 latch；< bedVanishMinConf 抑制 vanish-fire（防震动/EMI 假上床）
-}
-
-// PendingLostFall 已消失但等待 cell-area-typed 时长复现窗口的 track（lost-fall 规则）。
-//
-// 等待时长按消失点 cell areaType（5min~1h）+ StillBox 静止 credit；
-// 触发：track 消失 + checkLostFall 通过（离门 >1m，非 Enter 区，年龄足够）
-// 取消：① 新 track 出生（含 BlindSpotRecovery 反馈）② ExitRoom 事件 ③ room.NumberPeople ≥ 2
-type PendingLostFall struct {
-	OriginalTrackID int
-	DeviceAddr      string
-	RoomID          string
-	LogicID         string // 出生锚定的稳定逻辑身份（沿用自 TrackState.LogicID）
-	LastX, LastY    int // 画布坐标（grid 落点用）
-	LastZ           int
-	// firmware 直发的最后一帧 raw 雷达本地坐标 — alarm publish 时用，对外语义同 monitor_stream
-	LastRawH, LastRawV, LastRawZ int
-	LastScore                    int
-	LastVerdict                  TrackVerdict
-	LastCellArea                 AreaType // 消失点 cell.Belief[0].Type，决定 wait 时长
-	DisappearMs                  int64
-	StillBoxStartMs              int64 // 0 = 无 still box run；>0 = run 起点（半计入 wait credit + PR-C 守卫）
-	SpatialJump                  bool  // MaxImpliedSpeedFromBirth > SuspectSpeedCm（更敏感）
 }
 
 // NewTrackState 新 track 出生

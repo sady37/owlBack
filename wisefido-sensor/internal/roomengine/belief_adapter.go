@@ -284,9 +284,9 @@ func realnessStep(prevLO, dtSec float64, moving, jumpGhost, frozenGhost bool) (f
 func realnessPFromLO(lo float64) float64 { return 1.0 / (1.0 + math.Exp(-lo)) }
 
 // isSelfRescueRecapture — P3.4:曾丢失(lostAnchor>0 = lost-fall ramping)的 track 返回、且丢失 ≥ 阈
-// → self-rescue candidate(跌后自救可能)。production cancelPendingLostFallByBirth **硬 cancel** pending
-// lost-fall(人回来=全清,R0 不动);shadow **不硬 cancel**,标 self-rescue 留低 severity(只 log 不 fire,R1)——
-// 否则把"摔了又自己爬回来"当没事抹掉(对齐记忆 silent_leftbed_fall_recovery_window_gap)。
+// → self-rescue candidate(跌后自救可能)。gate-list lost-fall 退役后,跌后返回的取消/认定全归 DBN
+// belief shadow:标 self-rescue 留低 severity(只 log 不 fire,R1)——否则把"摔了又自己爬回来"当没事抹掉
+// (对齐记忆 silent_leftbed_fall_recovery_window_gap)。
 func isSelfRescueRecapture(lostAnchor, lastSeenMs, nowMs int64) bool {
 	return lostAnchor > 0 && nowMs-lastSeenMs >= beliefSelfRescueMinGapMs
 }

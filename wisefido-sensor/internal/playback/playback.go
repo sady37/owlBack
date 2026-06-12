@@ -78,18 +78,6 @@ type Result struct {
 	TotalFrames int        `json:"total_frames"`
 	GridW       int        `json:"grid_w"` // 优化后的 grid 尺寸
 	GridH       int        `json:"grid_h"`
-	// Lost Fall 挂起机制统计（cell-area-typed wait + ExitRoom + 多人 cancel）
-	LostFallPendingCreated   int `json:"lost_fall_pending_created"`
-	LostFallPendingCancelled int `json:"lost_fall_pending_cancelled"`
-	LostFallReported         int `json:"lost_fall_reported"`
-	LostFallOutstanding      int `json:"lost_fall_outstanding"`
-
-	// Silent Fall LeftBed（PR-2c 新版：sleepad LeftBed + radar 仍在 Bed 邻域）
-	SilentFallLeftBedReported  int `json:"silent_fall_leftbed_reported"`
-	SilentFallLeftBedCancelled int `json:"silent_fall_leftbed_cancelled"`
-
-	// Still Fall（PR-3：bathroom + Stand 静止 ≥ 15/18min）
-	StillFallReported int `json:"still_fall_reported"`
 
 	// RectDump：Options.DumpRect 设置时，跑完后的 cell 统计列表（用于定位学习异常）
 	RectDump []roomengine.CellStat `json:"rect_dump,omitempty"`
@@ -432,22 +420,13 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	snapshots = append(snapshots, takeSnapWithPaths(grid, cfg, opts.RoomID, simT,
 		buildTrackPaths(pathBuf, simT, trackLookbackMs)))
 
-	lostStats := tm.LostFallStatsSnapshot()
-	leftBedStats := tm.SilentFallLeftBedStatsSnapshot()
-	// PR-Bootstrap: StillFallStatsSnapshot 删除（v1 fire path 退役）；playback still 报表用 ai.log 重建
+	// 推断型 fall（lost / silent-leftbed / still）统计已随 gate-list 退役迁出 → DBN belief shadow 日志重建。
 	res := &Result{
-		Snapshots:                  snapshots,
-		TotalRows:                  totalRows,
-		TotalFrames:                totalFrames,
-		GridW:                      grid.Width,
-		GridH:                      grid.Height,
-		LostFallPendingCreated:     lostStats.PendingCreated,
-		LostFallPendingCancelled:   lostStats.PendingCancelled,
-		LostFallReported:           lostStats.Reported,
-		LostFallOutstanding:        lostStats.Outstanding,
-		SilentFallLeftBedReported:  leftBedStats.Reported,
-		SilentFallLeftBedCancelled: leftBedStats.Cancelled,
-		// StillFallReported 字段保留作 schema 稳定（playback 报表 JSON 输出契约），值固定 0
+		Snapshots:   snapshots,
+		TotalRows:   totalRows,
+		TotalFrames: totalFrames,
+		GridW:       grid.Width,
+		GridH:       grid.Height,
 	}
 	// 可选：dump 矩形内 cell 统计（debug 学习异常）
 	if opts.DumpRect != [4]int{0, 0, 0, 0} {
