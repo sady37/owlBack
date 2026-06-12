@@ -131,6 +131,27 @@
 
 **验收 bar**:`go build ./...` + `go vet` 净;6 个 MonitorVitalSource 测试过(新增 `RadarResolvedToBed` / `RadarUnresolvedSkipped`,删除断言旧错误行为的 `RadarSkipped`);bed scorer + vital adapter 测试过;已重启 sensor。`TestSleepaceAdapter_UnboundDeviceSkipped` 失败经 stash 基线确认是 `f4187a6` **预存在**,非本次引入。
 
+---
+
+### [2026-06-12] ★委员会指令：统一 ghost_* 日志 → `ghost_veto` + reason（cutover 4 任务最后一项）
+
+**当前残留（9 种 ghost-related log key）**：
+
+| # | 旧 key | 文件:行 | 新 key | reason |
+|---|--------|---------|--------|--------|
+| 1 | `mirror_pair_detected` | mirror_detect.go:350 | `ghost_veto` | `mirror_pair_l1` |
+| 2 | `track_verdict_ghost` | tm.go:1282,1313 | `ghost_veto` | `penalty_accumulated` / `low_score` |
+| 3 | `ghost_motion_symmetry_hit` | tm.go:1586 | `ghost_veto` | `motion_symmetry` |
+| 4 | `ghost_mirror_symmetry_hit` | tm.go:1596 | `ghost_veto` | `mirror_symmetry` |
+| 5 | `adjudicator_anchored_to_ghost_rejected` | engine.go:875 | `ghost_veto` | `anchored_reject` |
+| 6 | `belief_shadow_veto_evidence` | belief_shadow.go:330 | `ghost_veto` | `shadow_realness_jump` / `shadow_realness_frozen` |
+| 7 | `belief_dbn_veto_ghost` | belief_shadow.go:805 | `ghost_veto` | `dbn_coexist` |
+| 8 | `belief_dbn_veto_risk` | belief_shadow.go:810 | `ghost_veto` | `risk` |
+
+**不改**：`belief_dbn_fire`（非 veto，是 fire 事件）、`ghost_penalty` 字段名（JSON schema，非 log key）。
+
+**规则**：全部用 `zap.String("reason", ...)` 区分子类。改后 grep `"ghost_` 只命中 `ghost_veto` 和 `ghost_penalty` 字段名。build/vet/test 绿。**此指令为 cutover 4 任务收口——做完 4 任务全部闭合。**
+
 **⚠️ 验证 caveat**:**当前部署仅设备 9e7 可能返回 radar HR/RR,且需专门测试才能验**(故 journal 被动观察不到 radar sustain = 正常,非 bug)。端到端实证 blocked on 9e7 专测。
 
 **留给委员会的 3 个待裁**:
