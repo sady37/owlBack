@@ -79,6 +79,7 @@ type beliefShadowTLayer struct {
 	device       string // 源雷达 device_addr（同房对等雷达占用对账排除自身用）
 	logicID      string // 出生锚定的稳定逻辑身份（G-1 id-swap 守恒：失锁后查 logic_id 是否仍活在别 track）
 	loggedLo     bool   // 已 log 过本次 Lost 峰（防重复）
+	loggedVeto   bool   // 已 log 过本次 veto evidence（防重复）
 	lastX, lastY int    // P3.1:上帧位置,算本帧空间跳跃 Δ/dt(独立 shadow realness 探测器①)
 	lastPosTs    int64  // 上帧位置时刻
 	lastPose     int    // P3.2:上帧 pose/z,算 pose/z 锁死帧数(冻结伪迹 B 佐证③)
@@ -98,6 +99,7 @@ type beliefShadow struct {
 	decider      belief.Decider
 	tracks       map[int]*beliefShadowTrack
 	fired        bool                        // 已 log 过本次 confirm（防 confirm 持续期重复 log）
+	loggedBedSuppress bool // 已 log 过本次 bed_occupied_suppress（防重复）
 	tlayer       map[int]*beliefShadowTLayer // DBN P1 Track 层
 	deviceSpeed  map[string]*deviceSpeedStat // P2.1：per-device 学习走速封顶（device→room 稳定，跨 track 累积）
 	lastLostGeom belief.Geom                 // #3：最近一次丢失点 geom（fall log 辨床/桶区误报用）
@@ -275,10 +277,11 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			tl.logicID = ts.LogicID // G-1：趁活时 stash logic_id，失锁 sweep 查身份守恒
 		}
 		tl.loggedLo = false // 重新检出 → 允许后续再次 Lost 时重新 log
+		tl.loggedVeto = false // 重新检出 → 允许后续再次 veto 时重新 log
 
 		// R0 结构化否决证据(委员会 276e852):realness 基础的 ghost/frozen track 否决 emit。
 		// gate-list 删后 VerdictGhost 停产→b.Verdict==VerdictGhost 条件永假,已清 #1.2。
-		if jumpGhost || frozenGhost {
+		if (jumpGhost || frozenGhost) && !tl.loggedVeto {
 			reason := "shadow_realness_jump"
 			if frozenGhost {
 				reason = "shadow_realness_frozen"
@@ -293,6 +296,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 				zap.String("veto_reason", reason),
 				zap.Float64("track_ghostness", tlGhostness),
 			)
+			tl.loggedVeto = true
 		}
 
 		// gate-list 删后 VerdictGhost 永不设→Room 层 ghost track delete 条件永假,已清 #1.2。
@@ -628,12 +632,20 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	bedObs := bedAdapter(tm.BedOccupancyState(nowMs), nowMs)
 	obs = append(obs, bedObs...)
 
+	suppressActive := false
 	for _, o := range bedObs {
 		if o.Kind == belief.ObsBedOccupied && o.Fresh && o.Value >= 0.5 {
-			e.logger.Info("belief_shadow_bed_occupied_suppress", // 占用概率压 radar fall(无 radar-on-bed 要求)
-				zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),
-				zap.Float64("p5_bed_occupancy", o.Value), zap.Float64("p5_bed_conf", o.Conf))
+			suppressActive = true
+			if !sh.loggedBedSuppress {
+				sh.loggedBedSuppress = true
+				e.logger.Info("belief_shadow_bed_occupied_suppress", // 占用概率压 radar fall(无 radar-on-bed 要求)
+					zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),
+					zap.Float64("p5_bed_occupancy", o.Value), zap.Float64("p5_bed_conf", o.Conf))
+			}
 		}
+	}
+	if !suppressActive {
+		sh.loggedBedSuppress = false
 	}
 
 	// 死源#2(审查51 NP-1):wire firmware number_people 单 latch → ObsNumberPeople(弱 corroboration)。

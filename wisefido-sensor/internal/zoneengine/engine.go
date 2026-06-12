@@ -818,6 +818,11 @@ func (e *Engine) applyBedBayesianLocked(z *zoneInstance, nowMs int64) *ZoneEvent
 	z.state.BayesianProb = z.bedBayesian.Probability()
 	z.state.BayesianGamma = z.bedBayesian.Gamma(nowMs)
 
+	// 进/出待机带也要发事件（即使占用 Status 没翻），让下游 bed_status 在 0/1/8 间正确刷新。
+	if newStatus == prevStatus && newStandby == z.state.BedStandby {
+		return nil
+	}
+
 	if e.logger != nil {
 		d := z.bedBayesian.Debug(nowMs)
 		e.logger.Info("bed_decision_trace",
@@ -828,11 +833,6 @@ func (e *Engine) applyBedBayesianLocked(z *zoneInstance, nowMs int64) *ZoneEvent
 			zap.Float64("radar_lr", d.RadarLR), zap.Float64("covers_w", d.CoversWeight),
 			zap.Float64("shadow_l", d.ShadowL), zap.String("shadow_decision", d.ShadowDecision),
 			zap.Int64("ts_ms", nowMs))
-	}
-
-	// 进/出待机带也要发事件（即使占用 Status 没翻），让下游 bed_status 在 0/1/8 间正确刷新。
-	if newStatus == prevStatus && newStandby == z.state.BedStandby {
-		return nil
 	}
 	if newStatus != prevStatus {
 		applyTransitionToState(&z.state, TransitionResult{
