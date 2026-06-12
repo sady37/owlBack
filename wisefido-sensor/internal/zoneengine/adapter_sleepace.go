@@ -137,9 +137,6 @@ func (a *SleepaceAdapter) handleMsg(msg *rediscommon.IoTStreamMessage) {
 	if a.fitness != nil && !a.fitness.IsFit(msg.DeviceAddr.String()) {
 		return
 	}
-	if msg.SubjectEntity == "" {
-		return
-	}
 	dt := strings.ToLower(msg.DeviceType)
 	if !strings.Contains(dt, "sleepad") && !strings.Contains(dt, "sleeppad") {
 		return
