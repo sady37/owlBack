@@ -48,6 +48,20 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-12] 施工方 → 委员会:**★case fixture 三件套交付（导出再重放，请先审本条，再回 still-box 工单 721f40b）**
+
+用户拍板「导出再重放」架构，三工具统一 `tools/`（commit 链 …`285d66e`）。围绕统一 fixture 契约（`window.json` + `meta.json{device_uid,device_addr,device_type}`），导出与重放**分离**，fixture 两源（PG 真实 / lego 合成），重放只吃文件、不管来源。DB/Redis 密码**单源 `.env`**（不硬编码）。
+
+- **export**（原 `scripts/export_case_v2.sh` → `tools/export/`）：**unit 级**——从主设备推 /64，导整个 unit 全活跃设备（多 radar + sleepad，非单设备）；`case-<uidlast4>-<MMDD>-<startHHMM><endHHMM>` 名解析（last4→uid / HHMM+`--tz`→ms）；产 window.json(radar) + window_sleepad.json + meta.json{uid,addr,type} + 各 radar layout（主设备→room_layout.json）。
+- **simulate-make**（新建 `tools/simulate-make/`）：lego 块合成 → 同 fixture 契约；内置 `open-floor-fall`/`ghost-jump`；pose 单源 `owl-common/observation`；**不连 DB/redis**，AI 灵活造 fall/ghost 场景。
+- **replay**（原 `tools/redis-replay` 改名 `tools/replay`）：加 `--fixture <case目录>` 文件源（读 fixture→rebase ts→灌 redis→live sensor 真消费跑**完整链** track+belief shadow）；`meta.device_type` 权威定 dtype（sleepad 的 event 不误标 Radar）；meta + DB 补缺混合；`loadDotEnv` 密码不硬编码；保留 `--device/--unit` DB 模式向后兼容。
+
+**端到端验证**：cd2b-0606（unit201 = cd2b + 333b radar + 1641 sleepad，3 设备）→ fixture→redis→live sensor(新代码)→belief_shadow 完整链 → **`ghost_veto` 统一日志（reason=shadow_realness_jump）生产 emit 正确**（= 工单 9fa233d 产物在 live 验证）；纯文件模式（meta 全覆盖）不连库；simulate→replay 闭环（合成 fixture 可被 replay 读）。
+
+**请委员会先审本三件套**，通过后我再回 still-box 工单（721f40b）。**留下一轮**：cd2b-0606 为何未判 fall（单 track shadow_realness_jump、DBN 孤立 ρ=0 不否决；bedside fall 是否 FN）。doc 历史引用（feedback_p3 命令示例）的 redis-replay 名按历史保留，当前工具索引已更新。
+
+---
+
 ### [2026-06-12] 施工方 → 委员会:**ghost_* 日志统一 → `ghost_veto`+reason 完成(执行工单 9fa233d，cutover 4 任务收口)**
 
 按委员会工单 9fa233d 逐条执行。注:委员会给的行号是其视图,我先前 geom 退役/loggedVeto 清理已使行号漂,故按 **key 名**定位(实际位置一致)。

@@ -54,6 +54,8 @@ PREFIX="$(echo "$MAIN_ADDR" | cut -d: -f1-4)::/64"
 
 OUT_DIR="$ROOT_DIR/doc/cases/$CASE_NAME"
 mkdir -p "$OUT_DIR"
+# 清旧 export 产物（避免上次多/少 radar 的 stale layout 残留）；不动 test_record.txt 等非 export 文件。
+rm -f "$OUT_DIR"/room_layout*.json "$OUT_DIR"/window.json "$OUT_DIR"/window_sleepad.json "$OUT_DIR"/meta.json
 echo "unit prefix: $PREFIX  window: $START_MS..$END_MS -> $OUT_DIR"
 
 # ── 窗口内活跃设备（unit 全部，按 type 分） ──────────────────────────────────

@@ -27,7 +27,7 @@
 | `belief_generator_test.go` | 合成生成器:真 donor 案切 walk/stand/fallen/ghost 片段→建乐高库→场景模板组装→喂 DBN→报检出率 | ✅ 已建,委员会收但裁「合成测不准分类」(手搓签名=循环) |
 | `belief_recall_realdata_test.go` | Tier-1 recall 闭环:`legoLoadWindow()` 读 v2 window.json→喂生产 handleMessage→断言真摔不压;含 `legoV2Record` 结构体 + `legoEventCategory()` 分类器 | ✅ 单个 #9 case 跑通 |
 | `belief_neighbor_pipeline_test.go` | `bReplayUnit` 多房整单元回放(V1-V5 已绿) | ✅ 已建 |
-| `tools/redis-replay/` | 从 PG monitor_stream/event_log 按 device_uid+窗重放进 Redis→sensor 真消费→DBN 日志 | ✅ 已建 |
+| `tools/replay/`（原 redis-replay）| PG **或 --fixture 文件**→重放进 Redis→sensor 真消费→DBN 日志 | ✅ 已建（加文件源）|
 | `scripts/export_case_v2.sh` | 导出任意窗口为 v2 window.json | ✅ 已建 |
 
 **委员会已裁决的约束(B组必须遵守,不重新讨论)**:

@@ -43,7 +43,7 @@
 
 **确认的真因果时间链（event_log 实查）**：333B bathroom `EnterRoom 07:15:30 → Walking 07:15:41 → Fall 07:16:11 → Fall 07:17:32 → ExitRoom 07:17:50` ‖ CD2B bedroom `EnterRoom 07:17:46 → ExitRoom 07:18:08`。**两房事件差 ~4s = 真实人 bathroom→bedroom 移动**，非拼接 → **Tier-2 级真验素材**（Neighbor recall 黄金：真摔+firmware fire+起身 recovered+真 hand-off 一体）。
 
-> ★★ **数据墙解封（2026-06-09）**：event_log/monitor_stream 在本地 `owl_v2`（`DB_PASSWORD=postgres` 在 .env）**全可查**；`tools/redis-replay`（多 device-uids→重放回 redis 实时流）即委员会要的「整单元 replay 工具」；`scripts/export_case_v2.sh` 导任意窗口。**「blocked on unit201」实为缺工具/密码,非真 block** → #9 已导，benign 挖掘 + 任意真案导出 + Tier-2 整单元 replay 均**现在可做**。
+> ★★ **数据墙解封（2026-06-09）**：event_log/monitor_stream 在本地 `owl_v2`（`DB_PASSWORD=postgres` 在 .env）**全可查**；`tools/replay`（原 redis-replay，多 device-uids/--unit **或 --fixture 文件**→重放回 redis 实时流）即委员会要的「整单元 replay 工具」；`tools/export/export.sh`（原 scripts/export_case_v2.sh，**unit 级**+case-名解析）导任意窗口；`tools/simulate-make` 合成场景。**「blocked on unit201」实为缺工具/密码,非真 block** → #9 已导，benign 挖掘 + 任意真案导出 + Tier-2 整单元 replay 均**现在可做**。
 
 ### 排除（歧义/无据/不要轻易用）
 

@@ -2,6 +2,30 @@
 
 统一在 `owlBack/tools/` 目录下的检测工具。
 
+## case fixture 三件套（导出再重放）
+
+围绕统一 fixture 契约（`window.json` + `meta.json{device_uid,device_addr,device_type}`），导出与重放分离，fixture 有两条来源（PG 真实 / 合成），重放只吃文件、不管来源。DB/Redis 密码单源 `owlBack/.env`。
+
+| 工具 | 职责 | 来源/去向 |
+|------|------|-----------|
+| `export/export.sh` | PG → fixture（**unit 级**：从主设备推 /64，导整个 unit 全活跃设备：多 radar + sleepad） | PG → 文件 |
+| `simulate-make/` | lego 块合成 → fixture（AI 灵活造 fall/ghost 场景，不连 DB） | 合成 → 文件 |
+| `replay/` | fixture → rebase ts → 灌 Redis → live sensor 真消费跑完整链（track + belief shadow） | 文件 → live |
+
+```bash
+cd owlBack/tools
+# 导出（case 名自动解析 uid/时段）：
+./export/export.sh case-cd2b-0606-10271037 --tz America/Denver
+# 合成：
+go run ./simulate-make/ --scenario open-floor-fall --uid SIM0000FALL --addr <真实绑定addr> --out ../doc/cases/sim-fall
+# 重放（文件模式，灌 live；--speed 加快）：
+go run ./replay/ --fixture ../doc/cases/case-cd2b-0606-10271037 --speed 30
+# 重放（DB 模式，向后兼容）：
+go run ./replay/ --device-uids 9D8A32A1CD2B --t1 "..." --t2 "..." --tz America/Denver
+```
+
+> `replay/` 原名 `redis-replay`，2026-06-12 改名并加 `--fixture` 文件源模式。
+
 ## iot-inspect
 
 IoT 时序数据排障工具，用于查看 Redis Stream 和数据库中的数据。
