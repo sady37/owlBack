@@ -8,6 +8,22 @@
 
 ---
 
+## 工单4 cd2b fire 实证 PASS(2026-06-13 live replay)
+
+**cd2b-0604 床边真摔 FN 解决——新模型 fire。** 截 fixture `case-cd2b-0604-trim`(sleepad LeftBed 前60s→ExitRoom,~8min)经 `tools/replay --speed 1`→redis→live sensor(DBN_MODE=2)。按 room_id `fd00:0:3:112:3:100`(cd2b/201)过滤观测:
+
+- `belief_shadow_fall` + `belief_dbn_fire` 确认;**`p_fallen=0.996`,`argmax=Floor-Fallen`,`reason=pose_lying`,~22:25**(对齐 oracle"应 ~22:25 fire")。
+- **fire 路径 = 工单1 + 工单2 协同**:sleepad LeftBed → `bedReleased=true`(`belief_dbn_bedside_unbed`×224)→ `poseLikelihood(lying@bed, BedReleased=true)` → SFallen(`lrPoseLyingOpenFall=4`)→ ramp 0.996 → 确认。被子 lying@bed **不再被豁免**(床态已释放)→ 触发跌倒 = NOTES oracle 本意。
+- 注:fire 走 pose_lying 路,**非** silent sweep(被子有 lying pose → pose 路先 fire;silent sweep 是"无 pose 全丢"的兜底)。
+
+**更正前几轮误判**:中途"FN/床没释放/99 nodetect"是**看错房**——qinglan 一直喂别房(311/411)live 数据当噪声,未按 cd2b/201 room_id 过滤所致。cd2b/201 床**确实被 sleepad LeftBed 释放**,工单1 bed 融合(any-source-OR)本就 work。
+
+**🔑 replay 观测铁律**(记入):① qinglan 必须运行(停了会断 sensor 处理 + FE);② 必须按目标 room_id 过滤 sensor 日志(隔离 qinglan 别房 live 噪声);③ 验 fire 必须 `--speed 1`(confirmMs/dwell 按墙钟)。
+
+**工单状态更新**:工单1 ✅(实测床释放 work)/ 工单4 ✅(cd2b fire 实证)。trim fixture `case-cd2b-0604-trim` 暂未 commit(派生 artifact,待定)。
+
+---
+
 ## 工单2 + 工单3-前半段 落码完成(2026-06-13,先提交待委员会审)
 
 放行 bar 达成:`build ./...` ✓ / `vet ./internal/roomengine/...` ✓ / **belief 包 test ✓ + roomengine 0 FAIL**。
