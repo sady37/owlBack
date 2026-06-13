@@ -79,6 +79,9 @@ type Result struct {
 	GridW       int        `json:"grid_w"` // 优化后的 grid 尺寸
 	GridH       int        `json:"grid_h"`
 
+	// Grid 跑完学到的 grid（供 --persist 落 grid_snapshot 暖 live；不进 JSON/HTML）。
+	Grid *roomengine.RoomGrid `json:"-"`
+
 	// RectDump：Options.DumpRect 设置时，跑完后的 cell 统计列表（用于定位学习异常）
 	RectDump []roomengine.CellStat `json:"rect_dump,omitempty"`
 
@@ -427,6 +430,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		TotalFrames: totalFrames,
 		GridW:       grid.Width,
 		GridH:       grid.Height,
+		Grid:        grid,
 	}
 	// 可选：dump 矩形内 cell 统计（debug 学习异常）
 	if opts.DumpRect != [4]int{0, 0, 0, 0} {

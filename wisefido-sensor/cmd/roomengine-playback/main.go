@@ -44,6 +44,8 @@ func main() {
 		startISO   = flag.String("start", "", "回放起始（RFC3339 / 2006-01-02 15:04:05 local），与 --end 配合")
 		endISO     = flag.String("end", "", "回放结束")
 		cycles     = flag.Int("cycles", 1, "重放循环次数（>1 时同段数据连跑 N 遍，simT 单调递增）")
+		persist    = flag.Bool("persist", false, "跑完把学到的 grid 落 grid_snapshot（暖 live 引擎；需 --spatial-prefix）")
+		spatialPfx = flag.String("spatial-prefix", "", "落库的 room /88 CIDR（如 fd00:0:3:111:3:100::/88），live 按此 load")
 	)
 	flag.Parse()
 
@@ -122,6 +124,25 @@ func main() {
 	}
 	log.Printf("processed %d rows, %d valid frames, %d snapshots (grid %d×%d)",
 		res.TotalRows, res.TotalFrames, len(res.Snapshots), res.GridW, res.GridH)
+
+	// 4. 可选：把学到的 grid 落 grid_snapshot（暖 live）。hash 走 LayoutHash(cfg)（cfg 已 ApplyOptimizedExtent，
+	// 与 live engine.go:1296→1302 同序）→ live 启动 load 时 hash 匹配，不被当 stale 丢弃。
+	if *persist {
+		if *spatialPfx == "" {
+			log.Fatalf("--persist 需要 --spatial-prefix（room /88 CIDR）")
+		}
+		snap := roomengine.EncodeSnapshot(res.Grid)
+		payload, cellCount, err := roomengine.MarshalSnapshot(snap)
+		if err != nil {
+			log.Fatalf("marshal snapshot: %v", err)
+		}
+		hash := roomengine.LayoutHash(cfg)
+		persister := roomengine.NewPostgresPersister(db, "")
+		if err := persister.Save(ctx, *spatialPfx, hash, cellCount, payload); err != nil {
+			log.Fatalf("persist grid_snapshot: %v", err)
+		}
+		log.Printf("persisted grid_snapshot: spatial_prefix=%s hash=%s cells=%d bytes=%d", *spatialPfx, hash, cellCount, len(payload))
+	}
 
 	// 4. 写 HTML
 	if err := os.MkdirAll(filepath.Dir(*outHTML), 0755); err != nil {
