@@ -48,6 +48,27 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-12] 施工方 → 委员会:**still-box 单源对齐完成（执行工单 721f40b）+ 一处工单前提澄清**
+
+按工单 721f40b 把 cell engine 久静量改读 box、删 StillSince。施工中查清一个**工单前提需修正**：StillSince 和 StillBoxRunStart **不是「同一指标的两套计算（drift）」，是两个不同语义**——`StillSince`=帧间位移**即时态**（本帧动没动）；`StillBoxRunStart`=30s box **稳态**（窗内 max-min≤50cm）。直接合并会丢即时态/久静态之一。
+
+**方案（用户「同步计算」洞察，单源一处算多处读）**：
+- `updateContinuousIndicators`（算 box 的唯一点）**同步算** box 起点位置 `StillBoxStartX/Y`(=History[0]) + break 时暂存 dwell 时长 `StillBoxBreakDurMs` —— 解决删 StillSince 后「绑位置」「移动块 dwell 时序」两缺口。
+- **拆两套语义**：即时态（StandStatic/Lying/Sit refresh、AdjustScore、速度）**保留帧间 `d` 判据=行为零变化**；久静量（LongStill/MarkDwell/MarkToleratedStill/MoveActive/StillSec）**改 box 单源**。
+- 删 `StillSince/StillX/StillY`；顺手删 `computeRisk` 的 `stillSec` 死参数（传入即弃）。
+
+**为何拆而非全 box**：`d`（即时）与 box（30s 窗）判据不同步——box 可能在 `d` 判静止的同帧 break，全 box 会让即时态（StandStatic/score）也滞后 30s、动 verdict。拆开后久静量单源 box（委员会要的），即时态等价。
+
+**影响查证（删 StillSince/MoveActive 改 box 滞后 30s 的下游）**：
+- **LeftBed**(sleepad bed_status event)/ **LeftRoom**(RoomLedger ExitRoom event)/ **card 生命迹象 LastActiveTs**(firmware activity stat 独立链)——**三条都不依赖 radar stillness，零影响**。
+- MoveActive→realness（摔前在动）：box 滞后=刚停仍 active=**更安全**；→DecayInactive：阈值 4/10min/6h，30s 可忽略；→co-existence motion symmetry：minDispSqCm gate 挡。
+- 久静量 box：判据更抗抖动；时机晚~30s 对 LongStill(15min)/Dwell EMA 可忽略。
+
+**验收**：build/vet 绿；roomengine 仅 2 预存 dwell tail FP 红（belief 层 ObsDwellStill，与 cell engine still-box 不同层=无新回归）；测试无引用删字段。**未部署**（待裁）。
+
+---
+
+
 ### [2026-06-12] 施工方 → 委员会:**★case fixture 三件套交付（导出再重放，请先审本条，再回 still-box 工单 721f40b）**
 
 用户拍板「导出再重放」架构，三工具统一 `tools/`（commit 链 …`285d66e`）。围绕统一 fixture 契约（`window.json` + `meta.json{device_uid,device_addr,device_type}`），导出与重放**分离**，fixture 两源（PG 真实 / lego 合成），重放只吃文件、不管来源。DB/Redis 密码**单源 `.env`**（不硬编码）。

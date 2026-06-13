@@ -981,7 +981,7 @@ type TrackStatusBase struct {
 	StillBoxSec      int // still-box 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动，fall 判据用）
 	CellAreaType     AreaType
 	EnterTarget      string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
-	MoveActive       bool   // 本次快照是否"非静止"（StillSince==0 OR LastObservedMs == nowMs）
+	MoveActive       bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
 	TraverseDelta    int    // 自上次 SnapshotTrackStatuses 累计的 traverse cells（用于 SuiteCensus 升格判定）
 	SleepadInBed     bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
 }
@@ -1023,16 +1023,13 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			RawV:         ts.LastRawV,
 			RawZ:         ts.LastRawZ,
 			Pose:         ts.LastPose,
-			MoveActive:   ts.StillSince == 0 || ts.LastObservedMs == nowMs,
+			MoveActive:   ts.StillBoxRunStart == 0 || ts.LastObservedMs == nowMs,
 			SleepadInBed: sleepadInBed,
 		}
-		// StillSec：StillSince==0 表示非静止；否则 (nowMs - StillSince) / 1000。
-		if ts.StillSince > 0 && nowMs > ts.StillSince {
-			base.StillSec = int((nowMs - ts.StillSince) / 1000)
-		}
-		// StillBoxSec：still-box run 时长（30s 滚动 50×50 方框，抗质心抖动）。fall 判据优先用此。
+		// StillSec/StillBoxSec：still-box 单源（StillBoxRunStart==0 非静止；否则 box run 秒，30s 滚动 50×50 抗抖动）。
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
+			base.StillSec = base.StillBoxSec
 		}
 		// LongSurvival / StartupGrace 锚定 → 升格 Anchored verdict（v2 §10.1.1）
 		if base.Verdict == VerdictReal && (ts.LongSurvivalAnchored || ts.StartupGrace) {
@@ -1365,9 +1362,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		vx := int(math.Round(vxF))
 		vy := int(math.Round(vyF))
 
-		stillSec := 0
-		if ts.StillSince > 0 {
-			stillSec = int((nowMs - ts.StillSince) / 1000)
+		stillSec := 0 // still-box 单源（投影显示 TrackOutput.StillSec；computeRisk 不再吃此死参数）
+		if ts.StillBoxRunStart > 0 {
+			stillSec = int((nowMs - ts.StillBoxRunStart) / 1000)
 		}
 
 		source := "radar_direct"
@@ -1378,7 +1375,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			RoomID:     ts.RoomID,
 			Verdict:    ts.Verdict,
 			Score:      ts.Score,
-			Risk:       tm.computeRisk(ts, stillSec, nowMs),
+			Risk:       tm.computeRisk(ts, nowMs),
 			Anomaly:    ts.CurrentAnomaly,
 			X:          px,
 			Y:          py,
@@ -2024,13 +2021,8 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 	// PR-13: region static 维护 — |dx|≤15 AND |dy|≤15 视为同区域；累积期 ≥90% 容忍单帧噪声
 	tm.updateRegionStatic(ts, prev, x, y, nowMs, cell)
 
+	// ── 即时态（d 帧间位移判据）：score / refresh / stand-static 计时（不变；不碰久静量）──
 	if d < StillThreshCm {
-		// 静止
-		if ts.StillSince == 0 {
-			ts.StillSince = nowMs
-			ts.StillX = x
-			ts.StillY = y
-		}
 		// PR-7.2: 跟踪 pose=Stand 静止专用计时（用于自学习升 AreaSit）
 		if RadarPoseToCore(pose) == CorePoseStand {
 			if ts.StandStaticSince == 0 {
@@ -2080,22 +2072,9 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 		if !isRest && ts.Verdict == VerdictPending {
 			ts.AdjustScore(-3)
 		}
-		// 静止超时（综合 cell history 的自适应阈值）
-		// PR-9: 删除 bathroomRealCount caregiver 例外抑制 — Phase C 期 v1 抑制 dropped；
-		// PR-10 BathroomStillFall 用 census.BathroomCount + AnchorRoomType 重新引入 caregiver 例外。
+		// 静止超时 LongStill（久静量）已迁到下方 box 判据块（单源 StillBoxRunStart，见函数末）。
 		if cell != nil {
 			isRiskTime := IsNightTime(nowMs, tm.timezone)
-			timeout := cell.EffectiveStillTimeoutSec(isRiskTime)
-			if timeout > 0 {
-				stillSec := int((nowMs - ts.StillSince) / 1000)
-				if stillSec > timeout {
-					ts.CurrentAnomaly = AnomalyStillTooLong
-					if !ts.LongStillReported {
-						tm.grid.MarkLongStill(x, y, nowMs)
-						ts.LongStillReported = true
-					}
-				}
-			}
 
 			// PR-Bootstrap: v1 TrackManager still-fall fire path 已删除，由 PR-10 BathroomStillFall
 			// (§6.A.1) 在 bathroom room.kind 分支替代。stillFallTimeoutSec 谓词保留作"bathroom-like
@@ -2141,33 +2120,46 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 		// PR-10/11 BathroomBedsideFall + bedroom bedside_fall 将以 SuiteCensus + BedSession 重写，
 		// 触发主体改为 SuitePerson（决定 8），用 90s grace + 任意位置静止 ≥ 8 min（决定 18 真多人不 fire）。
 	} else {
-		// 在动：刚从静止恢复，记 Dwell EMA
-		if ts.StillSince > 0 {
-			dwellSec := int((nowMs - ts.StillSince) / 1000)
-			if dwellSec > 0 {
-				tm.grid.MarkDwell(ts.StillX, ts.StillY, dwellSec, nowMs)
-			}
-		}
-		// Cell history integral：之前曾被系统判为 long-still（LongStillReported=true）但 track 自己走了
-		// → 系统判错（容忍证据），喂给该 cell 自动放宽未来阈值
-		if ts.LongStillReported {
-			tm.grid.MarkToleratedStill(ts.StillX, ts.StillY, nowMs)
-		}
-		ts.StillSince = 0
-		ts.LongStillReported = false
+		// 即时态移动：reset 即时态计时（StandStatic/Lying/Sit/StillFall）；速度合理性。
+		// 久静量（Dwell/ToleratedStill/LongStill/Anomaly/LongStillReported）走下方 box 判据块。
 		ts.StillFallReported = false
 		ts.StandStaticSince = 0 // PR-7.2: track 移动 → reset stand-static 计时
 		ts.LyingOnBedSinceMs = 0
 		ts.SitOnToiletSinceMs = 0 // PR-11: track 移动 → reset 持续观测计时
-		if ts.CurrentAnomaly == AnomalyStillTooLong {
-			ts.CurrentAnomaly = AnomalyNone
-		}
 		// 速度合理性
 		speed := int(math.Round(ts.Kalman.Speed()))
 		if speed > 10 && speed < 150 {
 			ts.AdjustScore(3)
 		} else if speed >= 150 {
 			ts.AdjustScore(-2)
+		}
+	}
+
+	// ── 久静量（box 判据，单源 StillBoxRunStart/StillBoxStartXY；updateContinuousIndicators 已同步算）──
+	// 与 DBN 双读同一 box 字段，谁都不重算（§2.4 producer/maintainer；旧 StillSince 即时位移态已删）。
+	if cell != nil && ts.StillBoxRunStart > 0 {
+		// box 静止超时 → LongStill（位置用当前 x,y，与静止 track 位置一致）
+		isRiskTime := IsNightTime(nowMs, tm.timezone)
+		if timeout := cell.EffectiveStillTimeoutSec(isRiskTime); timeout > 0 {
+			if stillSec := int((nowMs - ts.StillBoxRunStart) / 1000); stillSec > timeout {
+				ts.CurrentAnomaly = AnomalyStillTooLong
+				if !ts.LongStillReported {
+					tm.grid.MarkLongStill(x, y, nowMs)
+					ts.LongStillReported = true
+				}
+			}
+		}
+	} else if ts.StillBoxBreakDurMs > 0 {
+		// box 刚 break = 静止结束 → MarkDwell + ToleratedStill（box 起点位置 + box 时长，单源）
+		if dwellSec := int(ts.StillBoxBreakDurMs / 1000); dwellSec > 0 {
+			tm.grid.MarkDwell(ts.StillBoxStartX, ts.StillBoxStartY, dwellSec, nowMs)
+		}
+		if ts.LongStillReported {
+			tm.grid.MarkToleratedStill(ts.StillBoxStartX, ts.StillBoxStartY, nowMs)
+		}
+		ts.LongStillReported = false
+		if ts.CurrentAnomaly == AnomalyStillTooLong {
+			ts.CurrentAnomaly = AnomalyNone
 		}
 	}
 
@@ -2247,7 +2239,7 @@ func (tm *TrackManager) updateLieStateMachine(ts *TrackState, pose, x, y int, no
 // 综合风险分
 // ========================================================================
 
-func (tm *TrackManager) computeRisk(ts *TrackState, stillSec int, nowMs int64) int {
+func (tm *TrackManager) computeRisk(ts *TrackState, nowMs int64) int {
 	if ts.Verdict == VerdictGhost {
 		return 0
 	}
@@ -2395,14 +2387,18 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 	// ---- StillBox（静止无移动）检测（50×50 per-axis box 判据）----
 	// 用 BoxRangeWithinMs（max(dx,dy)）而非 DisplacementWithinMs（对角线）：50×40 倒地框
 	// 对角线 64 会被误判成"动"，per-axis 算 50（≤StillBoxCm=50）才正确判 still。
+	ts.StillBoxBreakDurMs = 0 // 每帧清；仅本帧 break 时设（移动块 MarkDwell 消费）
 	disp := ts.BoxRangeWithinMs(30_000, nowMs)
 	if disp <= FallRulesParam.Lost.StillBoxCm && len(ts.History) >= 2 {
 		if ts.StillBoxRunStart == 0 {
-			// 起点回填到 History 最早帧（box 内最早可见点）
+			// 起点回填到 History 最早帧（box 内最早可见点）；同步存起点位置（cell engine 久静量单源读）。
 			ts.StillBoxRunStart = ts.History[0].TMs
+			ts.StillBoxStartX = ts.History[0].X
+			ts.StillBoxStartY = ts.History[0].Y
 		}
 	} else if ts.StillBoxRunStart > 0 {
 		dur := nowMs - ts.StillBoxRunStart
+		ts.StillBoxBreakDurMs = dur // 暂存刚结束的 dwell 时长，供 scoreMovement 移动块 MarkDwell
 		ts.StillBoxRunStart = 0
 		if tm.logger != nil {
 			tm.logger.Info("still_box_break",
@@ -2411,7 +2407,6 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 				zap.Int("disp_cm", disp),
 				zap.Int64("now_ms", nowMs))
 		}
-	} else {
 	}
 	// NOTE（防御层备忘，未实施）：box 判据只看 max-min 范围。理论 edge case：
 	// box 内反复抖动（30cm 范围内来回跨越）→ box 小但累计位移大 → 误判 still。

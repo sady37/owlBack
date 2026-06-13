@@ -95,9 +95,7 @@ type TrackState struct {
 	LieEnteredX  int
 	LieEnteredY  int
 
-	// ---- 静止状态机 ----
-	StillSince        int64
-	StillX, StillY    int
+	// ---- 静止状态机（still-box 单源：cell engine 久静量消费 box，见 updateContinuousIndicators/scoreMovement）----
 	LongStillReported bool // 防 LongStill 重复上报
 	StillFallReported bool // 防 still-fall 重复上报（bathroom + pose=Stand + 15/18min）
 
@@ -155,6 +153,9 @@ type TrackState struct {
 	// 抗 X/Y 抖动 / 抗摔倒抽搐（box 容差替代 byte-equal 严格相等）。
 	// 用于 lost-fall pending 计算 credit（半计入等待）+ PR-C 流式 cancel 守卫。
 	StillBoxRunStart int64
+	// still-box 单源派生（updateContinuousIndicators 同步算，cell engine 久静量读，替代旧 StillSince/StillX/StillY）：
+	StillBoxStartX, StillBoxStartY int   // box run 起点位置（=History[0] 回填点）→ MarkDwell/MarkToleratedStill 灌入 cell
+	StillBoxBreakDurMs             int64 // 本帧 still-box 刚 break 的 dwell 时长（0=未 break）→ 移动块 MarkDwell 消费
 
 	// ---- Birth-coherence Kalman 域（每帧 O(1) 维护）----
 	// MaxKalmanResidual：track 生命周期内的峰值残差（Mahalanobis-like）。
