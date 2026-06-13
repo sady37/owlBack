@@ -12,7 +12,8 @@
 # 输出 doc/cases/<name>/：
 #   window.json           unit 内所有 Radar 的 track/heart + event（每条带 device_uid）
 #   window_sleepad.json   unit 内所有 Sleepad
-#   meta.json             {"devices":[{device_uid, device_addr}]}（窗口内全部活跃设备 → replay 纯文件）
+#   alarm.json            unit 内设备直发 alarm（producer != sensor），含 evidence（replay --streams alarm）
+#   meta.json             {"devices":[{device_uid, device_addr, device_type}]}（窗口内全部活跃设备 → replay 纯文件）
 #   room_layout.json      主 radar 的 /128 canvas；其余 radar → room_layout_<last4>.json（供离线 belief_replay）
 #
 # DB 密码单源 owlBack/.env。
@@ -55,7 +56,7 @@ PREFIX="$(echo "$MAIN_ADDR" | cut -d: -f1-4)::/64"
 OUT_DIR="$ROOT_DIR/doc/cases/$CASE_NAME"
 mkdir -p "$OUT_DIR"
 # 清旧 export 产物（避免上次多/少 radar 的 stale layout 残留）；不动 test_record.txt 等非 export 文件。
-rm -f "$OUT_DIR"/room_layout*.json "$OUT_DIR"/window.json "$OUT_DIR"/window_sleepad.json "$OUT_DIR"/meta.json
+rm -f "$OUT_DIR"/room_layout*.json "$OUT_DIR"/window.json "$OUT_DIR"/window_sleepad.json "$OUT_DIR"/alarm.json "$OUT_DIR"/meta.json
 echo "unit prefix: $PREFIX  window: $START_MS..$END_MS -> $OUT_DIR"
 
 # ── 窗口内活跃设备（unit 全部，按 type 分） ──────────────────────────────────
@@ -115,6 +116,22 @@ WHERE s.device_addr << '$PREFIX'::inet AND s.device_type='Sleepad'
   AND s.ts BETWEEN to_timestamp($START_MS/1000.0) AND to_timestamp($END_MS/1000.0);
 " > "$OUT_DIR/window_sleepad.json"
 
-echo "window.json: $(wc -c < "$OUT_DIR/window.json") bytes / window_sleepad.json: $(wc -c < "$OUT_DIR/window_sleepad.json") bytes"
+# ── alarm.json：unit 内设备直发 alarm（producer != sensor platform-agent），含 evidence ────
+# sensor 自产 alarm（producer=fd00:0:fff1::1）不导——replay 中 sensor 应自己重新产出。
+# category=event_type；data_value=[payload ∪ {evidence}]（与 replay alarm 信封一致，单元素数组）。
+PSQL -c "
+SELECT COALESCE(json_agg(json_build_object('category', a.event_type,
+    'device_uid', d.device_uid, 'timestamp', (extract(epoch from a.triggered_at)*1000)::bigint,
+    'data_value', jsonb_build_array(
+       COALESCE(a.payload,'{}'::jsonb)
+       || CASE WHEN a.evidence IS NOT NULL AND a.evidence::text NOT IN ('','{}')
+               THEN jsonb_build_object('evidence', a.evidence) ELSE '{}'::jsonb END)
+    ) ORDER BY a.triggered_at),'[]'::json)::text
+FROM alarm_events a JOIN devices d ON a.device_addr=d.device_addr
+WHERE a.device_addr << '$PREFIX'::inet AND (a.producer IS NULL OR a.producer != 'fd00:0:fff1::1'::inet)
+  AND a.triggered_at BETWEEN to_timestamp($START_MS/1000.0) AND to_timestamp($END_MS/1000.0);
+" > "$OUT_DIR/alarm.json"
+
+echo "window.json: $(wc -c < "$OUT_DIR/window.json") bytes / window_sleepad.json: $(wc -c < "$OUT_DIR/window_sleepad.json") bytes / alarm.json: $(wc -c < "$OUT_DIR/alarm.json") bytes"
 echo "meta.json: $(echo "$ACTIVE" | tr ';' '\n' | wc -l) 设备"
 echo "Done."

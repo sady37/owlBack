@@ -6,25 +6,29 @@
 
 围绕统一 fixture 契约（`window.json` + `meta.json{device_uid,device_addr,device_type}`），导出与重放分离，fixture 有两条来源（PG 真实 / 合成），重放只吃文件、不管来源。DB/Redis 密码单源 `owlBack/.env`。
 
+**职责铁律**：export 触库、replay 只读文件，两者绝不互越。`replay/` 不 import 任何 DB 包（编译期证明），uid→addr→type 全经 `meta.json`（导出侧权威写入）。回放 alarm 流走 `alarm.json`（export 已导设备直发 alarm）。
+
 | 工具 | 职责 | 来源/去向 |
 |------|------|-----------|
-| `export/export.sh` | PG → fixture（**unit 级**：从主设备推 /64，导整个 unit 全活跃设备：多 radar + sleepad） | PG → 文件 |
+| `export/export.sh` | PG → fixture（**unit 级**：从主设备推 /64，导整个 unit 全活跃设备：多 radar + sleepad + alarm） | PG → 文件 |
 | `simulate-make/` | lego 块合成 → fixture（AI 灵活造 fall/ghost 场景，不连 DB） | 合成 → 文件 |
 | `replay/` | fixture → rebase ts → 灌 Redis → live sensor 真消费跑完整链（track + belief shadow） | 文件 → live |
 
 ```bash
 cd owlBack/tools
-# 导出（case 名自动解析 uid/时段）：
+# 导出（case 名自动解析 uid/时段；产出 window+window_sleepad+alarm+meta+room_layout）：
 ./export/export.sh case-cd2b-0606-10271037 --tz America/Denver
 # 合成：
 go run ./simulate-make/ --scenario open-floor-fall --uid SIM0000FALL --addr <真实绑定addr> --out ../doc/cases/sim-fall
-# 重放（文件模式，灌 live；--speed 加快）：
+# 重放（只读文件，灌 live；含 alarm 流）：
+go run ./replay/ --fixture ../doc/cases/case-cd2b-0606-10271037 --streams monitor,event,alarm
+# 加速重放（仅验数据流连通性，不能验 fire）：
 go run ./replay/ --fixture ../doc/cases/case-cd2b-0606-10271037 --speed 30
-# 重放（DB 模式，向后兼容）：
-go run ./replay/ --device-uids 9D8A32A1CD2B --t1 "..." --t2 "..." --tz America/Denver
 ```
 
-> `replay/` 原名 `redis-replay`，2026-06-12 改名并加 `--fixture` 文件源模式。
+> `replay/` 原名 `redis-replay`，2026-06-12 改名加 `--fixture`，并删除 DB 直查模式（only 文件源，符合 export/replay 职责分离）。
+>
+> ⚠️ **`--speed` 与 fall confirm 的时间语义**：belief `Decider` 的确认窗 `confirmMs=90s` 按 frame TMs 计，而 replay 把 frame TMs 重写成灌入墙钟（`/speed` 压缩间隔）。`--speed 30` 会把 confirmMs 压成 1/30，**任何 case 加速重放都测不到 fire confirm**。**验 fire 行为必须 `--speed 1`**（默认值）；加速重放仅用于验 track / belief 演化（p_fallen 轨迹、ghost_veto），不能验 confirm。
 
 ## iot-inspect
 

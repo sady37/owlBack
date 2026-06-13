@@ -48,6 +48,44 @@
 
 ## 审查记录（倒序）
 
+### [2026-06-12] 施工方 → 委员会:**cd2b-0606 no-fire 根因 = 确认窗时长(非漏报/非证据不足),工单 23ef71a 完成**
+
+按工单逐案排查 no-fire。结论**推翻了「bedside FN / 证据不足」的旧假设**——证据从不缺,是 90s 确认窗在过滤人为测试的短躺。
+
+**先澄清一个概念**:`Stand-Walk / Bed-Lying / Floor-Fallen` 是 **belief DBN 的 9 个隐状态**(`belief/state.go:24` 的 `State.String()` 标签,`SFallen`=Floor-Fallen),**不是 gate-list 概念**。gate-list 的 pose(`StandStatic/Lying`)在 track_manager,同形不同层。trace 的 `argmax_state` 是 DBN `b.Max()`,无 gate-list 泄漏。
+
+**逐案表(cd2b-0606,本轮可重放的唯一真实 case;p_fallen 来自 `--speed 30` 压缩重放,时间用帧计数还原——原始帧率实测 1Hz)**:
+
+cd2b 全程**两次** Floor-Fallen 抬头,均 <90s confirmMs → no-fire,但**两段性质不同**:
+
+| 段 | 帧区间 | 时长 | p_fallen 峰 | 结局 | 性质 |
+|---|---|---|---|---|---|
+| 第一段 | 467→470 | 4s | 0.891 | 帧471 崩回 Bed-Lying(0.89→0.32) | ✅ 短躺/翻身,confirmMs 正确过滤 |
+| 第二段 | 614→664 | 51s | **0.9952** | **维持 0.99 到 trace 末帧 664,无崩回** | ⚠️ 疑似倒地;**录制 51s 处结束**未达 90s |
+
+| case | track 数 | coExist | ghost 分支 | confirmMs | fire | 根因 |
+|---|---|---|---|---|---|---|
+| cd2b-0606 | 1(孤立) | false | 不进(铁律 ρ=0) | 90s | **no** | 两段持续证据(4s/51s)均 < 90s 确认窗 |
+
+**根因(诚实版,逐帧 trace 核对后**修正了初版「测试员躺~51s 起身 P 崩回」的臆测——第二段实际维持到录制末,不崩回**)**:
+
+1. **第一段 = 真·短躺过滤(正确行为)**:4s Floor-Fallen 后帧471 立即崩回 Bed-Lying。这是翻身/短躺,4s≪90s,confirmMs 正确清零。`Decider` 要求 `SFallen>θ_fire` 连续维持 90s,中途崩回即清零(belief.go:105-119)。
+
+2. **第二段 = 持续证据时长不足(数据局限,非抑制 bug)**:p_fallen 稳定 0.99 维持 **51s 到录制结束都没崩回**。no-fire 真因 = **录制窗口只覆盖 51s,confirmMs 要 90s 持续证据,数据不够长**。51s 之后人起身还是继续躺≥90s——**本数据未覆盖,无法判断**。结合「跌倒数据全人为测试,躺~1min 就站」,51s 后很可能起身,但这是推测非数据。⚠️ `belief.go:94` 注释「cd2b 类~47s 内崩回」只匹配第一段,不匹配第二段(疑历史标定),建议复核。
+
+3. **重放工具 speed artifact**:`ProcessFrame.nowMs=frames[0].TMs`(track_manager.go:1057-1059),replay 把 frame TMs 重写成灌入墙钟(main.go:223)+`rel=(ts-t1)/speed`(:205)。`--speed 30` → frame TMs 间隔压成 33ms → confirmMs(按 TMs 算)被压 30 倍 → 加速重放下 confirmMs 必不满足。⚠️ **验 fire confirm 必须 `--speed 1`**;加速重放只能验 track/belief 演化(p_fallen 轨迹/ghost_veto)。已记入 tools/README。
+
+4. **coExist/ghost 与 no-fire 无关**:单 track→`coExist`=false→ghost 铁律不进分支(P(Ghost)=0),ghost_veto 纯 forensic。
+
+**阈值/后续建议**:
+- **motion/mirror 阈值不需要动**——第二段 p_fallen 已达 0.9952,发射/realness 证据从不缺;问题在持续证据时长,不在阈值。
+- **confirmMs=90s 是否合适本案无法定论**——第二段是「躺 51s 录制中断」,无法证明它该 fire(51s后未知)也无法证明不该。真长躺(≥5min)与短躺的分界标定**需要真实跌倒数据**(memory:现数据全人为测试,时长由测试行为定非真实分布),推迟。
+- **真正需要**:`--speed 1` 重放一段**录满 ≥90s 持续倒地**的真实数据,验证 confirm 在真实时间语义下正常触发——本轮无此类数据。
+
+**收尾**:TEMP trace(Info→Debug 排查口)已回退;build/vet 绿;binary 重建,test1 已 restart 上线(PID 2148796,无 panic,trace 回 Debug)。
+
+---
+
 ### [2026-06-12] 施工方 → 委员会:**still-box 单源对齐完成（执行工单 721f40b）+ 一处工单前提澄清**
 
 按工单 721f40b 把 cell engine 久静量改读 box、删 StillSince。施工中查清一个**工单前提需修正**：StillSince 和 StillBoxRunStart **不是「同一指标的两套计算（drift）」，是两个不同语义**——`StillSince`=帧间位移**即时态**（本帧动没动）；`StillBoxRunStart`=30s box **稳态**（窗内 max-min≤50cm）。直接合并会丢即时态/久静态之一。

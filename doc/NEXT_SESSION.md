@@ -71,7 +71,7 @@ owlBack/wisefido-sensor 跌倒检测误报治本。最初设计意图(北极星)
 ## 访问
 DB: localhost:5432 postgres/postgres/owl_v2(raw 帧在 monitor_stream,ts=timestamptz,device_addr=inet;报警 alarm_events;事件 event_log.event_kind)
 Redis: localhost:6379 pw TeLunSu-36kr(ghost verdict 在 ai:track:verdict:stream,全局仅留 ~500 条)
-导出 fixture: scripts/export_case_v2.sh(读 owl_v2;老 export_case.sh 读已退役 iot_timeseries 不可用)
+导出 fixture: tools/export/export.sh(unit 级 PG→window.json+window_sleepad+alarm+meta，读 owl_v2;老 scripts/export_case*.sh 已退役删除)。重放: tools/replay --fixture(纯文件零 DB)
 D5F7=E598A2ACD5F7=fd00:0:3:111:3:300:a2ac:d5f7(101 浴室镜面雷达,card /80)
 
 **开工:先读上面的 doc 和 memory,然后从 belief_feedback_learning.md 起;动手前先跟用户确认大纲。**

@@ -4,8 +4,8 @@
 # + event_log + alarm_events），逐秒按时间排序，并【自动派生】 bed_state / room_state 的
 # >>> STATE 转换标记行（基于 InBed/LeftBed 与 EnterRoom/ExitRoom/number_people 事件，不硬编码）。
 #
-# 与 export_case.sh 的区别：那个导 JSON replay fixture 喂 belief_replay_test；本脚本导
-# 人类可读 txt 供测试复盘/对账（bed 融合、固件 fall、sleepad-radar 矛盾等）。
+# 与 tools/export/export.sh 的区别：那个导 JSON replay fixture 喂 belief_replay_test / redis-replay；
+# 本脚本导人类可读 txt 供测试复盘/对账（bed 融合、固件 fall、sleepad-radar 矛盾等）。
 #
 # 用法（二选一）:
 #   A 显式窗口: ./export_bed_test_record.sh <radar_uid> <sleepad_uid> <start> <end> --tz <TZ> [<case_name>]
