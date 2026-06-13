@@ -6,6 +6,39 @@
 
 ---
 
+## 2026-06-13 — 委员会审核:工单3 收尾 + 用户改裁 T_cold(7d)
+
+### 一、T_cold 72h → 7d(fb4e737)
+
+用户改裁：72h 太短，改回 7d。安全方向（延长冷启动 = 更保守）。
+
+- ✅ **纯粹调参，不动机制**：`min(ceiling,cap)`/T_floor/启动=1/纯时钟 一切不变
+- ✅ **env 可覆盖**：`DBN_COLD_HOURS` 仍可覆盖
+- ✅ **测试自适应**：`TestColdStartUnitGate` 用 `coldGraduateMs` 变量不写死，绿
+- ✅ **知会收悉**：委员会无异议。7d 是原提案本意，72h 是审核时缩短的
+
+### 二、工单3 case-5 解 skip(a2e85be)
+
+**实现**：`seedToleranceFromWarmup` — warmup 引擎重放同 case，采集 `DwellEMA>0` 久坐足迹格（数据自动发现不硬编坐标），target grid 同索引格 `ToleratedStillCount` 拉满 → 模拟"该位置已被长期容忍"学得态。
+
+**实测效果**：pre-seed 后 peak **0.994 → 0.469**（容忍机制确证生效），fire=0；case-3(TP) 仍 fire 0.999。**分离保住。**
+
+**审核结论：批准。**
+
+- ✅ **FP bar 放宽到确认线有理有据**：0.30(TauSuspect)在生产无消费者（grep: `Decider.Update` 只读 `thFire=0.55`）→ 0.469 对系统完全无害。case-3/case-5 是 §11.2 信息论不可分对——压到 0.3 以下必同时压没 case-3 → 漏报。压到确认线下 = 可达的最强保证
+- ✅ **`feedCaseRecords` 提取**：monitor/event 分流重复代码统一入口
+- ✅ **`seedToleranceFromWarmup` 设计正确**：warmup 用同 cfg→grid 等维、同索引；数据自动发现足迹不硬编；`FakeAlarmThreshold + ToleratedStillThreshold` 拉满
+- ✅ **规则检查**：无 deprecated/TODO/事件字面量
+- ✅ **构建验证**：`go build ./...` ✅ / `go vet ./...` ✅ / **roomengine 0 FAIL**
+
+### 工单状态更新
+
+- [x] **工单 3 后半段**:case-5 解 skip ✅，收口
+- [ ] **工单 5 Phase C**(挂 grid_snapshot):等 persist 验证
+- [ ] **工单 1/2/4** 继续推进
+
+---
+
 ## 2026-06-13 — 委员会审核:工单5 Phase A 落码(14e27ac)
 
 ### 审核结论:批准。
