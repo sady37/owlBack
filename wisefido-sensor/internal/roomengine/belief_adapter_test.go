@@ -129,28 +129,36 @@ const thFireProbe = 0.55
 // cell_area_type=0。判别关键：人走出 FOV/雷达丢目标 = track 消失(无 still-box)≠ 倒地后躺住
 // 新设计：lost-fall 走动前置(消失前60s在走动)。MoM 走动后消失，但有 ExitRoom → 取消。无走动消失=Still-fall 域。此处
 // lost-still + 帧停→stale→A 漂离 Fallen → 不 fire（gate-list 却凭"丢 track+5min"误报）。
+// TestMoMLostTrackVanishNoFire — P5 moving-fall 路径:走动中消失,但 MoM 实情='走出 exit'。
+// 新模型语义:moving-vanish 由 ExitRoom 事件路由 SLeft(走出去),不报 fall。
 func TestMoMLostTrackVanishNoFire(t *testing.T) {
-	t.Skip("工单3 后半段(oracle 重基线):本测试喂纯 nil(旧模型'沉默不漂'假设);P5 新模型下 MoM='走出 exit'应喂其 ExitRoom→Left,test 语义待按新模型更新")
 	be := belief.New(belief.DefaultModel())
 	now := int64(1_000)
 	be.Step(now, []belief.Observation{{Kind: belief.ObsEnterExit, Value: 1, Conf: 0.9, Ts: now, Fresh: true}})
-	// 浴室内行走几帧
+	// 浴室内行走几帧（moving,无 still-box）
 	for i := 0; i < 5; i++ {
 		now += 1000
 		ts := &TrackState{LastObservedMs: now, StillBoxRunStart: 0, LastZ: 160, Verdict: VerdictReal}
 		tr := observation.Track{LogicID: "L", Pose: observation.PoseWalking, PositionX: ptr(20), PositionY: ptr(130), PositionZ: ptr(160), PoseConfidence: 80}
 		be.Step(now, radarFrameAdapter(tr, ts, nil, now, false))
 	}
-	// track 消失：此后无帧（adapter 不被调用），仅时间推进 5min（=gate-list 误报窗）
+	// MoM 走出门:firmware ExitRoom 事件 → SLeft(人走出去,非倒地)。
+	now += 1000
+	be.Step(now, []belief.Observation{{Kind: belief.ObsEnterExit, Value: -1, Conf: 0.9, Ts: now, Fresh: true}})
+	// 之后无帧,时间推进（Left→Empty 收敛）
 	for i := 0; i < 30; i++ {
 		now += 10_000
 		be.Step(now, nil)
 	}
 	if d := be.Decide(); d == belief.DecisionFall {
-		t.Fatalf("MoM lost_track(vanish,无 still-box) 经 belief 仍误报: b=%v", be.Vector())
+		t.Fatalf("MoM 走出 exit 经 belief 仍误报 fall: b=%v", be.Vector())
 	}
-	if be.Vector().P(belief.SFallen) > 0.05 {
-		t.Fatalf("MoM P(Fallen)=%.3f 应极低（无 still-box 不该升 Fallen）", be.Vector().P(belief.SFallen))
+	// P5:走出 exit→Empty 主导;P(Fallen) 残留(走动余量经 Blind 0.5 种子微漂)远低于 fire,benign。
+	if s, _ := be.Vector().Max(); s != belief.SEmpty {
+		t.Fatalf("MoM 走出 exit 后应 SEmpty 主导,得 %s", s)
+	}
+	if be.Vector().P(belief.SFallen) > 0.1 {
+		t.Fatalf("MoM 走出 exit 后 P(Fallen)=%.3f 应低(<0.1,远低于 θ_fire)", be.Vector().P(belief.SFallen))
 	}
 }
 
