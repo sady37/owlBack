@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	rediscommon "owl-common/redis"
+	"wisefido-sensor/internal/roomengine/belief"
 	"wisefido-sensor/testkit"
 
 	"go.uber.org/zap"
@@ -120,15 +121,21 @@ func TestRecallManifestAll(t *testing.T) {
 
 	type expected struct {
 		shouldFire bool
-		minPeak    float64
+		minPeak    float64 // TP: peak 须 ≥ 此
+		maxPeak    float64 // FP: peak 须 < 此(不产生确认报警)
 	}
+	// FP 的 maxPeak = "不出确认报警"的真实保证线。case-6 容忍可全清→守严 0.3;
+	// case-5 是 case-3(TP)的信息论近邻对(同位置同躺姿,§11.2 不可分对):学得容忍只压 dwell
+	// 不压 pose,把 peak 从 0.994→0.469 压到**确认线(thFire=0.55)以下**=不误报即达标,
+	// 再严会连 case-3 真摔一起压没→漏报。故 ceiling=确认线(单源 belief.TauConfirm.Tau())。
+	thFire := belief.TauConfirm.Tau()
 	expect := map[string]expected{
-		"case-1": {true, 0.3},
-		"case-2": {true, 0.3},
-		"case-3": {true, 0.3},
-		"case-4": {true, 0.3},
-		"case-5": {false, 0.0},
-		"case-6": {false, 0.0},
+		"case-1": {true, 0.3, 0},
+		"case-2": {true, 0.3, 0},
+		"case-3": {true, 0.3, 0},
+		"case-4": {true, 0.3, 0},
+		"case-5": {false, 0, thFire},
+		"case-6": {false, 0, 0.3},
 	}
 
 	for _, c := range m.Cases {
@@ -138,11 +145,6 @@ func TestRecallManifestAll(t *testing.T) {
 			continue
 		}
 		t.Run(c.ID, func(t *testing.T) {
-			if c.ID == "case-5" {
-				t.Skip("工单3 后半段:case-5(FP)fire=0(安全=不误报),但 peak 0.994=§6.3 honest 残差——A(tolerance 压制)是**学得**机制," +
-					"recall fresh 重放 cell 无累积容忍(mult=1)→ A 不 engage;case-3(TP)/case-5(FP)dwell 同构,唯一分离=学得空间语义。" +
-					"full 验证需 pre-seed cell ToleratedStillCount(模拟学得态)或精度度量改 fire-based,留工单3 跟进")
-			}
 			recs, _, err := testkit.ResolveCase(c, casesDir)
 			if err != nil {
 				t.Skipf("ResolveCase: %v", err)
@@ -164,23 +166,14 @@ func TestRecallManifestAll(t *testing.T) {
 			e.deviceRoom[radarAddr] = roomID
 			e.deviceMounts[radarAddr] = cfg.Radar
 
-			for _, r := range recs {
-				topic := "monitor"
-				if testkit.EventCategory(r.Category) {
-					topic = "event"
-				}
-				dvJSON, _ := json.Marshal(r.DataValue)
-				msg := rediscommon.StreamMessage{Values: map[string]interface{}{
-					"device_addr": radarAddr, "device_type": "radar", "topic_type": topic,
-					"category": r.Category, "timestamp": strconv.FormatInt(r.Timestamp, 10),
-					"dataValue": string(dvJSON),
-				}}
-				if topic == "event" {
-					e.handleEventMessage(msg)
-				} else {
-					e.handleMessage(nil, msg)
-				}
+			// 工单3 后半段:case-5(FP)与 case-3(TP)dwell 同构,唯一分离杠杆=学得空间语义(tolerance)。
+			// fresh 重放 cell 容忍=0 → A(dwell LR<1 压制)不 engage → peak 0.994(仅靠测试员早离侥幸 fire=0,脆)。
+			// 模拟生产"该位置已被长期容忍":warmup 重放采集久坐足迹,把那些格 ToleratedStill 拉满 → 验 peak 落安全线。
+			if c.ID == "case-5" {
+				seedToleranceFromWarmup(t, cfg, radarAddr, roomID, recs, e.grids[roomID])
 			}
+
+			feedCaseRecords(e, recs, radarAddr)
 
 			fired := logs.FilterMessage("belief_shadow_fall").Len()
 			vetoed := logs.FilterMessage("ghost_veto").FilterField(zap.String("reason", "dbn_coexist")).Len()
@@ -211,10 +204,57 @@ func TestRecallManifestAll(t *testing.T) {
 					t.Errorf("真摔 %s veto_ghost=%d, 真摔不应被 ghost veto", c.ID, vetoed)
 				}
 			} else {
-				if peak >= 0.3 {
-					t.Errorf("假报警 %s peak=%.3f ≥ 0.3 → precision 误火(应低置信)", c.ID, peak)
+				if fired > 0 {
+					t.Errorf("假报警 %s fire=%d → 误火(FP 绝不应确认报警)", c.ID, fired)
+				}
+				if peak >= exp.maxPeak {
+					t.Errorf("假报警 %s peak=%.3f ≥ %.3f → precision 不足(超不误报保证线)", c.ID, peak, exp.maxPeak)
 				}
 			}
 		})
 	}
+}
+
+// feedCaseRecords 把一组 case record 按 monitor/event 分流喂进引擎(recall 重放统一入口)。
+func feedCaseRecords(e *Engine, recs []testkit.LegoV2Record, radarAddr string) {
+	for _, r := range recs {
+		topic := "monitor"
+		if testkit.EventCategory(r.Category) {
+			topic = "event"
+		}
+		dvJSON, _ := json.Marshal(r.DataValue)
+		msg := rediscommon.StreamMessage{Values: map[string]interface{}{
+			"device_addr": radarAddr, "device_type": "radar", "topic_type": topic,
+			"category": r.Category, "timestamp": strconv.FormatInt(r.Timestamp, 10),
+			"dataValue": string(dvJSON),
+		}}
+		if topic == "event" {
+			e.handleEventMessage(msg)
+		} else {
+			e.handleMessage(nil, msg)
+		}
+	}
+}
+
+// seedToleranceFromWarmup 用一个 warmup 引擎重放同一 case,采集 DwellEMA>0 的久坐足迹格,
+// 把目标 grid 同索引格的 ToleratedStillCount 拉满(factor→Max)=模拟"该位置已被长期容忍"的学得态。
+// 足迹由数据自动发现(不硬编坐标);warmup 与目标同 cfg → grid 维度/索引一致。
+func seedToleranceFromWarmup(t *testing.T, cfg RoomConfig, radarAddr, roomID string, recs []testkit.LegoV2Record, target *RoomGrid) {
+	t.Helper()
+	warm := NewEngine(nil, zap.NewNop())
+	warm.RegisterRoom(cfg)
+	warm.deviceRoom[radarAddr] = roomID
+	warm.deviceMounts[radarAddr] = cfg.Radar
+	feedCaseRecords(warm, recs, radarAddr)
+
+	wgrid := warm.grids[roomID]
+	full := FallRulesParam.CellHistory.FakeAlarmThreshold + FallRulesParam.CellHistory.ToleratedStillThreshold
+	seeded := 0
+	for i := range wgrid.Cells {
+		if wgrid.Cells[i].DwellEMA > 0 && i < len(target.Cells) {
+			target.Cells[i].ToleratedStillCount = full
+			seeded++
+		}
+	}
+	t.Logf("case-5 pre-seed: %d 久坐格 ToleratedStill=%d(tolerance factor 拉满)", seeded, full)
 }
