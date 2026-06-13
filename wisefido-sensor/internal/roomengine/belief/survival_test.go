@@ -18,10 +18,10 @@ func TestFallLRFromDwellEquivalence(t *testing.T) {
 			t.Fatalf("rt=%d at=%d d=%.0f：survival=%.4f 应 = %.4f", roomType, areaType, d, got, want)
 		}
 	}
-	check(1, 7, 1200, 300)    // Bathroom Toilet 20min: d=300, LR=1+(300/1200)^2=1.0625
-	check(1, 7, 1200, 1800)   // 过封顶
-	check(0, 4, 60, 30)       // default 60s: d=30, LR=1+(30/60)^2=1.25
-	check(0, 4, 60, 90)       // 过封顶
+	check(1, 7, 1200, 300)                 // Bathroom Toilet 20min: d=300, LR=1+(300/1200)^2=1.0625
+	check(1, 7, 1200, 1800)                // 过封顶
+	check(0, 4, dwellScaleOpenSec, 240)    // default 8min(480s): d=240, LR=1+(240/480)^2=1.25
+	check(0, 4, dwellScaleOpenSec, 1100)   // 过封顶
 }
 
 // TestFallLRFromDwellZoneTable — bed/enter/unknown 不在尾表 → 1.0 中性(不报);dwell≤0 → 1.0。
@@ -43,15 +43,15 @@ func TestFallLRFromDwellZoneTable(t *testing.T) {
 
 // TestFallLRFromDwellNightShortensTail — P4.3 夜间短尾:同 dwell 夜间 LR > 日间(更敏感);单调上升;封顶。
 func TestFallLRFromDwellNightShortensTail(t *testing.T) {
-	const d = 50.0
-	const areaActive = 4 // AreaActive → default 60s tail
+	const d = 200.0
+	const areaActive = 4 // AreaActive → default 8min(480s) tail（对齐 cell engine StillTimeout）
 	day := fallLRFromDwell(d, 1.0, 0, areaActive, false)
 	night := fallLRFromDwell(d, 1.0, 0, areaActive, true)
 	if !(night > day) {
 		t.Fatalf("夜间短尾应更敏感:night LR(%.4f) > day(%.4f)", night, day)
 	}
-	// default tail = 60s. night shortens: want = 1+(d/(60*dwellNightTailMult))²
-	const defaultTailSec = 60.0
+	// default tail = dwellScaleOpenSec(480s). night shortens: want = 1+(d/(480*dwellNightTailMult))²
+	const defaultTailSec = dwellScaleOpenSec
 	wantNight := 1 + math.Pow(d/(defaultTailSec*dwellNightTailMult), dwellShape)
 	if wantNight > dwellFallCap {
 		wantNight = dwellFallCap

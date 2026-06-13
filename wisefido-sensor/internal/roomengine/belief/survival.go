@@ -33,7 +33,10 @@ func dwellTailFor(roomType int, areaType int) (dwellTail, bool) {
 	case 3:
 		return dwellTail{scaleSec: 90 * 60, shape: dwellShape}, true // learned sitting area: 90min
 	default:
-		return dwellTail{scaleSec: 60, shape: dwellShape}, true // Unknown/Active/Enter/unlearned: 60s unit tick
+		// Unknown/Active/Enter/unlearned：对齐 cell engine StillTimeout DefaultSec(8min)。
+		// 治本:原硬编码 60s 与 cell engine 的"8min 才算异常久静"差 8×→DBN 在正常久坐/休息就报 dbn_silent
+		// (101/Hunzi/Ton 海量 FP),且远早于 tolerance 学习(LongStill 8min)能触发→学习永远追不上。
+		return dwellTail{scaleSec: dwellScaleOpenSec, shape: dwellShape}, true
 	}
 }
 
