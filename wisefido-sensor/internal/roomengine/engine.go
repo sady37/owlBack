@@ -1521,7 +1521,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	// 后台定时任务
 	go e.decayLoop(ctx)
 	go e.beliefScanLoop(ctx)
-	go e.firmwarePendingDrainLoop(ctx) // 档 0/2:雷达静默时 force-forward 滞留的 firmware fall(fail-safe,不漏)
+	go e.firmwarePendingDrainLoop(ctx) // 档 2:雷达静默时 force-forward 滞留的 firmware fall(fail-safe,不漏)
 	go e.winnerEvalLoop(ctx)
 	if e.persister != nil && e.snapshotInterval > 0 {
 		go e.snapshotLoop(ctx)
@@ -1655,7 +1655,7 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 		if m.Category == alarm.Fall || m.Category == alarm.SittingOnGround {
 			alarms := ParseRadarFallAlarm(m.DataValue, addrStr, m.Category, ts)
 			for _, a := range alarms {
-				// DBN_MODE:档 0/2(dbnVetoFirmwareEnabled)→ 暂存,下一 belief tick 用 fresh bases 现算 co-existence
+				// DBN_MODE:档 2(dbnVetoFirmwareEnabled)→ 暂存,下一 belief tick 用 fresh bases 现算 co-existence
 				// 裁决放行/否决(option A,消除事件 vs tick 竞态,孤立必发)。档 1 → firmware 地板,立即转发。
 				deferred := dbnVetoFirmwareEnabled()
 				if deferred {
@@ -1676,7 +1676,7 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 					zap.String("room_id", roomID),
 					zap.Int64("ts_ms", a.TMs),
 					zap.String("ts_human", time.UnixMilli(a.TMs).Format("15:04:05.000")),
-					zap.Bool("dbn_deferred", deferred), // 档 0/2:暂存待 tick 裁决;档 1:立即转发
+					zap.Bool("dbn_deferred", deferred), // 档 2:暂存待 tick 裁决;档 0/1:立即转发
 				)
 			}
 			tm.Tick(ts)

@@ -807,7 +807,7 @@ func (tm *TrackManager) SetBedsideFallConfig(c BedsideFallConfig) {
 }
 
 // RecordRadarAlarm 落账 radar firmware Fall/SittingOnGround 并转发 iot:alarm:stream（producer="wisefido-sensor"，
-// cardagg 落库）。firmware 直发跌倒的 forward 原语:DBN_MODE 档 1 立即调;档 0/2 经 belief shadow 延迟裁决后调。
+// cardagg 落库）。firmware 直发跌倒的 forward 原语:DBN_MODE 档 0/1 立即转发;档 2 经 belief shadow 延迟裁决后调。
 // 调用方应紧跟 tm.Tick(alarm.TMs)。end status 让 cardagg AlarmRouter 按 EndPolicy 关 alarm。
 //
 // 2026-06: gate-list 时期的 verifier(verifyRadarFall,纯 informational 不 gate、读 gate-list 信号)已删;

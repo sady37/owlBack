@@ -30,11 +30,11 @@ const beliefShadowLostTTLMs = 60_000 // track 超此无帧 = 丢失（对齐 tra
 
 // dbnMode cutover 三档（用户拍板,可逆,运维 .env 翻 DBN_MODE）。两条正交轴=否决 firmware × DBN 自发:
 //
-//	0 = 否决 firmware fire + DBN 不自发（DBN 只当 firmware 的 ghost 过滤器）
+//	0 = DBN 静默：不自发 + 不否决；firmware 所有 fire 直接通过（不进 stash/resolve,禁 DBN 处理；学习期安全档,firmware 仍兜底真摔）
 //	1 = 不否决 firmware fire + DBN 自发（firmware 地板不可挡,union；最不漏 firmware）
-//	2 = 否决 firmware fire + DBN 自发（全开）
+//	2 = 否决 firmware fire + DBN 自发（全开,DBN 权威）
 //
-// 否决 firmware 的依据三档统一 = 复用 DBN 自发的 co-existence ghost + 风险分层 τ*。
+// 否决 firmware 的依据 = 复用 DBN 自发的 co-existence ghost + 风险分层 τ*（仅档 2）。
 // 未设/非法 → 1（保 firmware 地板不可挡,最保守不漏 firmware）。秒翻档回滚。
 var dbnMode = parseDBNMode(os.Getenv("DBN_MODE"))
 
@@ -52,8 +52,9 @@ func parseDBNMode(s string) int {
 // dbnSelfFireEnabled 档 1/2：DBN 自发推断 fall（其内部 ghost/risk 自否决照常）。
 func dbnSelfFireEnabled() bool { return dbnMode == 1 || dbnMode == 2 }
 
-// dbnVetoFirmwareEnabled 档 0/2：DBN 可否决 firmware fire（ghost/risk 命中 → 挡掉固件那条）。
-func dbnVetoFirmwareEnabled() bool { return dbnMode == 0 || dbnMode == 2 }
+// dbnVetoFirmwareEnabled 仅档 2：DBN 可否决 firmware fire（ghost/risk 命中 → 挡掉固件那条）。
+// 档 0 不否决 → engine.go deferred gate 同此为 false → firmware 立即直通,不进 stash/resolve（不处理）。
+func dbnVetoFirmwareEnabled() bool { return dbnMode == 2 }
 
 // dbnVetoRecoveryEnabled P2 recovery-veto 独立子开关（委员会 6dafdc6,默认 OFF,可单独 live toggle）。
 // recovery-veto 漏报-safe by construction(同人+正向 up+track-loss 螺丝+self-rescue≥15s+默认放行)。
@@ -131,13 +132,13 @@ type beliefShadow struct {
 	recoveryGenuineFall bool  // firmware 火后摔者持续倒地≥阈=自救真摔→禁 recovery(不静默抹)
 	recoveryEmitted     bool  // 已 emit 本次 recovery(防重复)
 
-	// pendingFwFalls 档 0/2:firmware fall 异步到达时**不立即裁决**(那会用 cache-time 的旧 co-existence,
+	// pendingFwFalls 档 2:firmware fall 异步到达时**不立即裁决**(那会用 cache-time 的旧 co-existence,
 	// partner 消失后误否孤立真摔=漏报)。暂存,到下一 beliefShadowTick 用**当帧 bases** 现算 co-existence+ghost
 	// 裁决(与 self-fire 同源同 tick,结构上消除"事件 vs tick"竞态)。孤立(当帧<2 track)→ 必发(铁律)。
 	pendingFwFalls []pendingFwFall
 }
 
-// pendingFwFall 档 0/2 暂存的 firmware fall:待下一 tick 用 fresh bases 裁决放行/否决。
+// pendingFwFall 档 2 暂存的 firmware fall:待下一 tick 用 fresh bases 裁决放行/否决。
 type pendingFwFall struct {
 	a         RadarFallAlarm
 	arrivedMs int64
@@ -766,7 +767,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		OthersPresent: len(bases) >= 2,
 	}
 	tauCtxDec, tauCtxHit := belief.DecideTauCtx(pFallen, tauCtx)
-	// ★档 0/2 firmware-veto 裁决(option A):用**当帧** bases 现算的 co-existence/ghost/τ* 裁决暂存的 firmware fall,
+	// ★档 2 firmware-veto 裁决(option A):用**当帧** bases 现算的 co-existence/ghost/τ* 裁决暂存的 firmware fall,
 	// 不用 cache-time 旧值(消除"事件 vs tick"竞态)。孤立(coExist=false)→ 必发(铁律:孤立 track 永不判 ghost)。
 	if len(sh.pendingFwFalls) > 0 {
 		e.resolvePendingFirmwareFalls(sh, tm, roomID, coExist, ghostTracks, pFallen, tauCtxHit, nowMs)
@@ -927,7 +928,7 @@ const dbnFwPendingTimeoutMs = 5_000
 // dbnFwPendingDrainInterval firmwarePendingDrainLoop 扫描间隔(<timeout,使滞留 fall 在 ~timeout+interval 内必送出)。
 const dbnFwPendingDrainInterval = 2 * time.Second
 
-// stashPendingFirmwareFall 档 0/2:firmware fall 到达**不立即裁决**,仅暂存——待下一 beliefShadowTick 用 fresh bases
+// stashPendingFirmwareFall 档 2:firmware fall 到达**不立即裁决**,仅暂存——待下一 beliefShadowTick 用 fresh bases
 // 现算 co-existence 裁决(resolvePendingFirmwareFalls),或雷达静默时由 firmwarePendingDrainLoop 超时 force-forward。
 // 档 1 不走此路(firmware 地板立即发)。
 func (e *Engine) stashPendingFirmwareFall(roomID string, a RadarFallAlarm) {
