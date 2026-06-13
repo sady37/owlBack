@@ -1,6 +1,8 @@
-# P5 反馈日志 — belief 全空间区域占用重写 + cd2b 床边真摔 FN 根因 — 项目组 ↔ 委员会
+# Q5 反馈日志(项目组侧)— belief 全空间区域占用重写 + cd2b 床边真摔 FN
 
-> 新主题文件(P4 = dwell 尾表/K/FP 调参;P5 = 状态空间从「姿态9态」重构为「全空间区域占用×直立/倒地」+ cd2b replay FN 根因实证)。倒序,最新在上。
+> **QA 分离(2026-06-12,因 git 同步写冲突)**:P5 主题拆成两文件各写各的——
+> **本文件 `feedback_q5.md` = 项目组侧**(提案/问题/根因/复算请求);委员会裁决/审查/工单写 `feedback_a5.md`。
+> 两侧不写同一文件 → push 不再非-fast-forward 撞车。倒序,最新在上。
 >
 > **协作协议**:项目组提案 → 委员会裁 → 裁后建;裁前不建 / 需新岔口列选项不擅决 / 直接 main / cd wisefido-sensor 跑 go / 放行 bar = build/vet/belief 绿 + 0 FAIL。
 
@@ -27,6 +29,11 @@
 1. cd2b 的 fire **不来自 Track 层判 ghost**——co-existence 对孤立被子 ρ=0 判它 Real,反而保护它。fire 杠杆在 Room 层(sleepad 权威释放床占用 + 真人 absence + 未离场 → blind dwell ramp Fallen)。
 2. absence 须定义在 realness 门控后的 track 上(「任何可见区无 `P(Real)>阈` 的 track」=有效缺失),而非「无 track」。
 3. FP 安全性反转:旧 `A` 靠「→Fallen 极小,沉默不造跌倒」;新模型 blind-zone 久缺**必须**从沉默 ramp Fallen → 守门挪到 blind 进出纪律 + dwell 时序 + recapture/Exit cancel,且守[偏分监控铁律](只有极近两事件有向 hand-off 能排除 lost-fall)。
+
+**盲区无几何 — 对上面架构的实质修正(2026-06-12,用户提出)**:layout(`room_visual_layout`/`radar.areas`)只编码雷达**覆盖到**的 area 对象;盲区=其补集,**任何数据源都不画它**;firmware 只报 track,不报「看不见」。所以**盲区不能是有几何、可定位的状态**。
+- 重述:**Blind = 「有真人在场(近期证据)+ 没有任何 real track 解析出他 + 没有 Exit 事件」**——用否定定义,可观测性来自「track 从有到无 + 无 ExitRoom」,不来自几何。
+- Near/Far/Bath 子态**不能**来自盲区几何(未知),只能来自**消失前最后一帧位置**(last-seen area_type + 门距,已知)→ 改成**入口条件化**:`Blind-from-Door`(高 exit 先验)/`Blind-from-OpenFloor`(高 fall 先验)/`Blind-from-Bath`。状态索引是「怎么进的盲」(可观测),不是「现在在盲哪」(不可观测)。
+- cd2b 把此逼到极致:被子 track 把 Bed→Blind 转移**遮住**(连「track 没了」都观测不到)→ 该转移只能靠 **sleepad LeftBed 与 radar 床 track 矛盾**推出,对上原始提案 §7 诚实下限。
 
 ---
 
