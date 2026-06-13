@@ -149,7 +149,7 @@ type TrackState struct {
 
 	// ---- StillBox（静止无移动）检测（box 判据，2026-05-03 由 byte-equal 改为 box）----
 	// StillBoxRunStart：当前 still box run 起点 ms（0 = 未达 still 状态）。
-	// 判据：失锁前 30s 滚动窗口内位移 box (max-min) <= StillBoxCm(30) → 视为 still。
+	// 判据：失锁前 30s 滚动窗口内位移 box per-axis (max-min) <= StillBoxCm(50) → 视为 still。
 	// 抗 X/Y 抖动 / 抗摔倒抽搐（box 容差替代 byte-equal 严格相等）。
 	// 用于 lost-fall pending 计算 credit（半计入等待）+ PR-C 流式 cancel 守卫。
 	StillBoxRunStart int64
@@ -324,6 +324,34 @@ func (ts *TrackState) BoxRangeWithinMs(windowMs int64, nowMs int64) int {
 		return dx
 	}
 	return dy
+}
+
+// StillBoxBoundsWithinMs still 区在窗口内的 bounding box（画布 cm）。ok=false（<2 帧）→ 调用方回退单格。
+// still-box per-axis ≤50cm = 多个 10×10 cell；学习按此区摊到覆盖格，与 DBN 查的 live 格对齐。
+func (ts *TrackState) StillBoxBoundsWithinMs(windowMs int64, nowMs int64) (minX, minY, maxX, maxY int, ok bool) {
+	cutoff := nowMs - windowMs
+	minX, minY = math.MaxInt32, math.MaxInt32
+	maxX, maxY = math.MinInt32, math.MinInt32
+	count := 0
+	for _, p := range ts.History {
+		if p.TMs < cutoff {
+			continue
+		}
+		count++
+		if p.X < minX {
+			minX = p.X
+		}
+		if p.X > maxX {
+			maxX = p.X
+		}
+		if p.Y < minY {
+			minY = p.Y
+		}
+		if p.Y > maxY {
+			maxY = p.Y
+		}
+	}
+	return minX, minY, maxX, maxY, count >= 2
 }
 
 // TotalDisplacement 历史窗口内的总位移（cm）

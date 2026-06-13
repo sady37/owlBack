@@ -47,7 +47,7 @@ func dwellTailFor(roomType int, areaType int) (dwellTail, bool) {
 //   - toleranceMult ∈[1, MaxToleranceFactor]：R3 只读 cell 自适应容忍(FakeAlarmCount+ToleratedStillCount 学得)。
 //   - night：scale×dwellNightTailMult<1 → 更快 ramp(夜间久静更可疑;仅作用正向段)。
 //   - zone 不在尾表 ∨ dwell≤0 → 1.0 中性。
-func fallLRFromDwell(dwellSec, toleranceMult float64, roomType int, areaType int, night bool) float64 {
+func fallLRFromDwell(dwellSec, toleranceMult float64, roomType int, areaType int, night bool, radarDistCm int) float64 {
 	tail, ok := dwellTailFor(roomType, areaType)
 	if !ok || dwellSec <= 0 {
 		return 1.0
@@ -58,6 +58,9 @@ func fallLRFromDwell(dwellSec, toleranceMult float64, roomType int, areaType int
 	scale := tail.scaleSec
 	if night {
 		scale *= dwellNightTailMult
+	}
+	if float64(radarDistCm) >= dwellEdgeDistCm {
+		scale *= dwellEdgeMult // 雷达远边缘 still/pose/z 不可信 → 尾 ×1.5（fire 时人已 settle，坐标稳）
 	}
 	ramp := math.Pow(dwellSec/scale, tail.shape)
 	// tolWeight=0 当 mult=1（纯正向 ramp，TP 不受影响）；mult 越大权重越大，(1−tolWeight)<0 → 随 dwell **单调下压**。

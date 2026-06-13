@@ -163,11 +163,14 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 	if !nearDoor && isOpenFloorArea(area) {
 		dwellTol = grid.ToleranceFactorAt(x, y)
 	}
+	// 雷达远边缘 still/pose/z 不可信 → dwell 尾 ×dwellEdgeMult。用 live raw 距离（本地系原点）：
+	// 真摔经久静到 fire 时人已 settle，这个 live 坐标即稳定的最终位置（用户点 2）。
+	radarDistCm := distInt(ts.LastRawH, ts.LastRawV, 0, 0)
 
 	out := []belief.Observation{
 		{Source: t.LogicID, Kind: belief.ObsPose, Value: float64(t.Pose), Conf: poseConf, Ts: nowMs, Fresh: motionFresh, AreaConf: ac, AreaType: areaTypeAt, NearDoor: nearDoor},
 		{Source: t.LogicID, Kind: belief.ObsZBand, Value: float64(z), Conf: 0.7, Ts: nowMs, Fresh: motionFresh},                                         // P2.3 z 高度档 posture(不进 fall,R5)
-		{Source: t.LogicID, Kind: belief.ObsDwellStill, Value: dwellSec, Conf: 0.7, Ts: nowMs, Fresh: tsFresh, ToleranceFactor: dwellTol, Night: night}, // P4.1+P4.4 dwell 生存 ramp(开阔地带 tol gate)+P4.3 夜尾
+		{Source: t.LogicID, Kind: belief.ObsDwellStill, Value: dwellSec, Conf: 0.7, Ts: nowMs, Fresh: tsFresh, ToleranceFactor: dwellTol, Night: night, RadarDistCm: radarDistCm}, // P4.1+P4.4 dwell 生存 ramp(开阔地带 tol gate)+P4.3 夜尾+雷达边缘×1.5
 		{Source: t.LogicID, Kind: belief.ObsVitalPresent, Value: vitalVal, Conf: 0.6, Ts: nowMs, Fresh: motionFresh},
 	}
 

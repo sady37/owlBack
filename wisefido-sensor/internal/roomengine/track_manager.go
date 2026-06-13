@@ -2150,12 +2150,22 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 			}
 		}
 	} else if ts.StillBoxBreakDurMs > 0 {
-		// box 刚 break = 静止结束 → MarkDwell + ToleratedStill（box 起点位置 + box 时长，单源）
+		// box 刚 break = 静止结束 → MarkDwell + ToleratedStill（box 时长 + still 区覆盖的 10×10 格，
+		// 与 DBN 查的 live 格对齐；bounds 不可得则回退单格 box 起点）。
+		minX, minY, maxX, maxY, ok := ts.StillBoxBoundsWithinMs(30_000, nowMs)
 		if dwellSec := int(ts.StillBoxBreakDurMs / 1000); dwellSec > 0 {
-			tm.grid.MarkDwell(ts.StillBoxStartX, ts.StillBoxStartY, dwellSec, nowMs)
+			if ok {
+				tm.grid.MarkDwellRegion(minX, minY, maxX, maxY, dwellSec, nowMs)
+			} else {
+				tm.grid.MarkDwell(ts.StillBoxStartX, ts.StillBoxStartY, dwellSec, nowMs)
+			}
 		}
 		if ts.LongStillReported {
-			tm.grid.MarkToleratedStill(ts.StillBoxStartX, ts.StillBoxStartY, nowMs)
+			if ok {
+				tm.grid.MarkToleratedStillRegion(minX, minY, maxX, maxY, nowMs)
+			} else {
+				tm.grid.MarkToleratedStill(ts.StillBoxStartX, ts.StillBoxStartY, nowMs)
+			}
 		}
 		ts.LongStillReported = false
 		if ts.CurrentAnomaly == AnomalyStillTooLong {
@@ -2373,7 +2383,7 @@ func (tm *TrackManager) otherDeviceRealTrackRecent(excludeDevice string, nowMs i
 // updateContinuousIndicators 每帧维护 StillBox（静止无移动）检测 + Kalman birth-coherence 指标。
 //
 //  1. StillBox（静止无移动）检测（box 判据，2026-05-03 由 byte-equal 改为 box）：
-//     最近 30s History 滚动窗口内位移 box (max-min) ≤ StillBoxCm(30) → still。
+//     最近 30s History 滚动窗口内位移 box per-axis (max-min) ≤ StillBoxCm(50) → still。
 //     - 进入 still：起点 = History 最早帧 TMs（自然回填到 box 内最早一帧）
 //     - 持续 still：StillBoxRunStart 不变（即使 History 滚动丢早期帧）
 //     - 跳出 box：StillBoxRunStart 清零

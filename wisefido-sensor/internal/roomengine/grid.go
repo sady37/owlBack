@@ -352,6 +352,39 @@ func (g *RoomGrid) MarkDwell(x, y, dwellSec int, nowMs int64) {
 	c.LastUpdateMs = nowMs
 }
 
+// MarkDwellRegion 把本次 dwell 摊到 still 区 [minX,maxX]×[minY,maxY] 覆盖的每个 10×10 cell。
+// still-box per-axis ≤50cm 跨多格，单格 credit 会让"学的格 ≠ DBN 查的 live 格"→ 学了压不住。
+func (g *RoomGrid) MarkDwellRegion(minX, minY, maxX, maxY, dwellSec int, nowMs int64) {
+	c0, r0 := g.ToIndex(minX, minY)
+	c1, r1 := g.ToIndex(maxX, maxY)
+	for row := r0; row <= r1; row++ {
+		for col := c0; col <= c1; col++ {
+			if col < 0 || col >= g.Width || row < 0 || row >= g.Height {
+				continue
+			}
+			c := &g.Cells[row*g.Width+col]
+			c.DwellEMA = (4*c.DwellEMA + dwellSec) / 5
+			c.LastUpdateMs = nowMs
+		}
+	}
+}
+
+// MarkToleratedStillRegion 同 MarkDwellRegion，按覆盖格累计 tolerated-still。
+func (g *RoomGrid) MarkToleratedStillRegion(minX, minY, maxX, maxY int, nowMs int64) {
+	c0, r0 := g.ToIndex(minX, minY)
+	c1, r1 := g.ToIndex(maxX, maxY)
+	for row := r0; row <= r1; row++ {
+		for col := c0; col <= c1; col++ {
+			if col < 0 || col >= g.Width || row < 0 || row >= g.Height {
+				continue
+			}
+			c := &g.Cells[row*g.Width+col]
+			c.IncrToleratedStill()
+			c.LastUpdateMs = nowMs
+		}
+	}
+}
+
 // MarkLongStill 静止超 15min 阈值事件（一次 ++）
 func (g *RoomGrid) MarkLongStill(x, y int, nowMs int64) {
 	c := g.CellAt(x, y)

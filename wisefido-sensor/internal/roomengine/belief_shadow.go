@@ -448,7 +448,7 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			contDwellMs := st.stillBoxAgeMs + (nowMs - st.lastSeenMs) // 连续时钟:loss 前 still + loss 后流逝
 			obs = append(obs, belief.Observation{
 				Kind: belief.ObsDwellStill, Value: float64(contDwellMs) / 1000, Conf: 0.7, Ts: nowMs, Fresh: true,
-				ToleranceFactor: dwellTol, RoomType: roomType, AreaType: dwellArea, Night: night,
+				ToleranceFactor: dwellTol, RoomType: roomType, AreaType: dwellArea, Night: night, RadarDistCm: st.lastRawDistCm,
 			})
 			e.logger.Info("belief_shadow_silent_dwell", // silent:倒地后静止被丢,dwell 连续 ramp(替译反的 silent-miss)
 				zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),

@@ -66,6 +66,9 @@ type Observation struct {
 	// BedReleased bed_state 离床（权威>几何）：床区(area=Bed)躺着的 ObsPose 翻睡→倒地候选（取代旧止血 geom 翻转）。
 	NearDoor    bool
 	BedReleased bool
+	// RadarDistCm 该 obs 位置到雷达的平面距离 cm（仅 ObsDwellStill 消费）。≥dwellEdgeDistCm（雷达远边缘）
+	// → dwell 尾 ×dwellEdgeMult：边缘 still/pose/z 不可信，要更久才信"非歇着"。0=未设/不加边缘保守。
+	RadarDistCm int
 }
 
 // effConf 有效置信度：stale 观测当缺失。

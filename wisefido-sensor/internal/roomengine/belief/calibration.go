@@ -75,10 +75,12 @@ const (
 	// (R0:不碰生产),P9.6 待 oracle。封顶温和(真 dwell-fall 靠 Decider 窗累积)。
 	// **开阔地 dwell-fall(P4.4 裁决⑱ B2):scale=dwellScaleOpenSec×ToleranceFactor**——前置 Z_cell tolerance gate
 	// (被容忍久站的 cell 尾拉长→久站真人不报;tol 走 cell 几何/历史方差,**Z 只正向 R5**,不用 z 反向压)。
-	dwellScaleToiletSec = 900.0  // toilet/shower 15min(对齐生产 ToiletShowerSec)
-	dwellScaleOpenSec   = 1200.0 // 开阔地/Unknown 20min。两个理由:① **晚于 AreaSit 自学习(12min)** →
-	// 常坐/常站点先被 cell engine 学成 Sit(90min)→ DBN 永久不再误报(自愈);DBN 比学习早 fire 会打断学习第一周期。
-	// ② **radar detect 极限**:站/坐姿 still/pose 在距离/z 上不可信(5.5m 外 z=0 噪)→ 久静≥20min 才够信"非歇着"。
+	dwellScaleToiletSec = 900.0 // toilet/shower 15min(对齐生产 ToiletShowerSec)
+	dwellScaleOpenSec   = 720.0 // 开阔地/Unknown base 12min。≥ AreaSit 自学习阈(PR-7.2 stand-static 12min):
+	// DBN dwell 与学习共用同一 still-box(721f40b 单源)→ 学习在 box-age 12min 标成 Sit→DBN 转 90min 尾不报(学习 preempt 自愈)。
+	// 雷达 detect 极限的保守度走下面的距离闸(dwellEdgeMult),不 flat 抬 base。
+	dwellEdgeDistCm = 500.0 // ≥此(雷达远边缘 5m,离 5.5m 极限留余量)→ still/pose/z 不可信 → dwell 尺度 ×dwellEdgeMult
+	dwellEdgeMult   = 1.5   // 边缘风险系数:edge cell 阈值 = base × 1.5(开阔地 12→18min);近点不受影响
 	dwellFallCap        = 2.5   // fallLR 封顶(温和;真 dwell-fall 靠 Decider 窗累积)
 	dwellShape          = 2.0   // P4.1 生存尾形状(Weibull k;沿用现行 k=2;P9 待样本收紧尾形)
 	dwellNightTailMult  = 0.7   // P4.3 风险时段夜间短尾(scale×此=更快 ramp;久静夜间更可疑;P9 待标定)
