@@ -9,7 +9,7 @@ import (
 // TestReasonForMapping — P7.3 主导 ObsKind → reason 类（纯映射）。
 func TestReasonForMapping(t *testing.T) {
 	cases := map[ObsKind]FallReason{
-		ObsNoDetect:    ReasonLost,
+		ObsNoDetect:    ReasonMoving,
 		ObsDwellStill:  ReasonSilent,
 		ObsPose:        ReasonPoseLying,
 		ObsNeighbor:    ReasonUnknown, // 压制源不是 fall 成因
@@ -62,7 +62,7 @@ func TestFallReasonForEachPath(t *testing.T) {
 	}{
 		{"pose_fallen→pose_lying", poseFallenObs(), ReasonPoseLying},
 		{"dwell_still→silent", dwellStillObs(), ReasonSilent},
-		{"no_detect→lost", noDetectObs(), ReasonLost},
+		{"no_detect→moving", noDetectObs(), ReasonMoving},
 	}
 	for _, c := range cases {
 		// 先确认确实 fall-ward（LR>1），否则测的是 Unknown 退化。

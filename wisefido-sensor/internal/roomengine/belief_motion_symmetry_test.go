@@ -58,10 +58,7 @@ func TestDBNMovingReason(t *testing.T) {
 	if r := dbnMovingReason(belief.ReasonPoseLying, 0, now); r != belief.ReasonPoseLying {
 		t.Errorf("从未动应 ReasonPoseLying,得 %v", r)
 	}
-	// lost/silent 主导不受影响(只 pose_lying 才细分 moving)
-	if r := dbnMovingReason(belief.ReasonLost, now-1_000, now); r != belief.ReasonLost {
-		t.Errorf("lost 不应变 moving,得 %v", r)
-	}
+	// silent 主导不受影响(只 pose_lying 才细分 moving;P5 删了独立的 lost 成因)
 	if r := dbnMovingReason(belief.ReasonSilent, now-1_000, now); r != belief.ReasonSilent {
 		t.Errorf("silent 不应变 moving,得 %v", r)
 	}

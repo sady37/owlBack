@@ -431,9 +431,34 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		if _, alive := cur[tid]; alive || nowMs-st.lastSeenMs <= beliefShadowLostTTLMs {
 			continue
 		}
+		// P5 定稿(silent vs moving):消失前曾静止(有 still-box)= silent —— lost 算作原位 still-box 持续。
+		// dwell 连续(含 loss 前 still 时长)喂 survival ramp,**不进 moving 路径**(neighbor/noDetect/Blind)。
+		// 治本译反:原此处 `continue 归 Still-fall 域` 把"倒地→静止→被丢"两头不沾(lost 排除 + 无帧发不出 dwell)=silent-miss。
+		// recapture 框内续/框外断由 present 路径的 still-box 维护(track_manager)处理:返回框内→StillBoxRunStart 续→
+		// stillBoxAgeMs 大;返回框外→track_manager 重置→stillBoxAgeMs 归零→自然不再 silent。
 		if st.stillBoxAgeMs >= int64(FallRulesParam.Lost.MovingPreconditionMs) {
-			continue // 静止态消失 → Still-fall 域
+			dwellArea := st.lastAreaType
+			if bedReleased && dwellArea == int(AreaBed) {
+				dwellArea = int(AreaActive) // bed_state 离床 → 床区静止=床边真摔,按开阔地 dwell(否则 bed zone 不 ramp)
+			}
+			dwellTol := 1.0
+			if grid != nil && isOpenFloorArea(AreaType(dwellArea)) {
+				dwellTol = grid.ToleranceFactorAt(st.lastX, st.lastY)
+			}
+			contDwellMs := st.stillBoxAgeMs + (nowMs - st.lastSeenMs) // 连续时钟:loss 前 still + loss 后流逝
+			obs = append(obs, belief.Observation{
+				Kind: belief.ObsDwellStill, Value: float64(contDwellMs) / 1000, Conf: 0.7, Ts: nowMs, Fresh: true,
+				ToleranceFactor: dwellTol, RoomType: roomType, AreaType: dwellArea, Night: night,
+			})
+			e.logger.Info("belief_shadow_silent_dwell", // silent:倒地后静止被丢,dwell 连续 ramp(替译反的 silent-miss)
+				zap.String("room_id", roomID), zap.Int("track_id", tid), zap.Int64("ts_ms", nowMs),
+				zap.Int64("p5_cont_dwell_ms", contDwellMs),
+				zap.Int64("p5_still_before_loss_ms", st.stillBoxAgeMs),
+				zap.String("dwell_area", belief.AreaTypeLabel(dwellArea)),
+				zap.Bool("p5_bed_released", bedReleased))
+			continue
 		}
+		// 以下 = moving:消失前在走动(无 still-box)。neighbor hand-off / smallBath / noDetect→Blind / reachable-exit。
 		if st.lostAnchor == 0 {
 			st.lostAnchor = st.lastSeenMs
 		}

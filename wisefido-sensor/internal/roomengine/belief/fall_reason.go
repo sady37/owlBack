@@ -8,13 +8,12 @@ type FallReason int
 
 const (
 	ReasonUnknown   FallReason = iota // 无 fall-ward 主导（所有 fresh obs 对 SFallen LR≤1）
-	ReasonLost                        // NoDetect 主导：走动中消失=lost-fall（≈gate-list lost_track）
-	ReasonSilent                      // DwellStill 主导：dwell 久静=silent/still fall（≈bathroom_still/bedroom_person_silent）
+	ReasonSilent                      // DwellStill 主导：倒地后静止=silent（含 lost 算作原位 still-box 的无报告段延续）
 	ReasonPoseLying                   // Pose 主导：lying/fallen posture 抬 fall（开阔地倒姿）
-	ReasonMoving                      // P3：移动中突变倒地（摔前在动，Room 层按 motion context 赋值，非 obs 主导）
+	ReasonMoving                      // NoDetect 主导：走动中从未静止就消失=moving（走进盲/走出门，reachable-exit 裁）
 )
 
-var fallReasonLabel = [...]string{"unknown", "lost", "silent", "pose_lying", "moving"}
+var fallReasonLabel = [...]string{"unknown", "silent", "pose_lying", "moving"}
 
 func (r FallReason) String() string {
 	if int(r) < 0 || int(r) >= len(fallReasonLabel) {
@@ -26,10 +25,10 @@ func (r FallReason) String() string {
 // reasonFor 主导 ObsKind → reason 类。
 func reasonFor(k ObsKind) FallReason {
 	switch k {
-	case ObsNoDetect:
-		return ReasonLost
 	case ObsDwellStill:
-		return ReasonSilent
+		return ReasonSilent // 倒地后静止（still/lost 共用 dwell ramp）
+	case ObsNoDetect:
+		return ReasonMoving // 走动中从未静止就消失（lost 不再是独立成因）
 	case ObsPose:
 		return ReasonPoseLying
 	default:
