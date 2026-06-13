@@ -269,6 +269,13 @@ type Engine struct {
 	beliefShadows  map[string]*beliefShadow
 	beliefShadowMu sync.Mutex
 
+	// 工单5 cold-start per-unit 升档闸:suiteID(unit) → 该 unit 首次见 track 的 nowMs。
+	// effectiveMode = min(全局 dbnMode, unitCap);unitCap 启动=1(可自发不否决 firmware),
+	// now−firstTrack ≥ max(coldGraduateMs, coldFloorMs) 后升 2(可否决)。纯内存(Phase A):
+	// 重启 firstTrack 清零 → 重新冷启动(退档=FP 安全,委员会 §6.4 裁)。
+	unitFirstTrackMs map[string]int64
+	coldStartMu      sync.Mutex
+
 	// gate-list BathroomFallRules/BedroomFallRules 已退役(DBN_FIRE=1 短路,DBN 接管 fire)—码删 #1.2
 }
 
@@ -342,6 +349,7 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		trackLastSeen:       make(map[string]map[int]int64),
 		bathroomGates:       make(map[string]*BathroomGate),
 		beliefShadows:       make(map[string]*beliefShadow),
+		unitFirstTrackMs:    make(map[string]int64),
 	}
 }
 
@@ -1657,7 +1665,8 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 			for _, a := range alarms {
 				// DBN_MODE:档 2(dbnVetoFirmwareEnabled)→ 暂存,下一 belief tick 用 fresh bases 现算 co-existence
 				// 裁决放行/否决(option A,消除事件 vs tick 竞态,孤立必发)。档 1 → firmware 地板,立即转发。
-				deferred := dbnVetoFirmwareEnabled()
+				// 工单5:per-unit effectiveMode（cold unit cap=1 → 不否决,firmware 立即直通兜底真摔）。
+				deferred := e.dbnVetoFirmwareEnabledFor(roomID, ts)
 				if deferred {
 					e.stashPendingFirmwareFall(roomID, a)
 				} else {

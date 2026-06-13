@@ -49,12 +49,64 @@ func parseDBNMode(s string) int {
 	}
 }
 
-// dbnSelfFireEnabled 档 1/2：DBN 自发推断 fall（其内部 ghost/risk 自否决照常）。
-func dbnSelfFireEnabled() bool { return dbnMode == 1 || dbnMode == 2 }
+// ── 工单5 cold-start per-unit 升档闸（委员会 2026-06-13 §6 裁决，Phase A 纯内存）──
+//
+// 全局 dbnMode（DBN_MODE env）是 ceiling，每 unit 另有成熟度 cap，effectiveMode=min(两者)：
+// 自发=effectiveMode≥1，否决 firmware=effectiveMode==2。unit 刚上线 cell grid 空白
+// （tolerance 全 1.0 无学得语义）→ dbnMode=2 会在常坐区密集 dwell-silent FP，故 cap 启动=1
+// （可自发但不否决：firmware 兜底真摔，cd2b 这类 firmware 漏判靠 DBN 自发补，FP>>FN 安全），
+// grid 学满后才升 2。成熟判据=纯时钟（§6.1 裁 C，覆盖率门首版不做）:
+// now−firstTrack ≥ max(T_cold, T_floor)。T_cold 默认 72h 可 env 覆盖；T_floor=24h 硬下限。
+const coldFloorMs int64 = 24 * 60 * 60 * 1000 // §6.2 硬下限,不可 env 覆盖
 
-// dbnVetoFirmwareEnabled 仅档 2：DBN 可否决 firmware fire（ghost/risk 命中 → 挡掉固件那条）。
-// 档 0 不否决 → engine.go deferred gate 同此为 false → firmware 立即直通,不进 stash/resolve（不处理）。
-func dbnVetoFirmwareEnabled() bool { return dbnMode == 2 }
+var coldGraduateMs = parseColdHours(os.Getenv("DBN_COLD_HOURS")) // §6.1 默认 72h
+
+func parseColdHours(s string) int64 {
+	if s != "" {
+		if h, err := time.ParseDuration(s + "h"); err == nil && h > 0 {
+			return h.Milliseconds()
+		}
+	}
+	return 72 * 60 * 60 * 1000
+}
+
+// markUnitTrack 在 unit 首次见 track 时打桩 firstTrackMs（单调,只落一次不覆盖）。
+func (e *Engine) markUnitTrack(suiteID string, nowMs int64) {
+	if suiteID == "" {
+		return
+	}
+	e.coldStartMu.Lock()
+	if e.unitFirstTrackMs[suiteID] == 0 {
+		e.unitFirstTrackMs[suiteID] = nowMs
+	}
+	e.coldStartMu.Unlock()
+}
+
+// unitCap 本 unit 当前成熟度档：未满 cold 期=1（不否决 firmware）；满=2（可否决）。
+// firstTrack=0（从没见过 track）→ 全新 unit → 1。
+func (e *Engine) unitCap(suiteID string, nowMs int64) int {
+	e.coldStartMu.Lock()
+	first := e.unitFirstTrackMs[suiteID]
+	e.coldStartMu.Unlock()
+	graduate := coldGraduateMs
+	if coldFloorMs > graduate {
+		graduate = coldFloorMs
+	}
+	if first == 0 || nowMs-first < graduate {
+		return 1
+	}
+	return 2
+}
+
+// dbnSelfFireEnabledFor / dbnVetoFirmwareEnabledFor 是 dbnSelfFireEnabled/dbnVetoFirmwareEnabled
+// 的 per-unit 版：effectiveMode = min(全局 dbnMode, unitCap)。dbnMode=0 时 min 仍 0（运维全局静默不变）。
+func (e *Engine) dbnSelfFireEnabledFor(suiteID string, nowMs int64) bool {
+	return min(dbnMode, e.unitCap(suiteID, nowMs)) >= 1
+}
+
+func (e *Engine) dbnVetoFirmwareEnabledFor(roomID string, nowMs int64) bool {
+	return min(dbnMode, e.unitCap(e.SuiteIDForRoom(roomID), nowMs)) == 2
+}
 
 // dbnVetoRecoveryEnabled P2 recovery-veto 独立子开关（委员会 6dafdc6,默认 OFF,可单独 live toggle）。
 // recovery-veto 漏报-safe by construction(同人+正向 up+track-loss 螺丝+self-rescue≥15s+默认放行)。
@@ -213,9 +265,14 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 	tm := e.rooms[roomID]
 	grid := e.grids[roomID]
 	roomType := e.roomType[roomID]
+	unitSuiteID := e.roomSuiteID[roomID]
 	e.mu.RUnlock()
 	if tm == nil {
 		return
+	}
+	// 工单5 cold-start:本 unit 见到 track → 打桩 firstTrack（升档计时起点）。
+	if len(bases) > 0 {
+		e.markUnitTrack(unitSuiteID, nowMs)
 	}
 	e.beliefShadowMu.Lock()
 	defer e.beliefShadowMu.Unlock()
@@ -816,7 +873,8 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		)
 		// ★cutover 三档:档 1/2(dbnSelfFireEnabled)→ DBN 自发推断 fall。保守 ghost veto + 风险分层 τ* + 默认放行。
 		// 档 0 = DBN 不自发(只当 firmware 过滤器,见 stashPendingFirmwareFall/resolvePendingFirmwareFalls)。
-		if dbnSelfFireEnabled() {
+		// 工单5:per-unit effectiveMode（cold unit cap=1 仍允许自发，cd2b 这类 firmware 漏判靠它补）。
+		if e.dbnSelfFireEnabledFor(unitSuiteID, nowMs) {
 			fb, ok := dbnFallerBase(bases, sh)
 			// ★★ghost 判据 = co-existence（用户铁律,安全包线）：ghost 是真人的反射 → 必有共存的真人 partner
 			// → 画面里 **≥2 track**;**孤立 1 track = 没有被反射的源 = 不可能是 ghost = 一定是真人 → 永远发,绝不否**

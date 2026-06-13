@@ -8,6 +8,26 @@
 
 ---
 
+## 工单5(cold-start Phase A)落码完成(2026-06-13,先提交待委员会审)
+
+委员会 §6 裁决全部照办,Phase A 纯内存落地。放行 bar 达成:`build ./...` ✅ / `vet ./internal/roomengine/...` ✅ / belief 包 ✅ + **roomengine 0 FAIL**。
+
+**实现(`belief_shadow.go` + `engine.go`,~70 行)**:
+- `Engine.unitFirstTrackMs map[string]int64` + `coldStartMu`(纯内存,重启清零=重新冷启动,退档=FP 安全,§6.4 Phase A)。
+- `markUnitTrack(suiteID, nowMs)`:beliefShadowTick 里 `len(bases)>0` 时打桩 firstTrack(单调只落首次),unit 粒度=`roomSuiteID`。
+- `unitCap(suiteID, nowMs)`:`now−firstTrack ≥ max(coldGraduateMs, coldFloorMs)` → 2,否则 1(firstTrack=0 全新 unit → 1)。**纯时钟**(§6.1 裁 C,无覆盖率门)。`coldGraduateMs` 默认 72h、env `DBN_COLD_HOURS` 覆盖;`coldFloorMs=24h` 硬下限(§6.2)。无第三道稳定门(§6.3)。
+- 两个消费点改 per-unit:`belief_shadow.go` 自发 → `dbnSelfFireEnabledFor(unitSuiteID, nowMs)`;`engine.go` veto firmware → `dbnVetoFirmwareEnabledFor(roomID, ts)`。二者 = `min(全局 dbnMode, unitCap)`,自发≥1 / 否决==2。
+- **启动=1,路径 1→2**(§四裁决):cold unit cap=1 仍允许 DBN 自发(cd2b 这类 firmware 漏判靠它补),仅不否决 firmware;`unitCap=0` 只在运维 `DBN_MODE=0` 时由 min 产生。
+- **删死码(#1.2)**:全局 `dbnSelfFireEnabled()`/`dbnVetoFirmwareEnabled()` 改 per-unit 后零调用 → 删除。
+
+**测试**:新增 `cold_start_test.go::TestColdStartUnitGate` 锁四点——markUnitTrack 单调 / 时钟门 1→2 / T_floor 硬下限 / `min(ceiling,cap)`(dbnMode=2 cold→不否决但自发、mature→否决;dbnMode=1 ceiling 压 mature 不否决;dbnMode=0 全静默)。
+
+**Phase C(挂 grid_snapshot,§6.4)未做**:等 playback `--persist`(74cc558)live 验证后再合,与本 Phase A 解耦。
+
+**一处实现取舍记录**:beliefShadowTick 内已有一个**条件置空**的 `suiteID`(仅 smallBath 时填,喂 574/590 的 recapture/SuiteHasOtherDevice)。cold-start 需**恒填**的 unit id,故另起 `unitSuiteID := e.roomSuiteID[roomID]`,不动既有 `suiteID` 语义(避免改 lost-fall sweep 行为)。
+
+---
+
 ## 新提案:cold 启动期 per-unit 升档闸(`unit_dbn_mode`)— 申请委员会裁(2026-06-13)
 
 ### 问题
