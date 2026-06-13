@@ -8,6 +8,16 @@
 
 ---
 
+## 用户改裁:cold-start T_cold 默认 72h → 7d(2026-06-13,知会委员会)
+
+**用户拍板:72h(3天)太短,改回 7d(168h)。** 委员会 §6.1 当初把 T_cold 定默认 72h,但项目组原提案(§6.1 选项表 C 行 `T_cold` 描述)与最初动机本就是"学满 1 周"——72h 是评审时缩短的。用户判定 3 天不足以让 cell 地图覆盖完整周循环(工作日/周末作息差异),学得的 dwell/容忍证据不够,故改回 7d。
+
+- 安全方向:7d 让新装 unit 更长时间停在 cap=1(只自发不否决 firmware)→ 更保守,代价仅"开始压误报"晚几天。
+- 落码:`parseColdHours` 默认 `7*24h`(env `DBN_COLD_HOURS` 仍可覆盖);`coldFloorMs=24h` 硬下限不变。`TestColdStartUnitGate` 时钟门测试用变量不写死,自动适配,绿。
+- **请委员会知会**:这是对 §6.1 默认值的用户级改裁(非推翻机制,仅调参),T_floor/启动值/min(ceiling,cap) 一切不变。
+
+---
+
 ## 工单5(cold-start Phase A)落码完成(2026-06-13,先提交待委员会审)
 
 委员会 §6 裁决全部照办,Phase A 纯内存落地。放行 bar 达成:`build ./...` ✅ / `vet ./internal/roomengine/...` ✅ / belief 包 ✅ + **roomengine 0 FAIL**。

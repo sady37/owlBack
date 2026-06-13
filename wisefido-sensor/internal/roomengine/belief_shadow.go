@@ -56,10 +56,11 @@ func parseDBNMode(s string) int {
 // （tolerance 全 1.0 无学得语义）→ dbnMode=2 会在常坐区密集 dwell-silent FP，故 cap 启动=1
 // （可自发但不否决：firmware 兜底真摔，cd2b 这类 firmware 漏判靠 DBN 自发补，FP>>FN 安全），
 // grid 学满后才升 2。成熟判据=纯时钟（§6.1 裁 C，覆盖率门首版不做）:
-// now−firstTrack ≥ max(T_cold, T_floor)。T_cold 默认 72h 可 env 覆盖；T_floor=24h 硬下限。
+// now−firstTrack ≥ max(T_cold, T_floor)。T_cold 默认 7d 可 env 覆盖；T_floor=24h 硬下限。
+// 默认值用户拍 7d（覆盖完整周循环,委员会 §6.1 原定 72h 太短改回提案本意 1 周）。
 const coldFloorMs int64 = 24 * 60 * 60 * 1000 // §6.2 硬下限,不可 env 覆盖
 
-var coldGraduateMs = parseColdHours(os.Getenv("DBN_COLD_HOURS")) // §6.1 默认 72h
+var coldGraduateMs = parseColdHours(os.Getenv("DBN_COLD_HOURS")) // 默认 7d
 
 func parseColdHours(s string) int64 {
 	if s != "" {
@@ -67,7 +68,7 @@ func parseColdHours(s string) int64 {
 			return h.Milliseconds()
 		}
 	}
-	return 72 * 60 * 60 * 1000
+	return 7 * 24 * 60 * 60 * 1000
 }
 
 // markUnitTrack 在 unit 首次见 track 时打桩 firstTrackMs（单调,只落一次不覆盖）。

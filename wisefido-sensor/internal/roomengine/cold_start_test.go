@@ -34,9 +34,9 @@ func TestColdStartUnitGate(t *testing.T) {
 		t.Errorf("满 graduate 应 cap=2, got %d", cap)
 	}
 
-	// 3) T_floor 硬下限:即便只过了 24h 多一点但默认 72h 未满 → 仍 1。
+	// 3) T_floor 硬下限:即便只过了 24h 多一点但默认 7d 未满 → 仍 1。
 	if cap := e.unitCap("unitA", first+coldFloorMs+hourMs); cap != 1 {
-		t.Errorf("默认 72h 门未满(仅过 25h)应 cap=1, got %d", cap)
+		t.Errorf("默认 7d 门未满(仅过 25h)应 cap=1, got %d", cap)
 	}
 
 	// 4) effectiveMode = min(全局 dbnMode, unitCap)。
