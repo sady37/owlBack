@@ -6,6 +6,40 @@
 
 ---
 
+## 2026-06-13 — 委员会审核:工单5 Phase A 落码(14e27ac)
+
+### 审核结论:批准。
+
+放行 bar:`go build ./...` ✅ / `go vet ./...` ✅ / `go test ./internal/roomengine/...` **0 FAIL** ✅。
+
+### 逐项比对裁决
+
+| § | 裁 | 实现 | 合 |
+|---|-----|------|-----|
+| §6.1 θ 度量 | 纯时钟 C,`T_cold` 默认 72h env 可覆盖 | `coldGraduateMs = parseColdHours(DBN_COLD_HOURS)` 默认 72h | ✅ |
+| §6.2 TimeFloor | 24h 硬下限,不可 env 覆盖 | `coldFloorMs int64 = 24*60*60*1000` 常量 | ✅ |
+| §6.3 第三道门 | 不做 | 无 ticker/计数器,纯 `nowMs−first ≥ graduate` 单次判 | ✅ |
+| §6.4 存储归属 | Phase A 纯内存 | `Engine.unitFirstTrackMs map[string]int64` + `coldStartMu`,重启清零 | ✅ |
+| 启动值 | 启动=1,路径 1→2 | `unitCap` 返回 1(未满)/2(满);effectiveMode=`min(ceiling,cap)` | ✅ |
+
+### 代码审查要点
+
+- ✅ **`markUnitTrack` 单调**:只落首次,后续调用不覆盖(锁测试)
+- ✅ **`unitCap` 逻辑正确**:`first==0`→全新→1;`now-first < max(coldGraduateMs, coldFloorMs)`→未满→1;否则→2
+- ✅ **`dbnSelfFireEnabledFor`/`dbnVetoFirmwareEnabledFor`**:`min(全局 mode, unitCap)`,mode=0→0(运维静默不变),mode=1 ceiling 压 mature
+- ✅ **规则 #1.2 合规**:旧全局 `dbnSelfFireEnabled()`/`dbnVetoFirmwareEnabled()` 删净,零 stub/alias
+- ✅ **`suiteID` vs `unitSuiteID` 取舍**:beliefShadowTick 内既有 `suiteID` 仅 smallBath 时条件置空(recapture/SuiteHasOtherDevice),cold-start 需恒填的 unit id → 另起 `unitSuiteID := e.roomSuiteID[roomID]`,不改既有语义
+- ✅ **消费点全改**:beliefShadowTick 自发 → `dbnSelfFireEnabledFor(unitSuiteID, nowMs)`;engine.go veto → `dbnVetoFirmwareEnabledFor(roomID, ts)`
+- ✅ **测试 `TestColdStartUnitGate`**:锁四点——mark 单调/时钟门 1→2/T_floor 硬下限/min(ceiling,cap)四种 mode
+
+### 工单状态更新
+
+- [x] **工单 5 Phase A**:落码完成,批准,本审核收口
+- [ ] **工单 5 Phase C**(挂 grid_snapshot):等 playback `--persist`(74cc558) live 验证后合
+- [ ] **工单 1–4** 继续推进,不阻塞
+
+---
+
 ## 2026-06-13 — 委员会周期性审核(replay/case 提交 + cold-start 提案裁决)
 
 ### 审核范围
