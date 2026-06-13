@@ -313,7 +313,7 @@ func TestP4OpenFloorDwellToleranceGate(t *testing.T) {
 	const (
 		px, py    = 50, 200
 		nowBase   = 10_000_000 // 高起点:确保 StillBoxRunStart=now−dwell 恒 >0(否则 stillBox 失效→pose 不 stale→竞争压 Fallen)
-		dwellMs   = 560_000    // 固定 dwell 560s:落 ramp 带内(lo r=1.17 未饱和 / hi r=0.58)避免 cap 抹判别
+		dwellMs   = 1_400_000  // 固定 dwell 1400s(>20min 尾):落 ramp 带内(无tol r=1400/1200=1.17 未饱和)避免 cap 抹判别
 		frames    = 16         // 实测判别窗:lo P≈0.84 fired / hi P≈0.04 not,两侧远离 θ_fire 0.55
 		cadenceMs = 2_000
 	)
