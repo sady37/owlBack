@@ -2,28 +2,28 @@ package belief
 
 import "math"
 
-// State 隐状态 S（owlBack/doc/room_belief_state_machine.md §3）。
-// S0 Empty + S7 Left 是第一类公民——9h person_silent 的直接缺失态。
-// 位置语义不进 S，由 Observation.AreaType/NearDoor/BedReleased 作 P(o|s) 条件（§3 设计要点）。
+// State 隐状态 S：全空间区域占用 × {直立, 倒地}（P5 重写，feedback_a5 委员会批准）。
+// 区域（占用在哪）进 S；姿态由 Fallen 吸收态承载。ghost/伪迹归 Track 层（Conf×P(Real) 退火），S 不设伪迹态。
+// Blind* = 否定定义（占用但无 real track 解析 + 未离场）；Rest/Open 由消失前区域经转移阵 A 决定，不靠几何（盲区无几何）。
 type State int
 
 const (
-	SEmpty       State = iota // 房内无人
-	SBedLying                 // 在床躺（含睡眠）
-	SBedRestless              // 床上翻动/坐起
-	SSit                      // 坐（椅/沙发/马桶）
-	SStandWalk                // 站立或行走
-	SFallen                   // 倒地 ← 唯一 fire Fall 的目标态
-	STransition               // 过渡中（吸收瞬时不确定）
-	SLeft                     // 从门离开（→ 收敛回 Empty）
-	SArtifact                 // ghost / 反射 / 设备伪迹
+	SEmpty     State = iota // 0 房内确认无人
+	SBed                    // 1 占用在床（睡/休息）
+	SSit                    // 2 占用在休息区（椅/沙发）——久坐正常
+	SOpenFloor              // 3 占用在开阔活动区（站/走，摔在这里）
+	SBath                   // 4 占用在卫浴（高风险，常盲）
+	SFallen                 // 5 倒地 ← 唯一 fire Fall 的目标态，近吸收（index 不变 → Decider 引用稳定）
+	SBlindRest              // 6 占用但无 real track 解析 + 未离场，从 rest 区（床/卫浴）进盲
+	SBlindOpen              // 7 同上，从开阔区进盲
+	SLeft                   // 8 从门离开（→ 收敛回 Empty）
 )
 
 const numStates = 9
 
 var stateLabel = [numStates]string{
-	"Empty", "Bed-Lying", "Bed-Restless", "Sit", "Stand-Walk",
-	"Floor-Fallen", "Transition", "Left-via-Door", "Artifact",
+	"Empty", "Bed", "Sit", "Open-Floor", "Bath",
+	"Floor-Fallen", "Blind-Rest", "Blind-Open", "Left-via-Door",
 }
 
 func (s State) String() string { return stateLabel[s] }

@@ -149,11 +149,7 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 		vitalVal = 1
 	}
 
-	// ghost-ness：GhostPenalty(≥80→1) 与 verdict 合成。Ghost verdict 直接拉满。
-	ghost := clampUnit(float64(ts.GhostPenalty) / 80)
-	if ts.Verdict == VerdictGhost {
-		ghost = 1
-	}
+	// P5:ghost/反射归 Track 层(TrackBelief co-existence + Conf×P(Real) 退火),Room 层不再喂 ObsTrackPresent。
 
 	// P4.1 dwell 生存函数:still 时长(StillBoxRunStart 起)→ ObsDwellStill ramp。Fresh=tsFresh(track 在即可;
 	// dwell-fall 恰是"久静"语义,不受 still-box motion-stale 命门压制——与 pose/kinematics 不同)。
@@ -173,7 +169,6 @@ func radarFrameAdapter(t observation.Track, ts *TrackState, grid *RoomGrid, nowM
 		{Source: t.LogicID, Kind: belief.ObsZBand, Value: float64(z), Conf: 0.7, Ts: nowMs, Fresh: motionFresh},                                         // P2.3 z 高度档 posture(不进 fall,R5)
 		{Source: t.LogicID, Kind: belief.ObsDwellStill, Value: dwellSec, Conf: 0.7, Ts: nowMs, Fresh: tsFresh, ToleranceFactor: dwellTol, Night: night}, // P4.1+P4.4 dwell 生存 ramp(开阔地带 tol gate)+P4.3 夜尾
 		{Source: t.LogicID, Kind: belief.ObsVitalPresent, Value: vitalVal, Conf: 0.6, Ts: nowMs, Fresh: motionFresh},
-		{Source: t.LogicID, Kind: belief.ObsTrackPresent, Value: ghost, Conf: 0.8, Ts: nowMs, Fresh: tsFresh},
 	}
 
 	// 注：no-detect **不在逐帧 adapter 里发**。它是「走动中突然消失」的**消失事件**，由 engine/replay

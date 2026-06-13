@@ -16,14 +16,12 @@ const (
 	lrZStand   = 2.0  // z>80 → +SStandWalk(P9.6:应 ≥ lrPoseStand,现倒挂待 oracle)
 	lrZSit     = 2.0  // 30–80 → +SSit
 
-	// ── ObsVitalPresent(有生命体征→必真人,压 Empty/Artifact)──
-	lrVitalEmpty    = 0.2
-	lrVitalArtifact = 0.3
-	lrNoVitalEmpty  = 1.2 // 无 vital 是弱信号(mmWave 常漏)
+	// ── ObsVitalPresent(有生命体征→必真人,压 Empty)──
+	lrVitalEmpty   = 0.2
+	lrNoVitalEmpty = 1.2 // 无 vital 是弱信号(mmWave 常漏)
 
 	// ── ObsBedOccupied(嵌套 bed 贝叶斯 P(InBed)=p;对齐 bed_bayesian_scorer LR 表)──
-	gainBedLying     = 5.0 // 1+5p
-	gainBedRestless  = 3.0 // 1+3p
+	gainBedLying     = 5.0 // 1+5p（SBed）
 	dampBedFallen    = 0.2 // 1−0.2p（委员会裁 0.7→0.2:床占用对 fall 的压制减弱,配合 bedside FN 止血——床区躺也别把 fall 压死）
 	dampBedStandWalk = 0.6 // 1−0.6p
 	dampBedSit       = 0.5 // 1−0.5p
@@ -37,6 +35,7 @@ const (
 	lrExitEmpty      = 2.0
 	lrExitFallen     = 0.2 // 事件正向退场压 Fallen(非 pose,R5 不管事件)
 	lrExitStandWalk  = 0.5
+	lrExitBlind      = 0.2 // 离场了就不在盲区——压 BlindRest/BlindOpen(BlindRest 的 Left 逃生阀正是经此观测,非 A)
 
 	// ── ObsNumberPeople(np=0 是 corroboration 非 substitution;不反驳已倒地)──
 	lrNp0Empty     = 1.5
@@ -46,11 +45,6 @@ const (
 	lrNp0Fallen    = 1.0 // 中性:真倒地证据须仍能竞争
 	lrNpOccEmpty   = 0.3 // np>0 压 Empty
 
-	// ── ObsTrackPresent(ghost-ness g∈[0,1]→Artifact)──
-	gainGhostArtifact  = 6.0 // 1+6g
-	dampGhostStandWalk = 0.5 // 1−0.5g
-	dampGhostFallen    = 0.5
-
 	// ── ObsNeighbor(§5.5.2 弱耦合:邻居占用高→本房空/离,不太可能倒地)──
 	gainNbrEmpty     = 3.0
 	gainNbrLeft      = 2.0
@@ -58,11 +52,9 @@ const (
 	dampNbrBedLying  = 0.4
 	dampNbrStandWalk = 0.4
 
-	// ── ObsNoDetect(看了没测到的状态条件似然;固定强度不含时长,时长归 Decider/P3)──
-	lrNoDetStandWalk   = 0.3 // 可检测态凭空消失=坏解释→压
-	lrNoDetSit         = 0.4
-	lrNoDetBedRestless = 0.6
-	lrNoDetBedLying    = 0.8
+	// ── ObsNoDetect(realness 门控后无 real track 解析的状态条件似然;固定强度不含时长,时长归 Decider/P3)──
+	lrNoDetVisible = 0.3 // 可见区(Bed/Sit/Open/Bath)该被 track 解析却没有=坏解释→压
+	lrNoDetBlind   = 2.0 // 盲区占用(BlindRest/BlindOpen)=无 track 的合理解释→抬(P9.6 待 oracle)
 	// P6.1a(阻塞项#1):no-detect 抬 Fallen 不再固定,改门控 1+noDetGainFallen·P(real)·(1−P(door-exit))。
 	// 真人非门区消失(P(real)=1,door-exit=0)→ 1+0.6=1.6(=旧上限);ghost 消失/门区可达走出 → →1 中性
 	// (不裸 absence 抬 fall,治 dropout-FP)。连续边缘化非硬𝟙(realness 判错平滑退化,§4.3 ghost 融合同构)。
@@ -89,32 +81,31 @@ const (
 	dwellShape          = 2.0   // P4.1 生存尾形状(Weibull k;沿用现行 k=2;P9 待样本收紧尾形)
 	dwellNightTailMult  = 0.7   // P4.3 风险时段夜间短尾(scale×此=更快 ramp;久静夜间更可疑;P9 待标定)
 
-	// ── poseLikelihood(P2.2:对 fall 只正向;SStandWalk/SSit/SBedLying 是 posture 区分非 fall 压制)──
+	// ── poseLikelihood(P2.2:对 fall 只正向;SOpenFloor/SSit/SBed/SBath 是占用区分非 fall 压制)──
 	lrPoseWalkStandWalk  = 6.0
 	dampPoseWalkBed      = 0.3
 	lrPoseWalkEnterLeft  = 3.0 // 门口走动→可能离场
 	lrPoseSuspFallen     = 3.0
-	lrPoseSuspTrans      = 2.0
 	dampPoseSuspStand    = 0.8
 	lrPoseSitSit         = 6.0
 	dampPoseSitStand     = 0.8
-	lrPoseStand          = 6.0 // pose=standing → StandWalk(P9.6:z>80 权应 ≥ 此)
+	lrPoseStand          = 6.0 // pose=standing → SOpenFloor(P9.6:z>80 权应 ≥ 此)
 	lrPoseStandSit       = 1.5
 	lrPoseFallenBase     = 8.0  // area 未知
 	lrPoseFallenInBed    = 1.5  // 床上 fallen 多躺姿误读,降权(仍 >1 正向)
-	lrPoseFallenOpen     = 10.0 // 开阔地板确认倒地,升权
+	lrPoseFallenOpen     = 10.0 // 开阔地板/卫浴确认倒地,升权
 	dampPoseFallenStand  = 0.3
 	dampPoseFallenSit    = 0.3
 	lrPoseFallenBedLy    = 4.0
-	lrPoseLyingBedLying  = 6.0 // lying@InBed
-	lrPoseLyingBedRest   = 3.0
-	lrPoseLyingOpenFall  = 4.0 // lying@OpenFloor 倒地候选
+	lrPoseLyingBedLying  = 6.0 // lying@InBed → SBed
+	lrPoseLyingOpenFall  = 4.0 // lying@OpenFloor / 床区离床 倒地候选
 	dampPoseLyingOpenBed = 0.5
 	dampPoseLyingOpenSW  = 0.4
+	lrPoseLyingBathFall  = 4.0 // lying@卫浴 倒地候选(高风险区)
+	dampPoseLyingBath    = 0.5
 	lrPoseLyingDefBed    = 2.0 // lying@unknown
 	lrPoseLyingDefFall   = 1.5
 	lrPoseSitGroundFall  = 3.0
 	lrPoseSitGroundSit   = 1.5
-	lrPoseBedSitUpRest   = 4.0
-	lrPoseBedSitUpLying  = 1.5
+	lrPoseBedSitUpRest   = 4.0 // bed-sit-up → SBed
 )

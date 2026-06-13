@@ -11,7 +11,6 @@ const (
 	ObsBedOccupied                  // bed 贝叶斯 P(InBed)，嵌套 belief 子证据
 	ObsEnterExit                    // EnterRoom=+1 / ExitRoom=-1
 	ObsNumberPeople                 // 房间人数 0-8
-	ObsTrackPresent                 // track Verdict/GhostPenalty 合成 ghost-ness [0,1]
 	ObsNeighbor                     // §5.5.2 弱耦合：邻居 room P(占用) [0,1]
 	ObsNoDetect                     // P(no-detect|s)：本 tick 看了没测到（前置=消失前60s在走动）。状态条件似然=可检测态压低/可合理消失态保留；时长→P3，非斜坡
 	ObsReachableExit                // 丢失点可达退场证据 e=f_dist·f_reach [0,1]（P2 软门：近门+单帧可达→偏 Left 压 Fallen）
@@ -21,7 +20,7 @@ const (
 
 var obsKindLabel = [...]string{
 	"Pose", "VitalPresent", "BedOccupied", "EnterExit", "NumberPeople",
-	"TrackPresent", "Neighbor", "NoDetect", "ReachableExit", "ZBand", "DwellStill",
+	"Neighbor", "NoDetect", "ReachableExit", "ZBand", "DwellStill",
 }
 
 // String ObsKind 标签（source-fidelity 审计 / observability）。
