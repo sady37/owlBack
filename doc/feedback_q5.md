@@ -8,6 +8,20 @@
 
 ---
 
+## 工单3 后半段 大部完成——用户选 A(2026-06-13,commit 5a31de1+94d9f79)
+
+**用户裁:选 A**(tolerated cell→dwell LR<1 主动压制)。理由:B(死区)只延时不治本(tolerated cell 久站够久照饱和,case-5 站 30min 照报);A 给新拓扑(SFallen 近吸收)缺的**反向力**——cell engine 学到"此处常站"本就该是反 fall 证据,有反向力棘轮不成立;不伤 TP(真摔在非容忍点 mult=1 正常 ramp)。
+
+**落地**(`survival.go` fallLRFromDwell 改 signed ramp + `dwellTolFlipK=2`):
+- 非容忍 `mult=1` → `1+(d/scale)^k` 正向 ramp(TP 不变)。
+- 容忍 `mult>1` → `tolWeight=(mult−1)·2` 翻符号 → 随 dwell **单调下压 LR<1**(floor 兜底)→ 主动压 SFallen。
+
+**验**:`TestP4OpenFloorDwellToleranceGate` 无tol P0.940 fire / 高tol P0.021 not(分离 ✅);`TestMoMLostTrackVanishNoFire` 走出exit→Left 不报 ✅;真摔 case-3 fire 0.999(TP 保住 ✅)。build/vet 绿 + belief/roomengine 0 FAIL。
+
+**case-5(FP)honest 残差**:`fire=0`(安全=不误报)但 `peak=0.994`。根因=A 是**学得**容忍机制,recall 测试 fresh 重放、cell 无累积容忍(mult=1)→ A 不 engage;case-3(TP)/case-5(FP)在 dwell 上**同构**,唯一分离杠杆=学得空间语义(§6.3 honest 残差)。→ case-5 `t.Skip` 留跟进:**pre-seed cell `ToleratedStillCount`(模拟学得态)** 或精度度量改 fire-based。这是工单3 后半段唯一剩项。
+
+---
+
 ## 工单4 cd2b fire 实证 PASS(2026-06-13 live replay)
 
 **cd2b-0604 床边真摔 FN 解决——新模型 fire。** 截 fixture `case-cd2b-0604-trim`(sleepad LeftBed 前60s→ExitRoom,~8min)经 `tools/replay --speed 1`→redis→live sensor(DBN_MODE=2)。按 room_id `fd00:0:3:112:3:100`(cd2b/201)过滤观测:
