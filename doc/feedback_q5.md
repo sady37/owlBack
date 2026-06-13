@@ -29,6 +29,50 @@
 
 ---
 
+## lost / still / moving 定稿模型(2026-06-13,用户拍板)
+
+经几轮收敛,fall 时序坍缩成**两条机制、无例外**——纠正了原 belief_shadow 的 `MovingPrecondition` 译反(它在 still→lost 边界清零并排除最危险的"静止中被丢")。
+
+### 核心洞察:lost 不另立机制,**算作 still-box 仍在持续**
+
+still-box 的语义不是"track 在不在",而是"**人有没有离开这个 ~50cm 的点**"。一次跌倒 → 倒地+静止 → radar 可见性会闪(还瞄到=still-fall / 瞄丢=lost-fall),**但人没动,dwell 时钟从第一次静止起连续走,跨 lost/jitter 不重置**:
+- track 丢(lost)→ 不清 box,当"还在框里只是没上报",dwell 继续;
+- 小动几下(jitter)→ 落 StillBoxCm 内,box 不破(现判据 30s≥60%帧 50cm 内本就容忍);
+- 丢了又回、**框内** → 无缝续上,自然滑过去。
+
+### provisional + 位置一致性闸(用户补)
+
+lost 期间"算 still"是**假设**,returning track 才证实/推翻:
+- **返回框内(原位)** → 假设成立,Still 连续;
+- **返回框外(别处)** → **Still 被中断**(空档里人移动了)→ 清 box + 拉回该段 ramp 的 Fallen;同时挡 **track-swap/ghost 在别处冒头**被误续;
+- **一直不返回** → 假设保留(presume 倒地,保守安全)。
+
+### 附赠:框进出 = 统一的自救/recovery 判据
+
+不再需要单独 recapture 窗 / lostAnchor / 自救判别——丢了又回**框内**=人还倒着(继续 ramp,治 silent_leftbed 60s 恢复窗误 cancel 自救跌倒);**框外**=人起身走了(清 box、撤 ramp,这才是 recover)。框的进出就是答案。
+
+### 收敛后的完整 taxonomy —— **只有 silent / moving 两类**(3 类坍缩 2 类)
+
+原 still-fall + lost-fall 合并成 **silent**(lost 是 silent 的无报告段);moving-fall = **moving**。
+
+| 类型 | 覆盖 | 时钟/状态 | 触发 | 判别 |
+|---|---|---|---|---|
+| **silent** | 倒地后静止(原 still-fall ≡ lost-fall;track 丢/抖/recapture 都穿过原位 still-box) | 一个连续 dwell 时钟,lost=原位 still 的无报告段 | survival `fallLRFromDwell` | 框内续/框外断;框进出=自救判据 |
+| **moving** | 走动中、**从未进 box** 就消失(走进盲/走出门) | 消失锚点 + Blind/noDetect | 重复 absence | reachable-exit/neighbor 裁走出 vs 摔进盲 |
+
+**Blind/noDetect 只服务 moving**;倒地后被丢的主路(cd2b)走 silent(still-box dwell),不进 Blind。
+
+**reason 标签随之简化**(fall_reason.go):`ReasonLost` 退役 —— `ObsDwellStill` 主导 → `ReasonSilent`;`ObsNoDetect` 主导 → `ReasonMoving`(不再 `ReasonLost`)。lost 不再是独立成因。
+
+### 实现落点(belief_shadow sweep 重写 = 工单2 deferred 部分)
+
+- **track 生命周期(track_manager)**:lost track **不删、保活 `StillBoxRunStart` + stash 框心 `StillBoxStartX/Y`**;返回按位置在不在 `StillBoxCm` 内决定**续(框内)**还是**清+拉回(框外)**。
+- **dwell**:`now − StillBoxRunStart` 连续喂 survival,still 与 lost 共用一条 ramp。
+- **删**:`MovingPrecondition` 排除(belief_shadow:434)、`lostAnchor`/recapture 窗那套(框进出取代)。
+- **moving-fall**:保留 noDetect→Blind + reachable-exit(仅此路)。
+
+---
+
 ## 当前状态(2026-06-12)
 
 **定论(用户/架构师)**:DBN 自第一天(`b3a45ca`,2026-06-01)状态空间建错。重写方向 = 把 Room 层从「姿态 9 态」(位置不进状态,只作观测条件)换成「**全空间区域占用 × {直立, 倒地}**,含盲区一等态」;转移=空间运动;观测=区域有无 track;fall 从「占用 + 不可见或静止 + 未离场」涌现。`belief_shadow.go` 的 lost-fall sweep(MovingPrecondition 译反)删除变涌现。
