@@ -31,7 +31,8 @@
 
 - **审查起点 commit**:`3da5dfe`(本日志创建时 HEAD)
 - 此前 sensor 主线:`5aacad1`(still-box 50×50)、`4245f14`(lost-fall 读 room_type)、`d867c62`(risk 窗 22:00-06:30)、`96c69bd`(bed bayesian decay+standby)。
-- **last-audited**:`d830222`(委员会 R6 收 三件套tools交付:export/simulate-make/replay 统一 fixture 契约;端到端验证通过;未涉 sensor 代码。详见 `doc/feedback_p4.md`)
+- **last-audited**:`16def01`(委员会 R6 收 still-box 单源对齐:删 StillSince→cell engine 改读 StillBoxRunStart;MoveActive/MarkDwell/MarkLongStill/ToleratedStill 全迁 box;bed_state/target_state 不碰;build/vet✅)
+- **(旧)** `d830222`(委员会 R6 收 三件套tools交付:export/simulate-make/replay 统一 fixture 契约;端到端验证通过;未涉 sensor 代码)
 - **(旧)** `6acdcfe`(🏁委员会 R6 收 ghost_*→ghost_veto 统一:9→1 key+reason;cutover 4 任务全部闭合)
 - **(旧)** `51dbdd0`(委员会 R6 收 non-blocking 清理:删 ObsTimeContext+loggedVeto no-op 守卫;grep 零残留)
 - **(旧)** `7dd48de`(委员会 R6 收 geom 全量退役实施:D1-D4 签字后施工,删 belief.Geom 类型/字段/geomFrom*,代码残留 grep=NONE;已部署 test1 DBN_MODE=2。详见 `doc/geom_retirement_mapping.md`§7)
