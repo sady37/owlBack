@@ -244,6 +244,24 @@ cell engine 独立(自学习/自衰减/自带护栏),DBN 只读其结果。**唯
 
 **反向只有一条 producer→consumer**:track 层 still-box → cell engine(`MarkDwell/MarkLongStill`,§8)。cell engine 内部学习(dwell vs traverse / z 档 / 长静→sit / 护栏)**不在本 DBN 图**,属独立 cell-engine spec。
 
+### 11.5.1 三个时标 + still-box 单源(易记反,务必区分)
+
+两套机制是**不同时间尺度、单向只读、不构成反馈环**(R2 单时标 / R3 cell 只读),刻意分开正是为防"DBN 每帧瞬时判断回头污染 cell 慢学地图"。
+
+| 机制 | 真实频率/周期 | 入口 | 性质 |
+|---|---|---|---|
+| 证据累积(still-box / region-static / MarkDwell 灌 DwellEMA·计数 / StandStaticSince) | **每帧 ~1Hz**,在 `processFrame` 内 | `track_manager.go updateContinuousIndicators` | 逐帧喂证据进 cell 计数器 |
+| **真正的 cell learn**(LearnCellAreas 升格 Walk/Sit + 床外 Lie 异常 + 3 组 UpdateBelief 软概率) | **每 10min** 定时批跑(`beliefScanInterval`,PR-11 从 5min 降) | `engine.go scanBeliefAll ← beliefScanLoop` | 定时批量裁决,**非逐帧** |
+| **DBN**(`beliefShadowTick`) | **每帧 ~1Hz**(每条 radar message),**非 30s/60s** | `engine.go publishTrackStatuses → beliefShadowTick` | log-only shadow,只读 cell 当 π(zone),**绝不回写 cell** |
+| 落库 grid→grid_snapshot | 每 5min(`snapshotInterval`) | `snapshotLoop` | 与 10min learn 两个独立 ticker 不对齐 |
+| cell decay | 每 1h(`decayInterval`) | `decayLoop` | — |
+
+**still-box 是同一个,全系统只算一次(P0.2 单源,见 `belief_cell_contract.go`):** 仅在 `track_manager.go updateContinuousIndicators` 算 `StillBoxRunStart`,cell(MarkDwell)与 DBN(belief_adapter/belief_shadow)双读同一字段,谁都不重算 → 防两套阈值 drift。DBN 里**不存在**独立的 still-box 计算。
+
+**30s vs 60s 是两个层级,不是一个数:**
+- **30s = still-box 滚动窗的物理长度**(`BoxRangeWithinMs(30_000)`,per-axis box ≤ `StillBoxCm`=50cm)——"算 still 用多长历史"。底层只有这一个窗。
+- **60s = 派生阈值,非第二个窗**:读 `StillBoxRunStart` 到现在的**累计 still 时长** ≥60s(`MovingPreconditionMs` / `beliefShadowLostTTLMs` / `HandoffWindowMs`)= 静止态→不进 lost-fall。一句话:30s 算 still,60s 是"这个 still 已维持多久"的判据。
+
 ---
 
 ## 11. 定量结论(基于真实 case profile)

@@ -8,6 +8,85 @@
 
 ---
 
+## 新提案:cold 启动期 per-unit 升档闸(`unit_dbn_mode`)— 申请委员会裁(2026-06-13)
+
+> 用户已同意方向(per-unit 时间戳 + 全局门槛,不做人工 per-unit 门槛),申请委员会裁字段/门槛/落点。**greenfield**:`unit_dbn_mode`/`unit_learn_start` 全仓 grep 当前=0 命中,不存在,本提案是新建。
+
+### 1. 问题:`DBN_MODE` 现在是全局 env,但"信任成熟度"是 per-unit 事件
+
+现状(`belief_shadow.go:31-57`):`dbnMode = parseDBNMode(os.Getenv("DBN_MODE"))` 是**包级全局变量**,三档全 fleet 共享、运维手动翻:
+
+- 档 0 = DBN 静默(firmware 直通兜底,注释自称"**学习期安全档**")
+- 档 1 = DBN 自发 + 不否决 firmware(union,只多 FP 不漏 firmware)
+- 档 2 = DBN 自发 + **否决 firmware**(DBN 权威,可挡掉 firmware 那条 fire)
+
+错配:DBN 读 cell `AreaType` 当 π(zone) 先验,而 cell 地图"学够没"是**每个 unit 独立发生**的事件(新装机 / 改家具 / 挪雷达 / grid_snapshot hash 失配重学 → 各自从零起算 learn_start)。一个全局闸无论翻到哪档都错:
+
+- 翻到档 2 → 后装的、地图还空的 unit 立刻获得 veto 权威,拿空先验去**否决 firmware 真摔 → 漏报**(最危险)。
+- 留在档 0 → 早装、地图已成熟的 unit 永远吃不到 DBN 收益。
+
+**没有任何单一全局值能同时对所有 unit 正确**,因为 unit 上线时刻天然错开。
+
+### 2. 论证:三个设计选择
+
+**① 为什么必须 per-unit(不能全局一刀切)** — 见上,cold 期本质 = "本 unit cell 地图未学够,不能信其 AreaType 当先验",这是 per-unit 状态,不是系统级状态。把"没学过"误当"学过"= AreaType 错 = fall 抑制/escalate 全错。
+
+**② 为什么 per-unit *时间戳* + *全局* 门槛,而不是 per-unit *人工门槛*** — per-unit 的应该是"何时开始学"(`unit_learn_start` 时间戳,自动落),不是"要学多久"(门槛)。人工给每个 unit 配 cold 期长度被否,三条理由:(a) **无标定依据**——[[fall_data_is_artificial_test]] 铁律:现有跌倒/占用数据全人为测试,无法标定"多少天/多密算学够",人工拍 = 拿不存在的依据每 unit 错一次;(b) 装机量上去后**运维不可扩展**;(c) 门槛散落 per-unit 配置 = 多写入口 = drift(违 owlBack #1.3 单源)。→ **门槛逻辑全局统一,信号 per-unit**。
+
+**③ 风险方向:真正要守的是 veto(档 2),不是 self-fire(档 1)** — 关键洞察,决定闸该卡哪一档:
+
+| 档 | 空地图下的失效 | 安全性 |
+|----|--------------|--------|
+| 1 自发 union | DBN 可能在未学的沙发/床区 over-fire | 只多 **FP**(firmware 地板不可挡,不新增漏) → 低危 |
+| 2 否决 firmware | DBN 拿空先验**误否 firmware 真摔** | **漏报**(false suppression) → 高危 |
+
+→ cold 闸的核心 = **未成熟 unit 禁止升到档 2(veto)**;档 1(self-fire)风险低,可早放甚至随时放。对齐 [[partial_monitoring_fall_suppression_law]](证据不足时绝不抑制)+ [[fall_detection_risk_stratified_design]](一切看风险)。
+
+### 3. 设计:per-unit 有效档 = min(全局 ceiling, 成熟度 cap)
+
+```
+effectiveMode(unit) = min(globalDbnMode, maturityCap(unit))
+
+maturityCap(unit):
+  未成熟 → 1   (DBN self-fire union 可开,但禁 veto;firmware 兜底)
+  成熟   → 2   (放行到全局 ceiling)
+
+成熟 ⟺ (now − unit_learn_start ≥ TimeFloor)  AND  (coverage(unit) ≥ θ)   ← 两门 AND
+```
+
+- **时间保底门 `TimeFloor`(默认 7d)**:防"快速吃到流量但时间上未稳"的 unit 提前升;也给慢学 unit 时间。
+- **覆盖门 `θ`**:本 unit grid 里学到 AreaType 的 cell 数 / 已落库 snapshot 次数 ≥ θ。**这是结构性判据不是标定值**——它度量"地图密度够不够",不依赖跌倒数据,不违 [[fall_data_is_artificial_test]]。
+- **两门 AND**:缺覆盖门 → 空房 unit(无人住、学不到证据)会凭时间到点就升到 veto、拿空地图否决真摔(灾难);缺时间门 → 一天暴涨流量的 unit 升太早。
+- **"永不成熟"是合法安全态**:genuinely 稀疏的房永远到不了 θ → 永远 cap 在档 1(firmware 兜底 + DBN self-fire,只是不给 veto)。**保守到底正是 fail-safe**,不是 bug。
+
+`globalDbnMode` 保留为 ceiling:运维翻 `DBN_MODE=0` 可一键全 fleet 压回静默(回滚不变),per-unit 闸只能在 ceiling 之下收紧、不能突破。
+
+### 4. cold 期 fail-safe 语义(写死,不可协商)
+
+cold("不信 cell 先验")**≠ 不报跌倒**,而是**更敢报、更少抑制**:`effectiveMode ≤ 1` 时 firmware 直通照常 fire,DBN self-fire union 叠加,**绝不 veto**。学习在背后静默跑(逐帧喂证据 + 每 10min 批量升格,见 [[cell_dbn_timescales_stillbox_single_source]])。cold 期绝不能因"先验缺失"变成静默漏报。
+
+### 5. 字段与落点(greenfield,实现细节供裁)
+
+- `unit_learn_start`(per-unit 时间戳):本 unit 当前 cell 地图**开始累积**的时刻。**随地图失效重置**——layout 改 / grid_snapshot hash 失配拒绝 load → fresh 重学时重新落桩(复用现有 hash-match-才-load 逻辑的同一岔口)。
+- `unit_dbn_mode`(派生,不持久化或缓存):每 belief tick / 升格批跑后由上式现算,无需手配。
+- 生命周期与 grid_snapshot 同源(sensor 是 cell 地图 owner,learn_start 与它同落同失效最自洽)。**注**:per [[sensor_asks_data_sync_not_db]] sensor 不直连 DB,learn_start 的存取需走与 grid_snapshot 一致的持久化路径(snapshotLoop persister),不新开 DB 边——此处请委员会确认归属。
+
+### 6. 待委员会裁的岔口(列选项,不擅决)
+
+1. **覆盖门 θ 的度量**:(a) 学到 AreaType 的 cell 绝对数;(b) 占可达 cell 的比例;(c) 已落库 snapshot 次数(≈学习时长代理)。倾向 (b)——对房间大小归一,但需定"可达 cell"口径。
+2. **TimeFloor 取值**:7d(对齐用户点 3 原议)vs 更短(配合覆盖门,θ 达标后不必死等 7d?)。倾向保留 7d 当硬保底,**两门 AND** 已防早升。
+3. **稳定门要不要(第三门)**:最近 K 次 10min 批跑里 AreaType 升格已收敛(不再翻动)。增一层稳健,但加复杂度——是否首版纳入?倾向 v1 先两门,稳定门列后续。
+4. **`unit_learn_start` 存储归属**:随 grid_snapshot persister 落 vs 独立小表——见 §5 注,涉及 sensor 不直连 DB 铁律。
+5. **施工时序**:本闸与 Q5 工单 1-4(bed 融合 + belief 重写)正交,可并行;但"DBN 重写后才真正用 cell 先验"——是否等工单 2 落地再接此闸,还是先建闸架空跑 shadow?倾向后者(闸先 shadow-only 不影响 fire,与重写解耦)。
+
+### 7. 风险 / 未决(诚实)
+
+- θ 的具体数值**无法用现有数据标定**(同 [[fall_data_is_artificial_test]])→ 首版取**保守偏高**,宁可让 unit 多停在档 1 也不早放 veto;真实运行后按"成熟 unit 实际覆盖分布"反推,不靠跌倒数据。
+- 本提案只动"何时给 DBN veto 权威",**不改 DBN 内部数学、不改 cell 学习**——与工单 1-4 零耦合,可独立审。
+- 与全局 `DBN_MODE` 的关系是 **min(ceiling, cap)**,不破坏现有秒翻回滚能力。
+
+---
+
 ## 工单3 后半段 大部完成——用户选 A(2026-06-13,commit 5a31de1+94d9f79)
 
 **用户裁:选 A**(tolerated cell→dwell LR<1 主动压制)。理由:B(死区)只延时不治本(tolerated cell 久站够久照饱和,case-5 站 30min 照报);A 给新拓扑(SFallen 近吸收)缺的**反向力**——cell engine 学到"此处常站"本就该是反 fall 证据,有反向力棘轮不成立;不伤 TP(真摔在非容忍点 mult=1 正常 ramp)。
