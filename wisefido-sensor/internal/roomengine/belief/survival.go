@@ -37,24 +37,32 @@ func dwellTailFor(roomType int, areaType int) (dwellTail, bool) {
 	}
 }
 
-// fallLRFromDwell P4.1 生存函数 fall 似然比 = 1 + (d/scale)^shape（封顶 dwellFallCap）。
-//   - toleranceMult：开阔地 cell tolerance 拉长尾（被容忍久站→尾更长→久站真人不报，R3 只读；<1 视为 1）。
-//   - night：P4.3 风险时段夜间短尾（scale×dwellNightTailMult<1 → 更快 ramp，夜间久静更可疑）。
-//   - zone 不在尾表 ∨ dwell≤0 → 1.0 中性（不抬 fall）。
+// fallLRFromDwell P4.1 生存函数 fall 似然比。**A(P5,委员会选 A):tolerance 翻转 dwell 证据方向**——
+// 非容忍 cell(mult=1)正向 ramp `1+(d/scale)^shape`;容忍 cell(mult>1)反向 `1−(tolWeight−1?)...`<1 **主动压**
+// SFallen——"此处久站越久=越正常=反 fall 证据",给新拓扑(SFallen 近吸收)缺的反向力,破棘轮(否则任何持续
+// LR>1 都饱和,tolerance 只延时不治本)。**不伤 TP**:真摔在非容忍点(床边/浴室地,mult=1)正常 ramp。
+//   - toleranceMult ∈[1, MaxToleranceFactor]：R3 只读 cell 自适应容忍(FakeAlarmCount+ToleratedStillCount 学得)。
+//   - night：scale×dwellNightTailMult<1 → 更快 ramp(夜间久静更可疑;仅作用正向段)。
+//   - zone 不在尾表 ∨ dwell≤0 → 1.0 中性。
 func fallLRFromDwell(dwellSec, toleranceMult float64, roomType int, areaType int, night bool) float64 {
 	tail, ok := dwellTailFor(roomType, areaType)
 	if !ok || dwellSec <= 0 {
 		return 1.0
 	}
 	if toleranceMult < 1.0 {
-		toleranceMult = 1.0 // 默认/未设=1.0（无容忍证据→不放宽）
+		toleranceMult = 1.0
 	}
-	scale := tail.scaleSec * toleranceMult
+	scale := tail.scaleSec
 	if night {
-		scale *= dwellNightTailMult // 短尾
+		scale *= dwellNightTailMult
 	}
-	r := dwellSec / scale
-	lr := 1 + math.Pow(r, tail.shape)
+	ramp := math.Pow(dwellSec/scale, tail.shape)
+	// tolWeight=0 当 mult=1（纯正向 ramp，TP 不受影响）；mult 越大权重越大，(1−tolWeight)<0 → 随 dwell **单调下压**。
+	tolWeight := (toleranceMult - 1) * dwellTolFlipK
+	lr := 1 + (1-tolWeight)*ramp
+	if lr < likelihoodFloor {
+		lr = likelihoodFloor // 容忍久站强压封底（不湮灭，留可竞争）
+	}
 	if lr > dwellFallCap {
 		lr = dwellFallCap
 	}

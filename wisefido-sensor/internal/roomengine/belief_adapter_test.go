@@ -310,7 +310,6 @@ func TestP3RealnessCheckpoint(t *testing.T) {
 // 这是 §11.2 残差的"造对验证器":开阔地久站真人(被容忍 cell)vs 倒地(未容忍 cell)靠 Z_cell tolerance 分开,
 // 而非 P4.1 否的"接受测不到"。tol 走 cell 几何/历史(R3 只读),Z 只正向(R5)。
 func TestP4OpenFloorDwellToleranceGate(t *testing.T) {
-	t.Skip("工单3 后半段(oracle 重基线):dwell scale/tolerance 常量按旧 9 态拓扑标定;P5 新拓扑竞争 Fallen 的态变了,tolerance 门需按新拓扑重标(高/低 tol 当前不分离)")
 	const (
 		px, py    = 50, 200
 		nowBase   = 10_000_000 // 高起点:确保 StillBoxRunStart=now−dwell 恒 >0(否则 stillBox 失效→pose 不 stale→竞争压 Fallen)

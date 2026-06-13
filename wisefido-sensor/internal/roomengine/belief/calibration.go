@@ -80,6 +80,9 @@ const (
 	dwellFallCap        = 2.5   // fallLR 封顶(温和;真 dwell-fall 靠 Decider 窗累积)
 	dwellShape          = 2.0   // P4.1 生存尾形状(Weibull k;沿用现行 k=2;P9 待样本收紧尾形)
 	dwellNightTailMult  = 0.7   // P4.3 风险时段夜间短尾(scale×此=更快 ramp;久静夜间更可疑;P9 待标定)
+	// A(P5):tolerance 翻转系数。tolWeight=(mult−1)×此;mult=1→0(纯正向);mult=MaxToleranceFactor(2.0)→2(强压)。
+	// 翻转点 mult=1.5(tolWeight=1→中性)。容忍 cell 久站随 dwell 单调下压 SFallen(破近吸收棘轮)。P9.6 待 oracle。
+	dwellTolFlipK = 2.0
 
 	// ── poseLikelihood(P2.2:对 fall 只正向;SOpenFloor/SSit/SBed/SBath 是占用区分非 fall 压制)──
 	lrPoseWalkStandWalk  = 6.0
