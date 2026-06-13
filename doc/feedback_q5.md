@@ -23,6 +23,7 @@
 - `TestP4OpenFloorDwellToleranceGate`:dwell scale/tolerance 按旧拓扑标,新拓扑竞争 Fallen 的态变了,**dwell 常量待重标**(高/低 tol 当前不分离)。
 - `TestRecallManifestAll`(case-5 hunzi FP peak 0.994):真数据 TP/FP recall/precision oracle **待按新拓扑重基线**。
 - ⚠️ 暴露的标定张力:Blind→Fallen 种子大小 vs 纯 Predict 漂 / dwell tolerance 在新拓扑的分离力,是工单3 后半段重标的核心,且会牵动 lost-fall TP——须用真 fixture 标,别压死真摔。
+- 委员会非阻断标记(2026-06-13 审 a5):`SOpenFloor→Fallen=0.5` 是旧 `SStandWalk→Fallen=0.2` 的 2.5x("极小种子 0.05–0.5"的上界)。作种子可接受、已知,归工单3 后半段连同其它 →Fallen 种子一并对真 fixture 重标(倾向回拢 0.2 量级以减 A 漂)。
 
 **工单状态**:工单2 ✅(belief 重写)/ 工单3 前半段 ✅(骨架)/ 工单3 后半段 ⏳(oracle 重基线,上列 3 项)/ 工单1(bed 融合)、工单4(cd2b fire)未动。
 
