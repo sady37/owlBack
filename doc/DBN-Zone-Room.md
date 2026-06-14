@@ -205,4 +205,76 @@ $$\delta_{\text{pad/floor}}=D_{\mathrm{KL}}\!\big(P(\text{XY}\mid\text{on-pad})\
 | 裁决 | $\Lambda_t$ 展开；不可判交风险不对称；前置量 $\delta_{\text{pad/floor}}$ 待实测 |
 | 实现 | log 域 + log-sum-exp |
 
-**最高优先级**：HR/RR 的 `nearBed` + 非对称似然——它是 sleepad 离线时（cd2b 场景 3）不漏的真正闸门。
+**cd2b 主解（本轮 P-2/P-3 修正旧叙事）**：§5 emission 位置似然 $g^{xy}$（δ≫0 雷达几何可判）；HR/RR 因两源在 cd2b 摔倒段皆空而**后置**（详第三部分 §D）。
+
+---
+
+## 第三部分 · 三卷评审整合（2026-06-14）
+
+> 来源：P6 竞争式三卷评审（[[feedback-p6A]] 项目组 A / [[feedback-p6B]] 评审 B / [[feedback-p6C]] 评审 C）收敛回 ground truth。
+> 整合纪律：**框架进本文档；标定（含单 case 实测初值）留 [[feedback-p6C]] 作依据**——本文档只写"待标定项 + 约束/方向/锚"，设计不被单 case 反向绑死。
+
+### §A 新增第四轴：跨房 neighbor 耦合（C §9 发现，A 接受）
+
+第二部分内化了 $O_b$（床）、$N_r$（同房多 track 人数）、ghost（realness），**漏了跨房 neighbor**——现役代码 `belief_neighbor.go` 的 `ObsNeighbor`（本房丢轨后查兄弟房 hand-off、消解 lost-fall 二义）是 belief 外算好的硬结论外挂，与已废的硬 $O_b$ 同病。
+
+框架命题：neighbor 内化为**第四隐轴**，与 §10 ghost/$N_r$ 换轴同构——
+
+| 轴 | 证据 | 耦合 |
+|---|---|---|
+| 床 $B^j$ | 接触 | → 床占用 |
+| 人数 $S^{(i)}$ | 同房多 track | → $N_r$ |
+| ghost $T^{(i)}$ | 跨 track ρ | → P(ghost)（**对称**共存）|
+| **跨房 neighbor** | **兄弟房 hand-off ρ_xroom** | **→ 本房 $S$ 的 {Left,Empty} vs {Fallen} 路由（新增）**|
+
+- 内化方式：邻房占用不再外挂 `ObsNeighbor` 标量，而作本房 $S$ 转移 $T_S$ 的**跨房门控发射**——`Real-present(本房丢轨) → {Left, 邻房 Real-present}` 转移概率由 ρ_xroom 驱动，belief **联合推断**"人挪去邻房 vs 本房真摔"。
+- **有向性（A 校正 C 的"同构"）**：ρ_xroom 与 ghost ρ 仅在"跨实体共现耦合"层面同构；但 hand-off 是**有向时序**（同一人先走后到、新鲜度窗 + 方向），ghost co-existence 是**对称共存**。故 ρ_xroom 必须带**有向门控**（HandoffWindow×Jitter×方向），**不照搬 ghost ρ 的对称形式**。
+- sole-resident 门从离散 `rc≠1` 硬 OFF 改**连续衰减**：ρ_xroom 按 resident 数衰减（单住户强、多住户弱不归零）+ 进 §8 的 $C_{FN}$（多住户邻房占用压 fall 的"信用"降，漏报代价仍在）。
+- K（现 `dampNbrFallen=0.7`）从似然层固定 damp 常数 → ρ_xroom 驱动的转移概率，与 §3 κ、§10 ghost ρ 同为"几何/事件共现耦合"家族。
+
+**A 待补方程开口**：ρ_xroom 计算式、$T_S$ 跨房门控转移、与 §10 正交扩展接口——项目组 A 补（C 提出遗漏，不代写方程）。标定初值（HandoffWindowMs=60s / JitterMs=5s / K=0.7）见 [[feedback-p6C]] §9。
+
+### §B 裁决定位：期望损失是主框架，emission/dwell/neighbor 是证据层（C §7 修正）
+
+§8 的 fire 条件 $P^F C_{FN}(\text{risk}) > (1-P^F)C_{FP}$ 是裁决层**主框架（恒在）**；§5 emission（含 $g^{xy}$）、dwell、§A neighbor 均为**供 $P^F$ 的证据层**，非与裁决并列的解。
+
+- 二义性靠"代价不对称"裁决、非"把某值算更高"：cd2b 段 $P^F$ 卡 0.4、与 SBed 0.45 纠缠，argmax → SBed 赢 → 漏；期望损失 → 独居 $C_{FN}$ 巨大 → 0.4 翻转 → fire。**不需 $P^F$ 赢，只需代价翻转。**
+- 框架约束：现 `risk_evaluator.go` 离散三档 RiskLevel **不能直接喂**此连续不等式；decide 层须有 $C_{FN}(\text{risk})$ 连续代价函数消费风险因子（独居/夜/人数/失能）。代价函数"存在且连续"是框架，其参数曲线是标定（[[feedback-p6C]] §8）。
+
+### §C 转移 $K^{unobs}_\lambda$ 取定义 B（泄漏，vacant 吸收）（B2，A+C 锁定）
+
+离线弛豫核取**定义 B（occ 泄漏到 vac、vac 吸收）**，沿用 §6 $K^{obs}$ 的箭头记法（**不用矩阵，避免行列惯例 + 状态顺序双重歧义**）：
+
+$$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\text{occ}=1-\lambda,\quad \text{vac}\to\text{vac}=1,\quad \text{vac}\to\text{occ}=0\qquad(\varepsilon\ll\lambda)$$
+
+理由：养老院"床垫离线期间无人上床"为常态；vac 吸收避免空房离线被弛豫成 P(occ)=0.5 伪占用（cd2b 根方向）。离线时真有人上床 → 靠 radar pose/位置经 §4 Ψ 涌现，不靠 $B$ 链自发升 occ。λ 半衰期 < 离线判定窗（~30s，复现原 staleness），标定见 [[feedback-p6C]] §5。
+
+### §D §5 HR/RR：优先级后置 + absent 须 sleepad-online gate（P-2/P-3/B3）
+
+**优先级后置（推翻第二部分末"HR/RR 最高优先级"旧叙事）**：cd2b 摔倒段 HR/RR 两源皆空（radar enter-gate 不返 + sleepad 离线），HR/RR 闸门对 cd2b 结构性零作用。**cd2b 主解是 §5 emission 位置似然 $g^{xy}$（δ≫0 雷达几何可判），不是 HR/RR、不是风险兜底。** HR/RR 服务"床附近仍有 vital"的别场景，优先级后置。
+
+**absent 须 sleepad-online gate（B3）**：HR/RR absent 否决分支 `ℓ_hrrr(absent|AtBed)=1/L_hr` 须 gate 在"房内有独立在线 vital 源（sleepad）"之下。radar 自身 HR/RR absent **不得**作否决 AtBed 的证据——radar 在床位被 firmware enter-gate、结构性不返 vital（[[radar_hr_rr_bed_enter_gated]]），其 absent 是零信息非"不在床"。实证：cd2b 在床 558s 段 radar HR/RR 缺失 100%（573 帧 0 vital），不 gate 则每在床帧误推 F = 100% FP。
+
+### §E §4 Ψ 取 mixture（加权和），理由 = FN-safe（B4，A+B+C 共识）
+
+多床 $\Psi=\sum_j a_j\tilde\psi_j+a_\varnothing$（mixture）非 $\prod_j\tilde\psi_j$（product）。两点理由：
+
+① **物理**：人只占一床（不能同时占两床），mixture 软归属语义正确。
+② **真摔安全（FN-safe）**：product 下**任一床 occ 即把 F 乘到 $\varepsilon_{art}$**——人在 ambiguous 床位（$a_A\approx a_B\approx0.5$）摔、其中一床陈旧 occ 时 $\Psi(F)=\varepsilon_{art}\cdot1=\varepsilon_{art}$ 被压死 = **漏报（FN）**；mixture $\Psi(F)\approx0.5\varepsilon_{art}+0.5\approx0.5$ 保 F 竞争。养老院风险不对称下选 mixture 防漏报。
+
+> 校正记录：C 初版（[[feedback-p6C]] §10）曾写"product → phantom fall（FP）"，因果反了——product 过度压 F 是 **FN** 风险；phantom fall（多床 occ 时 $a_\varnothing$ 保住 F 的误报）反是 mixture 特性。A+B 数值独立验证一致，C §11 已自我反省、作废 §10 B4 论证。
+
+### §F μ=ε 对称默认 + 记号/量级（B1/C1/C3，标定锚）
+
+- **μ=ε（对称）默认**：$K^{obs}$ 的 vac→occ 速率 μ 与 occ→occ 自持补 ε 取对称——无数据支持"进床比离床易"的非对称漂移（cd2b 413s 仅 1 翻转），无证据不引偏置；未来 case 若显示上床事件系统性多于离床再放开。
+- **记号 C1**：§4 的 $o_j$ ≡ §2 的 $o_b(r,s_j)$（床 $j$ 的 overlap）。
+- **$\varepsilon_{art}$ 量级 C3**（标定）：用"在床段 pose=Lying 帧占比"反推（压得住床上翻身误读、不被 $\Phi$ 正向似然在 log 域淹没），与 $L_{in}$ 联合定，非凭空 $10^{-3}$。
+
+### 整合后轴/裁决一览
+
+| 轴 | 证据 | 状态 |
+|---|---|---|
+| 空间（§5 $g^{xy}$）| 雷达 XY | 已内化；δ 标定、脆弱（[[feedback-p6C]] 附）|
+| 时间（dwell 符号）| 久静 × cell 容忍 | 已内化（survival）；cell 容忍可靠性 = 框架前提 |
+| 裁决（§8 $C_{FN}$）| 风险因子 | 主框架；$C_{FN}$ 连续代价函数须 decide 落地 |
+| 跨房（§A neighbor ρ_xroom）| 兄弟房**有向** hand-off | 框架命题已立；**方程 A 待补** |
