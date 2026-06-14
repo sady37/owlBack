@@ -54,6 +54,7 @@ func main() {
 		fixtureA  = flag.String("fixture", "", "case 目录（含 window.json[+window_sleepad.json][+alarm.json]+meta.json），纯文件回放")
 		speed     = flag.Float64("speed", 1.0, "重放倍速（>1 加快，<1 放慢；验 fire 行为必须 1）")
 		streamSel = flag.String("streams", "monitor,event", "重放哪些流：monitor,event,alarm 逗号组合")
+		streamPfx = flag.String("stream-prefix", "", "stream 名前缀（喂 Tsensor 用 \"test:\" → 推 test:iot:*:stream；默认空=生产 iot:*）")
 		dryRun    = flag.Bool("dry-run", false, "只打印不实际 XADD")
 	)
 	flag.Parse()
@@ -150,6 +151,7 @@ func main() {
 		} else if r.topicType == "alarm" {
 			def = rediscommon.StreamAlarm
 		}
+		streamName := *streamPfx + def.Name // 前缀=""→生产 iot:*;"test:"→喂 Tsensor 订的 test:iot:*
 
 		rel0 := time.UnixMilli(r.tsMs).In(loc).Format("15:04:05")
 		line := fmt.Sprintf("  [%s] %-12s %-7s %-14s %s", rel0, short(r.addr), r.topicType, r.category, summary(r.payload))
@@ -157,8 +159,8 @@ func main() {
 		if *dryRun {
 			fmt.Println(line)
 		} else {
-			if _, err := rediscommon.PublishToStream(ctx, rdb, def.Name, msg.ToStreamMap(), def.MaxLen, def.RetentionSeconds); err != nil {
-				fmt.Fprintf(os.Stderr, "  XADD 失败 %s: %v\n", def.Name, err)
+			if _, err := rediscommon.PublishToStream(ctx, rdb, streamName, msg.ToStreamMap(), def.MaxLen, def.RetentionSeconds); err != nil {
+				fmt.Fprintf(os.Stderr, "  XADD 失败 %s: %v\n", streamName, err)
 				continue
 			}
 			fmt.Println(line)

@@ -8,6 +8,28 @@
 
 ---
 
+## Tsensor:DBN 分析/优化靶子落地(2026-06-13,用户直拍,请委员会审)
+
+**用户拍板建 Tsensor —— sensor 源码克隆 + 精简,专供 DBN 网络分析优化(拿真实+模拟 case 反复喂、读逐 tick belief trace 定位原因、优化 likelihood/transition/阈值)。** 工具/基础设施,用户授权直建,事后请委员会审。落 `tools/Tsensor/`(独立 go module)+ `tools/replay --stream-prefix`。
+
+**为什么不是"同一二进制+env 隔离"**:上一版那种被 config.yaml 旁路 REDIS_DB → 误连生产 DB0 抢 consumer group(已 revert)。教训:env 隔离会被旁路。Tsensor 改为**独立二进制 + 隔离写死在克隆源码**,结构上不可能落回生产。
+
+**三重隔离(实测生产零影响)**:
+1. **订 `test:*:stream`**(生产订 `iot:*`):克隆里把订阅名全加 `test:` 前缀(不改共享 owl-common)。同 redis 也不串(键不同)。实测:replay 后生产 `iot:monitor` 仍 4 个原有 group 未被碰,`test:iot:*` 是独立键。
+2. **所有对外发送 → `owl/log/Tsensor.log`**(不推 redis):publishAIMessage/track_status/zone_derived/alarm_back_channel 四个发送点全改 `tsensor_output` 日志。alarm_back_channel 落日志正好核 dbn_mode 否决 firmware 行为(出现=forward 未否决)。
+3. **不写库**:`snapshotLoop`/`dailySnapshotLoop` 关停 → 不往生产 owl_v2 写 grid_snapshot。
+
+**精简(focus DBN)**:
+- **删 cardConfig 接收**(config_card_consumer)。
+- **cell engine 选 B:只读不学习**——保留 grid/cell 读 + hydration,关停学习循环(decay/beliefScan/feedback)。AreaType 从 owl_v2 grid_snapshot **真实加载后冻结**,DBN 拿到的 zone 先验和生产逐字一致(否则 fresh 冷先验=分析跑偏,如 case-5 教训)。
+- **每 belief tick 无条件 `tsensor_belief`**:9 态向量 + 喂入 obs 列表 + fall_reason + dominant_obs/LR + tau。读日志逐 tick 看"obs→belief→reason"即得原因。
+
+**实测闭环 PASS**:克隆 `go build` 绿 → Tsensor 起(订 test:* ✅,23 房 hydrate)→ `replay --fixture cd2b-0604-trim --stream-prefix test:` → `tsensor_belief` 82 条落 Tsensor.log,cd2b 房 trace 显示 `obs:[Pose,ZBand,DwellStill,VitalPresent,BedOccupied]→argmax Bed 0.90`(与之前发现的 sleepad 床未释放一致)。**生产 sensor(test1)全程未受影响**。
+
+**请委员会审点**:① 隔离三重是否够(漏没漏写库/发送点);② cell 选 B(只读真实 AreaType)对 DBN 分析的保真度;③ per-frame 学习(MarkDwell/MarkToleratedStill)仍微动 tolerance,要不要严格冻结;④ 158 文件克隆的维护/drift 策略(用户已知会接受 drift,换隔离安全)。
+
+---
+
 ## 工单3 后半段收尾:case-5 解 skip(2026-06-13,知会委员会改 recall oracle bar)
 
 **case-5(FP)不再 skip,改为 pre-seed 容忍 + FP bar 放宽到确认线。** 工单3 后半段唯一剩项收口。

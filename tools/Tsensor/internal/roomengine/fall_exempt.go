@@ -1,0 +1,41 @@
+// fall_exempt.go — Fall 总闸：人工标定躺区豁免。
+//
+// 用户拍板：人工标定（SourceHuman）的 AreaBed（床 / long-sofa 躺区）= 100% 置信度，
+// 老人在该区域静止 = normal use case，所有 Fall 规则不报。
+// 仅 AreaBed —— Sit/Toilet/Shower 静止仍是真跌倒高发场景，不享豁免。
+//
+// 跨 Bedroom/silent_fall/Bathroom 各 fall 路径共享此判定，避免散在多处 drift。
+
+package roomengine
+
+// humanBedExemptMinConfidence 区分"真人工 layout 标定"vs"radar 自学习 lock"。
+// 真人工配置 (engine.SetPrior) 写 Confidence=99；MarkRestZoneByFeedback 等自学习路径
+// 同样写 SourceHuman 但 Confidence=95（命名 quirk，全局 Source 分级 audit 见 backlog）。
+// 用 Confidence≥99 切，避免把 radar 自学习 cell 当人工豁免。
+const humanBedExemptMinConfidence = 99
+
+// isHumanBedAt 返回 (x,y) 所在 cell 是否人工 layout 标定的躺区
+// （Source=Human + Type=Bed + Confidence ≥ 99，layout-config 专属）。
+// grid 或 cell 缺失时返回 false（默认不豁免）。
+func isHumanBedAt(grid *RoomGrid, x, y int) bool {
+	if grid == nil {
+		return false
+	}
+	cell := grid.CellAt(x, y)
+	if cell == nil {
+		return false
+	}
+	b := cell.Belief[0]
+	return b.Source == SourceHuman && b.Type == AreaBed && b.Confidence >= humanBedExemptMinConfidence
+}
+
+// humanBedVetoAt P7.4 决策层 veto：任一 fall 位置（present track 或 lost 锚点）落在 Conf≥99 人工床
+// → fall 豁免（躺床 normal use 非跌倒，fall 后验前置短路、不进 τ* 判决）。belief_shadow 读出 would-veto（R0）。
+func humanBedVetoAt(grid *RoomGrid, positions [][2]int) bool {
+	for _, p := range positions {
+		if isHumanBedAt(grid, p[0], p[1]) {
+			return true
+		}
+	}
+	return false
+}
