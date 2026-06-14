@@ -232,7 +232,60 @@ $$\delta_{\text{pad/floor}}=D_{\mathrm{KL}}\!\big(P(\text{XY}\mid\text{on-pad})\
 - sole-resident 门从离散 `rc≠1` 硬 OFF 改**连续衰减**：ρ_xroom 按 resident 数衰减（单住户强、多住户弱不归零）+ 进 §8 的 $C_{FN}$（多住户邻房占用压 fall 的"信用"降，漏报代价仍在）。
 - K（现 `dampNbrFallen=0.7`）从似然层固定 damp 常数 → ρ_xroom 驱动的转移概率，与 §3 κ、§10 ghost ρ 同为"几何/事件共现耦合"家族。
 
-**A 待补方程开口**：ρ_xroom 计算式、$T_S$ 跨房门控转移、与 §10 正交扩展接口——项目组 A 补（C 提出遗漏，不代写方程）。标定初值（HandoffWindowMs=60s / JitterMs=5s / K=0.7）见 [[feedback-p6C]] §9。
+下面三式即 C 提出、A 补的方程开口：ρ_xroom 计算式（§A.1）、$T_S$ 跨房门控转移（§A.2）、与 §10 正交扩展接口（§A.3）。标定初值（HandoffWindowMs=60s / JitterMs=5s / K 上确界=0.7 / 源型可信度 sleepad 0.9·room-enter 0.8·radar-only 0.2）见 [[feedback-p6C]] §9 与现役 `belief_neighbor.go`；本节只立**框架与方向/符号**，曲线参数（$\tau_h,\tau_j,\beta$）留标定。
+
+#### §A.1 ρ_xroom 计算式（有向 hand-off 耦合）
+
+记号：本房 $r$、同 unit 兄弟房集 $\mathcal N(r)$；本房 real-present track 消失时刻 $t^{\text{lost}}_r$（进 Blind 的丢轨时刻）；兄弟房 hand-off 落点事件时刻 $t^{\text{arr}}_{r'}$（EnterRoom ∨ InBed 翻转）；滞后
+
+$$\Delta_{r'}=t^{\text{arr}}_{r'}-t^{\text{lost}}_r\qquad(\Delta>0=\text{先走后到}=\text{有向命中})$$
+
+**(a) 有向新鲜度核**（与 ghost 对称核的关键分野——对 $\operatorname{sign}\Delta$ 不对称）：
+
+$$w^{\text{dir}}(\Delta)=\begin{cases}
+e^{-\Delta/\tau_h} & 0\le\Delta\le W & (\text{先走后到，新鲜度指数衰减})\\[2pt]
+e^{\Delta/\tau_j} & -J\le\Delta<0 & (\text{抖动反向余量，}\tau_j\ll\tau_h\text{ 仅容时钟噪声})\\[2pt]
+0 & \text{otherwise} & (\text{陈旧 / 真反向}\to\text{非 hand-off，不压 fall})
+\end{cases}$$
+
+$W$=HandoffWindow（60s，固定绝对、不随房距伸缩）、$J$=Jitter（5s）。窗外 = 0：stale「上次在哪」证不了此刻在哪（人可能穿盲区真摔），铁律 [[partial_monitoring_fall_suppression_law]]。
+
+**(b) 归因可信加权、去 ghost 的兄弟房占用**（belief 据此可**质疑**邻房归因，非吃算好的标量）：
+
+$$q_{r'}=c_{\text{attr}}(r')\cdot P_{r'}(\text{real-present}),\qquad P_{r'}(\text{real-present})=\Big(\!\!\sum_{S\notin\{E,L\}}\!\!P_{r'}(S)\Big)\cdot\big(1-P_{r'}(\text{ghost})\big)$$
+
+$c_{\text{attr}}$=源型可信度（sleepad InBed 接触式 0.9 / radar room-enter 过门事件 0.8 / radar-only 占用 0.2）。$P_{r'}(\text{real-present})$ 吃兄弟房**去 ghost 后**的占用后验（§A.3 接口①）——兄弟房一个 ghost 不算合法 hand-off 落点。
+
+**(c) sole-resident 连续衰减**（替离散 `rc≠1` 硬 OFF）：
+
+$$\eta(\text{rc})=e^{-\beta(\text{rc}-1)}\quad\Rightarrow\quad \text{rc}{=}1\!\Rightarrow\!\eta{=}1\ (\text{单住户强}),\ \ \text{rc}{>}1\!\Rightarrow\!\eta\in(0,1)\ (\text{弱但不归零})$$
+
+**合成**（N-4 单合并：至多取最强命中，单 conf 不相乘；sole-resident「人只在一处」前提）：
+
+$$\boxed{\ \rho^{\text{xr}}_t=\eta(\text{rc})\cdot\max_{r'\in\mathcal N(r)}\big[\,w^{\text{dir}}(\Delta_{r'})\cdot q_{r'}\,\big]\ \in[0,1)\ }$$
+
+**有向性对照（A 校正 C 的「同构」）**：$\kappa$（§3）= 对称互活 co-liveness（双方在线即更新、无时序）；ghost $\rho$（§10）= 对称 co-existence（两 track 同步移动，交换 $i\!\leftrightarrow\!j$ 不变）；**$\rho^{\text{xr}}$ = 有向**——源房**先**丢轨、宿房**后**占用，交换源/宿是不同事件，$w^{\text{dir}}$ 对 $\operatorname{sign}\Delta$ 不对称。三者同属「几何/事件共现耦合」家族，但只有 neighbor 带时序方向，**不照搬对称核**。
+
+#### §A.2 $T_S$ 跨房门控转移
+
+ρ_xroom **仅在 lost-track**（本房 real-present 消失、即处于 Blind* 行）激活，把 Blind 行的 $\to F$ 倾向按 ρ_xroom 改向 $\to L$（人挪去邻房而非本房真摔）：
+
+$$\tilde T_S(F\mid S')=(1-\rho^{\text{xr}}_t)\,T^0_S(F\mid S'),\qquad \tilde T_S(L\mid S')=T^0_S(L\mid S')+\rho^{\text{xr}}_t\,T^0_S(F\mid S')$$
+
+$$S'\in\{\text{BlindRest},\text{BlindOpen}\};\quad \text{行其余项不变，改向后按行归一}$$
+
+- $\rho^{\text{xr}}{=}0$（无新鲜有向 hand-off）→ 行不变 → Blind 照常 ramp Fallen（**lost-fall 本义保留 = 安全默认**：stale / 无事件 / 多住户归因弱 → 不抑制）。
+- $\rho^{\text{xr}}{\to}1$（fresh sleepad hand-off + 单住户）→ Fallen 倾向整流入 Left → 不造 phantom fall。
+- $K$（旧 `dampNbrFallen=0.7` 似然层固定 damp 常数）= 现 $\rho^{\text{xr}}$ 上确界（fresh·sleepad·单住户 $\approx0.9$）由证据涌现，从「标定常数」变「hand-off 证据驱动的转移概率」，与 §3 $\kappa$、§10 ghost $\rho$ 同源。
+- 注：改的是 $T_S$ **行内** $F\!\leftrightarrow\!L$ 改向（耦合进转移，**不进** $\Psi$，与 §6「耦合只在 $\Psi$」并不冲突——那条约束针对**床轴 $B$ 与 $S$ 的同帧相容**；neighbor 是 $S$ 轴自身的跨房转移先验，属 $T_S$ 本职，非 $B$–$S$ 双施）。
+
+#### §A.3 与 §10 正交扩展接口
+
+| # | 接口 | 内容 |
+|---|---|---|
+| ① | ghost 轴 → neighbor 轴 | $q_{r'}$ 吃兄弟房 $P_{r'}(\text{real-present})\cdot(1{-}P(\text{ghost}))$——§10 房内 ghost 后验喂 §A 房间 hand-off；兄弟房 ghost 不算落点 |
+| ② | 不加隐维（状态空间不爆） | $B^j$/$S^{(i)}$/$T^{(i)}$ 是房内 $J$ 的**隐维复制**；$\rho^{\text{xr}}$ 是房**间** $T_S$ 的**转移耦合**，吃兄弟房 belief 读出标量，**不进本房 $J$ 基数**（$9\cdot2^{|\mathcal B|}$ 不变） |
+| ③ | 同 census 双消费 | $\eta(\text{rc})$（§A.1）与 §8 $C_{FN}$ 的 resident 数同源：多住户既弱化 $\rho^{\text{xr}}$ 归因（belief 更不确定、$P^F$ 不被压死）**又**折扣 $C_{FN}$（漏报代价降不归零）——两层一致下拉，§B「期望损失主框架 + 证据层」分工保持：$\rho^{\text{xr}}$ 路由 belief（发生了什么），$C_{FN}$ 裁代价不对称（残余 $P^F$ 报不报） |
 
 ### §B 裁决定位：期望损失是主框架，emission/dwell/neighbor 是证据层（C §7 修正）
 
@@ -277,4 +330,4 @@ $$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\te
 | 空间（§5 $g^{xy}$）| 雷达 XY | 已内化；δ 标定、脆弱（[[feedback-p6C]] 附）|
 | 时间（dwell 符号）| 久静 × cell 容忍 | 已内化（survival）；cell 容忍可靠性 = 框架前提 |
 | 裁决（§8 $C_{FN}$）| 风险因子 | 主框架；$C_{FN}$ 连续代价函数须 decide 落地 |
-| 跨房（§A neighbor ρ_xroom）| 兄弟房**有向** hand-off | 框架命题已立；**方程 A 待补** |
+| 跨房（§A neighbor ρ_xroom）| 兄弟房**有向** hand-off | 框架命题 + **方程已落（§A.1 ρ_xroom / §A.2 $T_S$ 门控 / §A.3 §10 接口）**；曲线参数待标定 |
