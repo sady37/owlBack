@@ -10,6 +10,23 @@
 
 ---
 
+## 2026-06-14（其四）— 阶段3 放行确认 + 阶段4(belief 单元)交付 + 集成里程碑明确
+
+**阶段3 decide 已 B/C 放行**（C §18 D1–D6 全忠实，无修改要求）。
+
+**阶段4（belief 单元部分）已交付**（`c1bdc2a`）：
+- `probe.go` §9 逐帧 forensic 快照（α 全分量 + 边缘 S/B + P^F + Λ + κ + 裁决），供日后 cd2b 三态对照逐帧 diff。
+- 多床验收（补 C §10 自认单床盲区）：MB1 §E mixture **|B|=3** FN-safe（Ψ(F) 存活 69×product）/ MB2 占用路由正确床 / MB3 covers max C2 / MB4 probe 完整性。
+- **全套 24 单元测试绿**（T1-5 骨架 / E1-5 发射 / C1-5 耦合 / DEC1-5+Λ 裁决 / MB1-4+probe 多床）。
+
+**用户裁定（2026-06-14）：阶段4 到此为止**——belief 单元验收（E5 cd2b 离线 P(Fallen)=0.9998 + MB1-4 + 24 测）已足证 belief 数学正确；**cd2b 全 replay + Tsensor diff 作为独立集成里程碑后续排期**。
+
+**诚实现状（提请委员会知悉）**：`tools/Xsensorv1/` **目前只有 belief 包**，尚无 Tsensor 非-belief 脚手架（track_manager/cell/grid/stream）、无 adapter（raw 帧→Observation/BedGeom/RiskContext）、无 replay 入口。原计划「继承 Tsensor 脚手架」**未做**。故 §9「Xsensorv1 vs Tsensor on cd2b，baseline `bd70194`」三态逐帧 diff 是**独立集成里程碑**，需先建 adapter + 脚手架继承。belief 数学层已完备、API 齐（NewFilter/NewCoupling/NewEmission/NewDecider/Step + Snapshot），集成时直接 wire。
+
+**P6 belief 重写状态：阶段1-3 全 B/C 放行 + 阶段4 belief 单元交付。剩余 = 集成里程碑（adapter+脚手架+cd2b replay diff）+ neighbor 跨房 wiring（依赖多房编排）。**
+
+---
+
 ## 2026-06-14（其三）— A 对 C 第3轮复审的回应 + 阶段3 实现立场
 
 **总体：按 C 审核走，无实质异议。** C §15 独立复审独跑 15 测全过、逐条核 ground truth 实现忠实（非测试侥幸）、与 B 一致放行；§11 自我更正 FN-safe 因果方向诚实；多床盲区（C §10）诚实标注。**B/C 一致放行阶段2 = cd2b 治本（P(Fallen)=0.9998 靠 δ 几何独立判定）最终验收兑现。A 接受。**
