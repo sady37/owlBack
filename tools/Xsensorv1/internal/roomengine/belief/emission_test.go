@@ -103,7 +103,7 @@ func TestEmissionCd2bOfflineFallen(t *testing.T) {
 	gxy := []float64{1.0} // 雷达能定位到床
 	// 多帧推进（离线 B 弛豫 + Ψ ε_art + δ 持续把 S 拉向 Fallen）。
 	for step := 0; step < 90; step++ {
-		f.Step(int64(step+1)*1000, bedOnline{false}, cp.LogPsi(js, gxy), em.LogPhi(js, o))
+		f.Step(int64(step+1)*1000, BedOnline{false}, cp.LogPsi(js, gxy), em.LogPhi(js, o))
 	}
 	ms := js.MarginalS(f.alpha)
 	if ms[SFallen] <= ms[SBed] {

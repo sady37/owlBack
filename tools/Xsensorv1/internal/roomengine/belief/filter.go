@@ -52,13 +52,13 @@ func (f *Filter) Space() *JointSpace { return f.space }
 // NumBeds 本房床数（B1：显式持有）。
 func (f *Filter) NumBeds() int { return f.space.numBeds }
 
-// bedOnline 第 j 床 sleepad 在线标志（ρ_t）。长 = numBeds。
-type bedOnline []bool
+// BedOnline 第 j 床 sleepad 在线标志（ρ_t）。长 = numBeds。
+type BedOnline []bool
 
 // Predict 联合时间转移（因子化 T_S ⊗ T_B，log 域）。
 // online[j] = 第 j 床 ρ_t（决定 T_B 用 K^obs/K^unobs）。
 // B1 契约：len(online) 须 == numBeds（床在线标志逐床显式）；不符 = 上游 wiring 错 → panic（规则 1.4）。
-func (f *Filter) Predict(online bedOnline) {
+func (f *Filter) Predict(online BedOnline) {
 	js := f.space
 	nb := js.numBeds
 	if len(online) != nb {
@@ -100,7 +100,7 @@ func (f *Filter) Predict(online bedOnline) {
 // logTB[bFrom][bTo] = Σ_j log T_B^j(bit_j(bTo) | bit_j(bFrom))，按各床 online[j] 选 K^obs/K^unobs。
 // 仅依赖 (bFrom,bTo)、不依赖 S → 提出 S 循环外（T_B 因子化是 Predict 第一步，B 评审建议）。
 // -inf（如离线 vac→occ=0）经 float 加法自然传播。
-func (f *Filter) buildLogTBCol(online bedOnline) [][]float64 {
+func (f *Filter) buildLogTBCol(online BedOnline) [][]float64 {
 	js := f.space
 	nb := js.numBeds
 	logK := make([]logKernel, nb)
@@ -137,7 +137,7 @@ func (f *Filter) Correct(logPsi, logPhi JointVector) {
 }
 
 // Step 一帧推进。dtMs≤0（同帧重入）跳过 Predict。
-func (f *Filter) Step(nowMs int64, online bedOnline, logPsi, logPhi JointVector) {
+func (f *Filter) Step(nowMs int64, online BedOnline, logPsi, logPhi JointVector) {
 	if f.lastTs > 0 && nowMs > f.lastTs {
 		f.Predict(online)
 	}

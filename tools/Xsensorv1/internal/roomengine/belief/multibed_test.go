@@ -51,7 +51,7 @@ func TestRoutingTwoBeds(t *testing.T) {
 		Sleepad: []BedReading{BedInBed, BedNoReport}, // 仅 bed0 InBed
 	}
 	gxy := []float64{1.0, 0.0} // 雷达只定位到 bed0
-	online := bedOnline{true, false}
+	online := BedOnline{true, false}
 	for step := 0; step < 30; step++ {
 		f.Step(int64(step+1)*1000, online, cp.LogPsi(js, gxy), em.LogPhi(js, o))
 	}

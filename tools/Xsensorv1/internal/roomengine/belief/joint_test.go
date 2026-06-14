@@ -27,7 +27,7 @@ func TestJointNormalization(t *testing.T) {
 		f := NewFilter(DefaultModel(), nb)
 		verifySum(t, f, "nb="+itoa(nb)+" init")
 
-		online := make(bedOnline, nb)
+		online := make(BedOnline, nb)
 		for j := range online {
 			online[j] = true
 		}
@@ -102,7 +102,7 @@ func TestStaleness30sReproduction(t *testing.T) {
 	}
 
 	// sleepad 离线。逐步 Predict，记录 P(occ) 跌破 0.5 的步数。
-	offline := bedOnline{false}
+	offline := BedOnline{false}
 	crossStep := -1
 	for step := 1; step <= 120; step++ {
 		f.Predict(offline)
@@ -128,7 +128,7 @@ func TestStaleness30sReproduction(t *testing.T) {
 	}
 	f2.alpha[js.idx(SBed, 1)] = 0
 	f2.alpha.LogNormalize()
-	online := bedOnline{true}
+	online := BedOnline{true}
 	for step := 1; step <= 30; step++ {
 		f2.Predict(online)
 	}
@@ -147,7 +147,7 @@ func TestVacAbsorbing(t *testing.T) {
 	f.alpha[js.idx(SEmpty, 0)] = 0 // log(1)：空房 + bed vac
 	f.alpha.LogNormalize()
 
-	offline := bedOnline{false}
+	offline := BedOnline{false}
 	for step := 1; step <= 120; step++ {
 		f.Predict(offline)
 	}
