@@ -1252,4 +1252,36 @@ A：K^unobs 机制可留（重解释 config-static），但「ε≪λ 治本 cd2
 - **涌现 ≥55%** → 拆 δ FloorStripXY（emission+adapter）+ harness TTL 两块补丁；K^unobs 论证改写 config-static；E5/AD4 补丁测试换框架涌现测试；§24/§25/§27/§29 floor-strip 链正式废。
 - **涌现不够** → 补 Ψ/转移的 (S,B) 相容强度（o_j 压不够 / SBed→SFallen 转移种子），框架内事，**不加 cd2b 规则**。
 
+---
+
+# §32 增补（C 独立测试复审）— 框架纯路径涌现成立，放行拆补丁
+
+> A 报纯路径结果（0.9992）尚未 push 入库，C 不审不在仓库的东西——**C 自写独立测试 `TestCPureFrameworkEmergence` 亲验**（不照搬 A 的数）。
+
+## 一、C 独立测试（构造纯路径，零补丁）
+InBed 段（sleepad InBed）→ LeftBed 段（sleepad LeftBed + pose 躺 + 静止，`FloorStripXY:false` 零补丁）：
+- InBed 段后：`P(B=occ)=0.9999`（人在床，B 正确）
+- LeftBed+躺+静止：`P(Fallen)=0.9950  P(B=vac)=0.9999  Λ=4.66`（零 floor-strip）
+- 与 A 报 0.9992/4.66 **同量级**。
+
+机制链 C 亲验：LeftBed→B=vac→Ψ 相容表压 SBed 留 SFallen→pose 躺静止→SFallen 浮 0.995。**δ 确实多余，框架本就涌现——C 用独立测试证，不是信 A。**
+
+## 二、放行拆补丁 + AC-拆1~4 验收点
+- **AC-拆1**：拆后纯路径仍涌现（≥55%）。
+- **AC-拆2**：全测试绿。
+- **AC-拆3**：harness 去 TTL 后 cd2b replay 仍涌现。
+- **AC-拆4**：歧路记录 §23-§31 保留不删。
+
+## 三、正式作废清单（C 钉死）
+**作废**：§24（fork 方案 a）、§25（掉线前历史前提）、§27 二三（floor-strip 施工）、§29 全作废。
+**保留**：§27 一 **bed_id 铁律**（框架级，sleepad-keyed 非坐标，与 floor-strip 无关）。
+
+## 四、歧路记录留存（C 坚持）
+§23-§31 完整留存不删——"框架被 case 腐蚀成补丁、再纠偏回框架"的诚实过程，方法论教训。
+
+## 五、弧线总结
+§23→§32：从被 cd2b 拽进补丁，到用户"在打补丁不是建框架"点醒，到回归框架、C 独立测试证零补丁涌现 0.995。**最终结论最干净：cd2b 不需任何专用处理，Ψ 相容表本身就让它涌现。**
+
+A 拆完补丁（四步）+ 跑通 AC-拆1~4，C 复审清理结果。
+
 
