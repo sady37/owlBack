@@ -1146,3 +1146,60 @@ default(45-55可判)    → tie: cfn>cFP 打破平衡
 **decide 重写忠实 §26，四档正确，C_FN 收窄正确，Λ 转 gate 是正确推论（A 诚实记录推翻 D2）。通过。** 
 
 **注**：decide（裁决层）已对齐 §26；floor-strip on-pad 参考（§27 本轮施工）A 尚未做，仍是 HR-2 BLOCKER。decide 改对是裁决逻辑就位，但 cd2b 端到端过 HR-2 仍等 floor-strip。C 待 A floor-strip 实现复审。
+
+
+---
+
+# §30 增补（C 重大自我纠偏）— §23–§29 是补丁歧路；回到框架，cd2b 靠 (S,B) 相容涌现 + unknown 裁定
+
+> 用户一针见血：「丢掉 cd2b 这个 case，你一直在打补丁而不是建框架了。」C 承认：§23–§29 整段偏离了 DBN 建框架初衷，把 cd2b 这个**验证样本**误当**设计目标**，围着它打补丁（floor-strip→on-pad 参考→rect drift→fork 方案 a），越解越细。这是方向错，C 诚实纠偏。
+
+## 一、C 认错：补丁思维的歧路（§23–§29）
+
+**根因**：C 从 §23 被 cd2b 具体 case 拽走，没回原始数据核 cd2b 真实信号构成，一路顺 A 的 δ 实验 + harness rect 派生往下推，把「floor-strip 怎么修」当问题，没问「cd2b 该靠什么判」。用户连续追问（等价纯雷达？查 replay？哪句掉线？LeftBed 高优先级？）逐步把 C 拽回真实数据。
+
+**真实数据推翻的假设**（C 查 window_sleepad.json + window.json）：
+- sleepad **全程在线**（非掉线）；542s 报 LeftBed；摔倒 544s 紧接。
+- 摔倒段雷达 y≈210 ≈ on-pad y≈212——**y 根本分不开**。§24 fork 裁 a 的依据「on-pad212 vs floor160 差 3.1σ」**对不上真实摔倒数据**，方案 a 在真实数据上失效。
+- E5/AD4 的 0.9998 是**补丁路**：手设 FloorStripXY=true + 假设 sleepad 离线（NoReport）——**两个假设都不符真实数据**（真实 sleepad 在线报 LeftBed）。**不算真治本。**
+
+**DBN 初衷**：联合占用 DBN 本就是要**终结 Tsensor 旧版「每场景一条 fall rule」的补丁山**（BedsideFall/LostFall/StillFall/bedside_silent/sleepad_radar_conflict…），用统一框架（隐状态+转移+发射+期望损失）让所有 case 自然涌现。C 却在 Xsensorv1 里重新发明 floor-strip 补丁——**背叛了框架初衷**。
+
+## 二、框架视角：cd2b 靠 (S,B) 联合相容涌现，零专用处理
+
+cd2b 在框架里本就该自然涌现，不需任何专用规则：
+- sleepad **LeftBed → B 轴 vac**（人不在床）——发射，框架已有（`ℓ(LeftBed|vac)=L_left≫1`）。
+- 雷达 pose=6 + 持续静止 + 在床边 → S 轴证据。
+- **关键涌现**：B=vac（床空）+ 雷达低姿静止的人 → 联合状态 **(SFallen, vac)** 最相容 → 后验自然升。「人在床睡」=(SBed, occ)，LeftBed 后 B=vac 使 (SBed, occ) 不相容（床空哪来床上睡）→ SBed 压、SFallen 浮。
+- **不需要 floor-strip / on-pad 参考 / BedsideFall 规则**——联合滤波本身让 P(Fallen,vac) 浮出。cd2b 判别**不靠雷达 XY 精确空间位置**（floor-strip 想干的），靠 **B 轴(sleepad床占用) × S 轴(雷达姿态) 的联合相容性**。
+
+**补丁 vs 框架的本质区别**：BedsideFall 是「LeftBed+床边+静止→规则触发」（一条 if）；框架是「LeftBed 推 B→vac，联合滤波涌现 Fallen」（无 if，后验自然）。移植 BedsideFall 进 Xsensorv1 **仍是补丁**——C 差点又建议这个，被用户拦住。
+
+## 三、下一步：审框架（A 主张，C 完全支持）
+
+A 三步（C 背书）：
+1. **跑框架纯路径**：sleepad 在线 InBed→LeftBed，雷达 pose 躺+静止，**不喂 floor-strip**，看 (SFallen,vac) 后验是否自然浮出 ≥55%（§26 报阈）。
+2. **浮出** → cd2b 零专用处理；δ floor-strip / on-pad 参考 / fork（§24）/ §25 / §27 floor-strip 施工 / §29 **全废**；E5/AD4 手设 floor-strip 测试是补丁测试，**替换为「框架涌现」测试**（LeftBed→B vac→SFallen 自涌现）。
+3. **不浮出** → 补的是框架里 (S,B) 联合相容的**发射/转移**（如 o_j 太小致 (SBed,vac) 压不够、或 SBed→SFallen 转移种子）——**绝不加 cd2b 规则**。
+
+**C 验收转向**：从「floor-strip fire@真摔」转为「框架纯路径 (SFallen,vac) 涌现 ≥55%，零 floor-strip」。HR-2 重新定义 = 框架涌现，非补丁 fire。
+
+## 四、unknown(8) 裁定：映射 B 后验不确定，**不扩 B 轴态**（C 同 A 倾向，框架级理由）
+
+A 问：bed_state 三值（0 InBed/1 LeftBed/8 unknown）→ B 轴二元 vac/occ，unknown 映射后验≈0.5 还是 B 加第三态？
+
+**C 裁定：unknown → 发射中性，B 后验靠 ε≪λ 自然演化；不扩 B 轴态。** 框架级理由：
+
+1. **扩态破坏 §1 正交分解 + 违 DBN 精神**：B 轴二元是物理（床有人/没人）；unknown 是**认知状态（不知道）非物理状态**。「不知道」是对两物理态的**概率分布**，非第三种物理现实。把认知不确定编码成离散态 = 违 §8「诚实的不确定=后验两可，非假装有确定的 unknown 态」。基数也从 9·2^|B| 涨 9·3^|B|。
+
+2. **ε≪λ 已天然表达 unknown**：B 轴 K^unobs（§C 单向泄漏）在无 sleepad 证据时 occ 向 vac 衰减、后验滑向不确定。unknown(8) = 无 InBed/LeftBed 确定证据 = **发射 ℓ≡1 中性**（同 NoReport），B 后验由转移主导自然演化——**比硬塞 0.5 更对**（0.5 是恰好一半；框架给的是由历史+转移决定的、可能非 0.5 的不确定后验）。
+
+3. **三值→二元映射**：`0 InBed→ℓ(InBed|occ)=L_in≫1 推 occ`；`1 LeftBed→ℓ(LeftBed|vac)=L_left≫1 推 vac`；`8 unknown→ℓ≡1 中性（复用 BedNoReport）`。**现有 BedReading 三枚举（NoReport/InBed/LeftBed）够用，unknown 复用 NoReport 中性发射，不新增枚举、不扩 B 轴。**
+
+→ **unknown = 后验不确定（A 倾向对），框架已天然表达，B 轴保持二元。**
+
+## 五、C 立场（纠偏后）
+
+**§23–§29 的 floor-strip 方向作废待验**（步骤1 纯路径浮出则正式废）。**C 回到框架审查**：cd2b 当验证样本，靠 (S,B) 相容涌现，不打补丁。unknown 不扩态。**C 待 A 跑框架纯路径结果**，据「(SFallen,vac) 是否 ≥55% 自涌现」复审——浮出则废补丁链，不浮出则审框架发射/转移哪里不够（仍不加规则）。
+
+**致谢用户**：这次纠偏的价值远超一个 case——它把 C 从补丁惯性拉回框架初衷。一个框架的考验不是"能不能为某 case 加对补丁"，是"case 能不能在零补丁下涌现"。
