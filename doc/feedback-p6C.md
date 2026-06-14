@@ -744,3 +744,50 @@ C §13 🔴 必修「两套 belief 包重复」→ A commit `a092bb7 fix(xsensor
 - emission Φ/§D HRRR gate、coupling Ψ/§E mixture：可起（ground truth 已定形态）。
 - transition/§A neighbor 有向门控：**等 A 的 ρ_xroom 完整方程**（路二，A 按住中）。
 - 阶段 2 前 A 处理两项：B 的 Predict 重构 + bedOnline 契约断言（双方共识）。
+
+
+---
+
+# §15 增补（第 3 轮审核）— A 阶段 2 emission/coupling/neighbor 独立审 + 与 B 对照
+
+> 第 3 轮：A 交阶段 2（emission §5 Φ / coupling §2·§3·§4 / neighbor §A 方程 / 🟡 两项修复）。C 独立 pull、独立跑、独立审实现忠实性，再对照 B 第 2 轮 phase2 审查。
+
+## 一、C 独立验证（不照搬 B 的数）
+
+C 临时降版编译、独立跑全 15 测试：**T1–T5（骨架回归无退化）+ E1–E5（emission）+ C1–C5（coupling）全过。** 两个核心数 C 独立跑出、与 B 报告一致：
+
+- **cd2b 离线态 P(Fallen)=0.9998 > P(AtBed)=0.0000**——不靠 sleepad/HRRR，δ 几何主解实证兑现（emission_test.go:112）。这是整条线 cd2b 治本的最终验收，C 独立确认属实。
+- **§E mixture FN-safe：Ψ(F)=0.55 存活 vs product=0.01 压死（55×）**（coupling_test.go:82）。C §11 自我更正的 FN-safe 因果方向，A 实现里方向正确。
+
+## 二、C 独立审实现忠实性（逐条核 ground truth，非看测试数）
+
+测试是 A 自写，C 不止看 PASS，独立读实现判忠实：
+
+| ground truth | A 实现 | C 独立核 |
+|---|---|---|
+| §E Ψ=Σ_j a_j ψ̃_j+a_∅（mixture 非 product） | coupling.go:100 加权和 | ✅ 非乘积；注释明写"product 任一床 occ 压死 F=漏报"，FN-safe 方向对 |
+| §E Fallen 行不被 κ 覆盖 | psiPhys:80 物理常量 | ✅ κ 退火在 psiTilde，不碰 Fallen 行 |
+| §D absent 须 sleepad-online gate | emission.go:108 `else if VitalSourceOnline` | ✅ radar 自身 absent 零信息不否决（C §13/B3 实证约束落地） |
+| §5 Φ 分轴（接触→B/雷达→S） | contactLogB/radarLogS | ✅ 接触只依赖 bmask 位、雷达只依赖 S |
+| δ 主解 floor-strip | emission.go:119 `SFallen:lDelta, SBed:1/lDelta` | ✅ 偏 F 压 AtBed，δ≫0 离线可判=cd2b 0.9998 来源 |
+| §3 κ EMA 无 max | coupling.go:51 `(1-g)κ+g·m` | ✅ 可升可降，互活门控（仅 live 才更新） |
+
+**C 净判：A 阶段 2 实现忠实于 ground truth，非仅测试通过——逐条方程映射正确。**
+
+## 三、与 B 第 2 轮 phase2 审查对照
+
+**本轮 B/C 完全一致，无分歧、无独占发现。** 双方独立审到同一结论：§5/§D/§4/§3/§2/§A 实现忠实、cd2b 0.9998、mixture 55×、🟡 两项（bedOnline panic + buildLogTBCol/Predict 重构）已修。
+
+这与前几轮（C 有 fixture 独占、B 有代数独占）不同——**阶段 2 是直接的方程→代码映射，两卷独立审收敛到同一判断，正是"实现忠实"的最强信号：两个独立审查者都没找到偏差。**
+
+## 四、covers max（C2）裁定确认
+
+C2「`w_pose=covers(r,·)` 的点参数（多床取 max/最近/整体）」此前是 C 标的悬空项。A 选 `max_j covers`（B 第 2 轮裁定、ground truth §F C2 已记、edf5e61）。**C 立场：这是 C2 悬空项交 A 的正当选择，max 在单雷达多床下取"最能看清的那张床的覆盖"作 pose 权重，合理；C 标注接受，不反对。** 单 case fixture 是单床（max 退化为单值），多床 max 语义待阶段 4 多床 case 验证。
+
+## 五、第 3 轮放行（C 立场）
+
+阶段 2 通过。emission/coupling/neighbor 方程实现忠实、核心验收（cd2b 0.9998）兑现、🟡 修复确认。**与 B 一致放行。**
+
+下一步（阶段 3/4）：
+- 阶段 3 decide.go：§8 期望损失主框架（$P^F C_{FN} > (1-P^F)C_{FP}$）+ 不可判兜底。$C_{FN}(\text{risk})$ 代价函数形态须落地（C §8：框架级，连续非离散档），取值标定待 oracle。
+- 阶段 4 probe + cd2b 三态对照（baseline `bd70194`，C D-1）+ 多床 case 验 §E mixture/covers max（补单 case 盲区，呼应 §10 C 实证路线多床短板）。
