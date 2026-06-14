@@ -2,7 +2,6 @@ package roomengine
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"os"
 	"time"
@@ -109,10 +108,6 @@ func (e *Engine) dbnSelfFireEnabledFor(suiteID string, nowMs int64) bool {
 func (e *Engine) dbnVetoFirmwareEnabledFor(roomID string, nowMs int64) bool {
 	return min(dbnMode, e.unitCap(e.SuiteIDForRoom(roomID), nowMs)) == 2
 }
-
-// verboseTick Tsensor 诊断开关（TSENSOR_VERBOSE=1）：每 belief tick 输出全状态(belief 9 态向量 +
-// p_fallen + bed 态 + 每 track realness/坐标 + τ*)到 Info log,供回放逐 tick 扒原因。生产默认 OFF。
-var verboseTick = os.Getenv("TSENSOR_VERBOSE") == "1"
 
 // dbnVetoRecoveryEnabled P2 recovery-veto 独立子开关（委员会 6dafdc6,默认 OFF,可单独 live toggle）。
 // recovery-veto 漏报-safe by construction(同人+正向 up+track-loss 螺丝+self-rescue≥15s+默认放行)。
@@ -843,26 +838,6 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 		zap.String("p7_1_tau_decision", tauDec.String()), zap.Float64("p7_1_tau", tauHit),
 		zap.Bool("p7_2_bathroom", tauCtx.Bathroom), zap.Bool("p7_2_night", tauCtx.Night),
 		zap.String("p7_2_tau_decision", tauCtxDec.String()), zap.Float64("p7_2_tau", tauCtxHit))
-	if verboseTick {
-		belMap := make(map[string]float64, belief.SLeft+1)
-		for s := belief.SEmpty; s <= belief.SLeft; s++ {
-			belMap[s.String()] = v.P(s)
-		}
-		tracks := make([]string, 0, len(sh.tlayer))
-		for tid, tl := range sh.tlayer {
-			tracks = append(tracks, fmt.Sprintf("t%d@(%d,%d)real=%.2f", tid, tl.lastX, tl.lastY, tl.tb.Vector().P(belief.TReal)))
-		}
-		e.logger.Info("tsensor_tick",
-			zap.String("room_id", roomID), zap.Int64("ts_ms", nowMs),
-			zap.String("ts_human", time.UnixMilli(nowMs).Format("15:04:05.000")),
-			zap.Float64("p_fallen", pFallen),
-			zap.String("argmax", argTraceS.String()), zap.Float64("argmax_p", argTraceP),
-			zap.Any("belief", belMap),
-			zap.Any("bed_status", bedSt.BedStatus), zap.Any("bed_conf", bedSt.BedConfidence), zap.Bool("bed_released", bedReleased),
-			zap.Float64("tau_ctx", tauCtxHit), zap.Bool("others_present", tauCtx.OthersPresent),
-			zap.Int("track_count", len(bases)), zap.Strings("tracks", tracks),
-		)
-	}
 	confirmed := sh.decider.Update(v, nowMs) == belief.DecisionFall
 	if confirmed && !sh.fired {
 		argS, argP := v.Max()

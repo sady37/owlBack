@@ -8,26 +8,6 @@
 
 ---
 
-## Tsensor 隔离回放靶子(2026-06-13,用户直接拍板,工具/基础设施,知会委员会)
-
-**用户拍:克隆一个 Tsensor 做隔离全链路回放,快速演算 + 逐 tick 查原因,不影响生产。** 工具/基础设施,非 belief 逻辑,用户授权直接建,事后知会(不阻塞委员会主线)。
-
-**关键设计选择(否决了用户最初的"改 stream 名")**:隔离靠 **redis 库号(REDIS_DB)** 而非改 `iot:*:stream` 名。理由:① 改名要动 `owl-common`(全服务共享)+ 收敛散落硬编 + 改所有输出点,漏一个 Tsensor 假报警就泄漏进生产 `iot:alarm:stream`;② **换库号=键空间物理隔离,不可能泄漏**,改动仅 1 行。stream 名两库都叫 `iot:*` 但互不相干。
-
-**落地(零 fork,生产默认全不变)**:
-- `internal/config/config.go`:`REDIS_DB` 变可配(env,默认 0=生产)。
-- `internal/roomengine/belief_shadow.go`:`TSENSOR_VERBOSE=1` 开逐 tick `tsensor_tick` Info 日志——belief 9 态向量 + p_fallen + argmax + bed 态(status/conf/released)+ 每 track realness/坐标 + τ*。默认 OFF。
-- `wisefido-sensor/tsensor.sh`:**同一份二进制**跑隔离 env(REDIS_DB=1 + verbose + DBN_MODE=2),复用 .env,带 **REDIS_DB=0 拒启安全闸**。不复制任何逻辑代码。
-- `tools/replay/main.go`:加 `--redis-db` 推向隔离库(与 Tsensor 同库),header 显示 speed scale + 库号供 sync。
-
-**用法**:`./tsensor.sh`(起隔离 sensor)→ 另开 `go run ./tools/replay --fixture <case> --redis-db 1 --speed 1`(推录像进同库)→ tail `tsensor_tick` 逐 tick 扒 belief 全状态。`--speed 1` 真时序查原因,加速演算(confirmMs/dwell 失真,工具已 warn)。
-
-**验证**:`go build ./...`✅ / `go vet ./...`✅ / roomengine+belief 0 FAIL✅。生产路径零回归(REDIS_DB 默认 0、verbose 默认 off)。
-
-**与 replay 门控讨论的关系**:这是"验全链路 + 查原因"那条腿(用户最终选了它),取代之前纠结的方案 A/B/C——redis 库号隔离比"清 fitness gate"(方案 A)更彻底(连污染一起解决,fitness gate 在全新 Tsensor 里默认全 fit 也不挡)。进程内 recall 套(验纯算法回归)仍并存。
-
----
-
 ## 工单3 后半段收尾:case-5 解 skip(2026-06-13,知会委员会改 recall oracle bar)
 
 **case-5(FP)不再 skip,改为 pre-seed 容忍 + FP bar 放宽到确认线。** 工单3 后半段唯一剩项收口。

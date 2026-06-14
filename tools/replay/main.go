@@ -54,7 +54,6 @@ func main() {
 		fixtureA  = flag.String("fixture", "", "case 目录（含 window.json[+window_sleepad.json][+alarm.json]+meta.json），纯文件回放")
 		speed     = flag.Float64("speed", 1.0, "重放倍速（>1 加快，<1 放慢；验 fire 行为必须 1）")
 		streamSel = flag.String("streams", "monitor,event", "重放哪些流：monitor,event,alarm 逗号组合")
-		redisDB   = flag.Int("redis-db", 0, "推向的 redis 库号（Tsensor 隔离回放用 1+，与其 REDIS_DB 一致；0=生产库）")
 		dryRun    = flag.Bool("dry-run", false, "只打印不实际 XADD")
 	)
 	flag.Parse()
@@ -90,7 +89,7 @@ func main() {
 		rdb = rediscommon.NewRedisClient(&commonconfig.RedisConfig{
 			Addr:     getEnv("REDIS_ADDR", "localhost:6379"),
 			Password: getEnv("REDIS_PASSWORD", "TeLunSu-36kr"),
-			DB:       *redisDB,
+			DB:       0,
 		})
 		defer rediscommon.Close(rdb)
 		if err := rediscommon.Ping(ctx, rdb); err != nil {
@@ -110,8 +109,8 @@ func main() {
 	}
 	winFrom := time.UnixMilli(rows[0].tsMs).In(loc).Format(localLayout)
 	winTo := time.UnixMilli(rows[len(rows)-1].tsMs).In(loc).Format(localLayout)
-	fmt.Printf("重放 %d 条 (%s) | 设备 %d 台 | 窗口 %s~%s UTC | 倍速(speed scale) %.2gx | redis DB %d | rebase t1->now%s\n",
-		len(rows), strings.Join(streamNames, "+"), len(addrs), winFrom, winTo, *speed, *redisDB, dryRunTag(*dryRun))
+	fmt.Printf("重放 %d 条 (%s) | 设备 %d 台 | 窗口 %s~%s UTC | 倍速 %.2gx | rebase t1->now%s\n",
+		len(rows), strings.Join(streamNames, "+"), len(addrs), winFrom, winTo, *speed, dryRunTag(*dryRun))
 	if *speed != 1.0 {
 		fmt.Printf("⚠️  倍速 %.2gx ≠ 1：sensor 的 confirmMs/dwell/decay 按真实墙钟计,加速会压缩时间窗 → fire/confirm 判断失真,仅供数据流连通性冒烟。验 fire 行为必须 --speed 1。\n", *speed)
 	}
