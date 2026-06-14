@@ -845,8 +845,13 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			belMap[s.String()] = v.P(s)
 		}
 		obsKinds := make([]string, 0, len(obs))
+		poseVal, poseArea := -1, -1
+		poseReleased := false
 		for _, o := range obs {
 			obsKinds = append(obsKinds, o.Kind.String())
+			if o.Kind == belief.ObsPose {
+				poseVal, poseArea, poseReleased = int(o.Value), o.AreaType, o.BedReleased
+			}
 		}
 		frReason, frDom, frLR := belief.FallReasonFor(obs)
 		e.logger.Info("tsensor_belief",
@@ -859,6 +864,13 @@ func (e *Engine) beliefShadowTick(roomID string, bases []TrackStatusBase, nowMs 
 			zap.String("fall_reason", frReason.String()),
 			zap.String("dominant_obs", frDom.String()), zap.Float64("dominant_lr", frLR),
 			zap.Float64("tau", tauCtxHit), zap.Int("track_count", len(bases)),
+			// Tsensor 诊断:床态 + pose 归因(看 cd2b 卡在哪)
+			zap.Bool("bed_released", bedReleased),
+			zap.Int("bed_status", bedSt.BedStatus), zap.Int("bed_conf", bedSt.BedConfidence),
+			zap.Int("pose", poseVal), zap.Int("pose_area", poseArea),
+			zap.Bool("pose_is_lying", poseVal == int(observation.PoseLying)),
+			zap.Bool("pose_in_bed_area", poseArea == int(AreaBed)),
+			zap.Bool("pose_bed_released", poseReleased),
 		)
 	}
 	confirmed := sh.decider.Update(v, nowMs) == belief.DecisionFall

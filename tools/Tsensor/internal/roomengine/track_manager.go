@@ -601,10 +601,13 @@ func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
 	}
 
 	// LeftBed：如实落 LeftBedAtMs（BedOccupancyState→cardagg bed_state）。
-	// 原 5min precondition 是 silent-fall 质量过滤,已随 gate-list 退役——真上床又下床如实报 LeftBed 才正确。
+	// 设备开机即在床 / sensor 重启 / 数据裁切等情形常缺前置 InBed 事件,但 LeftBed 本身是 firmware
+	// 观测信号且床边离床=高风险 → 从宽认定:无 in-bed 历史也建会话记 LeftBedAtMs(不丢),
+	// 由 BedOccupancyState(latestInBed==0 仍认离床)消费。
 	s := tm.bedSessions[evt.DeviceUID]
-	if s == nil || s.InBedSinceMs == 0 {
-		return // 没有有效 in-bed 历史
+	if s == nil {
+		s = &BedSession{DeviceUID: evt.DeviceUID}
+		tm.bedSessions[evt.DeviceUID] = s
 	}
 	s.LeftBedAtMs = evt.TMs
 }
@@ -767,11 +770,13 @@ func (tm *TrackManager) BedOccupancyState(nowMs int64) card.BedState {
 	if tm.lastRadarLeftBedMs > latestLeftBed {
 		latestLeftBed = tm.lastRadarLeftBedMs
 	}
-	if latestInBed == 0 {
-		return card.BedState{} // 无床数据 → BedConfidence=0 → bedAdapter Fresh=false,不喂 shadow
+	if latestInBed == 0 && latestLeftBed == 0 {
+		return card.BedState{} // 真无床数据(InBed/LeftBed 都没)→ BedConfidence=0,不喂 shadow
 	}
 	if latestLeftBed >= latestInBed {
-		// 任一源 LeftBed ≥ 最近 InBed(any-source-OR veto)→ 离床 → 不压 → Fall 浮出(漏报-safe,审查㊾)
+		// 任一源 LeftBed ≥ 最近 InBed(any-source-OR veto)→ 离床 → 不压 → Fall 浮出(漏报-safe,审查㊾)。
+		// 含"无在先 InBed"(latestInBed==0):LeftBed 是观测信号 + 床边真摔高风险 → 从宽认定离床,
+		// 不依赖在先 InBed(否则 sensor 重启/数据裁切丢了 InBed 就吞掉离床=漏报)。
 		return card.BedState{BedStatus: 1, BedStatusTs: latestLeftBed, BedConfidence: bedConfSleepad}
 	}
 	conf := bedConfSleepad // sleepad 接触式权威=90
