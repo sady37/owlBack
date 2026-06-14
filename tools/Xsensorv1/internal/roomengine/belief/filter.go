@@ -1,6 +1,9 @@
 package belief
 
-import "math"
+import (
+	"fmt"
+	"math"
+)
 
 // filter.go — 联合 forward 滤波（DBN-Zone-Room §7，log 域）。
 //   Predict: ᾱ_t = log Σ_{S',{B'^j}} exp( log T_S(S|S') + Σ_j log T_B(B^j|B'^j) + α_{t-1} )
@@ -54,22 +57,18 @@ type bedOnline []bool
 
 // Predict 联合时间转移（因子化 T_S ⊗ T_B，log 域）。
 // online[j] = 第 j 床 ρ_t（决定 T_B 用 K^obs/K^unobs）。
+// B1 契约：len(online) 须 == numBeds（床在线标志逐床显式）；不符 = 上游 wiring 错 → panic（规则 1.4）。
 func (f *Filter) Predict(online bedOnline) {
 	js := f.space
 	nb := js.numBeds
-
-	// 预算每床的 log T_B 核（按各自 ρ）。
-	logK := make([]logKernel, nb)
-	for j := 0; j < nb; j++ {
-		on := false
-		if j < len(online) {
-			on = online[j]
-		}
-		logK[j] = makeLogKernel(f.bedP.tBKernel(on))
+	if len(online) != nb {
+		panic(fmt.Sprintf("belief: Predict online 长度=%d ≠ numBeds=%d（B1 契约）", len(online), nb))
 	}
 
+	logTB := f.buildLogTBCol(online) // bmaskN×bmaskN 因子化 log T_B 表（提出 S 循环外）
+
 	next := js.NewJointVector()
-	// ᾱ(sTo, bTo) = LogSumExp_{sFrom, bFrom} ( logA[sFrom][sTo] + Σ_j logK_j + α )
+	// ᾱ(sTo, bTo) = LogSumExp_{sFrom, bFrom} ( logA[sFrom][sTo] + logTB[bFrom][bTo] + α )
 	for sTo := 0; sTo < numStates; sTo++ {
 		for bTo := 0; bTo < js.bmaskN; bTo++ {
 			acc := math.Inf(-1)
@@ -79,29 +78,15 @@ func (f *Filter) Predict(online bedOnline) {
 					continue
 				}
 				for bFrom := 0; bFrom < js.bmaskN; bFrom++ {
-					if f.alpha[js.idx(State(sFrom), bFrom)] == math.Inf(-1) {
+					lb := logTB[bFrom][bTo]
+					if math.IsInf(lb, -1) {
 						continue
 					}
-					// Σ_j log T_B^j(B^j_to | B^j_from)
-					logB := 0.0
-					zero := false
-					for j := 0; j < nb; j++ {
-						from := bedOf(bFrom, j)
-						to := bedOf(bTo, j)
-						lb := logK[j][from][to]
-						if math.IsInf(lb, -1) {
-							zero = true
-							break
-						}
-						logB += lb
-					}
-					if zero {
+					ap := f.alpha[js.idx(State(sFrom), bFrom)]
+					if math.IsInf(ap, -1) {
 						continue
 					}
-					v := la + logB + f.alpha[js.idx(State(sFrom), bFrom)]
-					if !math.IsInf(v, -1) {
-						acc = logAdd(acc, v)
-					}
+					acc = logAdd(acc, la+lb+ap)
 				}
 			}
 			next[js.idx(State(sTo), bTo)] = acc
@@ -109,6 +94,31 @@ func (f *Filter) Predict(online bedOnline) {
 	}
 	next.LogNormalize()
 	f.alpha = next
+}
+
+// buildLogTBCol 预算 bmaskN×bmaskN 的因子化 log T_B 表：
+// logTB[bFrom][bTo] = Σ_j log T_B^j(bit_j(bTo) | bit_j(bFrom))，按各床 online[j] 选 K^obs/K^unobs。
+// 仅依赖 (bFrom,bTo)、不依赖 S → 提出 S 循环外（T_B 因子化是 Predict 第一步，B 评审建议）。
+// -inf（如离线 vac→occ=0）经 float 加法自然传播。
+func (f *Filter) buildLogTBCol(online bedOnline) [][]float64 {
+	js := f.space
+	nb := js.numBeds
+	logK := make([]logKernel, nb)
+	for j := 0; j < nb; j++ {
+		logK[j] = makeLogKernel(f.bedP.tBKernel(online[j]))
+	}
+	logTB := make([][]float64, js.bmaskN)
+	for bFrom := 0; bFrom < js.bmaskN; bFrom++ {
+		logTB[bFrom] = make([]float64, js.bmaskN)
+		for bTo := 0; bTo < js.bmaskN; bTo++ {
+			s := 0.0
+			for j := 0; j < nb; j++ {
+				s += logK[j][bedOf(bFrom, j)][bedOf(bTo, j)]
+			}
+			logTB[bFrom][bTo] = s
+		}
+	}
+	return logTB
 }
 
 // Correct 观测更新 α ∝ Ψ · Φ · ᾱ（log 域元素加）。
