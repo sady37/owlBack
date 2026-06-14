@@ -14,22 +14,26 @@ import (
 
 func bed(x1, y1, x2, y2 int) Rect { return Rect{x1, y1, x2, y2} }
 
-// AD1：floorStrip 派生。床 (0,0,100,200)，margin=60。
+// AD1：floorStrip 派生（down 姿门控 + 床外近缘）。床 (0,0,100,200)，margin=60。
 func TestFloorStripDerivation(t *testing.T) {
 	p := DefaultParams()
-	mk := func(x, y int) FrameInput {
-		return FrameInput{Track: RadarTrack{Online: true, X: x, Y: y}, Beds: []Rect{bed(0, 0, 100, 200)}}
+	mk := func(x, y, pose int) FrameInput {
+		return FrameInput{Track: RadarTrack{Online: true, X: x, Y: y, Pose: pose}, Beds: []Rect{bed(0, 0, 100, 200)}}
 	}
-	if floorStrip(mk(50, 100), p) {
-		t.Error("床内(50,100) 不应是 floor-strip（on-pad）")
+	if floorStrip(mk(50, 100, 6), p) {
+		t.Error("床内(50,100) lying 不应是 floor-strip（on-pad）")
 	}
-	if !floorStrip(mk(130, 100), p) {
-		t.Error("床缘外 30cm(130,100,≤60 margin) 应是 floor-strip")
+	if !floorStrip(mk(130, 100, 6), p) {
+		t.Error("床缘外 30cm(130,100,≤60 margin) lying 应是 floor-strip")
 	}
-	if floorStrip(mk(300, 100), p) {
+	if floorStrip(mk(300, 100, 6), p) {
 		t.Error("远(300,100,>60 margin) 不应是 floor-strip")
 	}
-	if floorStrip(FrameInput{Track: RadarTrack{Online: false}, Beds: []Rect{bed(0, 0, 100, 200)}}, p) {
+	// down-pose 门控（AC-2 修，HR-5 误火根因）：走动(pose=1)在床缘 不是 floor-strip。
+	if floorStrip(mk(130, 100, 1), p) {
+		t.Error("床缘 walking(pose=1) 不应是 floor-strip（δ 仅对 down 姿）")
+	}
+	if floorStrip(FrameInput{Track: RadarTrack{Online: false, Pose: 6}, Beds: []Rect{bed(0, 0, 100, 200)}}, p) {
 		t.Error("雷达离线不应是 floor-strip")
 	}
 }

@@ -10,6 +10,28 @@
 
 ---
 
+## 2026-06-15 — 集成步骤2 replay harness 落地 + HR-5 揪出 FloorStripXY 真缺陷（fork 待裁）
+
+按 C §21 规格起 replay harness（`internal/roomengine/replay/`），复用 adapter+belief+probe+fixture，不碰 DB、不克隆引擎。**harness 工作正常，HR-5 归因边界兑现了它的全部价值——把缺陷精确定位到 adapter，证明 belief 正确。**
+
+### 结果
+- **HR-1 ✓ 解析忠实**：cd2b window.json → 644 帧 FrameInput，NowMs 单调，床矩形 {-70,90,150,240}。
+- **HR-5 归因边界兑现**：cd2b 经 harness（raw XY 派生 floor-strip）**误火**——但不是 belief 错，是 **adapter FloorStripXY 派生**错。两层 bug，belief 全程正确：
+  1. **【已修】pose-agnostic floorStrip**：+100s 一个**走动**(pose=1)的人路过床缘 → rect 几何判 floor-strip → δ 推 SFallen → 误火。修：**down-pose 门控**（δ 只对 lying/fallen 有意义，δ 实验本就 pose=6 only）。AC-2 译层修，非数据拟合。
+  2. **【OPEN，真 δ 难题】rect 派生 vs 真实雷达 XY 的 layout drift**：实测 on-pad 卧姿雷达 XY（x≈-80~-130, y≈210-240）落在**画的床矩形外**（x≥-70）→ rect+margin 误判 on-pad 为 floor-strip → 正常睡觉 P^F=0.996 假信号（仅因段 <90s T_hold 侥幸没 fire）；而真摔 floor 簇（x=-170，>margin）反被判 false。**rect 几何 ≠ δ 簇边界**——A δ 实验本就是离线 Mahalanobis 簇分析，不是矩形包含。
+- **HR-2 端到端正确 BLOCKED**：在 FloorStripXY 运行时实现 fork 上（下）。HR-3 三态对照同样待此。AC-3（alone<0 守卫落 adapter 边界）已做。
+
+### FloorStripXY 运行时实现 fork（A 提请委员会裁）
+| 方案 | 评 |
+|---|---|
+| **a. on-pad 参考（学自 sleepad-InBed 段）** | **A 推荐**。sleepad 确认 InBed 时雷达 XY 即 on-pad（定义上），累积成 on-pad 簇；floor-strip = XY 偏离 on-pad 参考（主要 y 下移）。**这正是 δ 簇边界的运行时化**（匹配离线实验方法 + κ/MM「双设备共观」哲学），per-installation 自适应、**非单 case 拟合**（守铁律 [[fall_data_is_artificial_test]]）。代价：adapter 需 on-pad 参考状态（或预跑一遍 InBed 段）。 |
+| b. 扩床矩形到雷达观测足迹 | **否**。把矩形按这个 case 的 drift 扩 = 单 case 拟合，违铁律。 |
+| c. 弃 δ FloorStripXY，cd2b 离线纯靠 offline-λ + 风险兜底 | 失去 A δ 实验的「可判」优势（δ≫0），cd2b 离线退回不可判→C_FN 兜底。保底但弱。 |
+
+**A 待委员会定 a/b/c 再实现**（adapter 设计经 B/C 审过，改派生机制须对齐）。harness 是干净的验证台，方案定后此处直接验 HR-2/HR-3。
+
+---
+
 ## 2026-06-14（交接清单）— belief 包收口，集成/neighbor 暂停待排期
 
 > 用户裁定：belief 包在此**清晰交接、暂停**。belief 数学层阶段 1–4 全 B/C 放行、24 测绿、cd2b 治本兑现。下面是重启点。

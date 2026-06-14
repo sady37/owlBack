@@ -58,6 +58,7 @@ type FrameInput struct {
 // Params 派生层参数（form-anchor，标定留 oracle）。
 type Params struct {
 	PoseLying       int     // observation.PoseLying = 6
+	DownPoses       []int   // 倒/卧姿（δ floor-strip 仅对 down 姿有意义；δ 实验本就 pose=6 only）
 	FloorMarginCm   int     // 床缘外 floor-strip 带宽（δ 派生）
 	NearBedMarginCm int     // HR/RR nearBed 邻域（≥ FloorMargin）
 	PeakInsideGxy   float64 // XY 在床内的 g^xy（尖峰）
@@ -65,8 +66,18 @@ type Params struct {
 }
 
 // DefaultParams 形态默认（铁律 [[fall_data_is_artificial_test]]：非权威值，留 oracle）。
+// DownPoses = Lying(6)/Fallen(5)/SuspectedFall(2)（observation 枚举）。
 func DefaultParams() Params {
-	return Params{PoseLying: 6, FloorMarginCm: 60, NearBedMarginCm: 100, PeakInsideGxy: 1.0, NearGxy: 0.5}
+	return Params{PoseLying: 6, DownPoses: []int{2, 5, 6}, FloorMarginCm: 60, NearBedMarginCm: 100, PeakInsideGxy: 1.0, NearGxy: 0.5}
+}
+
+func isDown(pose int, p Params) bool {
+	for _, d := range p.DownPoses {
+		if pose == d {
+			return true
+		}
+	}
+	return false
 }
 
 // distCm 点到矩形的平面距离（内部=0）。
@@ -104,9 +115,11 @@ func Gxy(fi FrameInput, p Params) []float64 {
 	return g
 }
 
-// floorStrip δ 运行时化：XY 在所有床外 但在某床缘 FloorMargin 内 = 床沿地条。
+// floorStrip δ 运行时化：down 姿 + XY 在所有床外 但在某床缘 FloorMargin 内 = 床沿地条。
+// down-pose 门控（AC-2 修）：δ 是「卧 pad vs 卧床沿地」判别，δ 实验本就 pose=6 only；
+// 走动/站立者在床缘不是「摔在床沿地条」——不门控则走过床边即误判 SFallen（HR-5 实测 +100s 误火根因）。
 func floorStrip(fi FrameInput, p Params) bool {
-	if !fi.Track.Online {
+	if !fi.Track.Online || !isDown(fi.Track.Pose, p) {
 		return false
 	}
 	near := false
@@ -189,9 +202,14 @@ func BuildObservation(fi FrameInput, p Params) belief.Observation {
 }
 
 // BuildRiskContext Census → belief.RiskContext。
+// AC-3：alone<0（adapter 时钟回拨）守卫落**边界**（规则 #1.4），cFN 内部保持纯形态（B round3 + B/C 共识）。
 func BuildRiskContext(fi FrameInput) belief.RiskContext {
+	alone := fi.Census.AloneContinuousMin
+	if alone < 0 {
+		alone = 0
+	}
 	return belief.RiskContext{
-		AloneContinuousMin: fi.Census.AloneContinuousMin,
+		AloneContinuousMin: alone,
 		Night:              fi.Census.Night,
 		PeopleCount:        fi.Census.PeopleCount,
 		Disabled:           fi.Census.Disabled,
