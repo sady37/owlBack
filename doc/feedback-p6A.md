@@ -10,6 +10,42 @@
 
 ---
 
+## 2026-06-14（其二）— §A neighbor 方程开口已补 + 阶段 2 发射/耦合落地
+
+### 一、§A neighbor ρ_xroom 完整方程（C 提出遗漏，A 补，落 `DBN-Zone-Room.md` §A.1–§A.3）
+
+C §9 把"邻房 hand-off"识别为 A 漏的第四轴并把完整方程踢回 A。A 补齐三式：
+
+- **§A.1 ρ_xroom 计算式**：$\rho^{\text{xr}}_t=\eta(\text{rc})\cdot\max_{r'}[w^{\text{dir}}(\Delta_{r'})\cdot q_{r'}]$。
+  - **有向新鲜度核 $w^{\text{dir}}(\Delta)$**：对 $\operatorname{sign}\Delta$ **不对称**（先走后到指数衰减 / 反向仅容 jitter / 窗外=0）——这是 A 校正 C「与 ghost ρ 同构」的关键点：**ghost ρ 对称共存、ρ_xroom 有向时序，不照搬对称核**。
+  - **去 ghost 兄弟房占用 $q_{r'}$**：吃 §10 房内 ghost 后验 $P_{r'}(\text{real-present})(1-P(\text{ghost}))$——兄弟房一个 ghost 不算合法 hand-off 落点。
+  - **sole-resident 连续衰减 $\eta(\text{rc})=e^{-\beta(\text{rc}-1)}$**：替离散 `rc≠1` 硬 OFF（C §三的「第三处离散 gate」病），单住户强、多住户弱不归零。
+- **§A.2 $T_S$ 跨房门控**：仅 lost-track（Blind* 行）激活，把 →Fallen 倾向按 $\rho^{\text{xr}}$ 整流入 →Left；$\rho{=}0$ → 行不变 → Blind 照常 ramp Fallen（**lost-fall 本义=安全默认**，stale/多住户不抑制，铁律 [[partial_monitoring_fall_suppression_law]]）；旧 `dampNbrFallen=0.7` 从似然层固定常数变 ρ_xroom 上确界由证据涌现。
+- **§A.3 与 §10 接口三条**：① ghost 轴喂 neighbor 轴；② **不加隐维**（neighbor 是房间 $T_S$ 转移耦合、非房内 $J$ 隐维复制，状态空间 $9\cdot2^{|\mathcal B|}$ 不爆）；③ $\eta(\text{rc})$ 与 §8 $C_{FN}$ 同 census 双消费（一致下拉，保 §B「期望损失主框架 + 证据层」分工）。
+
+**边界守住**：本节只立**框架/方向/符号**，曲线参数（$\tau_h,\tau_j,\beta$）+ 初值（HandoffWindow 60s/Jitter 5s/K 上确界 0.7/源型可信度）留 [[feedback-p6C]] §9 标定，不被单 case 绑死。
+
+### 二、阶段 2 发射/耦合落地（`tools/Xsensorv1/.../belief/`，T 全过）
+
+| 文件 | 章节 | 验收 |
+|---|---|---|
+| `mm.go` | §2 | BedGeom 三标量 covers/onbed/overlap + κ 几何冷启 |
+| `coupling.go` | §3/§4/§E | κ EMA **无 max** 互活门控（可升可降）；a_j 软归属 g^xy 门控；**Ψ mixture**（C1-C5 全过，§E mixture 存活 55×product，Fallen 行 ε_art 不被 κ 覆盖） |
+| `emission.go`/`observation.go` | §5/§D | Φ 分轴；离线=中性；HR/RR nearBed+非对称+**§D absent 须 gate 在独立在线 vital 源下**；δ floor-strip→Fallen（E1-E5 全过） |
+
+**E5 cd2b 离线态实证**：sleepad 离线 + HR/RR absent 无独立源 + pose lying + floor-strip XY，经 90 帧 → **P(Fallen)=0.9998 > P(AtBed)≈0**，**不靠 sleepad/HRRR，δ≫0 几何救回**（DBN-Zone-Room §9 row3 兑现，治本 cd2b 漏报）。
+
+### 三、🟡 B/C 共识两项已在正本处理（不阻塞阶段 1）
+
+`filter.go`：①`Predict` 入口断言 `len(online)==numBeds`（B1 契约，wiring 错 panic 规则 1.4）；②`buildLogTBCol` 因子化 log T_B 表提出 S 循环外（B 建议，O(numBeds·nBC²)→O(nBC²)）。T1-T5 不回归。
+
+### 四、待续（新会话）
+
+- **§A neighbor 落地**：ρ_xroom + $T_S$ 跨房门控是**跨房**耦合，需兄弟房 belief 读出（去 ghost 占用 + census），属 wiring 阶段（依赖多房 filter 编排），阶段 2 单房 emission/coupling 不含。
+- 阶段 3 decide（$\Lambda_t$ + $C_{FN}$ 连续代价，§8/§B）；阶段 4 probe + cd2b §9 三态 Xsensorv1 vs Tsensor diff。
+
+---
+
 ## 2026-06-14 — A 方案：Xsensorv1 联合占用滤波（与 Tsensor 并存做对照验证）
 
 ### 一、根基：三个已定事实（写代码前已从代码/文档坐实）
