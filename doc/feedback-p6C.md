@@ -548,3 +548,199 @@ C §10 第三节称："mixture 更安全，product 在多床房有 phantom fall�
 此错暴露 **C 实证路线的第二个盲区（继 §10 的单床漏 B4 之后）**：C 凭定性直觉推 $\Psi$ 的乘/和差异，**未代数地算 $a_A=a_B=0.5$ 中间态**——纯代数推导是 B 设计层审查的强项，C 在此吃亏。**确认 B 在"方程内部代数正确性"上对 C 有不可替代的制衡。这正是竞争式三卷的价值：C 的 fixture 实证防 A 押错方向，B 的代数审查防 C 推错因果。**
 
 → **net：DBN-Zone-Room §E 应作 FN-safe（A 统一文档时改）；本 C 卷 §10 B4 论证作废，以本节 §11 为准。**
+
+
+---
+
+# §12 增补 — 阶段 1 骨架验收规格（原 acceptance 文件并入）
+
+
+> **角色边界（C 自我更正）**：production code（含阶段 1 骨架）执笔归项目组 A；C 定验收标准 + 独立审。
+> C 此前一稿曾代写 joint/bed_axis/filter——**作废为执笔产物**，仅可作 A 的实现参考；正式骨架由 A 执笔、B/C 审。
+> 本文件 = C 交给 A 的**验收规格**（断言级，A 实现后 B/C 据此审真 code）。
+
+---
+
+## 验收前提（不验则骨架不可信）
+
+阶段 1 骨架 = 纯联合滤波，Ψ/Φ 中性占位（=1），Correct 为恒等。验**数值正确性**非行为。与 δ/neighbor 零依赖。
+
+---
+
+## T1 · 归一化守恒 Σα=1
+
+**断言**：任意 `numBeds ∈ {0,1,2,3}`，初始 α 及连续 ≥50 步 Predict 后，`Σ_i α[i]` 与 1 的偏差 < 1e-9。
+
+**构造**：`NewFilter(DefaultModel(), nb)`；online 全 true；循环 Predict(1) ×50，每步后查 ΣΑ。
+
+**通过判据**：`|ΣΑ − 1| < 1e-9` 恒成立（含初始态）。失败 = 因子化 Predict 或 normalize 有质量泄漏。
+
+---
+
+## T2 · 单床退化基数 + numBeds 显式持有（B1）
+
+**断言**：联合空间基数 = `numStates · 2^numBeds`：
+
+| numBeds | 期望 size |
+|---|---|
+| 0 | 9（回 S 轴单链） |
+| 1 | 18 |
+| 2 | 36 |
+| 3 | 72 |
+
+**附加断言（B1 闭合）**：`Filter.NumBeds()`（或等价显式字段）必须返回构造时的 numBeds——**床数显式持有，不靠隐式推断**。
+
+**退化正确性**：`numBeds=0` 时 `MarginalS(α)` 必须逐分量等于原单实体 `Belief` 行为（初始 == model.Prior，偏差 < 1e-9）。
+
+---
+
+## T3 · P-5 maxBeds 超界硬断言
+
+**断言**：`maxBeds=3`（养老院房 ≤3–4 床上界）。
+
+- `numBeds ∈ {-1, 4, 99}` → 构造（NewJointSpace/NewFilter）必须 **panic**（不静默膨胀）。
+- `numBeds == maxBeds`（=3）→ **不 panic**（边界合法）。
+
+**通过判据**：超界 recover 到非 nil；边界值无 panic。
+
+---
+
+## T4 · D-2 核心：ε≪λ 复现 30s staleness（cd2b 治本不变量）
+
+**这是阶段 1 最关键验收——"一个不等式 ε≪λ 替代所有 staleness/TTL"的实证，也是 cd2b 漏报根因（陈旧 occ 永不衰减）在新架构治本的直接证据。**
+
+**喂数序列**：
+1. 单床（numBeds=1）。构造初始 occ 主导：质量集中到 `(SBed, bmask=1)`（人在床睡，床 occ），归一化。
+2. 验初始 `P(B^0=occ) = MarginalB(α,0) ≥ 0.99`。
+3. **sleepad 离线**：`online = {false}`。逐步 Predict（1Hz，1 步 = 1s），共 120 步，每步记 `P(occ)`。
+
+**期望衰减曲线**（§C 单向泄漏核 K^unobs，λ 半衰期 ≈ ln2/λ）：
+- `P(occ)` 单调下降（occ→vac=λ 泄漏，vac→occ=0 吸收 → 单向）。
+- **跌破 0.5 的步数 `crossStep` 必须 ∈ (0, 30]**——陈旧 occ 在原 30s staleness 窗内蒸发到 vac 主导。
+- λ 形态约束：默认 λ 使半衰期 < 离线判定窗（~30s）；occ 主导跌破 0.5 约 1 个半衰期。**值是标定（feedback-p6C §5），但"< 30 步跌破"是形态验收，必过。**
+
+**在线对照组（证明蒸发归因离线核，非数值漂移）**：
+- 同初始 occ 主导，`online = {true}`，Predict ×30。
+- 期望 `P(occ)` 仍 ≥ 0.5（K^obs 高自持，ε 小，不蒸发）。
+- 失败 = ε 太大（在线核也蒸发）→ ε≪λ 不成立。
+
+**通过判据**：离线 `crossStep ∈ (0,30]` **且** 在线 30 步后 `P(occ) ≥ 0.5`。两者缺一即 D-2 不通过。
+
+---
+
+## T5 · §C vac 吸收态（单向泄漏正确性）
+
+**断言**：空房（`(SEmpty, bmask=0)`，床 vac）+ 离线（online=false）+ Predict ×120 后：
+- `P(B^0=occ) ≤ 0.05`（vac→occ=0 吸收 → 空房离线**不被弛豫成 0.5 伪占用**）。
+
+**为什么单列**：这是 A 坚持"弃矩阵、用箭头记法"要守的核心——若 K^unobs 方向写反（occ 吸收/vac 泄漏），此断言失败 = cd2b 漏报原样重演。**T5 是 §C 箭头记法方向正确性的守门测试。**
+
+---
+
+## 验收总判据
+
+T1–T5 全过 = 阶段 1 骨架数值正确，可进阶段 2（emission/coupling/transition）。
+任一不过 = 骨架有数值缺陷，阶段 2 不得动。
+
+**审查归属**：A 执笔骨架 → B/C 据本规格独立审真 code（C 不审自写代码，独立性保住）。
+
+
+---
+
+# §13 增补 — C 对 A 阶段 1 骨架真 code 的独立审查（第 1 轮，原 skeleton-review 并入）
+
+
+> 审查对象：commit `6baa31f`（A 执笔，`tools/Xsensorv1/`）。
+> 审查方式：pull 真 code，对照 [[feedback-p6C-acceptance]] T1–T5 + 独立查规格未覆盖的隐患。
+> 角色：C 审 A 写的 code（C 未参与执笔，独立性成立）。
+> 工具链注：容器限 go 1.22（go.dev 不在白名单），临时降版编译验证，未改 A 的 go.mod（1.25.0）。
+
+---
+
+## 总判：**骨架通过，质量超出验收要求；一个结构问题须修，两个小点建议。**
+
+T1–T5 全过（实测，非纸面）。A 的实现**优于 C 的参考稿**——C 参考是线性域，A 自己上了 log 域 + LogSumExp，满足 DBN-Zone-Room §7 数值稳定要求。核心不变量（ε≪λ 复现 staleness、§C vac 吸收）实测兑现。
+
+---
+
+## 一、验收结果（T1–T5 实测）
+
+| 验收 | 结果 | 实测 |
+|---|---|---|
+| T1 Σα=1 守恒 | ✅ | log 域 LogNormalize，nb=0/1/2/3 多步后 Σexp(α)=1 |
+| T2 单床退化 + numBeds 字段 | ✅ | size 9/18/36/72；`NumBeds()` 显式持有（B1 闭合） |
+| T3 maxBeds panic | ✅ | -1/4/99 panic，maxBeds=3 合法 |
+| T4 D-2 ε≪λ staleness | ✅ | **离线后陈旧 occ 14 步(≈14s)蒸发到 vac 主导，< 30s 窗**；在线对照不蒸发 |
+| T5 §C vac 吸收 | ✅ | 空房离线 120s 后 P(occ)≈0，不伪占用 |
+
+**D-2 是关键验收**：ε=1e-2、λ=0.05，半衰期≈14s，陈旧 occ 在 30s 窗内蒸发——"一个不等式 ε≪λ 替代所有 staleness/TTL"实证兑现，cd2b 漏报根因（陈旧 occ 永不衰减）在新架构治本。
+
+## 二、C 认可 A 超出要求的两处（记功，非挑刺）
+
+1. **log 域 + LogSumExp（A 自加，C 参考无）**：`filter.go` 全程 log 域，`LogSumExp` 防下溢（跳过 <-50 项防 subnormal）、`logP(p≤0)=-Inf` 边界干净。这是 §7 要求、C 验收规格**未强制**但 A 主动做对的——为阶段 2 的极小 $\varepsilon_{art}$（§E）log 域诊断预留了数值空间。**A 比 ground truth 要求更前一步。**
+2. **logKernel 预存**：T_B 核 log 化预存（`makeLogKernel`），Predict 内层不重复 log，性能正确。
+
+## 三、🔴 必修：两套 belief 包重复提交（结构问题）
+
+commit `6baa31f` 把 belief 包提交进**两个路径**，内容不同：
+- `internal/belief/`（6 文件）
+- `internal/roomengine/belief/`（6 文件，commit stat 列为正本）
+
+**问题**：①包名都是 `belief`，并存造成 import 歧义、审查对象不明；②两套内容不同（疑早期试写 vs 定稿），后续维护会 drift；③C 实测的是 `roomengine/belief/`（与 Tsensor 路径一致），`internal/belief/` 来源/用途不明。
+
+**C 要求**：确认正本（建议 `roomengine/belief/`，与 Tsensor `internal/roomengine/belief/` 路径一致、便于阶段 4 对照 diff），**删除另一套**。这是 D-1 baseline 对照纪律的延伸——审查对象必须唯一。
+
+## 四、🟡 建议（不阻塞，阶段 2 前处理）
+
+1. **`bedOnline` 长度与 numBeds 的契约未断言**：`Predict(online bedOnline)` 内 `if j < len(online)` 容错，但 `len(online) != numBeds` 时静默用 false（离线）。建议加断言或文档明确契约——否则阶段 2 adapter 传错长度会静默当离线，掩盖 bug。
+2. **参数是形态占位，须在阶段 2 标定前显式标记**：`defaultBedAxisParams` 的 ε=1e-2/λ=0.05 是 feedback-p6C §5 的单 case 量级锚，**非标定值**。注释已写，但建议 A 在进 emission/coupling 前确认这些不被下游当权威值硬编码（铁律：定形态、不定参数）。
+
+## 五、阶段 2 放行判据（C 立场）
+
+- 🔴 三（两套包）修了 → 审查对象唯一 → 骨架正式通过。
+- 阶段 2（emission Φ/§D gate、Ψ/§E mixture、transition/§A neighbor）**仍按硬序**：neighbor transition 等 A 的 ρ_xroom 方程；emission/coupling 的非 neighbor 部分可在骨架修后起。
+
+**C 净判：A 骨架数值正确、质量超 C 参考；修掉两套包重复即正式通过。B 可独立复审。**
+
+
+---
+
+# §14 增补（第 2 轮审核）— A 修复后复审 + 与 B 骨架审查对照
+
+> 第 2 轮：A 修了 C §13 的必修项；B 也出了独立骨架审查。C 复审 A 修复 + 对照 B。
+
+## 一、C 必修项已闭合 ✅
+
+C §13 🔴 必修「两套 belief 包重复」→ A commit `a092bb7 fix(xsensorv1): 删重复 belief 包（C 骨架审查发现）` 已修。
+
+**C 复审实测**：仓库只剩一套正本 `internal/roomengine/belief/`（C 建议保留的、与 Tsensor 路径一致的那套），删包后 T1–T5 仍全过（重跑确认，删包未碰坏正本）。**审查对象唯一性恢复，骨架正式通过。**
+
+## 二、与 B 骨架审查（`feedback-p6B-skeleton-review`）对照
+
+**完全一致项**：T1–T5 全过、log 域+LogSumExp 满足 §7（双方都认这是 A 超 C 参考的优点）、两套包重复（B 明确归功「C 发现、A 已修」）、bedOnline 契约未断言（C 标、B 认同）。
+
+**B 抓到 C 漏的一项（C 认）**：
+- B §三：**Predict 内层 `Σ_j logK` 重复计算**——此和只依赖 (bFrom,bTo)、不依赖 S，却嵌在最内层 S 循环重复算。B 给重构方案（预存 bmaskN×bmaskN 的 logTB 表，提到 S 循环外，复杂度从 O(numBeds·nBC²) 降 O(nBC²)）。
+- **C 认账**：C §13 盯方程正确性 + 不变量，漏了这个**计算结构冗余**——纯代码结构/复杂度是 B 的强项（呼应 §11：B 在代数/结构上对 C 有制衡）。不阻塞（|B|≤3 ~15k ops 可忽略），但 B 对：T_B 因子化是 Predict 第一步，不该嵌最内层。阶段 2 重构。
+
+**C 抓到 B 没提的一项**：
+- C §13 🟡②「参数形态占位须防下游硬编码成权威值」（铁律：定形态不定参数）——B 未提。这是目的/纪律层，B 盯方程实现没盯到参数标定纪律。
+
+## 三、第 2 轮净结算
+
+| 项 | B | C |
+|---|---|---|
+| T1–T5 + log 域 + §7 | ✅ | ✅（一致） |
+| 两套包重复 | 认 C 发现 | C 发现、A 已修 ✅ |
+| bedOnline 契约 | 认同 C | C 标 |
+| Predict logB 重复计算 | **B 抓** | C 漏，认 |
+| 参数形态占位纪律 | 未提 | **C 抓** |
+
+**双方对骨架结论一致：通过，放行阶段 2。** 各补一项对方盲区（C 漏 B 的计算结构、B 漏 C 的参数纪律）——三卷互补再次兑现。
+
+## 四、阶段 2 放行（C 立场，与 B 一致）
+
+骨架正式通过（必修已闭合）。阶段 2 仍按硬序：
+- emission Φ/§D HRRR gate、coupling Ψ/§E mixture：可起（ground truth 已定形态）。
+- transition/§A neighbor 有向门控：**等 A 的 ρ_xroom 完整方程**（路二，A 按住中）。
+- 阶段 2 前 A 处理两项：B 的 Predict 重构 + bedOnline 契约断言（双方共识）。
