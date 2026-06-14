@@ -10,6 +10,41 @@
 
 ---
 
+## 2026-06-14（交接清单）— belief 包收口，集成/neighbor 暂停待排期
+
+> 用户裁定：belief 包在此**清晰交接、暂停**。belief 数学层阶段 1–4 全 B/C 放行、24 测绿、cd2b 治本兑现。下面是重启点。
+
+### 状态：DONE（B/C 全放行）
+- **正本**：`tools/Xsensorv1/internal/roomengine/belief/`（joint / bed_axis / filter / model / state / mm / coupling / emission / decide / probe + 各 _test）。
+- **测试**：24 全绿 = T1-5 骨架 / E1-5 发射 / C1-5 耦合 / DEC1-5+Λ 裁决 / MB1-4+probe 多床。`go build ./... && go vet ./internal/roomengine/belief/` 干净。
+- **关键实证**：E5 cd2b 离线 **P(Fallen)=0.9998 > P(AtBed)≈0**（δ 几何独立判定，不靠 sleepad/HRRR）；MB1 §E mixture |B|=3 存活 69×product。
+- **方程**：`doc/DBN-Zone-Room.md` §1-§10 + §A-§F + §A.1-§A.3 neighbor。评审卷 feedback-p6A/B（至 round3）/C（至 §19）。
+
+### belief API（集成时直接 wire，无需改 belief）
+每帧：`cp.LogPsi(js, gxy)` + `em.LogPhi(js, obs)` → `f.Step(now, online, logPsi, logPhi)` → `js.PFallen(α)` & `ComputeLambda(js,logPsi,logPhi)` → `dec.Step(now, pF, λ, riskCtx)` → `Snapshot(...)` 出 probe。构造：`NewFilter(model,numBeds)` / `NewCoupling(geom)` / `NewEmission(geom)` / `NewDecider()`。
+
+### 剩余里程碑 1 — 集成（**顺序在前**，neighbor 依赖它）
+1. **adapter**（raw 帧 → belief 输入）：radar pose/z/HR-RR/XY + sleepad InBed/LeftBed + cell geom(covers/onbed/overlap) + room census → `Observation` / `BedGeom` / `RiskContext`。这是新代码主体。
+2. **继承 Tsensor 非-belief 脚手架**：cell / track_manager / grid / stream（Xsensorv1 现仅 belief 包，脚手架未继承）。
+3. **cd2b vs Tsensor 逐帧 diff**：baseline **`bd70194`**（C D-1：止血补丁 `7ffec9c` 之父，避免污染对照）。
+4. **C 验收点（预告）**：集成后 cd2b 端到端**仍 fire 无回归**（probe 逐帧对照 Tsensor）。
+5. **待办（B round3 建议）**：`cFN()` 对 `alone<0`（adapter 时钟回拨）的守卫——按**规则 #1.4「错误处理只在边界」落在 adapter 侧，不进 cFN 内部**（B/C 共识）。
+
+#### adapter 译层待定点（集成入口先核 Tsensor 现有基建，非孤立试水可解）
+A 自评：adapter 大部分是「wire 到 Tsensor 现有量」（pose→PoseLying、sleepad 事件→BedReading、census→RiskContext、cell 枚举→BedGeom），但**两处运行时算法依赖床区数据源、现未定**——是 plumbing 不确定（数据从哪来）非 algorithm 不确定（式子不会写），故**只能在集成时带真脚手架 + 真数据一次解对，孤立 adapter 骨架试水信息增益低**：
+- **`FloorStripXY`（δ 主解运行时化）**：δ 是离线簇分析（Mahalanobis 3.35）；运行时判「XY ∈ 床沿地条簇」需**床垫区 / 地条区的数据源**（cell？`radar.areas`？layout？）——集成入口第一问。
+- **`gxy`（g^xy 归属可分性运行时化）**：§4 抽象似然（能分→尖峰 / 床间均匀 / 看不见→0）的具体运行式 + 同一床区数据源——集成入口第二问。
+- 次要核对：BedReading 的 sleepad 事件→状态映射 + 新鲜度 TTL；BedGeom 的 cell 枚举（R(r,b)/P(s,b)）接 Tsensor cell 层。
+
+### 剩余里程碑 2 — neighbor 跨房 wiring（集成后）
+- §A.2 `T_S` 跨房门控 wire 进**多房 filter 编排**：兄弟房**去 ghost 占用** + census 喂 ρ_xroom。方程 C §16 已审过，待 wire。
+- **C 验收点（预告）**：真实 hand-off case 下 lost-fall 正确整流入 Left（ρ_xroom→1 路径）；**无新鲜 hand-off 时不抑制**（安全默认，铁律 [[partial_monitoring_fall_suppression_law]]）。
+
+### 标定（全部留 oracle，非里程碑标定目标）
+$C_{FN}$ 曲线 / neighbor $\tau_h,\tau_j,\beta$ / $\varepsilon_{art}$ / $\delta$ —— 现值全是**保守 form-anchor 非权威值**（铁律 [[fall_data_is_artificial_test]]：跌倒数据全人为，不可标定）。
+
+---
+
 ## 2026-06-14（其四）— 阶段3 放行确认 + 阶段4(belief 单元)交付 + 集成里程碑明确
 
 **阶段3 decide 已 B/C 放行**（C §18 D1–D6 全忠实，无修改要求）。
