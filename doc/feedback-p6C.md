@@ -879,3 +879,47 @@ cd2b（δ≫0，E5=0.9998）已在 emission 解掉；decide 只对 δ≈0 边缘
 **阶段 3 完成。期望损失主框架（§B）+ $C_{FN}$ 连续代价（§8/C §8）+ Λ 不作 gate（A 立场①）三者在 code 落地。** 与 B 待对照（B 若已审则比对，未审则 C 先行）。
 
 下一步阶段 4：probe + cd2b 三态对照（baseline `bd70194`，C D-1）+ **多床 case 验 §E mixture/covers max/§A neighbor**——补 C 实证路线单床盲区（§10 自认短板）。$C_{FN}$ 曲线参数留 oracle（D6），非阶段 4 标定目标。
+
+
+---
+
+# §19 增补（第 5 轮审核）— A 阶段 4 belief 单元独立审（probe §9 + 多床 MB1–MB4）
+
+> 第 5 轮：A 交阶段 4 belief 单元（`c1bdc2a`：probe.go + multibed_test.go）。C 独立 pull、独立跑全 24 测试、读多床构造与 probe 实现。**重点：多床 case 补 C §10 自认的实证路线单床盲区。**
+
+## 一、C 独立验证
+
+全 24 测试独立跑通（临时降版编译）。零回归（T1–T5 / E1–E5 / C1–C5 / D1–D6 全保持）。新增 4 项多床 + 1 项 probe 全过。
+
+## 二、多床验收 — 补 C §10 单床盲区（本轮核心）
+
+C §10/§11 反复自认：fixture 单床（cd2b 一张床），$|\mathcal B|=1$ 时 mixture/product 退化等价，**C 实证路线测不到多床**（当初漏 B4 即因此）。阶段 4 终于补上，C 独立核构造**真测到多床风险，非退化伪多床**：
+
+| 单元 | 构造 | C 独立核 |
+|---|---|---|
+| **MB1 §E mixture FN-safe** | $|\mathcal B|=3$，bed0 陈旧 occ + bed1/2 vac + 人摔（SFallen, bmask=1） | ✅ **真多床 product 塌缩**：mixture Ψ(F)=0.69 存活 vs product=ε_art·1·1=0.01（69×）。单床触不到——bed1/2 的 vac 各贡献 1，product 乘起来仍被 bed0 的 ε_art 拖死=FN；mixture 按 a_j 软分配存活。**§E FN-safe 因果在多床实证（不再单床退化推测）** |
+| **MB2 多床路由** | 雷达 g^xy=[1,0] 仅定位 bed0、仅 bed0 InBed，30 步 | ✅ P(B0)=1.0 >> P(B1)=0.113，S*=SBed——**多床证据不串床**，attachment a_j 按 g^xy 归属正确（单床无从验） |
+| **MB3 covers max C2** | 异覆盖 [0.3,1.0] → geom0Covers 取 max=1.0 | ✅ ground truth §F C2 落地（A 选 max_j，C §15 接受） |
+| **MB4 probe 快照** | Σα=1 + 边缘一致 | ✅ |
+
+**C 立场更新**：§10「C 实证路线多床盲区」自认短板，阶段 4 MB1/MB2 已补——多床 mixture FN-safe（69×）+ 多床路由不串床均独立验证。**C 的单床局限在此闭合**（曲线参数仍留 oracle，但 §E/路由的"形态正确性"多床已证）。
+
+## 三、probe §9 — 纯诊断确认（与 D2 Λ-不-gate 同精神）
+
+`probe.go` C 独立核：`Snapshot` 只**读** filter/coupling（`f.Alpha()`、`copy(cp.kappa)`），**不写回、不被 decide/filter 决策路径引用**（grep 仅注释出现）。吐 α 全分量 + 边缘 S/B + P^F + Λ + κ + 裁决，供 Xsensorv1 vs Tsensor 逐帧 diff（baseline `bd70194`）。**纯 forensic，绝不参与推断**——与 §18 D2（Λ 不 gate）同精神：诊断暴露一切，不参与决策。
+
+## 四、第 5 轮净判
+
+**阶段 4 belief 单元通过，无修改要求。** 24 测试全绿（独立跑）、多床构造真实、probe 纯诊断。
+
+**C 的实证路线单床盲区（§10 自认）在本轮闭合**——这是阶段 4 对 C 最大的意义：不是 A 又交一批测试，是 C 一直承认的"测不到多床"短板被 MB1/MB2 直接补掉，§E mixture FN-safe 从单床退化推测升为多床实证。
+
+## 五、belief 包收口 + 下两个里程碑（C 立场）
+
+belief 包（joint/bed_axis/filter/mm/coupling/emission/decide/probe + neighbor 方程）阶段 1–4 **B/C 全放行**。治本兑现：cd2b 离线 P(Fallen)=0.9998 δ 几何独立判定。
+
+剩两个独立里程碑（belief 包外，C 同意 A 的裁定）：
+- **集成**：建 adapter + 继承非 belief 脚手架（cell/track_manager/grid/stream）+ cd2b vs Tsensor 逐帧 diff（baseline `bd70194`，C D-1）。belief API 已齐待 wire。**C 验收点（预告）**：集成后 cd2b 端到端仍 fire（probe 逐帧对照 Tsensor，证 belief 替换未引入回归）。
+- **neighbor 跨房 wiring**：依赖多房 filter 编排（§A 方程已审过，待 wire）。**C 验收点（预告）**：兄弟房 hand-off 真实 case 下 lost-fall 被正确整流入 Left（§A.2 ρ_xroom→1 路径），且无新鲜 hand-off 时不抑制（安全默认）。
+
+$C_{FN}$ 曲线 / neighbor τ_h,τ_j,β 等参数留 oracle，非集成里程碑的标定目标（D6 纪律延续）。
