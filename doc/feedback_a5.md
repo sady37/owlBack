@@ -6,6 +6,49 @@
 
 ---
 
+## 2026-06-13 — 委员会审核:Tsensor 隔离回放靶子(b71133b)
+
+### 审核结论:批准。
+
+构建验证:`go build ./...` ✅ / `go vet ./...` ✅
+
+### 架构
+
+`tools/Tsensor/` — 独立 Go module（`replace owl-common => ../../owl-common`），sensor 源码克隆 + 精简，专供 DBN 分析优化。用户授权直建（greenfield 工具/基础设施）。
+
+**三重隔离**（结构上不可能落回生产）：
+
+| 层 | 隔离 | 验证 |
+|---|------|------|
+| 1. Stream | 订阅 `test:iot:*:stream`（生产订 `iot:`） | 生产 consumer group 未被碰 |
+| 2. 对外发送 | 全部改 `owl/log/Tsensor.log`，不推 Redis | `publishAIMessage`/`track_status`/`zone_derived`/`alarm_back_channel` 四处全改 |
+| 3. 不写库 | `snapshotLoop`/`dailySnapshotLoop` 关停 | 不往 owl_v2 写 grid_snapshot |
+
+**精简（focus DBN）**:
+- 删 `config_card_consumer`（不接收 cardConfig）
+- **cell engine 选 B:只读不学习** — 从 owl_v2 加载真实 grid_snapshot AreaType，**冻结**学习循环（decay/beliefScan/feedback 关停）→ DBN 拿到的 zone 先验和生产逐字一致
+- 每 tick 无条件 `tsensor_belief` 日志:9 态向量 + obs 列表 + fall_reason + dominant_obs/LR + tau
+
+**replay 配套**:`tools/replay` 加 `--stream-prefix` flag，推 `test:iot:*:stream` → Tsensor 消费。生产 stream 不受影响。
+
+### 四个审点答复
+
+1. ✅ **隔离三重够**。生产 Redis stream key 不被碰、生产 DB 不写 grid_snapshot、Redis 不推 alarm。仅共享生产 DB **读**（layout + grid_snapshot），读只读不污染。
+2. ✅ **cell 只读保真度正确**。拿真实 AreaType 是 case-5 教训——fresh 冷先验让 DBN 分析跑偏。冻结后 DBN 分析同生产。
+3. ⚠️ **per-frame 学习（MarkDwell/MarkToleratedStill）微动 tolerance** — 当前仍运行。按用户 q5 的坦诚标注，DBN 分析关停学习后 tolerance 近乎恒等 1.0 → dwell 容忍翻转不生效（与 cold-start 同因）。如果 replay case 涉及 tolerance 分离（如 case-5），需 pre-seed 容忍或严格冻结 tolerance。**委员会知悉，non-blocking**。
+4. ⚠️ **158 文件克隆的 drift 风险** — 用户已知会接受 drift 换隔离安全。委员会建议:① `tools/Tsensor/` 内代码在 commit message/README 标注"独立克隆,同步走手动 cherry-pick"；② production `wisefido-sensor/` 改动时，`git log --oneline -- <path>` 列出 candidate 供手动移植；③ 不建自动化 sync 管线（会腐蚀隔离）。
+
+### replay 工具变更
+
+`--stream-prefix` flag 一行改:`streamName := *streamPfx + def.Name`。向前兼容（默认 `""` = 生产 `iot:`）。
+
+### 工单状态
+
+- [x] 本审核:Tsensor 隔离靶子批准
+- [ ] 工单 1/2/4 继续推进
+
+---
+
 ## 2026-06-13 — 委员会审核:工单3 收尾 + 用户改裁 T_cold(7d)
 
 ### 一、T_cold 72h → 7d(fb4e737)
