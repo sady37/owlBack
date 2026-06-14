@@ -181,6 +181,13 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) setDefaults() {
+	// REDIS_DB env 覆盖 config.yaml(env 胜):Tsensor 隔离库号靠此生效。
+	// 缺此则 Load() 读 yaml 的 db:0 → Tsensor 误连生产库(脚本闸看 env=1 放行,引擎却用 yaml=0,两值不一致=隔离失效)。
+	if v := os.Getenv("REDIS_DB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.Redis.DB = n
+		}
+	}
 	if c.Database.SSLMode == "" {
 		c.Database.SSLMode = "disable"
 	}
