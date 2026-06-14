@@ -1,3 +1,3 @@
-module xsensorv1
+module owlBack/tools/Xsensorv1
 
-go 1.22
+go 1.25.0
