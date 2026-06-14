@@ -404,6 +404,10 @@ func LoadFromEnv() (*Config, error) {
 	cfg.Redis.Addr = getEnv("REDIS_ADDR", "localhost:6379")
 	cfg.Redis.Password = getEnv("REDIS_PASSWORD", "")
 	cfg.Redis.DB = 0
+	// REDIS_DB:生产默认 0;Tsensor 用独立库号(如 1)整 keyspace 隔离回放,不污染生产流。
+	if v, err := strconv.Atoi(getEnv("REDIS_DB", "0")); err == nil && v >= 0 {
+		cfg.Redis.DB = v
+	}
 	cfg.Alarm.Cache.RealtimeKeyPrefix = getEnv("CACHE_REALTIME_PREFIX", "vital-focus:card:")
 	cfg.Alarm.Cache.RealtimeSuffix = ":realtime"
 	cfg.Alarm.Cache.AlarmKeyPrefix = getEnv("CACHE_ALARM_PREFIX", "vital-focus:card:")
