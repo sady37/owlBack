@@ -321,6 +321,7 @@ $$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\te
 
 - **μ=ε（对称）默认**：$K^{obs}$ 的 vac→occ 速率 μ 与 occ→occ 自持补 ε 取对称——无数据支持"进床比离床易"的非对称漂移（cd2b 413s 仅 1 翻转），无证据不引偏置；未来 case 若显示上床事件系统性多于离床再放开。
 - **记号 C1**：§4 的 $o_j$ ≡ §2 的 $o_b(r,s_j)$（床 $j$ 的 overlap）。
+- **$w_{\text{pose}}$ 取定 C2（B 第2轮裁定）**：§5 的 $w_{\text{pose}}/w_{\text{dwell}}/w_{\text{hrrr}}$ 的 $\text{covers}(r,\cdot)$ 多床下取 **$\max_j\text{covers}(r,j)$**（实现 `geom0Covers()`），理由 = **保持 $\Phi$ 的 S/B 分轴清洁**（雷达轴只挂 $S$、不按床 $j$ 分解，否则 AtBed 用对应床 covers、$F$ 用 max covers 会把床轴拖进 $S$ 发射）。已知代价：多床房**雷达 coverage 高估**（被全覆盖的床"借" coverage 给弱覆盖床 → 弱覆盖床的 pose/dwell 弱信号被满权放大，可能推高其 $F$/AtBed 信念）。**触发条件式退路**：后续多床 case 若出现此高估致 FP，再引入 per-state covers（AtBed↔对应床、$F$↔max）。当前单 case 无多床证据，保 max。
 - **$\varepsilon_{art}$ 量级 C3**（标定）：用"在床段 pose=Lying 帧占比"反推（压得住床上翻身误读、不被 $\Phi$ 正向似然在 log 域淹没），与 $L_{in}$ 联合定，非凭空 $10^{-3}$。
 
 ### 整合后轴/裁决一览

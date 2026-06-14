@@ -122,7 +122,8 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 	return logS
 }
 
-// geom0Covers 雷达对本房床的覆盖权重 w=covers。单雷达：取各床 covers 的代表（最大），
+// geom0Covers 雷达对本房床的覆盖权重 w=covers。多床取 max_j covers（C2 取定，DBN-Zone-Room §F）：
+// 保 Φ 的 S/B 分轴清洁（雷达轴只挂 S 不按床分解）；代价=多床 coverage 高估，留 per-state covers 作触发式退路。
 // 远边缘/看不见 → 小 → 雷达轴自然弱化。numBeds=0（无床房）仍允许雷达轴（covers 取 1 全权）。
 func (e *Emission) geom0Covers() float64 {
 	if len(e.geom) == 0 {
