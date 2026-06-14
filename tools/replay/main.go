@@ -118,6 +118,7 @@ func main() {
 
 	baseMs := rows[0].tsMs // 基准 t0 = 全局最早一帧（radar/sleepad 合并排序后第一条）；每条 fire 在 now + (ts−t0)/speed
 	startWall := time.Now()
+	startWallMs := startWall.UnixMilli() // 方案一(虚拟时钟):时间戳盖 startWall+(ts−t0) 保真 dt,允许超前墙钟
 	seq := map[string]uint64{}
 	var nMon, nEvt, nAlarm int
 
@@ -140,7 +141,7 @@ func main() {
 			DeviceAddr:     addr,
 			DeviceType:     r.dtype,
 			SubjectEntity:  r.addr, // 生产 raw envelope subject 非空(=device_uid);PG 未存,回放补 device_addr 过 adapter_radar 非空闸(否则 radar 事件被 zoneengine 丢)
-			Timestamp:      time.Now().UnixMilli(),
+			Timestamp:      startWallMs + (r.tsMs - baseMs), // 方案一:保真 dt(原始数据间距),发送节奏仍按 speed 加速 → 虚拟时间轴
 			TopicType:      r.topicType,
 			Category:       r.category,
 			DataValue:      r.payload,

@@ -100,3 +100,4 @@ wisefido-data/cmd/wisefido-data/wisefido-data
 
 # wisefido-cardaggv1: v2 重写前的本地备份，不入远程（2026-05-17）
 wisefido-cardaggv1/
+tools/replay/replay
