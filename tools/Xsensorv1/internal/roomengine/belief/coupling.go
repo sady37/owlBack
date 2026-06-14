@@ -9,7 +9,7 @@ package belief
 // couplingParams §3/§4 形态参数。开发阶段锚方向/符号，标定见 feedback-p6C（γ 遗忘率 / c_∅ / ε_art §C3）。
 type couplingParams struct {
 	gamma  float64 // κ EMA 遗忘率（§3：K 动作+延迟窗固定，只调 γ）
-	cEmpty float64 // a_∅ 的 c_∅（无床兜底质量；远离床时 Ψ→中性的载体）
+	cEmpty float64 // a_∅ 的 c_∅（无床归属质量；远离床时 Ψ→中性的载体）
 	epsArt float64 // ψ_phys(F,occ) 被子残留极小（§E/§C3：用在床段 pose=Lying 占比反推，非凭空 1e-3）
 }
 
