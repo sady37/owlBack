@@ -1,3 +1,32 @@
+# feedback-p6C — 评审组 C 对 P6（联合占用 DBN）方案的评审
+
+> **30 秒导读（委员会用）**
+
+**总判**：结构正确、纪律到位，**支持建 Xsensorv1**。$S$ 轴保留、$B$ 轴联合化、删硬 $O_b$、并存对照——方向无误。评审价值在**纠正优先级叙事** + **补一根 A 遗漏的轴** + **指出一条贯穿全案的病**。
+
+**C 的框架：cd2b 二义性 = 四轴，终裁在期望损失**
+
+| 轴 | 证据 | 解的二义性 | A 状态 | C 节 |
+|---|---|---|---|---|
+| 空间 δ（emission $g^{xy}$） | 雷达 XY | 床边摔 vs 垫上躺 | ✅ 内化 | §5 |
+| 时间（dwell 符号） | 久静 × cell 容忍 | 卧地 vs 久坐 | ✅ 内化 | §6/§7 |
+| 裁决（$C_{FN}$ 期望损失） | 风险因子（独居/夜/人数） | 低 $P^F$ 报不报 | 🟡 形态待定 | §7/§8 |
+| **跨房 neighbor（ρ_xroom）** | **兄弟房 hand-off** | **挪去邻房 vs 本房真摔** | **🔴 A 遗漏** | §9 |
+
+**一条主线（贯穿三处的同一个病）**：风险/归因被做成**离散 gate**，而 DBN 终极（发现风险）要**连续代价加权**——
+① §7 dwell 符号（容忍 cell 二分）② §8 risk_evaluator（离散三档 RiskLevel）③ §9 neighbor sole-resident 门（rc≠1 硬 OFF）。三处都应统一到 §8 的期望损失 $P^F C_{FN} > (1-P^F) C_{FP}$。
+
+**C 的两处自我修正（诚实记录）**：① 撤回"cd2b 必走风险兜底"（trim 版数据缺失误读成物理不可判；完整版 δ≫0 可判）② 更正裁决层定位——风险偏好裁决是**主框架（恒在）**，非"退路"；emission/dwell/位置似然全是供 $P^F$ 的证据层。
+
+**C vs B 的分工**：B 审"方程写对没有"（设计层，4 个参数阻塞项）；**C 审"方案押对没有 + 目的对不对"**（实证层：fixture 实测 + 代码核查 + 风险目的）。C 独占的三手 B 结构上做不到：
+- §5 用 fixture 把 B 的开问题落值（B1 μ、B2 λ、B3 在床 HR/RR 100% 缺失→设计否决）。
+- §6/§7 dwell 符号是框架不是标定（cell 容忍可靠性升格为框架级前提）。
+- **§9 neighbor 是 A 遗漏的第四轴——它根本不在 `DBN-Zone-Room.md` 里，只在代码里，B 不读代码看不到。**
+
+**C 列出的三个前提（Xsensorv1 落地必答）**：δ 跨 case 稳定性（标定/脆弱）、cell 容忍判定可靠性（框架）、$C_{FN}$ 代价函数（框架形态 + 标定取值）。
+
+---
+
 # P6C 反馈日志（评审组 C 侧）— Xsensorv1 联合占用滤波方案评审
 
 > **QA 三方分离（2026-06-14）**：P6 评审采用竞争式三卷，各写各的文件防 git push 撞车——
@@ -134,3 +163,297 @@ A 的方案**结构是对的**，但"阶段 0 决定一切 + HR/RR 闸门优先"
 - 雷达几何稳态可分性 $\delta(XY)\approx 1$ nat（边际可分离，$\gg0$）。
 - HR/RR 两源（radar 42 条 / sleepad t+602s 后）摔倒段皆空——实证铁律。
 - 结论：cd2b 落**可判侧**，主解 emission 位置似然。δ 严谨化（多摔点 / pose=6 且床区严格筛 / 置信区间）并行补，服务 `g^{xy}` 初始权重标定。
+
+---
+
+# §5 增补（2026-06-14）：C 对评审组 B 阻塞项的实证回应
+
+> B 的评审是**纯设计层**（自我限定"不碰 fixture"），逐方程挑出 4 个参数未约束的阻塞项（B1–B4）+ 3 澄清（C1–C3）+ 1 标定依赖（S1）。这些洞**真实**。但 B 只能"建议 A 定义"——B 没有数据去定值。
+> C 的差异化价值：**用完整版 cd2b fixture（case-cd2b-0604-16141631）实测，把 B 停在开问题的地方，推进到初始值/设计结论。** 下逐条回应 B 的阻塞项。
+
+## 对 B1（$\mu$ 未约束）的实证回应 — 给出初值 + 默认对称的依据
+
+B 问：$K^{obs}$ 的 vac→occ 参数 $\mu$ 从未约束，$\mu$ vs $\varepsilon$ 关系决定 $B$ 链漂移。
+
+**实测（完整版 0604 sleepad）**：413s 跨度内床态翻转 **仅 1 次**（InBed→LeftBed @413s）。翻转率 ≈ 1/400 /帧。
+
+**C 给出的初值与依据**：
+- $\varepsilon$（occ→occ 自持的补）对应"每 ~400s 才翻一次" → $\varepsilon \sim \mathcal O(10^{-2})$/帧（1Hz 下），在线自持极强。
+- **$\mu=\varepsilon$（对称）是 fixture 支持的默认**：数据中上床/离床各仅观测到一侧，无证据支持"进床比离床容易"的非对称漂移。无证据则不引入偏置——对称是最大熵默认。
+- B 担心的"$\mu\gg\varepsilon$ → 向 occ 漂移"在 fixture 上无依据；若未来 case 显示上床事件系统性多于离床，再放开对称约束。
+
+→ **B1 从"未约束"推进到"$\mu=\varepsilon\sim10^{-2}$，对称默认有数据支撑"。**
+
+## 对 B2（$K^{unobs}_\lambda$ 弛豫目标 + 速率未指定）的实证回应 — 给出 λ 硬锚点
+
+B 问：弛豫目标是均匀（定义 A）还是泄漏（定义 B），速率 $\lambda$ 未定。
+
+**实测**：sleepad 正常帧间隔中位 **10.0s**（最大 11s）→ 离线判定阈值 ~3× = **30s**。sleepad 末帧 @558s（报 LeftBed），其后 radar 独跑 509s。
+
+**C 给出的 λ 锚点**：
+- $\lambda$ 半衰期**必须 < 30s**——使陈旧 occ 在 fall confirm 窗（90s）**之前**蒸发完。否则 cd2b 漏报重演（陈旧 InBed 撑到 confirm）。
+- 这个 30s **正是原 staleness/TTL 窗**——故 **B2 的 $\lambda$ 标定与 C 的 D-2（$\varepsilon\ll\lambda$ 复现 30s staleness）是同一个锚点**：$\lambda$ 取"半衰期 ≈ 10–15s"即可在 30s 内蒸发 occ，且 $\varepsilon(\sim10^{-2}) \ll \lambda$ 自然成立。
+- 弛豫目标 A/B 之争：cd2b 只依赖 occ→vac 方向（B 自己也指出两定义在此等价）。C 主张**定义 B（泄漏，vacant 吸收）**——理由是养老院场景"床垫离线期间无人上床"远比"离线期间有人上床且需模型自发学到 occ"常见；vacant 吸收避免空房离线被弛豫成 P(occ)=0.5 的伪占用。床垫离线时真有人上床 → 靠 radar pose/位置经 $\Psi$ 涌现，不需 $B$ 链自发升 occ。
+
+→ **B2 从"目标/速率未定"推进到"定义 B + λ 半衰期 10–15s，与 D-2 共锚 30s"。**
+
+## 对 B3（HR/RR absent 否决 AtBed 的 FP 风险）的实证回应 — 风险量级 = 100%，升级为设计否决
+
+B 标注：HR/RR absent 否决 AtBed 时，人在床但 HR/RR 因遮挡缺失 → 误推向 $F$ = fall 假阳性。B 定性为"固有取舍，建议 §5 加风险标注"。
+
+**实测（完整版 0604，人确在床的 558s 段）**：radar track 帧 **573 帧，返回 HR/RR>0 的 = 0 帧。在床段 radar HR/RR 缺失率 = 100%。**
+
+**C 的结论（比 B 的"标注风险"更进一步——这是设计否决，不是标注）**：
+- radar 在床位被 firmware enter-gate，**结构性不返 vital**（铁律 [radar_hr_rr_bed_enter_gated]）。故 B3 的 FP 不是"偶发遮挡风险"，是 **100% 必然**：只要 radar 是房内唯一 vital 源，`ℓ_hrrr(absent|AtBed)=1/L_hr` 会在**每一个在床帧**否决 AtBed。
+- 由此锁定设计约束：**HR/RR 的 absent 分支必须 gate 在"房内有独立在线 vital 源（sleepad）"之下。radar 自身 HR/RR 的 absent 不得作为否决 AtBed 的证据**——radar 在床不返 vital 是结构性零信息，不是"人不在床"信号。把它当否决证据 = 100% 在床误判。
+- 这与 P-2 互补：P-2 说"HR/RR 救不了 cd2b（两源皆空）"；B3+实测说"HR/RR 若不 gate 还会害别的场景（在床 100% 误推 F）"。**两面夹击 → HR/RR absent 分支不仅后置，还必须带 sleepad-online gate 才能启用。**
+
+→ **B3 从"建议标注风险"推进到"风险量级 100% + 必须 sleepad-online gate 的设计否决"。**
+
+## 对 C3（$\varepsilon_{art}$ 量级未定）的补充
+
+B 正确指出 $\varepsilon_{art}$ 需在 log 域与 $L_{in}$ 联合定数量级。C 补一个约束来源：$\varepsilon_{art}$ 要小到使 $\psi(F,occ)$ 压得住"床上翻身 pose 误读为 Lying"，但大到不在 log 域被 $\Phi$ 正向似然淹没。结合 B1 的翻转率，床上 pose 噪声事件频率可作 $\varepsilon_{art}$ 上界的经验锚——建议标定阶段用"在床段 pose=Lying 帧占比"反推，而非凭空取 $10^{-3}$。
+
+## 净结论（C vs B 的分工与 C 的增量）
+
+| B 提出（设计层开问题） | C 实证推进（给值/给设计结论） |
+|---|---|
+| B1 $\mu$ 未约束 | $\mu=\varepsilon\sim10^{-2}$，对称默认有数据支撑（413s 仅 1 翻转） |
+| B2 弛豫目标/λ 未定 | 定义 B（泄漏）+ λ 半衰期 10–15s，与 D-2 共锚 30s（帧间隔实测） |
+| B3 HR/RR FP 风险（建议标注） | 量级 = 100%（在床 573 帧 0 vital）→ 升级为"absent 须 sleepad-online gate"的设计否决 |
+| C3 $\varepsilon_{art}$ 量级 | 用在床段 pose=Lying 占比反推，非凭空取值 |
+
+**B 审"方程写对没有"，C 审"方案押对没有"且用数据给 B 的开问题落值。两卷互补；C 的增量 = 把 B 的 4 个开问题里的 3 个从'待 A 定义'直接推进到'有 fixture 依据的初值/否决'，这是 B 自限设计层做不到的一手。**
+
+
+---
+
+# §6 增补（2026-06-14）：步速上限前提 + "慢=高危" — C 发现的 dwell 轴反向冲突
+
+> **前提（A 提请补充，C 据代码权威值落实）**：老人室内步行速度有生理上限；且**越慢风险越高**——弱→易摔且难恢复→慢速/静止不是"低信号"而是"高危信号"。
+> 此前提在 C 的 §5 增补与 A 方案中均未显式纳入。纳入后**修正一条 B 未发现、跨 A 方程层的冲突**。
+
+## 前提的代码权威值（引用，非自造）
+
+第一层 **速度上限**已实现（`belief_adapter.go` / `kalman.go`）：老人步速标定 0.3–1.0 m/s；封顶生理上限 150cm/s（挡超人噪声）、下限 30cm/s、全局兜底 60cm/s；per-device EWMA 学习。**用途仅 ghost-filter**（剔 track-swap 假跳），不做"走速判走动"（radar 量化重，per-frame 走速不可靠）。
+
+第二层 **慢=高危**已实现于 reachable-exit（`belief_adapter.go` 安全偏置原文）：*"逼近速度慢速封顶=老人保守（越弱越易摔且难恢复→宁少抑制少漏报）；独居老人步态慢→封顶自然低→绝不给『他本可走出去』虚高信用→不漏报。"* 即：走得越慢，越不敢判"已走出"，保 fall 信念。**方向正确。**
+
+## C 发现的冲突：`survival.go` 的"久静=正常"与"慢=高危"在非容忍 cell 上反向
+
+`survival.go` 另有一条相反逻辑（为破 SFallen 近吸收棘轮设）：*"此处久站越久=越正常=反 fall 证据……随 dwell **单调下压** SFallen。"*
+
+两条在"慢=高危"前提下冲突，且冲突点正落 cd2b：
+
+| 机制 | 对慢速/久静的处理 | 在 cd2b 床沿静止 37s 上 |
+|---|---|---|
+| reachable-exit 安全偏置 | 慢→不敢判走出→**保 fall 信念** | 正确 |
+| survival dwell-tolerance | 久静→当正常久站→**压 SFallen** | **错**（把摔后卧地压成正常） |
+
+cd2b 实证：床沿簇 t+561~598s 静止 37s（1Hz 稳定，conf=80，已核实真实静止非 artifact）。survival 的 dwell-tolerance 会把这段往"正常久站、压 SFallen"拉——**与"慢=高危"前提要求的方向相反**。
+
+## C 给出的修正：dwell 轴按 cell 容忍属性分流，不是全局单调下压
+
+"久静→压 fall"只在**容忍 cell**（椅/沙发，人常坐久驻）成立；在**非容忍 cell**（床沿地面、开阔地）下，"慢=高危"前提要求久静止**单调上抬** SFallen，而非下压。区分键 = **cell 容忍属性**（`calibration.go` 已有 `tolWeight`/`ToleranceFactor` 这个量，可直接驱动分流）：
+
+```
+dwell 久静止 × cell 容忍属性：
+  容忍 cell(椅/沙发)   → 久静 = 正常久驻 → 单调下压 SFallen（survival 现行为，保留）
+  非容忍 cell(床沿/开阔) → 久静 = 高危卧地 → 单调上抬 SFallen（"慢=高危"，现缺）
+```
+
+这与 §5 对"静止 37s"的处理衔接：该判据不只是"这次确实摔了"的正面证据，更应在 **dwell 轴单调利用**（HSMM 驻留尾）——非容忍 cell 静止越久，$P(F)$ 越往上爬，不是到阈值才触发、更不是被 tolerance 下压。
+
+## 为什么这是 C 独占的一手（vs A / B）
+
+- A 方案 §5 dwell 核写 "$\ell_{dwell}(\text{still}\ge\tau\mid F)=\ell_{dwell}(\text{still}\ge\tau\mid\text{AtBed})=D>1$，dwell 不分 F/AtBed"——只处理"静止占用 vs 活动"，**未处理非容忍 cell 静止的 F-单调上抬**，也未接入"慢=高危"。
+- B 在设计层审了 dwell 核（C3 提 $\varepsilon_{art}$、未及 dwell 方向），但 **B 没碰 survival.go 的"久站压 fall"，更未发现它与"慢=高危"在非容忍 cell 反向**——因 B 自限不碰 fixture，缺 cd2b"床沿静止 37s 在非容忍 cell"的实测语境。
+- C 凭"前提（慢=高危）× 代码（survival 现行下压）× fixture（cd2b 床沿非容忍 cell 静止 37s）"三者交叉，定位这条冲突并给出 cell-容忍分流的修法。
+
+→ **新增 C 的设计结论：dwell 轴对 SFallen 的单调方向必须由 cell 容忍属性 gate；非容忍 cell 久静止单调上抬 SFallen（"慢=高危"），仅容忍 cell 保留 survival 现行的久静下压。这是 cd2b 床沿摔在 dwell 轴上不被压死的必要条件，与 §5 的 emission 位置似然（空间轴）互为正交保险。**
+
+
+---
+
+# §7 增补（2026-06-14）：站立/静坐时长体系 + 两个框架级澄清（C 自我修正 §6）
+
+> A 提请：老人静立站立一般 5min，故设静止站立 8min/12min 阈值；静坐 90min。这些已成体系，C §6 称"非容忍 cell 久静上抬 SFallen 现缺"**是错的——机制已存在，C 撤回该'独占发现'**。
+> 借此回答 A 的两个问题：(1) 这些影响框架还是标定？(2) DBN 终极目标是发现风险，二义性从风险偏好考虑。
+
+## 一、已存在的时长体系（C 此前漏读，更正记录）
+
+`survival.go` dwell 生存尾（Weibull，`-ln S_vol`）按 zone 分档，**且 tolerance 翻转方向已实现**：
+
+| zone | scale 尾尺度 | 方向 |
+|---|---|---|
+| 浴室 toilet/shower | 20min（便秘安全/医学） | 正向 ramp |
+| 浴室其它 | 12min | 正向 |
+| 学习久坐区 | 90min（静坐） | 正向 |
+| 床/休息区 | 不报 | — |
+| 未知/开阔 | 20min | 正向 |
+
+`fallLRFromDwell`：**非容忍 cell(mult=1)正向 ramp `1+(d/scale)^shape` 久静上抬 SFallen；容忍 cell(mult>1)`(1-tolWeight)<0` 随 dwell 单调下压**。站立自学习：非浴室 stand-static ≥12min（物理：人很难纯站立超 12min）→判站位/坐位；RestZone 8min 强化。夜间短尾（久静更可疑）、雷达远边缘 ×1.5。
+
+→ **C §6 提议的"按 cell 容忍属性分流上抬/下压"已在代码中（委员会选的 A 方案）。C 撤回 §6 独占性主张，保留其与 cd2b 床沿语境的衔接价值（确认该机制对 cd2b 非容忍床沿生效），但不再声称是新发现。**
+
+## 二、问题(1)：影响框架还是标定？——**数值是标定，方向/符号是框架**
+
+| 量 | 类别 | 理由 |
+|---|---|---|
+| 20min/12min/90min/8min 尾尺度 | **标定** | Weibull `scale` 参数，改它只左右平移 ramp 曲线；框架（dwell 进 $\Phi$ 的 `ObsDwellStill` 发射）不动。注释自承"P9.6 待 oracle 收紧" |
+| 5min/8min/12min 站立物理常数 | **标定** | 生理先验锚，定 scale 初值，可随 oracle 调 |
+| 夜间短尾、边缘 ×1.5 | **标定** | scale 乘子 |
+| **dwell 证据方向（上抬 vs 下压）由 cell 容忍属性决定** | **框架** | 决定同一"静止 600s"在似然层是 LR>1（增 fall）还是 LR<1（减 fall）——**符号翻转是结构不是数值** |
+
+**关键框架命题**：dwell 对 SFallen 的**符号**挂在 `toleranceMult`（cell 容忍属性）上。故 **"cell 容忍属性的权威来源"是框架必须钉死的**——若床沿被误学成容忍 cell，符号翻错，真摔被下压（呼应 C 此前标的"cell 容忍标定可靠性"脆弱点，现定位为**框架级**而非标定级风险）。
+
+→ **结论：时长阈值本身（数值）只影响标定，可放心随 oracle 调；但 dwell 方向由 cell 容忍属性 gate 这件事是框架，且 cell 容忍属性的判定可靠性是框架级前提，须有权威源（FE 画 > feedback > 自学），不能让自学误翻符号。**
+
+## 三、问题(2)：DBN 终极是发现风险，二义性从风险偏好裁决——**C 自我修正裁决层定位**
+
+A 的命题切中 C 此前一个方向性错误。**C 此前（§3/执行序）把 decide 的风险兜底称"退路"、与 emission"并重"——这是降格，错。** 更正：
+
+**裁决不是 `argmax P(S)`（比哪个值高），是期望损失最小化（[[DBN-Zone-Room]] §8 已 ground truth，line 173）：**
+
+$$\text{fire} \iff P^F \cdot C_{FN}(\text{risk}) > (1-P^F)\cdot C_{FP}$$
+
+**含义重述（这是 C 对 A 命题的接受 + 自我更正）：**
+
+1. **二义性不靠"把某个值算得更高"消解，靠"代价不对称"裁决。** cd2b 摔倒段证据稀薄 → $P^F$ 可能就卡 0.4、与 SBed 0.45 纠缠。按"哪个值高"→ SBed 赢 → 漏。按期望损失 → 独居老人 $C_{FN}$ 巨大 → 0.4 的 $P^F$ 已压过 0.45 SBed → fire。**不需要 $P^F$ 赢，只需期望代价翻转。**
+
+2. **survival 的"慢=高危→久静上抬 fall"是同一精神的局部体现**：它不在说"久静更可能是摔"（概率），是"久静的漏报代价更高所以更该报"（风险）。dwell 方向由风险偏好驱动，与 §8 裁决同源。
+
+3. **裁决层定位更正——风险偏好裁决是主框架，不是退路：**
+   - ❌ C 旧定位："decide 不可判兜底 = emission 失败时的退路，与 emission 并重"。
+   - ✅ 更正："**期望损失裁决是整个裁决层的主框架，恒在；emission/dwell 是给它供 $P^F$ 的证据层。** 即使 $P^F$ 因证据稀薄算不高，风险裁决仍在高危独居老人身上 fire。cd2b 不是'$P^F$ 够高所以报'，是'$P^F$ × 巨大 $C_{FN}$ > 误报代价所以报'。"
+   - emission 位置似然（§5）、dwell 方向（§6/本节）都**降为风险裁决的输入**，不是与裁决并列的解。**cd2b 的终解在 decide 的期望损失，emission/dwell 只是供料。**
+
+## 四、对 A 两问的一句话答复
+
+(1) **时长阈值（数值）= 标定，随 oracle 调无虞；dwell 证据的方向（符号）由 cell 容忍属性决定 = 框架，且 cell 容忍判定可靠性是框架级前提。**
+(2) **DBN 裁决是期望损失最小化（$P^F C_{FN} > (1-P^F)C_{FP}$）非 argmax——二义性靠代价不对称裁决，不靠把值算高。C 据此自我更正：风险偏好裁决是裁决层主框架（恒在），emission/dwell/位置似然全是供 $P^F$ 的证据层，cd2b 终解在 decide 期望损失。** [[DBN-Zone-Room]] §8 已 ground truth，C 此前的"退路/并重"定位降格，撤回。
+
+
+---
+
+# §8 增补（2026-06-14）：风险标定依赖项 — $C_{FN}(\text{risk})$ 代价函数（裁决主框架下唯一悬空量）
+
+> §7 把 cd2b 终解定到 decide 的期望损失 $P^F C_{FN}(\text{risk}) > (1-P^F)C_{FP}$。$C_{FN}(\text{risk})$ 是这个主框架下**唯一悬空的量**——[[DBN-Zone-Room]] §8 只给定性"独居→$C_{FN}$ 大"，无标定。本节按 C 的实证纪律，给出**复用源 + 落差 + 标定路径**（类比 B 的 S1 标定依赖项）。
+
+## 一、关键发现：现有 risk_evaluator 是"分档"，§8 要的是"代价加权"——风险因子同源，消费方式不同
+
+`risk_evaluator.go` 已有完整风险分层（`owl-common/card/risk_thresholds.go`）：
+
+| room | Day standing | RiskTime standing | alone | multi |
+|---|---|---|---|---|
+| Bathroom | 8/15 | 5/8（夜更敏感） | day 30/45 / night 20/30 | 清零 |
+| Default | 8/15 | 8/15 | — | 降一档 |
+| Kitchen | 12/18 | 8/15 | — | 降一档 |
+
+RiskTime 默认 21:00–08:00。产出 **离散三档** `RiskNormal/Attention/Risk`，机制是**阈值穿越**（`standingMin ≥ riskMin → RiskRisk`）。
+
+**落差**：§8 的 $C_{FN}$ 是**乘进期望损失不等式的连续代价权重**；现有 risk_evaluator 产出**离散 RiskLevel**。两者**风险因子同源**（独居 min、RiskTime 昼夜、multi 人数），但：
+- 现有：风险因子 → 选离散档（分类）。
+- §8 要：风险因子 → 算连续 $C_{FN}$ 倍数（代价加权裁决）。
+
+→ **$C_{FN}$ 标定不需新造风险因子，复用 risk_evaluator 现有三因子即可；缺的是"因子 → 连续代价倍数"的映射，这个映射悬空，且它直接决定 cd2b 这类边缘 case（$P^F$ 卡 0.4）报不报。**
+
+## 二、$C_{FN}(\text{risk})$ 标定依赖项（C 列为待定，不凭空取值）
+
+| 风险因子 | 复用源 | $C_{FN}$ 方向 | 标定悬空点 |
+|---|---|---|---|
+| 独居持续 | `AloneContinuousMin` | 独居↑→$C_{FN}$↑（无人代为发现，漏报代价指数升） | 独居 min → 代价倍数曲线（线性？阈后跳变？） |
+| 昼夜 | `IsRiskTime`(21–08) | 夜↑→$C_{FN}$↑（夜间无人巡视，与 survival 夜间短尾同向） | 夜间倍数 vs 白天基准 |
+| 人数 | `TotalPeople` | multi↓→$C_{FN}$↓（有人在场可代发现，现有 multi 降档同理） | multi 时 $C_{FN}$ 折扣系数 |
+| 失能史 | 〔现无通道〕 | 失能↑→$C_{FN}$↑（难自救，[radar 走速封顶"越弱越易摔难恢复"]同源） | 是否引入、PHI 边界 |
+
+**标定纪律（同 §5 对 B 的实证回应精神）**：
+- $C_{FP}$ 锚护士响应成本（一次误报 = 一次白跑），相对稳定，可设为 1（归一基准）。
+- $C_{FN}$ 锚"漏一次真摔的后果"（独居老人卧地数小时→失温/横纹肌溶解/死亡），量级远大于 $C_{FP}$——**这正是"低 $P^F$ 也发"的代价依据**。
+- 具体倍数曲线**须 oracle 标定**，但**初始量级**可锚现有 risk_evaluator 的档间比 + 临床跌倒后果数据（"长躺时间 vs 死亡率"曲线），不凭空取。
+
+## 三、为什么这是框架级前提而非纯标定（与 §7(1) 呼应）
+
+$C_{FN}$ 的**取值**是标定；但"**裁决用期望损失（$C_{FN}$ 加权）而非 RiskLevel 分档**"是框架。现有 risk_evaluator 的离散三档**不能直接喂 §8 不等式**——RiskRisk 不是一个代价数。所以：
+
+- **框架要求**：decide 层必须有一个 $C_{FN}(\text{risk})$ 连续代价函数，消费 risk_evaluator 的因子，输出代价倍数，进期望损失裁决。**这个"代价函数存在且连续"是框架，不是标定。**
+- **标定**：该函数的具体曲线/倍数。
+
+→ **C 列此为风险标定依赖项：$C_{FN}(\text{risk})$ 的"存在与形态（连续代价加权）"是框架级前提（须在 decide 落地，不能用 RiskLevel 离散档替代）；其"取值曲线"是标定（oracle + 临床数据锚，不凭空）。这是裁决主框架（§7）唯一悬空量，与 §5 的 δ（emission 输入）、§7 的 cell 容忍可靠性（dwell 符号）并列为 Xsensorv1 的三个标定/框架前提。**
+
+## 四、C 的三个前提一览（收口）
+
+| 前提 | 轴 | 类别 | 悬空点 |
+|---|---|---|---|
+| $\delta_{\text{pad/floor}}$ | 空间（emission $g^{xy}$） | 标定（脆弱） | 跨 case 稳定性，δ≈0 退化 |
+| cell 容忍属性可靠性 | 时间（dwell 符号） | **框架** | 误学翻符号→真摔被压；须权威源 gate |
+| $C_{FN}(\text{risk})$ 代价函数 | 裁决（期望损失） | **框架**（形态）+ 标定（取值） | 连续代价函数须存在；倍数曲线待 oracle+临床锚 |
+
+**三者正交**：空间证据（δ）、时间证据（dwell 符号）供 $P^F$；裁决（$C_{FN}$）决定 $P^F$ 多高才 fire。cd2b 三者各有贡献，但**终裁在 $C_{FN}$ 加权的期望损失**——这是 §7 的结论在标定层的落地。
+
+
+---
+
+# §9 增补（2026-06-14）：跨房 neighbor 耦合（第四轴）— A 方案的结构性遗漏
+
+> A 提请：当前代码已有一个二义性消解机制——**雷达信号缺失、无明显概率偏好时，用整个 unit 的相邻（兄弟房）信号决断**（neighbor hand-off，K=耦合强度）。
+> C 核查：**这根轴 `DBN-Zone-Room.md` 全文零提及**（搜 neighbor/跨房/hand-off 无命中）。A 的联合滤波只内化了 $O_b$（床）、$N_r$（**同房**多 track 人数）、ghost（realness），**跨房 neighbor 是被遗漏的第四轴**。
+
+## 一、当前代码的 neighbor 机制（A 方案要消灭的"外挂"，却漏在清单外）
+
+`belief_neighbor.go` + `belief_adapter.go`：本房丢轨（lostSeenMs，二义 lost-fall）后，查同 unit 兄弟房有无**新鲜有向** hand-off（邻房 EnterRoom 仍占用 ∨ InBed 翻转）→ 人挪去邻房 → 压本房 phantom fall。
+
+| 参数 | 值 | 含义 |
+|---|---|---|
+| HandoffWindowMs | 60s | 邻房事件相对本房丢轨最大滞后（先走后到） |
+| JitterMs | 5s | 反向余量 |
+| **dampNbrFallen (K)** | **0.7** | 邻房占用 n→ SFallen ×(1−0.7n) 压 |
+| gainNbrEmpty/Left | 3.0 / 2.0 | 邻房占用→本房 Empty/Left 抬 |
+| 邻房 bed 可信度 | sleepad 0.9 / radar-only 0.2 | 接触式 vs 雷达式 |
+
+**两个安全门**：
+- **N-3 sole-resident 门**：仅单住户允许用邻房压本房 fall；多人/无人→邻房占用可能是另一人→归因不安全→**不压（漏报-safe）**。
+- **有向极近窗**：邻房事件须**晚于**本房丢轨；stale"上次在哪"不算 hit（证不了此刻在哪，人可能穿盲区真摔）。
+
+**机制形态 = 外挂 gate**：`neighborHandoff` 在 belief **外**算出 neighborResult → `neighborToObs` 包成 `ObsNeighbor` → 喂进似然 `1−dampNbrFallen·n` 压 SFallen。
+
+## 二、问题：这是 A "删硬外挂"清单漏掉的同类病
+
+A 方案核心论证（[[DBN-Zone-Room]] §2-§3）：$O_b$ 做成外部观测 → **第一步不确定性在第二步丢失，DBN 无法质疑硬结论** → 故内化为隐变量。
+
+**neighbor 犯的是同一个病**：`neighborHandoff` 在 belief 外算好 neighborResult（含 sole-resident 门的硬判定 + max 合并的 conf），belief 只收到一个 `ObsNeighbor.Value/Conf`，**无法质疑邻房归因是否可信**（人到底挪去邻房了，还是邻房那个占用是另一人/陈旧事件）。A 把 $O_b$ 内化了，却把**结构同型的 neighbor 留作外挂**——A 的删除清单（§6 删硬 $O_b$/止血/zone 硬交接）**漏了它**。
+
+## 三、neighbor 的 sole-resident 门与 §8 期望损失裁决未对齐（同 risk_evaluator 的病）
+
+N-3 sole-resident 门是**离散 gate**：`rc != 1`（非单住户）→ 邻房耦合整个 OFF。但 §8 的裁决是**连续期望损失**。两者都在处理"多人时归因不安全"，消费方式却不同：
+
+- neighbor N-3：多人 → **硬 OFF**（二值）。
+- §8：多人 → $C_{FN}$ 折扣（连续，多人时漏报代价降但不归零，因仍可能没人注意到摔倒）。
+
+**这与 §8 发现的 risk_evaluator"离散档 vs 连续代价"是同一个病的第三处复现**（§7 dwell 符号、§8 risk_evaluator、本节 neighbor 门）。三处都把"风险/归因"做成离散 gate，而 DBN 终极（[[fall_detection_risk_stratified_design]]）要连续代价加权。
+
+## 四、C 给 Xsensorv1 的处理建议：neighbor 内化为"跨房拓扑轴"，与 §10 ghost 轴正交同构
+
+A 的 §10 已给出"换轴"范式：$N_r$/ghost 用"跨 track $\rho$ 耦合，同一滤波形式"。**neighbor 应同构地内化为第四轴**：
+
+```
+床轴   B^j          接触证据 → 床占用（A 已内化）
+人数轴 S^(i)         同房多 track → N_r（A 已内化）
+ghost  realness T^(i) 跨 track ρ → P(ghost)（A 已内化）
+跨房   neighbor      兄弟房 hand-off ρ_xroom → 本房 S 的 {Left, Empty} vs {Fallen} 路由（★A 遗漏，C 补）
+```
+
+- **内化方式**：邻房占用不再外挂成 `ObsNeighbor` 标量，而是作为本房 $S$ 转移 $T_S$ 的**跨房门控发射**——`Real-present(本房丢轨) → {Left, 邻房 Real-present}` 的转移概率由 ρ_xroom（hand-off 新鲜度×有向性）驱动，与 §10 的 realness ρ 同源（都是"跨实体共现"耦合）。belief 据此**联合推断**"人挪去邻房 vs 本房真摔"，而非吃一个算好的 ObsNeighbor。
+- **sole-resident 门改连续**：不再 `rc!=1` 硬 OFF，而是邻房归因的 ρ_xroom **按 resident 数衰减**（单住户 ρ 强、多住户 ρ 弱但不归零）+ 进 §8 的 $C_{FN}$（多住户时邻房占用压 fall 的"信用"降，但漏报代价仍在）。
+- **K（dampNbrFallen=0.7）去向**：内化后不再是似然层的固定 damp 系数，而是 ρ_xroom 驱动的转移概率——K 从"标定常数"变成"由 hand-off 证据涌现的耦合强度"，与 §3 的 $\kappa$（同床）、§10 的 ρ（ghost）同为"几何/事件共现耦合"家族。
+
+## 五、收口：C 的轴从三补到四
+
+| 轴 | 证据 | 解决的二义性 | A 状态 |
+|---|---|---|---|
+| 空间 δ（emission $g^{xy}$） | 雷达 XY | 床边摔 vs 垫上躺 | ✅ 内化 |
+| 时间（dwell 符号） | 久静 × cell 容忍 | 卧地 vs 久坐 | ✅ 内化（survival） |
+| 裁决（$C_{FN}$） | 风险因子 | 低 $P^F$ 报不报 | 🟡 形态待定（§8） |
+| **跨房 neighbor（ρ_xroom）** | **兄弟房 hand-off** | **人挪去邻房 vs 本房真摔** | **🔴 A 遗漏（本节）** |
+
+**neighbor 是 cd2b 类"本房雷达缺失 + 无概率偏好"二义性的现役解（代码已用），但 A 的联合滤波方案未把它内化、且其 sole-resident 门与 §8 风险裁决未对齐。C 建议：内化为第四轴（跨房拓扑），ρ_xroom 与 §10 ghost ρ 同构；sole-resident 门从离散 OFF 改连续衰减 + 进 $C_{FN}$。这是 B（只审 DBN-Zone-Room 方程）结构上看不到的——因为 neighbor 根本不在那份文档里，只在代码里。**
