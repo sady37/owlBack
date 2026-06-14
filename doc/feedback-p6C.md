@@ -971,3 +971,51 @@ $C_{FN}$ 曲线 / neighbor $\tau_h,\tau_j,\beta$ / $\varepsilon_{art}$ / $\delta
 belief 包 = 干净收口点。C 一路的纪律（fixture 实证、形态/标定分界、目的对齐、自我更正盲区）在 belief 层走完。**重启集成时，C 的角色从「审 belief 方程忠实」转为「审集成无回归 + adapter 译层忠实 + neighbor 安全默认」——验收点 AC-1~AC-8 已钉死，C 待 A 集成代码出，独立审。**
 
 招呼 C 再动（集成 adapter 出 / neighbor wire 出 / 其它）。
+
+
+---
+
+# §21 增补 — replay harness 设计约束 + 验收点（C 出规格，A 执笔）
+
+> 用户裁定集成步骤 2 走**选项一 replay harness**（最瘦、复用已验证三块、守 AC-1 归因边界、不碰 DB、不克隆引擎；保留后续克隆选项）。
+> **角色边界**：harness 是 test-harness code，执笔归 A（同阶段 1 骨架、decide——C 不代写 production code）。本节是 C 给 A 的设计约束 + 验收点，A 据此实现，B/C 据此审。
+
+## 一、为什么选一（C 的依据，非偏好）
+
+C 核实两事实：① Tsensor `roomengine-playback` 是 **DB 耦合**（拉 iot_timeseries、需 DB_HOST/PASSWORD），非干净 replay 入口；② adapter `FrameInput` 已 **decoupled**（纯数据结构，不依赖 engine/track_manager）。故 harness 核心接口已就绪——只差 window.json→FrameInput 解析，复用 adapter+probe+fixture export 三块。选项三（Tsensor 内并行）会绑死 DB 耦合引擎 + 两套 belief 纠缠，违背 AC-1 归因边界；选项二（全克隆）是过早全量投入，cd2b 验证不需要生产引擎。
+
+## 二、harness 数据流（C 约束，A 实现）
+
+```
+cd2b window.json 帧序列
+  → [解析] → adapter.FrameInput 序列        ← 新代码主体
+  → adapter.BuildObservation/BedGeoms/Online/BuildRiskContext
+  → belief: f.Step(now, online, LogPsi, LogPhi) → PFallen + ComputeLambda → dec.Step
+  → probe.Snapshot(...) 逐帧                  ← 复用（C §19 审过）
+  → 对照 Tsensor 录制输出（baseline bd70194）
+```
+
+**复用已验证三块**：adapter（C 待审 AC-2，本轮一并出验收）、probe §9（C §19 审过纯诊断）、fixture export。**不克隆全引擎、不碰 DB。**
+
+## 三、C 验收点（harness 专属，AC-1 落地为可执行）
+
+| # | 验收 | 判据 |
+|---|---|---|
+| **HR-1** | 解析忠实 | window.json → FrameInput 无丢字段；NowMs 单调；Sleepads/Beds/Covers/Onbed/Overlap 长度=numBeds（adapter 已 panic 守，HR-1 验解析侧不喂错长度） |
+| **HR-2 (AC-1核心)** | cd2b 端到端 fire 无回归 | 经 harness（raw XY 派生 floor-strip，非手设）cd2b 离线段 P(Fallen) 达 0.9998 量级、独处 fire=true。**与 belief 单元 E5/AD4 一致** |
+| **HR-3** | 三态对照 Tsensor | cd2b 三态（正常在床 / 床边摔 / 离线陈旧）逐帧 probe vs Tsensor baseline `bd70194`：摔倒态 Xsensorv1 fire 而 Tsensor 漏（**治本差异显形**）；在床态两者均不误报 |
+| **HR-4** | baseline 纯净 | 对照基线 = `bd70194`（止血补丁 `7ffec9c` 之父），不可用打补丁版（否则对照被旧 staleness 污染，C D-1） |
+| **HR-5** | 归因边界 | harness 若 cd2b 不 fire → 缺陷在解析/adapter 派生（floor-strip/Gxy），**不在 belief**（已验证黑盒）。probe 逐帧定位到哪一层断 |
+
+## 四、连带：adapter 正式审（AC-2/AC-3 补审，C 欠的）
+
+A 已交 adapter（`1b80fc4`），C 跑过 AD1-4 全过 + 端到端 0.9998，但**未逐条核译层忠实**。harness 依赖 adapter，故本轮 C 一并出 adapter 审验收（A 实现 harness 时 C 同步审 adapter）：
+
+- **AC-2 译层忠实**：FloorStripXY（XY 在床外近缘=床沿地条，δ 运行时派生）/ Gxy（XY 对各床归属集中度，近两床→均匀）两派生算法核对——floor-strip 区域分类边界（FloorMarginCm=60 form-anchor）、Gxy 尖峰/近邻/远（Peak1.0/Near0.5）语义。VitalSourceOnline 门（§D：radar 自身 absent≠否决）。
+- **AC-3 边界守卫位置**：cFN 的 alone<0 守卫落 **adapter 侧**（时钟回拨在边界处理），cFN 内部保持纯形态（B round3 + B/C 共识，规则「错误处理只在边界」）。
+
+## 五、C 立场
+
+harness 走选项一，规格如上。**A 执笔 harness + 解 adapter 待审点；C 出 HR-1~HR-5 + AC-2/AC-3，待 A 代码出独立审。** 标定项（FloorMarginCm/Gxy 值/$C_{FN}$ 曲线）全留 oracle，harness 只验形态 + 无回归 + 三态治本差异，非标定。
+
+招呼 C 再动（harness 出 / adapter 同步审）。
