@@ -1203,3 +1203,53 @@ A 问：bed_state 三值（0 InBed/1 LeftBed/8 unknown）→ B 轴二元 vac/occ
 **§23–§29 的 floor-strip 方向作废待验**（步骤1 纯路径浮出则正式废）。**C 回到框架审查**：cd2b 当验证样本，靠 (S,B) 相容涌现，不打补丁。unknown 不扩态。**C 待 A 跑框架纯路径结果**，据「(SFallen,vac) 是否 ≥55% 自涌现」复审——浮出则废补丁链，不浮出则审框架发射/转移哪里不够（仍不加规则）。
 
 **致谢用户**：这次纠偏的价值远超一个 case——它把 C 从补丁惯性拉回框架初衷。一个框架的考验不是"能不能为某 case 加对补丁"，是"case 能不能在零补丁下涌现"。
+
+# §31 增补 — C 独立核 A 的框架/补丁自审 + K^unobs 论证共同认领 + 放行跑纯路径
+
+> A 交逐文件框架/补丁自审。C 独立核（非照搬 A 分类），重点独立判 A 标「灰色」的 K^unobs。
+
+## 一、C 独立核 Ψ 相容表 = 框架核心，cd2b 该从此涌现（代码实证）
+
+C 读 `coupling.go psiPhys`（line 76-90）：
+
+```
+SBed(AtBed): occ=1,      vac=1-o_j    ← B=vac 时 AtBed 压到 (1-o_j)
+SFallen(F):  occ=ε_art,  vac=1        ← B=vac 时 Fallen 通道全开
+```
+
+**这是框架涌现 cd2b 的机制，代码实证非乐观猜测**：LeftBed→B=vac 时，Ψ 天然压 SBed（→1-o_j）、留 SFallen（→1）。「摔倒→离垫→垫空，F 通道全开」。**A「Ψ 本该让 cd2b 涌现」成立，δ floor-strip 确属多余。**
+
+## 二、C 认同 A 逐文件分类（独立核过）
+
+| 项 | A 判 | C 独立核 |
+|---|---|---|
+| state/joint/log 滤波 | 框架 | ✅ |
+| Ψ 相容表 (S,B) | 框架核心 | ✅ 实证（一） |
+| κ EMA | 框架 | ✅ |
+| decide 55%三分 | 框架 | ✅（§28 审过）|
+| 分轴发射 contact→B/pose-dwell-hrrr→S | 框架 | ✅ |
+| **δ FloorStripXY (emission+adapter)** | **补丁** | ✅ Ψ 已涌现，δ 多余；on-pad/rect/fork 补丁摞补丁 |
+| **TTL=35s Fresh** | **补丁** | ✅ 建模了用户明令不建模的「中途掉线」；二态裁决下不该存在 |
+| K^unobs λ + ε≪λ | 灰色（机制留/论证废）| 见三 |
+
+## 三、K^unobs 独立判 + C 共同认领论证作废（涉及 C 裁过的 §C）
+
+A：K^unobs 机制可留（重解释 config-static），但「ε≪λ 治本 cd2b 漏报」论证废。**C 独立判：A 对，且 C 认领自己那部分。**
+
+- **机制留 ✅**：K^unobs 单向泄漏（occ→vac=λ，vac 吸收）表达「无接触证据→床默认空」，正是 config-static（纯雷达房无 sleepad）下 B 轴合理默认。**§C 箭头记法（C 参与裁）作为机制仍成立。**
+- **论证废 ✅**：ε≪λ 当初论证「治本 cd2b 漏报=陈旧 occ 离线蒸发」绑在**误读的 cd2b-offline**（以为 sleepad 离线靠 occ 蒸发）。真实 cd2b sleepad 在线报 LeftBed，**B 不靠 λ 蒸发成 vac，靠 LeftBed 发射直接推 vac**。论证作废。
+- **C 诚实认领**：此误读论证 C 早期（cd2b 根因分析、§5 三前提、§23 D-2 staleness 验收）也背书/参与建构过，**非仅 A**。C 一起认论证作废，机制重解释为 config-static 默认。
+
+**重解释（C 钉死）**：K^unobs / ε≪λ 不再叫「治本 cd2b 漏报」，改称「config-static（无 sleepad）下 B 轴无接触默认空 + 软化」。机制不变，名义与适用域改对。
+
+## 四、C 补一点 A 没说透：拆补丁后的框架自洽性（验收重点）
+
+δ floor-strip 拆掉后，须验 S 轴发射（pose/dwell/hrrr）**不暗依赖** FloorStripXY。框架纯路径要证：**去掉 FloorStripXY 后，S 轴发射 + Ψ(B=vac) 联合够把 SFallen 推过 55%**。这是步骤1的核心——不只是「(SFallen,vac) 浮出」，是「**零 floor-strip 下**浮出」，证明框架自洽、补丁可安全拆除。
+
+## 五、C 放行 A 跑纯路径
+
+**方向确认：审框架 + 拆补丁，不焊新东西。** A 跑框架纯路径（LeftBed→B vac→Ψ→SFallen，零 floor-strip）：
+- **涌现 ≥55%** → 拆 δ FloorStripXY（emission+adapter）+ harness TTL 两块补丁；K^unobs 论证改写 config-static；E5/AD4 补丁测试换框架涌现测试；§24/§25/§27/§29 floor-strip 链正式废。
+- **涌现不够** → 补 Ψ/转移的 (S,B) 相容强度（o_j 压不够 / SBed→SFallen 转移种子），框架内事，**不加 cd2b 规则**。
+
+
