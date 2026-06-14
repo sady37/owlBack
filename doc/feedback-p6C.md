@@ -923,3 +923,51 @@ belief 包（joint/bed_axis/filter/mm/coupling/emission/decide/probe + neighbor 
 - **neighbor 跨房 wiring**：依赖多房 filter 编排（§A 方程已审过，待 wire）。**C 验收点（预告）**：兄弟房 hand-off 真实 case 下 lost-fall 被正确整流入 Left（§A.2 ρ_xroom→1 路径），且无新鲜 hand-off 时不抑制（安全默认）。
 
 $C_{FN}$ 曲线 / neighbor τ_h,τ_j,β 等参数留 oracle，非集成里程碑的标定目标（D6 纪律延续）。
+
+
+---
+
+# §20 增补（评审方交接确认）— belief 包收口，C 验收点钉死待重启
+
+> 用户裁定：belief 包清晰交接、暂停，集成/neighbor 专门排期。A 已出 A 卷交接清单（`c8cb3ce`）。本节是 **C（评审方）的交接确认**：钉死 belief 验证状态 + 把两里程碑 C 验收点从「预告」转「待执行」，作为重启时 C 的依据。
+
+## 一、C 对 belief 包的最终验证确认（交接前独立复跑）
+
+C 交接前最后一次独立验证：`go test ./internal/roomengine/belief/` **24 测全绿**、`go vet` 干净。
+
+| 维度 | C 确认状态 |
+|---|---|
+| 数值正确 | T1–T5：Σα=1、退化 9/18/36/72、maxBeds panic、ε≪λ staleness（14s<30s）、vac 吸收 |
+| 发射 | E1–E5：Φ 分轴、§D HRRR gate、δ floor-strip、**cd2b 离线 P(Fallen)=0.9998**（治本兑现） |
+| 耦合 | C1–C5：κ EMA 无 max、§E mixture FN-safe（单床 55×） |
+| 裁决 | D1–D6：期望损失非 argmax、Λ 不 gate、C_FN 连续单调多人不归零、cd2b 不回归 |
+| 多床 | MB1–MB4：**|B|=3 mixture 69×**、路由不串床、covers max、probe 快照——**C §10 单床盲区闭合** |
+| 方程 | §A.1–§A.3 neighbor（有向核/T_S 门控/§10 接口）C §16 审过 |
+
+**C 判：belief 数学层阶段 1–4 全放行，是干净的已验证黑盒。集成只需证「接入无回归」，不需重验 belief 内部。**
+
+## 二、C 验收点钉死（重启时 C 据此审，从「预告」转「待执行」）
+
+### 里程碑 1 集成 — C 验收点
+
+- **AC-1（核心·无回归）**：集成后 cd2b 端到端**仍 fire**。判据：probe 逐帧对照 Tsensor（baseline `bd70194`，C D-1），P(Fallen) 轨迹在 cd2b 离线段达 fire 阈、与 belief 单元测一致（0.9998 量级）。**belief 是已验证黑盒，若端到端不 fire → 缺陷在 adapter/wire，不在 belief。** 这条归因边界是清晰交接的核心价值。
+- **AC-2（adapter 译层忠实）**：adapter 译 raw→Observation/BedGeom/RiskContext 的字段语义正确。重点：BedReading 状态映射（InBed/LeftBed/NoReport）、g^xy 雷达定位算法、VitalSourceOnline 门（§D：radar 自身 absent≠否决，须独立 vital 源在线）、online[] 长度=numBeds 契约（C §13 标的）。
+- **AC-3（边界守卫位置）**：`cFN()` 对 `alone<0`（adapter 时钟回拨）的守卫——**按规则「错误处理只在边界」落 adapter 侧、不进 cFN 内部**（B round3 建议 + B/C 共识）。C 验收：cFN 内部保持纯形态函数，守卫在 adapter。
+- **AC-4（baseline 纯净）**：diff 对照基线必须是 `bd70194`（止血补丁 `7ffec9c` 之父），不可用打了补丁的版本——否则对照被旧 staleness 补丁污染（C D-1 纪律）。
+
+### 里程碑 2 neighbor wiring — C 验收点
+
+- **AC-5（路由正确）**：真实 hand-off case 下 lost-fall 正确整流入 Left（§A.2 ρ_xroom→1：fresh sleepad hand-off + 单住户）。
+- **AC-6（安全默认·铁律）**：**无新鲜有向 hand-off 时不抑制 fall**（ρ_xroom=0 → Blind 行不变 → 照常 ramp Fallen）。stale「上次在哪」/多住户归因弱 → 不压。铁律 [[partial_monitoring_fall_suppression_law]]。**这条是 neighbor wiring 最危险处**：wire 错会让 neighbor 变成漏报源（早期外挂 ObsNeighbor 的病），C 重点审。
+- **AC-7（去 ghost 落点）**：ρ_xroom 吃兄弟房**去 ghost 后**占用（§A.3 接口①），兄弟房一个 ghost 不算合法 hand-off 落点。
+- **AC-8（不加隐维）**：neighbor wire 后本房 J 基数仍 9·2^|B|（§A.3 接口②，ρ_xroom 是房间 T_S 转移耦合、吃兄弟房 belief 标量，不进本房隐空间）。
+
+## 三、标定项交接（全留 oracle，非里程碑目标）
+
+$C_{FN}$ 曲线 / neighbor $\tau_h,\tau_j,\beta$ / $\varepsilon_{art}$ / $\delta$ —— 全是保守 form-anchor 非权威值（铁律 [[fall_data_is_artificial_test]]）。**集成/neighbor 里程碑不标定这些**，只验形态正确性 + 无回归。标定待真实 oracle 数据，独立于工程里程碑。
+
+## 四、C 交接结语
+
+belief 包 = 干净收口点。C 一路的纪律（fixture 实证、形态/标定分界、目的对齐、自我更正盲区）在 belief 层走完。**重启集成时，C 的角色从「审 belief 方程忠实」转为「审集成无回归 + adapter 译层忠实 + neighbor 安全默认」——验收点 AC-1~AC-8 已钉死，C 待 A 集成代码出，独立审。**
+
+招呼 C 再动（集成 adapter 出 / neighbor wire 出 / 其它）。
