@@ -16,25 +16,19 @@ set -euo pipefail
 
 OWLBACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# 调用者意图先存下:.env 里也有 REDIS_DB/TSENSOR_VERBOSE/DBN_MODE,source 会覆盖,
-# 故隔离项必须在 source 后强制写回调用者意图(默认 1),否则被 .env 的生产值(DB=0)盖掉。
-_REQ_DB="${REDIS_DB:-1}"
-_REQ_VERBOSE="${TSENSOR_VERBOSE:-1}"
-_REQ_DBN="${DBN_MODE:-2}"
-
-# 复用生产同套 .env(DB / redis addr / identity 等)。
+# 复用生产同套 .env(DB / redis addr / identity 等),再用下方 override 覆盖隔离项。
 if [ -f "$OWLBACK_DIR/load_env.sh" ]; then
     # shellcheck disable=SC1091
     source "$OWLBACK_DIR/load_env.sh"
 fi
 
-export REDIS_DB="$_REQ_DB"
+export REDIS_DB="${REDIS_DB:-1}"
 if [ "$REDIS_DB" = "0" ]; then
     echo "❌ REDIS_DB=0 是生产库,Tsensor 拒绝启动(改用 1+)。" >&2
     exit 1
 fi
-export TSENSOR_VERBOSE="$_REQ_VERBOSE"
-export DBN_MODE="$_REQ_DBN"
+export TSENSOR_VERBOSE="${TSENSOR_VERBOSE:-1}"
+export DBN_MODE="${DBN_MODE:-2}"
 
 LOG="$OWLBACK_DIR/wisefido-sensor/.bin/tsensor.log"
 mkdir -p "$(dirname "$LOG")"

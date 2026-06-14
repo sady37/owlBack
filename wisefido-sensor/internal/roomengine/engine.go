@@ -1555,7 +1555,6 @@ func (e *Engine) Run(ctx context.Context) error {
 		zap.String("monitor_stream", monitorStream),
 		zap.String("event_stream", eventStream),
 		zap.String("alarm_stream", alarmStream),
-		zap.Int("redis_db", e.redisClient.Options().DB), // 实际连的库号:Tsensor 隔离=非0;生产=0(可据此核隔离真生效)
 		zap.String("winner", e.paramSets[e.winner].Name),
 		zap.Bool("persist", e.persister != nil),
 	)
