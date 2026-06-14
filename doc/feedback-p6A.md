@@ -10,6 +10,26 @@
 
 ---
 
+## 2026-06-15（其二）— decide 重写到 §26 55% 三分判据（用户裁定，A 执笔）
+
+C §26 / 用户裁定落地：`decide.go` 从「§8 全局期望损失 P^F·C_FN>(1-P^F)·C_FP」改为 **55% 三分**：
+
+| P^F | 裁决 | C_FN |
+|---|---|---|
+| ≥55% | 报 | 不需要（证据自足）|
+| ≤45% | 不报 | 不需要 |
+| 45–55% 两可 **且可判** | C_FN 风险偏好打破平衡（`cFN>cFP`）| **唯一作用窗口** |
+| 高度不可判（Λ≤lambdaInformative）| **默认不报** | 不介入 |
+
+- **A 立场① 推翻记录（诚实）**：原「Λ 不 gate、不可判走同一不等式兜底 fire」是资源充足逻辑；§26 资源稀缺前提下 **Λ 现作 gate**（高度不可判→默认不报），C_FN 作用域收窄至两可窗。decide.go 头注明确记此推翻。
+- **知情设计决定署名**（用户 2026-06-15）：高度不可判默认不报 = 知情接受设备不足时漏掉部分**高度不可判**真摔，换告警可信度（防 alarm fatigue 烧穿稀缺护理注意力）。仅高度不可判侧；可判侧不受影响。
+- DEC1-6 全过：≥55报+持续 / 两可 C_FN 打破（独处报·多人不报）/ **高度不可判默认不报（即使独处高风险，§26 核心反转）** / ≤45不报（C_FN 不救低 P^F）/ ≥55多人也报（证据自足）。阈 55/45/lambdaInformative 全 form-anchor 留 oracle。
+- AD4/E5 cd2b 离线 P(Fallen)=0.9998（Λ≫1 可判）→ report，不受影响；HR-2 仍 skip 在 FloorStripXY open（下条）。
+
+**多床绑定提醒（用户 2026-06-15，记入 on-pad 参考设计前提）**：layout 床矩形**无 bed_id**；bed↔sleepad 绑定 = **时间窗→sleepad→bed_id**。故 on-pad 参考须**按 sleepad 为键**学习（哪 sleepad 报 InBed 学那段雷达 XY），不按 layout 索引硬配。adapter 现 `Sleepads[j]↔Beds[j]` 索引对齐仅单床简化，多床/方案甲移植须改为 sleepad-keyed。
+
+---
+
 ## 2026-06-15 — 集成步骤2 replay harness 落地 + HR-5 揪出 FloorStripXY 真缺陷（fork 待裁）
 
 按 C §21 规格起 replay harness（`internal/roomengine/replay/`），复用 adapter+belief+probe+fixture，不碰 DB、不克隆引擎。**harness 工作正常，HR-5 归因边界兑现了它的全部价值——把缺陷精确定位到 adapter，证明 belief 正确。**

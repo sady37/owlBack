@@ -2,13 +2,21 @@ package belief
 
 import "math"
 
-// decide.go — §8 读出与裁决（期望损失主框架，§B）。
-//   fire ⟺ P^F·C_FN(risk) > (1-P^F)·C_FP   持续 ≥ T_hold
-// 不靠 argmax（P^F 不需赢，只需代价翻转，C §7）；不可判（Λ→1）**不写独立分支**——
-// 同一不等式统一处理：证据两可→P^F 中等，高 C_FN（独处）翻转。Λ_t 纯诊断（probe 暴露），绝不作 gate。
+// decide.go — 读出与裁决（§26 用户裁定 55% 三分判据，资源稀缺前提；推翻 §8 全局 C_FN 兜底）。
+//   P^F ≥ 55%            → 报（证据自足，C_FN 不需要）
+//   P^F ≤ 45%            → 不报
+//   45–55% 两可 且 可判    → C_FN 风险偏好打破平衡（C_FN **唯一作用窗口**）
+//   高度不可判（Λ 无判别力）→ 默认不报（C_FN 不介入）   ← §26 知情设计决定（署名）
+// 持续 ≥ T_hold 防瞬时噪声。
 //
-// 形态锚（铁律 [[fall_data_is_artificial_test]]：跌倒数据全人为，C_FN 曲线取值无法标定，
-// 只设保守形态——连续、各风险因子单调、多人折扣有下限不归零——+ 显式非权威，留 oracle）。
+// 知情设计决定（用户 2026-06-15 署名）：高度不可判默认不报 = 知情接受「设备不足时漏掉一部分**高度
+// 不可判**真摔，换告警可信度」。理由：资源稀缺→护理注意力稀缺→低置信告警烧穿注意力(alarm fatigue)
+// →真摔也被忽略，比偶尔漏报更糟。仅高度不可判侧；可判侧（≥55%/≤45%）正常报/不报，不受影响。
+//
+// 推翻记录（诚实）：§8/§17「C_FN 全局兜底、不可判走同一不等式、Λ 不 gate」是资源充足逻辑，
+// 已被 §26 收窄——C_FN 只在 45–55% 两可窗打破平衡；高度不可判 **Λ 现作 gate**（默认不报）。
+//
+// 形态锚（铁律 [[fall_data_is_artificial_test]]：阈值/曲线全人为数据不可标定，留 oracle）。
 
 // RiskContext 裁决期风险因子（复用 risk_evaluator 同源因子，§8 连续消费非离散档）。
 type RiskContext struct {
@@ -68,17 +76,22 @@ func (p decideParams) cFN(rc RiskContext) float64 {
 // Decision 一帧裁决结果 + forensic（probe/sdl）。
 type Decision struct {
 	Fire         bool    // 持续 ≥ T_hold 后的最终触发
-	InstFire     bool    // 本帧瞬时满足不等式（未含持续）
+	InstFire     bool    // 本帧瞬时判据满足（未含持续）
+	Band         string  // 落在哪档：report(≥55) / no(≤45) / tie(45-55可判) / indeterminate(高度不可判)
 	PFallen      float64 // P^F_t
-	CFN          float64 // C_FN(risk)
-	Margin       float64 // P^F·C_FN − (1−P^F)·C_FP（>0=瞬时该发）
-	Lambda       float64 // Λ_t 似然比（纯诊断：informative≫1 / 全暗→1）
-	Identifiable bool    // Λ_t > 阈（诊断标志，**不参与 fire 决策**）
+	CFN          float64 // C_FN(risk)（仅 tie 档参与）
+	Margin       float64 // P^F − 报阈（诊断：>0 越确定该报）
+	Lambda       float64 // Λ_t 似然比
+	Identifiable bool    // Λ_t > 阈 = 可判（§26 起 **参与裁决**：高度不可判默认不报）
 	FireSinceMs  int64   // 瞬时条件起始（持续计时；0=未武装）
 }
 
-// lambdaInformative Λ_t 可判诊断阈（仅 forensic 标注，非 gate）。
-const lambdaInformative = 3.0
+// 55% 三分阈 + 可判阈（form-anchor，留 oracle）。
+const (
+	pFireHi          = 0.55 // P^F ≥ → 报（证据自足）
+	pFireLo          = 0.45 // P^F ≤ → 不报
+	lambdaInformative = 3.0 // Λ > 此 = 可判；否则高度不可判（§26 gate 默认不报）
+)
 
 // Decider 持有持续计时状态（跨帧）。
 type Decider struct {
@@ -88,11 +101,22 @@ type Decider struct {
 
 func NewDecider() *Decider { return &Decider{p: defaultDecideParams()} }
 
-// Step 一帧裁决。pFallen=§8 P^F_t（filter.PFallen）；lambda=ComputeLambda（诊断）。
+// Step 一帧裁决（§26 55% 三分）。pFallen=P^F_t（filter.PFallen）；lambda=ComputeLambda。
 func (d *Decider) Step(nowMs int64, pFallen, lambda float64, rc RiskContext) Decision {
 	cfn := d.p.cFN(rc)
-	margin := pFallen*cfn - (1-pFallen)*d.p.cFP
-	inst := margin > 0
+	identifiable := lambda > lambdaInformative
+	var inst bool
+	var band string
+	switch {
+	case pFallen >= pFireHi:
+		inst, band = true, "report" // ≥55% 证据自足（C_FN 不需要）
+	case pFallen <= pFireLo:
+		inst, band = false, "no" // ≤45% 不报
+	case !identifiable:
+		inst, band = false, "indeterminate" // 45-55% 但高度不可判 → 默认不报（§26 守告警可信度）
+	default:
+		inst, band = cfn > d.p.cFP, "tie" // 45-55% 可判两可 → C_FN 打破平衡（唯一作用窗口）
+	}
 
 	if inst {
 		if d.fireSinceMs == 0 {
@@ -106,18 +130,19 @@ func (d *Decider) Step(nowMs int64, pFallen, lambda float64, rc RiskContext) Dec
 	return Decision{
 		Fire:         fired,
 		InstFire:     inst,
+		Band:         band,
 		PFallen:      pFallen,
 		CFN:          cfn,
-		Margin:       margin,
+		Margin:       pFallen - pFireHi, // 诊断：距报阈的距离
 		Lambda:       lambda,
-		Identifiable: lambda > lambdaInformative,
+		Identifiable: identifiable,
 		FireSinceMs:  d.fireSinceMs,
 	}
 }
 
-// ComputeLambda §8 似然比 Λ_t = Σ_bmask ΨΦ(F,bmask) / Σ_bmask ΨΦ(AtBed,bmask)。
+// ComputeLambda 似然比 Λ_t = Σ_bmask ΨΦ(F,bmask) / Σ_bmask ΨΦ(AtBed,bmask)。
 // 当前帧证据能否分开「床边摔」与「睡床上」：informative→≫1；全暗（logPsi+logPhi≡0）→1。
-// 纯诊断量（A 阶段3 立场①：不参与 fire）。
+// §26 起 Λ **参与裁决**：Λ≤lambdaInformative=高度不可判 → 默认不报（守告警可信度，非纯诊断）。
 func ComputeLambda(js *JointSpace, logPsi, logPhi JointVector) float64 {
 	fBase := int(SFallen) * js.bmaskN
 	bBase := int(SBed) * js.bmaskN

@@ -5,94 +5,87 @@ import (
 	"testing"
 )
 
-// decide_test.go — §8 期望损失裁决 + A 阶段3 三立场验收：
-//   DEC1 fire 条件 + T_hold 持续（瞬时满足须持续 ≥ T_hold；瞬时断开复位）
-//   DEC2 风险分层（同 P^F：独处+夜→发；多人白天→不发）
-//   DEC3 代价翻转非 argmax（P^F=0.4<AtBed 0.45，独处高 C_FN 仍发）
-//   DEC4 不可判由同一框架处理（无独立分支）：Λ→1 不可判，高风险独处仍 fire；Λ 不 gate
-//   DEC5 ComputeLambda 诊断（informative≫1 / 全暗→1）
+// decide_test.go — §26 55% 三分判据验收（资源稀缺前提，用户裁定）：
+//   DEC1 ≥55% 报 + T_hold 持续（瞬时断开复位）
+//   DEC2 45-55% 可判两可：C_FN 风险偏好打破平衡（独处报 / 多人不报）
+//   DEC3 高度不可判（Λ 无判别力）默认不报 —— 即使独处（§26 推翻旧「不可判兜底 fire」）
+//   DEC4 ≤45% 不报 —— 即使独处（C_FN 不再救低 P^F）
+//   DEC5 ≥55% 报 与风险无关（证据自足，多人也报）
+//   DEC6 ComputeLambda（informative≫1 / 全暗→1）
 
 const deps = 1e-9
 
-// DEC1：fire 条件 + T_hold 持续。
-func TestDecideSustain(t *testing.T) {
+var ident = 5.0   // Λ 可判（> lambdaInformative=3）
+var unident = 1.0 // Λ 高度不可判
+
+// DEC1：≥55% 报 + 持续。
+func TestDecideReportSustain(t *testing.T) {
 	d := NewDecider()
-	rc := RiskContext{PeopleCount: 1} // 独处白天，cFN=base=2
-	// P^F=0.5：margin=0.5*2-0.5*1=0.5>0 瞬时满足
-	if dec := d.Step(1000, 0.5, 5.0, rc); !dec.InstFire || dec.Fire {
-		t.Fatalf("t=1000 应 InstFire 但未到 T_hold 不 Fire；得 inst=%v fire=%v", dec.InstFire, dec.Fire)
+	rc := RiskContext{PeopleCount: 1}
+	if dec := d.Step(1000, 0.6, ident, rc); !dec.InstFire || dec.Fire || dec.Band != "report" {
+		t.Fatalf("P^F=0.6 应 InstFire/report 未到 T_hold 不 Fire；得 inst=%v fire=%v band=%s", dec.InstFire, dec.Fire, dec.Band)
 	}
-	if dec := d.Step(50_000, 0.5, 5.0, rc); dec.Fire {
-		t.Errorf("t=50s（49s<90s）不应 Fire")
+	if dec := d.Step(91_000, 0.6, ident, rc); !dec.Fire {
+		t.Errorf("证据自足档持续 90s 应 Fire")
 	}
-	if dec := d.Step(91_000, 0.5, 5.0, rc); !dec.Fire {
-		t.Errorf("t=91s（≥90s 持续）应 Fire")
-	}
-	// 瞬时断开复位：新 decider
+	// 瞬时断开复位
 	d2 := NewDecider()
-	d2.Step(1000, 0.5, 5, rc)            // 武装
-	d2.Step(2000, 0.0, 5, rc)            // margin<0 → 复位
-	dec := d2.Step(2000+91_000, 0.0, 5, rc)
-	if dec.Fire {
-		t.Errorf("瞬时断开后 P^F=0 不应 Fire（持续已复位）")
+	d2.Step(1000, 0.6, ident, rc)
+	d2.Step(2000, 0.2, ident, rc) // 跌破 → 复位
+	if dec := d2.Step(2000+91_000, 0.2, ident, rc); dec.Fire {
+		t.Errorf("跌破后不应 Fire（持续复位）")
 	}
 }
 
-// DEC2：风险分层——同 P^F=0.3，独处+夜 fire；多人白天不 fire。
-func TestDecideRiskStratified(t *testing.T) {
-	pF := 0.3
-	aloneNight := RiskContext{AloneContinuousMin: 30, Night: true, PeopleCount: 1}
-	if dec := NewDecider().Step(1000, pF, 5, aloneNight); !dec.InstFire {
-		t.Errorf("独处+夜 P^F=0.3 应瞬时 fire（cFN=%.1f margin=%.2f）", dec.CFN, dec.Margin)
+// DEC2：45-55% 可判两可 → C_FN 打破平衡。独处报、多人不报。
+func TestDecideTieWindow(t *testing.T) {
+	if dec := NewDecider().Step(1000, 0.50, ident, RiskContext{AloneContinuousMin: 30, Night: true, PeopleCount: 1}); !dec.InstFire || dec.Band != "tie" {
+		t.Errorf("两可+独处+夜 应 tie 报（cFN=%.1f band=%s）", dec.CFN, dec.Band)
 	}
-	multiDay := RiskContext{PeopleCount: 3} // 白天多人
-	if dec := NewDecider().Step(1000, pF, 5, multiDay); dec.InstFire {
-		t.Errorf("多人白天 P^F=0.3 不应 fire（有人代发现，cFN=%.2f margin=%.2f）", dec.CFN, dec.Margin)
+	if dec := NewDecider().Step(1000, 0.50, ident, RiskContext{PeopleCount: 3}); dec.InstFire {
+		t.Errorf("两可+多人 不应报（有人代发现，band=%s cFN=%.2f）", dec.Band, dec.CFN)
 	}
 }
 
-// DEC3：代价翻转非 argmax。P^F=0.4（< 假想 AtBed 0.45，argmax 会选 AtBed），
-// 独处高 C_FN → 仍 fire；同 P^F 多人 → 不 fire。证明裁决靠代价不对称非 P^F 量级。
-func TestDecideCostFlipNotArgmax(t *testing.T) {
-	pF := 0.4 // argmax 下输给 AtBed 0.45
-	alone := RiskContext{AloneContinuousMin: 30, Night: true, PeopleCount: 1}
-	if dec := NewDecider().Step(1000, pF, 1.0, alone); !dec.InstFire {
-		t.Errorf("独处 P^F=0.4 应 fire（代价翻转，非 argmax）margin=%.2f", dec.Margin)
-	}
-	multi := RiskContext{PeopleCount: 4}
-	if dec := NewDecider().Step(1000, pF, 1.0, multi); dec.InstFire {
-		t.Errorf("多人 P^F=0.4 不应 fire（同 P^F，代价不翻转）margin=%.2f", dec.Margin)
-	}
-}
-
-// DEC4：不可判由同一框架处理（A 立场①：无独立分支，Λ 不 gate）。
-// Λ→1（全暗不可判）+ 高风险独处低 P^F=0.1 → 期望损失仍翻转 fire；Identifiable=false 不阻断。
-func TestDecideUnidentifiableNoSpecialBranch(t *testing.T) {
-	lambda := 1.0 // 全暗不可判
-	alone := RiskContext{AloneContinuousMin: 30, Night: true, Disabled: true, PeopleCount: 1}
-	dec := NewDecider().Step(1000, 0.1, lambda, alone)
+// DEC3（§26 核心反转）：高度不可判 → 默认不报，即使独处。
+func TestDecideIndeterminateNoReport(t *testing.T) {
+	dec := NewDecider().Step(1000, 0.50, unident, RiskContext{AloneContinuousMin: 30, Night: true, Disabled: true, PeopleCount: 1})
 	if dec.Identifiable {
-		t.Fatalf("Λ=1 应判不可判（Identifiable=false）")
+		t.Fatalf("Λ=%.1f 应判高度不可判", unident)
 	}
-	if !dec.InstFire {
-		t.Errorf("不可判但高风险独处 P^F=0.1 应仍 fire（同一期望损失框架，无 special-case）cFN=%.1f margin=%.2f", dec.CFN, dec.Margin)
+	if dec.InstFire || dec.Band != "indeterminate" {
+		t.Errorf("高度不可判应默认不报（即使独处高风险）band=%s inst=%v —— §26 守告警可信度", dec.Band, dec.InstFire)
 	}
 }
 
-// DEC5：ComputeLambda 诊断。
+// DEC4：≤45% 不报，即使独处（C_FN 不救低 P^F，§26 收窄作用域）。
+func TestDecideLowNoReport(t *testing.T) {
+	dec := NewDecider().Step(1000, 0.30, ident, RiskContext{AloneContinuousMin: 30, Night: true, Disabled: true, PeopleCount: 1})
+	if dec.InstFire || dec.Band != "no" {
+		t.Errorf("P^F=0.30≤45%% 应不报（即使独处，C_FN 作用域不含此档）band=%s", dec.Band)
+	}
+}
+
+// DEC5：≥55% 报 与风险无关（证据自足）。
+func TestDecideReportSelfSufficient(t *testing.T) {
+	dec := NewDecider().Step(1000, 0.70, ident, RiskContext{PeopleCount: 5}) // 多人
+	if !dec.InstFire || dec.Band != "report" {
+		t.Errorf("P^F=0.70≥55%% 多人也应报（证据自足，C_FN 不需要）band=%s", dec.Band)
+	}
+}
+
+// DEC6：ComputeLambda 诊断。
 func TestComputeLambda(t *testing.T) {
 	js := NewJointSpace(1)
-	// 全暗：logPsi/logPhi 全 0 → Λ=1
 	if l := ComputeLambda(js, js.NewJointVector(), js.NewJointVector()); math.Abs(l-1.0) > deps {
 		t.Errorf("全暗 Λ=%.4f 应=1", l)
 	}
-	// informative：logPhi 抬 F 压 AtBed → Λ≫1
 	logPhi := js.NewJointVector()
 	for b := 0; b < js.bmaskN; b++ {
-		logPhi[js.idx(SFallen, b)] = math.Log(4) // 抬 F
-		logPhi[js.idx(SBed, b)] = math.Log(0.25) // 压 AtBed
+		logPhi[js.idx(SFallen, b)] = math.Log(4)
+		logPhi[js.idx(SBed, b)] = math.Log(0.25)
 	}
 	if l := ComputeLambda(js, js.NewJointVector(), logPhi); l < 10 {
-		t.Errorf("informative Λ=%.2f 应≫1（F 抬 AtBed 压）", l)
+		t.Errorf("informative Λ=%.2f 应≫1", l)
 	}
 }
