@@ -1088,3 +1088,61 @@ HR-1✅；belief 24测全绿；**HR-2 OPEN**：cd2b端到端fire但@+271s在床�
 
 ## 六、C 立场（修正后）
 55%三分判据 + 高度不可判默认不报，钉死。C_FN 作用域收窄至两可窗口。§25 FA-7 推翻为 FA-7'。**Xsensorv1 验证收尾判据修正**：HR-2(a路径有参考 fire@真摔) + **FA-7'(无参考时不误报,非强行fire)**。知情设计决定署名在案。
+
+# §27 增补 — 多床 bed_id 铁律 + 床坐标不精确 → adapter 空间派生按精度分级（用户两提醒）
+
+> 用户两提醒：① 多床 bed_id 靠「时间窗→sleepad→bed_id」，**禁坐标反推**；② 床矩形坐标**本就不精确，只大致一致**。
+
+**一、bed_id 铁律（钉死）**：`Sleepads[j]/Beds[j]/Covers[j]` 索引 j **必须=sleepad 设备绑定 bed_id**（wiring 时间窗→sleepad→bed_id 保证）。**禁「XY 落矩形→几号床」坐标反推**。wiring 断言 len 一致且 j 同源，不符 panic。理由：§23 已证矩形 drift，坐标→bed_id 犯同病。
+
+**二、床坐标不准 → adapter 三处用 distCm(XY,矩形) 全受影响**，按精度需求分级处置：
+
+| 派生 | 精度需求 | 敏感度 | 处置 |
+|---|---|---|---|
+| floorStrip | on-pad212 vs floor160 差52cm | 高 | **改 on-pad 参考**（本轮 FA-1~6）|
+| Gxy | 中（mixture 容错）| 中 | 待办下轮改 |
+| nearBed | 100cm 粗门控 | 低（鲁棒）| **不改**（C 核 emission.go:102 是空间预筛非精判别，矩形飘20-30cm 不改布尔结论）|
+
+**三、设计原则**：精细判别（floor-strip 52cm 级）用学到的 on-pad 参考簇；粗门控（nearBed 100cm 级）容忍不精确矩形。床矩形**降级为粗略范围提示**，精细活交真实雷达学的 on-pad 簇。
+
+**四、坐实 fork**：否 b 升级（扩矩形=精修本就不精确之物，越调越假）；加固 a（on-pad 参考从真实雷达 XY 学不依赖床坐标，绕开不准矩形=选对了）。
+
+**五、本轮 A 施工（floor-strip only）**：bed_id 铁律 + on-pad 参考 per-bed（sleepad 时间窗归属非坐标）+ FA-1~7' + 多床验「打乱 Beds 坐标不影响 bed_id」。不碰 Gxy（待办）/nearBed（鲁棒）。
+
+---
+
+# §28 增补（第7轮审核）— A decide 重写到 §26 55%三分独立审 + D2 正式更新（Λ 转 gate）
+
+> A 在 C §27 前已交 decide 重写（`6193b50`），实现 §26 55% 三分判据。C 独立 pull/跑/读实现。
+
+## 一、C 独立验证
+全 3 包测试过（adapter/belief/replay）。decide 5 测对应 §26 四档：ReportSelfSufficient(≥55报)/TieWindow(两可)/IndeterminateNoReport(高度不可判默认不报)/LowNoReport(≤45不报)。
+
+## 二、四档分流忠实 §26（C 读实现核，非看测试名）
+
+```
+pFallen>=0.55         → report  证据自足
+pFallen<=0.45         → no
+!identifiable         → indeterminate 高度不可判默认不报
+default(45-55可判)    → tie: cfn>cFP 打破平衡
+```
+
+**C_FN 作用域正确收窄（C 上轮纠正的要害）**：仅 `tie` 档读 `cfn>cFP`；report/no/indeterminate 三档**完全不读 cfn**。C_FN 未被用来把低 P^F 或不可判硬翻 fire——§26 收回 §8 过宽表述，A 落实。✅
+
+## 三、D2 正式更新：Λ 从「不作 gate」→「高度不可判时作 gate」（C 裁决：A 对）
+
+**矛盾**：§17/§18 D2=「Λ 绝不作 gate」（C §18 审过）。但 decide 现 `case !identifiable→no`，`identifiable=lambda>lambdaInformative`——**Λ 在 gate 了**，与 D2 直接矛盾。
+
+**C 裁决：A 对，这是 §26 必然推论非 bug**：
+- D2「Λ 不 gate」前提 = 「不可判偏向 fire（C_FN 兜底）」→ 不需识别不可判 → Λ 无用。
+- §26 推翻此前提（资源稀缺→不可判默认不报）→ **必须识别「高度不可判」才能执行「默认不报」** → 识别工具唯一是 Λ。
+- **故 §26 一旦成立，Λ 从纯诊断升 gate 是逻辑必然。** A 注释明确标「§17 D2 被 §26 推翻」，诚实，非偷改。
+
+**D2 正式更新（C 钉死）**：
+- ~~D2 旧：Λ 绝不作 gate~~（资源充足逻辑，§26 废）
+- **D2 新：Λ 仅在「高度不可判（Λ≤lambdaInformative）→ 默认不报」时作 gate；可判侧（≥55/≤45/tie）不读 Λ。** Λ 的 gate 作用域 = 仅识别高度不可判这一档，非全局 gate。
+
+## 四、C 净判
+**decide 重写忠实 §26，四档正确，C_FN 收窄正确，Λ 转 gate 是正确推论（A 诚实记录推翻 D2）。通过。** 
+
+**注**：decide（裁决层）已对齐 §26；floor-strip on-pad 参考（§27 本轮施工）A 尚未做，仍是 HR-2 BLOCKER。decide 改对是裁决逻辑就位，但 cd2b 端到端过 HR-2 仍等 floor-strip。C 待 A floor-strip 实现复审。
