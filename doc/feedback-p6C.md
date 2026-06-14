@@ -791,3 +791,91 @@ C2「`w_pose=covers(r,·)` 的点参数（多床取 max/最近/整体）」此�
 下一步（阶段 3/4）：
 - 阶段 3 decide.go：§8 期望损失主框架（$P^F C_{FN} > (1-P^F)C_{FP}$）+ 不可判兜底。$C_{FN}(\text{risk})$ 代价函数形态须落地（C §8：框架级，连续非离散档），取值标定待 oracle。
 - 阶段 4 probe + cd2b 三态对照（baseline `bd70194`，C D-1）+ 多床 case 验 §E mixture/covers max（补单 case 盲区，呼应 §10 C 实证路线多床短板）。
+
+
+---
+
+# §16 增补（neighbor 方程补审）— C 对 §A.1–§A.3 ρ_xroom 独立审
+
+> C 欠审：§15 仍写「等 A 的 ρ_xroom 方程」，但 A 早在 `6018f11` 交付 §A.1–§A.3。C 独立读方程，逐点核 A 点名的三处。
+
+## 一、§A.1 有向核 $w^{dir}$ 对 $\operatorname{sign}\Delta$ 不对称 — ✅ 成立，C 接受 A 对「同构」的校正
+
+正/反向衰减常数不同（$\tau_j\ll\tau_h$：正向 60s 新鲜窗、反向仅 5s 容时钟噪声）→ $w^{dir}(\Delta)\ne w^{dir}(-\Delta)$，对 sign Δ 不对称。物理正确：先走后到（Δ>0）=合法 hand-off 给长窗；反向=抖动给极短余量。**C 接受 A 校正**：C 早先「与 ghost ρ 同构」过简；neighbor 带时序方向、不照搬 ghost 对称核。C §9「同构」措辞作废，以 §A.1 有向版为准。
+
+## 二、§A.2 $T_S$ 跨房门控 — ✅ 成立，A 主动堵「耦合进 T vs §6」表面矛盾
+
+Blind 行 $\to F$ 按 $\rho^{xr}$ 整流入 $\to L$；$\rho{=}0$ 行不变（lost-fall 本义保留=安全默认），$\rho{\to}1$ F 整流入 L（不造 phantom）。**关键审点**：耦合进 $T_S$ 是否违反 §6「耦合只在 Ψ」？A 论证：§6 针对床轴 B 与 S 同帧相容（防 B–S 双施）；neighbor 是 S 轴自身跨房转移先验、属 $T_S$ 本职、非 B–S 双施。**C 独立核：A 论证正确**——§6 防同一耦合在 T 与 Ψ 重复施加；ρ_xroom 只在 $T_S$ 施一次、不碰 B–S。A 提前堵得对。
+
+## 三、§A.3 三接口 — ✅ 全成立
+
+①ghost→neighbor（$q_{r'}$ 吃去 ghost 占用，ghost 不算落点，belief 可质疑归因=内化非外挂）；②不加隐维（$\rho^{xr}$ 是房间 $T_S$ 转移耦合，不进本房 J 基数，解 P-5 爆炸）；③同 census 双消费（$\eta(\text{rc})$ 与 $C_{FN}$ resident 数同源，多住户两层一致下拉，守 §B 分工）。
+
+## 四、C 净判
+**§A.1–§A.3 通过，无修改要求。** 有向性成立、$T_S$ 门控与 §6 不冲突、三接口守状态空间不爆+§B 分工。曲线参数留标定。C §15「等方程」更正：方程已落且已审通过。
+
+---
+
+# §17 增补 — C 对 A 阶段 3 三条立场的回应（decide 实现前对齐）
+
+## 立场 1 不可判兜底不写独立分支（$\Lambda$ 绝不作 gate）— ✅ C 接受，A 更优雅
+special-case 一个不可判分支 = 假装知道何时不可判，反违背 §8「诚实的不确定」。**追加验收：禁止 $\Lambda$ 作 gate；$\Lambda$ 仅 probe forensic。**
+
+## 立场 2 $C_{FN}$ 只设保守 form-anchor — ✅ 与 C §8 一致
+形态框架（连续/各因子单调/多人折扣有下限不归零）+ 取值留 oracle（[[fall_data_is_artificial_test]]）。
+
+## 立场 3 cd2b 主解定位守住（decide 不改 cd2b 解）— ✅ C 认，A 主动防 C 早期误框
+cd2b（δ≫0，E5=0.9998）已在 emission 解掉；decide 只对 δ≈0 边缘兜底。C §3/§7 已更正「cd2b 终解在 decide」误框，A 守住此定位。
+
+## C 给阶段 3 decide 的验收点（D1–D6，实现前规格）
+
+| # | 验收 | 判据 |
+|---|---|---|
+| D1 | 期望损失裁决 | `fire ⟺ P^F·C_FN>(1-P^F)·C_FP 持续≥T_hold`；非 argmax |
+| D2 | $\Lambda$ 不作 gate | decide 路径不读 $\Lambda$ 做分支 |
+| D3 | $C_{FN}$ 连续形态 | 连续非离散档；各风险因子单调；多住户折扣有正下限不归零 |
+| D4 | $C_{FP}$ 归一 | $C_{FP}=1$ 基准 |
+| D5 | cd2b 不回归 | decide 接上后 cd2b 离线态仍 fire |
+| D6 | 取值非权威标注 | $C_{FN}$ 曲线标 form-anchor、留 oracle |
+
+**C 放行 A 起阶段 3。** neighbor 方程已审通过（§16）；decide 三立场对齐；D1–D6 待实现后审。
+
+---
+
+# §18 增补（第 4 轮审核）— A 阶段 3 decide.go 独立审（对照 §17 D1–D6）
+
+> 第 4 轮：A 交 decide.go（`444dab7`）。C 独立 pull、独立跑全测试、读 decide.go 逐条核 §17 的 D1–D6 验收（非看测试名）。
+
+## 一、C 独立验证
+
+全 20 测试独立跑通（含 5 个 decide：Sustain/RiskStratified/CostFlipNotArgmax/UnidentifiableNoSpecialBranch/ComputeLambda），cd2b 0.9998 无回归。
+
+## 二、D1–D6 逐条核（读实现，非看测试）
+
+| # | 验收 | decide.go 实现 | C 核 |
+|---|---|---|---|
+| D1 | 期望损失非 argmax | `margin=pF·cFN-(1-pF)·cFP; inst=margin>0`；tHold=90s | ✅ 正是 $P^F C_{FN}>(1-P^F)C_{FP}$，非 argmax |
+| **D2** | **Λ 绝不作 gate** | `inst/fired` 只依赖 `margin`，**完全不读 lambda**；`Lambda/Identifiable` 仅写 Decision 结构作 forensic，注明「不参与 fire 决策」 | ✅ **A 立场①硬约束落实**：无 special-case 分支，不可判由同一不等式吸收 |
+| **D3** | **$C_{FN}$ 连续/单调/多人不归零** | `cFN()`：独居连续增益饱和、夜×1.5、失能×1.5 全单调；多人 `disc=1/N` 连续，`if disc<peopleFloor{disc=0.3}` 下限不归零 | ✅ 连续非离散档；各因子单调；多住户折扣有正下限（呼应 §A.3③） |
+| D4 | $C_{FP}$ 归一 | `cFP=1.0` 基准 | ✅ |
+| D5 | cd2b 不回归 | emission 0.9998 未动，decide 只在 $P^F$ 上裁决 | ✅ 独立跑确认 |
+| D6 | 取值非权威标注 | `decideParams`/`cFN` 注「标定锚非权威，留 oracle」+ 引 [[fall_data_is_artificial_test]] | ✅ |
+
+**D2/D3 是 §17 三立场的硬约束（C 重点查），A 落实正确。** 尤其 D2：decide 路径不读 Λ，Λ 仅 probe forensic——A 立场①「special-case 不可判 = 假装知道何时不可判，反不诚实」在 code 里兑现。
+
+## 三、关键立场测试 C 独立确认
+
+- **DEC3 代价翻转非 argmax**：$P^F=0.4$（argmax 下输给假想 AtBed 0.45）独处高 $C_{FN}$ 仍 fire——「不需 $P^F$ 赢，只需代价翻转」（C §7/§B）实证。
+- **DEC4 不可判无独立分支**：$\Lambda\to1$（全暗）高风险独处仍 fire，且 Λ 不 gate——A 立场① 实证。
+
+## 四、C 记 A 一处超规格（记功）
+
+`ComputeLambda` 用 LogSumExp 在 log 域算 $\Lambda=\exp(\text{LSE}(F)-\text{LSE}(AtBed))$，数值稳定、与 §7 log 域一致。C 的 D 规格未要求 Λ 数值实现细节，A 自己做对——延续阶段 1 起 A 在数值稳定性上主动超 C 参考的一贯。
+
+## 五、第 4 轮净判
+
+**decide.go 通过，D1–D6 全忠实，无修改要求。** 边界 case 干净（margin>0 严格不等保守、PeopleCount≤1 当独处、fireSince 断开复位防噪声）。
+
+**阶段 3 完成。期望损失主框架（§B）+ $C_{FN}$ 连续代价（§8/C §8）+ Λ 不作 gate（A 立场①）三者在 code 落地。** 与 B 待对照（B 若已审则比对，未审则 C 先行）。
+
+下一步阶段 4：probe + cd2b 三态对照（baseline `bd70194`，C D-1）+ **多床 case 验 §E mixture/covers max/§A neighbor**——补 C 实证路线单床盲区（§10 自认短板）。$C_{FN}$ 曲线参数留 oracle（D6），非阶段 4 标定目标。
