@@ -1,0 +1,115 @@
+package belief
+
+// coupling.go — §3 同床耦合 κ（EMA 无 max 互活门控）+ §4 软归属 a_j + 片内相容势 Ψ。
+//   κ：几何冷启 + 事件驱动时间修，可升可降（不用 max，否则几何一旦重叠钉死 1）。
+//   a_j：软床归属，κ·g^xy 归一（远离任何床 g^xy→0 → a_j→0 → Ψ 中性）。
+//   Ψ：同帧 S×B 两轴相容势（不是转移，耦合只在此施一次，§6）。Fallen 行物理常量不被 κ 覆盖。
+//   Ψ 取 mixture（§E，FN-safe）：Ψ=Σ_j a_j ψ̃_j + a_∅，非 product（product 任一床 occ 即把 F 压死=漏报）。
+
+// couplingParams §3/§4 形态参数。开发阶段锚方向/符号，标定见 feedback-p6C（γ 遗忘率 / c_∅ / ε_art §C3）。
+type couplingParams struct {
+	gamma  float64 // κ EMA 遗忘率（§3：K 动作+延迟窗固定，只调 γ）
+	cEmpty float64 // a_∅ 的 c_∅（无床兜底质量；远离床时 Ψ→中性的载体）
+	epsArt float64 // ψ_phys(F,occ) 被子残留极小（§E/§C3：用在床段 pose=Lying 占比反推，非凭空 1e-3）
+}
+
+func defaultCouplingParams() couplingParams {
+	return couplingParams{gamma: 0.2, cEmpty: 0.2, epsArt: 1e-2}
+}
+
+// Coupling 持有每床 κ 状态（跨帧 EMA）+ 几何。numBeds 显式（B1）。
+type Coupling struct {
+	p     couplingParams
+	geom  []BedGeom // 长 numBeds
+	kappa []float64 // κ_{r,s_j}，长 numBeds；init=几何冷启
+}
+
+// NewCoupling 建耦合状态，κ 初值=各床几何冷启 covers·onbed。
+func NewCoupling(geom []BedGeom) *Coupling {
+	k := make([]float64, len(geom))
+	for j := range geom {
+		k[j] = geom[j].kappaColdStart()
+	}
+	return &Coupling{p: defaultCouplingParams(), geom: geom, kappa: k}
+}
+
+// Kappa 第 j 床当前耦合置信（诊断/probe 用）。
+func (c *Coupling) Kappa(j int) float64 { return c.kappa[j] }
+
+// UpdateKappa §3 互活门控 EMA（无 max，可升可降）。每床：
+//   live[j]   = r 与 s_j 在 [t_e±K] 均在线（互活门控；对方离线/沉默 → 不更新，非"不同床"）。
+//   matched[j]= 另一设备在 K 内有匹配床事件（Bernoulli 目标）。
+// 仅 live[j]=true 才更新；否则该床无信息、κ 不动（带遗忘 Beta–Bernoulli，几何作先验伪计数）。
+func (c *Coupling) UpdateKappa(matched, live []bool) {
+	g := c.p.gamma
+	for j := range c.kappa {
+		if j < len(live) && live[j] {
+			m := 0.0
+			if j < len(matched) && matched[j] {
+				m = 1.0
+			}
+			c.kappa[j] = (1-g)*c.kappa[j] + g*m // 无 max：可升可降
+		}
+	}
+}
+
+// attachment §4 软床归属：a_j=κ_j g^xy_j / (Σ_j' κ_j' g^xy_j' + c_∅)，a_∅=c_∅/(·)。
+// gxy[j]=雷达对床 j 的几何 XY 可分性（能分→尖峰 / 只知在某床→床间均匀 / 看不见→0）。长 numBeds。
+func (c *Coupling) attachment(gxy []float64) (a []float64, aEmpty float64) {
+	nb := len(c.kappa)
+	a = make([]float64, nb)
+	denom := c.p.cEmpty
+	for j := 0; j < nb; j++ {
+		g := 1.0
+		if j < len(gxy) {
+			g = gxy[j]
+		}
+		a[j] = c.kappa[j] * g
+		denom += a[j]
+	}
+	for j := range a {
+		a[j] /= denom
+	}
+	return a, c.p.cEmpty / denom
+}
+
+// psiPhys §4 物理相容表 ψ_phys(S, B^j)（固定）：
+//   AtBed: occ=1（人在床→垫占）, vac=1-o_j（床内头/脚端错位）
+//   F:     occ=ε_art（摔倒却垫占只能是被子残留）, vac=1（摔倒→离垫→垫空，F 通道全开）
+//   else:  1, 1（开阔地跌倒不牵涉床垫，靠 g^xy 门控非显式势惩罚）
+// Fallen 行物理常量不被 κ 覆盖（覆盖在 psiTilde 的退火，非这里）。
+func (c *Coupling) psiPhys(s State, b BedState, j int) float64 {
+	switch s {
+	case SBed: // §1 的 AtBed
+		if b == BOcc {
+			return 1.0
+		}
+		return 1.0 - c.geom[j].Overlap
+	case SFallen:
+		if b == BOcc {
+			return c.p.epsArt
+		}
+		return 1.0
+	default:
+		return 1.0
+	}
+}
+
+// LogPsi §4 相容势 Ψ → log 域 JointVector（喂 filter.Correct 的 logPsi）。
+//   ψ̃_j(S,B^j)=κ_j ψ_phys(S,B^j)+(1-κ_j)   （κ→0 退火中性=诚实无知；κ→1 全物理表）
+//   Ψ_t(S,bmask)=Σ_j a_j ψ̃_j(S, bit_j(bmask)) + a_∅   （§E mixture，非 product，FN-safe）
+func (c *Coupling) LogPsi(js *JointSpace, gxy []float64) JointVector {
+	a, aEmpty := c.attachment(gxy)
+	out := js.NewJointVector()
+	for i := 0; i < js.size; i++ {
+		s, bmask := js.decode(i)
+		psi := aEmpty
+		for j := 0; j < js.numBeds; j++ {
+			b := bedOf(bmask, j)
+			psiTilde := c.kappa[j]*c.psiPhys(s, b, j) + (1 - c.kappa[j])
+			psi += a[j] * psiTilde
+		}
+		out[i] = logP(psi)
+	}
+	return out
+}
