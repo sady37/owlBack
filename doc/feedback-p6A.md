@@ -10,6 +10,26 @@
 
 ---
 
+## 2026-06-15（其五）— ghost realness 隐轴落地（§34 track=2，零补丁涌现，待 C 复审）
+
+build-order 步骤① 完成（commit `c7d3e30`）：`belief/ghost.go` realness 隐轴 + 合成涌现测试。
+
+**结构**（§34 锁定）：成对 realness `(T^A,T^B)` 4 态（RR/RG/GR/GG）+ co-existence ρ **pairwise 耦合**（与 §3 κ 同源，**不做 (S×T)² 全联合**）。S^(i) 仍在各自 S-filter，realness 是正交隐轴。
+
+**机制**：P(ghost) **纯从 co-existence ρ 涌现**（共动 + 镜面几何）；mirror 几何（biasA）破 RG/GR 对称定哪个是反射；ρ=0（独立）→ 仅 RR 存活（皆真，§10 孤立安全）。**废 Track 层 Conf×P(Real) 硬外挂**——belief 出 P(ghost)，不吃 ghost_adjudicator 算好的标量。`PReal` 喂 decide（fall×P(Real)，ghost 的「摔」喂不动 SFallen，§10/dbn_cutover ③）。
+
+**病根规避**（[[fall_detection_risk_stratified_design]]）：realness 轴**无单 track 静止输入**，ghost 只能由 co-existence ρ 涌现——结构上不可能「单 track 久静→判 ghost」。
+
+**GH1-4 全过**（C 验收点兑现）：
+- GH1 一真(A)一镜(B)+镜面指 B → **P(GhostB)=0.9747 涌现、P(GhostA)=0.0120 低**（零硬外挂）。
+- GH2 独立两 track（ρ=0）→ 皆 Real（P≈0.0001）。
+- GH3 病根规避：ρ=0 久持 200 帧 → P(恰一 ghost)=**0.0000**（绝不靠静止判 ghost）。
+- GH4 对称（镜面未知）→ 恰一 ghost（PExactlyOne=0.9759，PGG≈0），不确定哪个（PGhostA≈PGhostB=0.49）。
+
+请 C 据验收点（镜涌现≥阈/真低/零硬外挂/病根规避）复审。复审过 → 步骤② neighbor 隐轴（§A ρ_xroom 有向门控）。
+
+---
+
 ## 2026-06-15（其四）— A 答 build-order + 认同方案乙（四轴全内化新建 roomengine）
 
 **认同 §33 方案乙**（新建 roomengine + copy 非DBN包）：四轴全内化 = roomengine 整体重写，"注入躯干"前提消失；copy 非DBN包是机械改 import 非搬运。DBN 边界 = 四隐轴全内化（S/B/ghost-T^(i)/neighbor）零 gate 零硬外挂。
