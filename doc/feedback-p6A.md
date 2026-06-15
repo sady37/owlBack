@@ -10,6 +10,23 @@
 
 ---
 
+## 2026-06-16（其六）— A 接受抢跑批评 + realness 轴补全方向（连续 P(real) 非硬阈）
+
+**接受 C §35 批评：我抢跑了。** ghost.go 在 ghost 物理机制还没收敛时就写了，只覆盖最早的「镜像 co-existence 消歧」子集，漏了用户后几轮纠正的主线（功率自适应导致 track 消失、时间过滤建 real 信心、real 信心护已确认真人摔倒）。**ghost 隐轴未做完，C 判对。** 教训记下：涉底层雷达物理的设计，先吃透机制（功率自适应是代码/文档没写全、靠用户领域知识给的）再写码。
+
+**认同补全三缺口**（金属单 track 静止 / 时间过滤 survival / real 信心护真人摔倒），复用 BirthScore/MaxImpliedSpeedFromBirth/AreaEnter/AreaDeny。
+
+**一处精化（缺口3 real 信心闸门）**：C §35 写「real 信心**达阈**后翻转」——我建议**做连续 P(real) 后验，不设硬阈**：
+- 硬阈 = 把刚拆掉的 gate 从后门请回；且安全攸关阈无法从人为数据标定（铁律 [[fall_data_is_artificial_test]]）。
+- 正确：**P(real) 连续 × 消失观测(ObsNoDetect) → 连续推 P(Fallen) → §26 55%三分裁决**。现 ghost.go 的 `PReal` 即此原语（输出对），待补：① 源补全（出生地/运动/survival 三类发射，非仅 mirror co-existence）② 消失耦合（P(real)→S 落 Blind→Fallen ramp，dbn_cutover ③ fall×P(Real)）。**连续 PReal 本身就是闸门，不需另设硬阈。**
+- 自洽点：realness 连续量恰是 **§26（高度不可判默认不报）与 partial_monitoring（消失不抑制 fall）的裁决者**——P(real) 高的消失 = 确信真人 → fire；P(real) 低的消失 = 高度不可判/ghost → 不报。
+
+**ghost.go 去向**：mirror co-existence 留作「运动-同步」发射分量（mirror-ghost 类），不再当主判据；realness 轴整体重做成 3 类 + 两层（快出生/运动/区域 + 慢 survival）+ 连续 PReal × 消失耦合 Blind/Fallen + 共生律抬占用后验。
+
+**不再抢跑**：待用户/C 确认补全方向（尤其「连续非硬阈」这条），我再动手。
+
+---
+
 ## 2026-06-15（其五）— ghost realness 隐轴落地（§34 track=2，零补丁涌现，待 C 复审）
 
 build-order 步骤① 完成（commit `c7d3e30`）：`belief/ghost.go` realness 隐轴 + 合成涌现测试。

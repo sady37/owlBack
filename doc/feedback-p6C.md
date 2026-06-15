@@ -1353,3 +1353,28 @@ C grep 证实「新建+copy」可行：
 **C 验收点（预告）**：合成 2-track（一真一镜，同步移动）→ P(ghost) 对镜像 track 涌现 ≥ 阈、对真人 track 低；零硬外挂（不吃 ghost_adjudicator 算好的标量）。
 
 C 待 A ghost 隐轴涌现结果复审。
+
+---
+
+# §35 增补 — C 复审 A 抢跑的 ghost.go：镜像消歧子集，三缺口待补
+
+> A 在 ghost 物理机制还没在委员会收敛时就交了 `ghost.go`+`ghost_test.go`。C 读后判：只覆盖最早那套「镜像几何消歧」，漏了用户后几轮纠正的主线（功率自适应/时间过滤/real 信心闸门）。**不能算 ghost 隐轴做完。**
+
+## 一、A 做对的（保留）
+- pairwise 结构符 §34（4 态 RR/RG/GR/GG 不全联合，基数锁对）。
+- co-existence ρ 涌现镜像消歧。
+- **GH3 病根规避（重要）**：A 明确「ρ=0 无论多久不产 ghost，绝不靠单 track 静止判 ghost」（ghostLeak 向均匀遗忘）——与用户「已确认 real 的静止消失当摔倒不当 ghost」方向一致，守住了不冤枉久躺真人。
+
+## 二、三个核心缺口（用户这几轮纠正的，A 全没有）
+1. **金属/静止反射体没处理**：A 的 pairwise 需两 track 共动；金属是**单 track 静止**（铁桶/把手），覆盖不到。用户说三类都进 realness，A 只做镜像一类。
+2. **功率自适应 + 时间过滤没有**：核心物理（ghost/金属/摔倒人都因降功率消失，靠存活时长 + 跨静止期建 real 信心），A 完全没有。
+3. **real 信心闸门没有（最危险）**：用户钉死「时间过滤只用于未确认新 track；已确认 real 后静止消失=摔倒，不当 ghost 否定」。A 缺这个闸门 → 真人摔倒静止消失可能被当 ghost 漏报 = **cd2b 病另一面**。A 有 PReal 加权 fall，但没有区分「未确认疑似 ghost 消失」vs「已确认 real 消失=摔」的闸门。
+
+## 三、C 判
+A 的 ghost.go = **镜像消歧子集**，数学干净、GH3 病根规避对，但**不是完整 realness 轴，ghost 隐轴未做完**。待补：金属（单 track 静止反射）、时间过滤（real 信心累积，ε≪λ 式时间演化）、real 信心闸门（护已确认真人摔倒不被当 ghost）。复用现成量：BirthScore/MaxImpliedSpeedFromBirth/AreaEnter/AreaDeny。
+
+## 四、C 认自己的问题（方法论）
+C 一开始也凭空想「轴对称几何/工业界方法」，被用户「没读设计和代码根本没法思考」拦下，读了 mirror_detect/static_reflector/sensor_v2/track.go 才懂真实机制（功率自适应/时间过滤）。A 抢跑某种程度也因 ghost 设计还没收敛就动手。**教训：ghost 涉底层雷达物理，必须先把机制（功率自适应——代码/文档没写全，靠用户领域知识给）吃透再写码。**
+
+## 五、A 的回应（其六，见 feedback-p6A）
+A 接受抢跑批评 + 认同补全方向；**一处精化**：缺口3 real 信心闸门应是**连续 P(real) 后验**非硬「达阈」（硬阈=请回 gate + 标定陷阱，铁律）——P(real) 连续 × 消失观测 → 连续推 P(Fallen) → §26 55%三分；现 ghost.go 的 PReal 即此原语，待补全源（出生/运动/survival 非仅 mirror）+ 消失耦合 Blind/Fallen。realness 连续量恰是 §26（高度不可判默认不报）与 partial_monitoring（消失不抑制 fall）自洽的裁决者。
