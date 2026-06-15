@@ -37,45 +37,49 @@ func TestHR1ParseFidelity(t *testing.T) {
 	t.Logf("HR-1 ✓ 解析 %d 帧，numBeds=%d，床矩形=%+v，NowMs 单调", len(tl), nb, tl[0].Beds)
 }
 
-// HR-2 (AC-1核心)：cd2b 经 harness（raw XY 派生 floor-strip，非手设）端到端 → P(Fallen) 浮出 + 独处 fire。
-// HR-5 归因边界：若不 fire，缺陷在解析/adapter 派生（floor-strip/Gxy），不在 belief。
-func TestHR2Cd2bEndToEnd(t *testing.T) {
+// HR-2/AC-拆3（§32 框架接触轴）：cd2b 经 harness 端到端（sleepad 全程在线、零 floor-strip、零 TTL）
+// → 经 LeftBed→B vac→Ψ 涌现 SFallen → 独处 fire。**且 fire 在 LeftBed 之后**（人离床才摔），
+// 在床段（sleepad InBed）不误火。证框架接触轴解 cd2b，无几何 δ、无离线补丁。
+func TestHR2Cd2bContactAxis(t *testing.T) {
 	tl, err := BuildTimeline(cd2bCase, cd2bUID)
 	if err != nil {
 		t.Fatalf("BuildTimeline err: %v", err)
 	}
 	frames, finalS := Run(tl)
+	start := tl[0].NowMs
 
-	// 统计：最大 P(Fallen)、是否 fire、fire 首帧、floor-strip 命中帧数。
-	var maxPF float64
+	// LeftBed 起点（sleepad 在线报离床的首帧）。
+	var leftBedMs int64
+	for _, fi := range tl {
+		if len(fi.Sleepads) > 0 && fi.Sleepads[0].Reading == belief.BedLeftBed {
+			leftBedMs = fi.NowMs
+			break
+		}
+	}
+	// 首个 fire 帧 + 在床段(LeftBed 前)是否误火。
 	var fired bool
 	var fireAtMs int64
-	var offlineFrames int
+	var inBedFalseFire bool
 	for _, fr := range frames {
-		if fr.Probe.PFallen > maxPF {
-			maxPF = fr.Probe.PFallen
-		}
 		if fr.Decision.Fire && !fired {
 			fired = true
 			fireAtMs = fr.Probe.Ts
 		}
-	}
-	// floor-strip / 离线 帧统计（诊断 HR-5 用，从 timeline 重算）。
-	for _, fi := range tl {
-		if !fi.Sleepads[0].Fresh {
-			offlineFrames++
+		if fr.Decision.Fire && leftBedMs > 0 && fr.Probe.Ts < leftBedMs {
+			inBedFalseFire = true // LeftBed 之前 fire = 在床误火
 		}
 	}
 
-	start := tl[0].NowMs
-	t.Logf("HR-2 实测：帧数=%d  maxP(Fallen)=%.4f  finalP(Fallen)=%.4f  fire=%v@+%.0fs  离线帧=%d",
-		len(frames), maxPF, finalS[belief.SFallen], fired, float64(fireAtMs-start)/1000, offlineFrames)
+	t.Logf("HR-2 实测：帧数=%d finalP(Fallen)=%.4f LeftBed@+%.0fs fire=%v@+%.0fs",
+		len(frames), finalS[belief.SFallen], float64(leftBedMs-start)/1000, fired, float64(fireAtMs-start)/1000)
 
-	// HR-5 归因（已诊断，feedback-p6A 记录）：harness 工作正常、belief 正确；fire 发生但是
-	// **on-pad 误火**（+127s 正常在床，非 +561s 真摔）——缺陷在 adapter FloorStripXY **rect 派生**：
-	// layout drift 使雷达 XY（on-pad x≈-80~-130）落在画的床矩形外（x≥-70）→ 误判床沿地条；真摔
-	// floor 簇（x=-170，>margin）反被判 false。rect 几何 ≠ δ 簇边界（A δ 实验本就是离线簇分析）。
-	// HR-2 端到端正确（在床不误火 + 真摔 fire）BLOCKED 在 FloorStripXY 运行时实现 fork（on-pad 参考）。
-	t.Skipf("HR-2 OPEN：harness+belief 正确，cd2b 经 FloorStripXY rect 派生 on-pad 误火（非真摔）"+
-		"；fork=on-pad 参考实现，见 feedback-p6A。(诊断已在 HR-5：fire@+%.0fs 在床段非 +561s 真摔)", float64(fireAtMs-start)/1000)
+	if !fired {
+		t.Errorf("AC-拆3：cd2b 应经接触轴 fire（LeftBed→B vac→Ψ→SFallen），未 fire")
+	}
+	if inBedFalseFire {
+		t.Errorf("在床段（LeftBed 前）误火——sleepad InBed 时 B occ 应经 Ψ ε_art 压住 SFallen")
+	}
+	if fired && leftBedMs > 0 && fireAtMs < leftBedMs {
+		t.Errorf("fire@+%.0fs 早于 LeftBed@+%.0fs（应人离床后才摔）", float64(fireAtMs-start)/1000, float64(leftBedMs-start)/1000)
+	}
 }

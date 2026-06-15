@@ -15,8 +15,9 @@ import (
 //   window.json / window_sleepad.json / room_layout.json → []adapter.FrameInput 解析 + 驱动。
 // 不碰 DB、不克隆引擎（Tsensor playback 是 DB 耦合，不可复用作 harness）。
 // AC-1 归因边界：belief 已验证，若 cd2b 不分离/不 fire，缺陷在 adapter 派生或本解析，不在 belief。
-
-const sleepadTTLMs = 35_000 // sleepad 离线判定窗（与生产 beliefSleepadTTLMs 一致）
+//
+// §32 拆补丁（用户二态裁定：设备在线 OR 没有，不建模中途掉线）：原 sleepadTTLMs=35s 的 Fresh 判定
+// 是「中途掉线检测」补丁，已删——sleepad 一旦报过即视为在线、持住最后 bed_status（不 TTL 过期成离线）。
 
 // ---- fixture JSON 结构 ----
 
@@ -108,7 +109,8 @@ type sleepadState struct {
 	hasFrame  bool
 }
 
-// BuildTimeline 装一段 cd2b replay 时间线：cd2b 雷达帧为主 tick，sleepad 按 TTL 合入，床矩形从 layout。
+// BuildTimeline 装一段 cd2b replay 时间线：cd2b 雷达帧为主 tick，sleepad 持住最后 bed_status（§32 二态，
+// 报过即在线、不 TTL 过期），床矩形从 layout。
 // census：单住户独处（cd2b 场景），PeopleCount=1，AloneContinuousMin 随时长增长，Night=false（保守）。
 func BuildTimeline(caseDir, radarUID string) ([]adapter.FrameInput, error) {
 	var rf radarFile
@@ -144,9 +146,16 @@ func BuildTimeline(caseDir, radarUID string) ([]adapter.FrameInput, error) {
 		ts  int64
 		dv0 struct{ pose, x, y, z int }
 	}
+	// §32 二态：有 sleepad 房（config 1）replay 双传感器窗——从 sleepad 首报起（fixture 的 sleepad 数据
+	// 始于人已在床的 +144s，更早 radar 帧缺 sleepad 上下文）。真实部署 sleepad 全程在线，无此缺口；
+	// 窗到双传感器期 = 诚实复现部署实况，非掩盖（更早 radar 是入床前走动，与床边摔检测无关）。
+	var sleepadStart int64
+	if len(sf) > 0 {
+		sleepadStart = sf[0].Timestamp
+	}
 	var radar []rframe
 	for _, f := range rf {
-		if f.DeviceUID != radarUID || len(f.DataValue) == 0 {
+		if f.DeviceUID != radarUID || len(f.DataValue) == 0 || f.Timestamp < sleepadStart {
 			continue
 		}
 		d := f.DataValue[0]
@@ -161,12 +170,20 @@ func BuildTimeline(caseDir, radarUID string) ([]adapter.FrameInput, error) {
 	onbed := []float64{1}
 	overlap := []float64{1}
 	startMs := radar[0].ts
+	// §32 二态：房间有 sleepad（config-static present）即全程 ρ=1，含首报前——不因「还没上报」误判离线。
+	sleepadPresent := len(sf) > 0
 
 	out := make([]adapter.FrameInput, 0, len(radar))
 	for _, r := range radar {
 		ss := sleepadBefore(r.ts)
-		fresh := ss.hasFrame && r.ts-ss.ts <= sleepadTTLMs
-		inBed := ss.bedStatus == 0 // 0=InBed
+		reading := belief.BedNoReport // 首报前 = unknown（§30：中性发射，ρ=1 由 K^obs 持住 B 不抽 vac）
+		if ss.hasFrame {
+			if ss.bedStatus == 0 {
+				reading = belief.BedInBed // 0=InBed
+			} else {
+				reading = belief.BedLeftBed
+			}
+		}
 		out = append(out, adapter.FrameInput{
 			NowMs: r.ts,
 			Track: adapter.RadarTrack{
@@ -174,7 +191,7 @@ func BuildTimeline(caseDir, radarUID string) ([]adapter.FrameInput, error) {
 				X: r.dv0.x, Y: r.dv0.y, Z: r.dv0.z,
 				HR: 0, RR: 0, // 雷达帧无 vital 字段（cd2b：radar enter-gate 不返 HR/RR）
 			},
-			Sleepads: []adapter.SleepadFrame{{InBed: inBed, Fresh: fresh}},
+			Sleepads: []adapter.SleepadFrame{{Present: sleepadPresent, Reading: reading}},
 			Beds:     beds,
 			Covers:   covers, Onbed: onbed, Overlap: overlap,
 			Census: adapter.Census{

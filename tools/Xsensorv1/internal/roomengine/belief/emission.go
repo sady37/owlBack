@@ -4,13 +4,16 @@ import "math"
 
 // emission.go — §5 联合发射 Φ → log 域 JointVector（喂 filter.Correct 的 logPhi）。
 //   Φ_t = Π_j ℓ_sj(o^sj|B^j)^{w_sj}  ·  Π_c ℓ_c(o^c|S)^{w_c}
-//          └── 接触→B^j（只依赖 bmask 第 j 位）──┘  └── 雷达 pose/dwell/hrrr/δ→S（只依赖 S）──┘
+//          └── 接触→B^j（只依赖 bmask 第 j 位）──┘  └── 雷达 pose/dwell/hrrr→S（只依赖 S）──┘
 // 两轴在 log 域可分：logPhi[(S,bmask)] = contactLogB(bmask) + radarLogS(S)。
-// 权重作指数（log 域 = w·log ℓ）：w_sj=onbed, w_pose=w_dwell=covers, w_hrrr=covers·1[nearBed], w_δ=covers。
+// 权重作指数（log 域 = w·log ℓ）：w_sj=onbed, w_pose=w_dwell=covers, w_hrrr=covers·1[nearBed]。
 //
 // 形态锚（铁律 [[fall_data_is_artificial_test]]：单 case 不刻精确参数，只定可判侧形态）：
 // L_in/L_left≫1（接触强）、pose lying 二义(AtBed=F 同 boost)、HR/RR 非对称 + §D absent 门控、
-// dwell still≥τ 只分静止占用 vs 活动、δ floor-strip 偏 Fallen（A 阶段0：δ≫0 可判）。标定见 feedback-p6C。
+// dwell still≥τ 只分静止占用 vs 活动。标定见 feedback-p6C。
+//
+// 注（§32 拆补丁）：δ floor-strip 已删——cd2b 不靠雷达 XY 精确空间，靠 LeftBed→B vac 经 §4 Ψ 相容
+// 涌现 SFallen（C 独立测试 0.995 验证）。floor-strip 是补丁，框架 Ψ 让 cd2b 零补丁涌现。
 
 type emissionParams struct {
 	lIn      float64 // ℓ_sj(InBed|occ)=L_in≫1
@@ -19,14 +22,13 @@ type emissionParams struct {
 	lHR      float64 // L_hr：present|AtBed 倍数（absent|AtBed=1/L_hr）
 	dwellHi  float64 // D>1：still≥τ|F = still≥τ|AtBed
 	dwellLo  float64 // <1：still≥τ|O/Sit（活动态久静受罚）
-	lDelta   float64 // δ：ℓ_pos(floor-strip|F) vs |AtBed 比（A 阶段0 δ≫0）
 	stillTau float64 // dwell 阈 τ（秒）；cell 容忍/夜间对 τ 的调制属 decide/adapter 层（feedback-p6C §6/§7）
 }
 
 func defaultEmissionParams() emissionParams {
 	return emissionParams{
 		lIn: 20, lLeft: 20, lPose: 3, lHR: 5,
-		dwellHi: 3, dwellLo: 0.5, lDelta: 4, stillTau: 60,
+		dwellHi: 3, dwellLo: 0.5, stillTau: 60,
 	}
 }
 
@@ -107,16 +109,11 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 			addLogLkAll(&logS, pv, w)
 		} else if o.VitalSourceOnline {
 			// §D：absent 否决 AtBed 须 gate 在独立在线 vital 源下；radar 自身 absent=零信息不否决。
-			// absent|AtBed=1/L_hr；absent|¬AtBed=1（不指定替代，F/Sit/O 交 pose/dwell/δ）。
+			// absent|AtBed=1/L_hr；absent|¬AtBed=1（不指定替代，F/Sit/O 交 pose/dwell）。
 			av := uniformVec(1.0)
 			av[SBed] = 1.0 / e.p.lHR
 			addLogLkAll(&logS, av, w)
 		}
-	}
-
-	// δ 位置（cd2b 主解）：floor-strip XY → boost F、suppress AtBed（δ≫0 时离线也可判）。
-	if o.FloorStripXY {
-		addLogLk(&logS, Vector{SFallen: e.p.lDelta, SBed: 1.0 / e.p.lDelta}, w, SFallen, SBed)
 	}
 
 	return logS

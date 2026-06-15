@@ -1,10 +1,14 @@
 package belief
 
 // bed_axis.go — B 轴：床占用隐变量 B^j ∈ {vac, occ}，与 S 轴正交（DBN-Zone-Room §1）。
-// T_B 转移核（§6 + 第三部分 §C）：观测可用性 ρ 门控自持。
-//   在线 ρ=1：K^obs（高自持，上下床稀有，防抖）。
-//   离线 ρ=0：K^unobs_λ（§C 箭头记法单向泄漏 occ→vac，vac 吸收）。
-// 关键不等式 ε≪λ：陈旧 occ 在 fall confirm 前快速蒸发（治本 cd2b 漏报 + 替所有 staleness/TTL 补丁）。
+// T_B 转移核（§6 + 第三部分 §C）：观测可用性 ρ 门控自持。ρ 为 config-static（§32 二态裁定：
+// 设备在线 OR 没有，不建模中途掉线）——有 sleepad 房 ρ=1，无 sleepad（radar-only）房 ρ=0。
+//   ρ=1（有 sleepad）：K^obs（高自持，上下床稀有，防抖）。
+//   ρ=0（无 sleepad，radar-only）：K^unobs_λ（§C 箭头记法单向泄漏 occ→vac，vac 吸收）= 无接触证据
+//     时 B 轴合理默认空、由 radar 经 §4 Ψ 涌现占用。
+// ε≪λ（§C 机制保留，C 裁过）：occ→vac 比 vac→occ 快。**论证订正（§31/§32 C 共同认领）**：原「治本
+// cd2b 漏报=陈旧 occ 离线蒸发」绑在误读的 cd2b-offline 上，作废——真实 cd2b sleepad 在线报 LeftBed，
+// B 靠 LeftBed 发射直接推 vac，非靠 λ 蒸发。机制重解释为「config-static 无 sleepad 房 B 轴默认空+软化」。
 
 // BedState 床占用二态。索引固定（joint.go bmask 第 j 位 = B^j）。
 type BedState int

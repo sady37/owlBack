@@ -6,37 +6,12 @@ import (
 	"owlBack/tools/Xsensorv1/internal/roomengine/belief"
 )
 
-// adapter_test.go — 翻译层验收（集成步骤1）：
-//   AD1 floorStrip 派生（床内→false / 床缘 margin 内→true / 远→false）
-//   AD2 Gxy 派生（内→peak / 近→Near / 远→0 / 近两床→均匀）
-//   AD3 BuildObservation 映射（pose=6/sleepad TTL/VitalSourceOnline/nearBed/HRRR）
-//   AD4 端到端 mini cd2b 离线 replay（adapter→belief，XY 派生 floor-strip 复现 E5：P(Fallen) 浮出）
+// adapter_test.go — 翻译层验收（集成步骤1；§32 拆 floor-strip 后）：
+//   AD2 Gxy 派生（§4 attachment，保留：内→peak / 近→Near / 远→0 / 近两床→均匀）
+//   AD3 BuildObservation 映射（pose=6/sleepad/VitalSourceOnline/nearBed/HRRR）
+//   AD4 端到端框架涌现（adapter→belief，sleepad 在线 InBed→LeftBed，零 floor-strip → fire via 接触轴）
 
 func bed(x1, y1, x2, y2 int) Rect { return Rect{x1, y1, x2, y2} }
-
-// AD1：floorStrip 派生（down 姿门控 + 床外近缘）。床 (0,0,100,200)，margin=60。
-func TestFloorStripDerivation(t *testing.T) {
-	p := DefaultParams()
-	mk := func(x, y, pose int) FrameInput {
-		return FrameInput{Track: RadarTrack{Online: true, X: x, Y: y, Pose: pose}, Beds: []Rect{bed(0, 0, 100, 200)}}
-	}
-	if floorStrip(mk(50, 100, 6), p) {
-		t.Error("床内(50,100) lying 不应是 floor-strip（on-pad）")
-	}
-	if !floorStrip(mk(130, 100, 6), p) {
-		t.Error("床缘外 30cm(130,100,≤60 margin) lying 应是 floor-strip")
-	}
-	if floorStrip(mk(300, 100, 6), p) {
-		t.Error("远(300,100,>60 margin) 不应是 floor-strip")
-	}
-	// down-pose 门控（AC-2 修，HR-5 误火根因）：走动(pose=1)在床缘 不是 floor-strip。
-	if floorStrip(mk(130, 100, 1), p) {
-		t.Error("床缘 walking(pose=1) 不应是 floor-strip（δ 仅对 down 姿）")
-	}
-	if floorStrip(FrameInput{Track: RadarTrack{Online: false, Pose: 6}, Beds: []Rect{bed(0, 0, 100, 200)}}, p) {
-		t.Error("雷达离线不应是 floor-strip")
-	}
-}
 
 // AD2：Gxy 派生。
 func TestGxyDerivation(t *testing.T) {
@@ -76,7 +51,7 @@ func TestBuildObservation(t *testing.T) {
 	p := DefaultParams()
 	fi := FrameInput{
 		Track:    RadarTrack{Online: true, Pose: 6, X: 130, Y: 100, HR: 0, RR: 0, StillSec: 80},
-		Sleepads: []SleepadFrame{{InBed: false, Fresh: true}}, // 在线但离床
+		Sleepads: []SleepadFrame{{Present: true, Reading: belief.BedLeftBed}}, // 在线但离床
 		Beds:     []Rect{bed(0, 0, 100, 200)},
 	}
 	o := BuildObservation(fi, p)
@@ -89,30 +64,31 @@ func TestBuildObservation(t *testing.T) {
 	if !o.VitalSourceOnline {
 		t.Error("sleepad fresh → VitalSourceOnline=true")
 	}
-	if !o.NearBed || !o.HRRRObserved {
-		t.Error("床缘 30cm 应 NearBed + HRRRObserved（近床返 vital 通道）")
+	if !o.NearBed {
+		t.Error("床缘 30cm 应 NearBed")
 	}
-	if o.HRRRPresent {
-		t.Error("HR=RR=0 应 HRRRPresent=false")
+	// 铁律 [[radar_hr_rr_bed_enter_gated]]：HR=RR=0（雷达未返 vital）= 零信息，HRRRObserved/Present 均 false，
+	// 不触发 §D absent 否决（近床但 enter-gate 未测 ≠ 观测到 absent）。
+	if o.HRRRObserved || o.HRRRPresent {
+		t.Error("HR=RR=0 应 HRRRObserved=false + HRRRPresent=false（雷达未测 vital=零信息）")
 	}
-	if !o.FloorStripXY {
-		t.Error("床缘外 30cm 应 FloorStripXY")
-	}
+	// §32：FloorStripXY 已删，cd2b 靠 LeftBed→B vac 经 Ψ 涌现（见 AD4），非雷达 XY 几何。
 	// sleepad 离线 → NoReport + VitalSourceOnline=false
-	fi.Sleepads = []SleepadFrame{{InBed: true, Fresh: false}}
+	fi.Sleepads = []SleepadFrame{{Present: true, Reading: belief.BedNoReport}}
 	o2 := BuildObservation(fi, p)
 	if o2.Sleepad[0] != belief.BedNoReport || o2.VitalSourceOnline {
 		t.Errorf("¬Fresh 应 NoReport + VitalSourceOnline=false，得 %v / %v", o2.Sleepad[0], o2.VitalSourceOnline)
 	}
 }
 
-// AD4：端到端 mini cd2b 离线 replay。raw 帧(sleepad 离线 + pose lying + XY 床沿地条) 经 adapter→belief，
-// P(Fallen) 浮出（复现 E5，但 floor-strip 由 XY 派生而非手设，证翻译层驱动正确）。
-func TestAdapterCd2bOfflineReplay(t *testing.T) {
+// AD4（§32 框架涌现，替原离线+floor-strip 补丁测试）：端到端 adapter→belief cd2b。
+// sleepad **全程在线** InBed→LeftBed，雷达躺+静止，**零 floor-strip**。LeftBed→B vac→Ψ→SFallen
+// 涌现，独处持续过 T_hold → fire。证翻译层 + 框架接触轴解 cd2b，不靠几何 δ。
+func TestAdapterCd2bFrameworkEmergence(t *testing.T) {
 	p := DefaultParams()
 	geomFI := FrameInput{
-		Beds:    []Rect{bed(0, 0, 100, 200)},
-		Covers:  []float64{1}, Onbed: []float64{1}, Overlap: []float64{1},
+		Beds:   []Rect{bed(0, 0, 100, 200)},
+		Covers: []float64{1}, Onbed: []float64{1}, Overlap: []float64{1},
 	}
 	geom := BedGeoms(geomFI)
 	f := belief.NewFilter(belief.DefaultModel(), 1)
@@ -120,11 +96,10 @@ func TestAdapterCd2bOfflineReplay(t *testing.T) {
 	cp := belief.NewCoupling(geom)
 	em := belief.NewEmission(geom)
 
-	// 默认 prior 起步 → 阶段A 充 occ + S→Bed → 阶段B 离线摔床沿（公开 API 全程，无需手改 alpha）。
 	// 阶段A：人在床、sleepad 在线 InBed。
 	inBed := FrameInput{
-		Track:    RadarTrack{Online: true, Pose: 6, X: 50, Y: 100, StillSec: 60}, // 床内
-		Sleepads: []SleepadFrame{{InBed: true, Fresh: true}},
+		Track:    RadarTrack{Online: true, Pose: 6, X: 50, Y: 100, StillSec: 60},
+		Sleepads: []SleepadFrame{{Present: true, Reading: belief.BedInBed}},
 		Beds:     geomFI.Beds, Covers: geomFI.Covers, Onbed: geomFI.Onbed, Overlap: geomFI.Overlap,
 	}
 	for step := 1; step <= 30; step++ {
@@ -135,33 +110,32 @@ func TestAdapterCd2bOfflineReplay(t *testing.T) {
 		t.Fatalf("阶段A 后 P(B occ)=%.3f 应高（在床充 occ）", pb)
 	}
 
-	// 阶段B：sleepad 离线 + 人摔到床沿地条（XY 出床、pose lying、HR/RR 灭）。
+	// 阶段B：sleepad **在线**报 LeftBed（人离床）+ 雷达仍躺+静止 + 近床。**零 floor-strip**。
 	fall := FrameInput{
-		Track:    RadarTrack{Online: true, Pose: 6, X: 130, Y: 100, HR: 0, RR: 0, StillSec: 120}, // 床缘外 30
-		Sleepads: []SleepadFrame{{InBed: true, Fresh: false}},                                    // 离线（陈旧 InBed）
+		Track:    RadarTrack{Online: true, Pose: 6, X: 130, Y: 100, HR: 0, RR: 0, StillSec: 120},
+		Sleepads: []SleepadFrame{{Present: true, Reading: belief.BedLeftBed}}, // 在线 LeftBed（§32 二态，不离线）
 		Beds:     geomFI.Beds, Covers: geomFI.Covers, Onbed: geomFI.Onbed, Overlap: geomFI.Overlap,
 	}
 	for step := 31; step <= 120; step++ {
 		fall.NowMs = int64(step) * 1000
 		f.Step(fall.NowMs, Online(fall), cp.LogPsi(js, Gxy(fall, p)), em.LogPhi(js, BuildObservation(fall, p)))
 	}
-	ms := js.MarginalS(f.Alpha())
-	if ms[belief.SFallen] <= ms[belief.SBed] {
-		t.Fatalf("cd2b 离线 replay：P(Fallen)=%.4f 应 > P(AtBed)=%.4f（adapter XY 派生 floor-strip 驱动）", ms[belief.SFallen], ms[belief.SBed])
+	pF := js.PFallen(f.Alpha())
+	if pF < 0.55 {
+		t.Fatalf("框架涌现：cd2b 零补丁 P(SFallen)=%.4f 应≥0.55（LeftBed→B vac→Ψ）", pF)
 	}
 
 	// 裁决：独处 → fire（持续过 T_hold）。
 	d := belief.NewDecider()
 	var dec belief.Decision
 	rc := belief.RiskContext{AloneContinuousMin: 30, PeopleCount: 1}
-	pF := js.PFallen(f.Alpha())
 	lam := belief.ComputeLambda(js, cp.LogPsi(js, Gxy(fall, p)), em.LogPhi(js, BuildObservation(fall, p)))
 	for step := 121; step <= 230; step++ {
 		dec = d.Step(int64(step)*1000, pF, lam, rc)
 	}
 	if !dec.Fire {
-		t.Errorf("独处 cd2b 离线摔，持续过 T_hold 应 fire（P^F=%.3f Λ=%.2f margin=%.3f）", pF, lam, dec.Margin)
+		t.Errorf("独处 cd2b 接触轴摔，持续过 T_hold 应 fire（P^F=%.3f Λ=%.2f band=%s）", pF, lam, dec.Band)
 	}
-	t.Logf("AD4 ✓ adapter→belief cd2b 离线 replay：P(Fallen)=%.4f > P(AtBed)=%.4f，独处 fire=%v（XY 派生 floor-strip）",
-		ms[belief.SFallen], ms[belief.SBed], dec.Fire)
+	t.Logf("AD4 ✓ adapter→belief 框架接触轴：P(SFallen)=%.4f，独处 fire=%v（零 floor-strip，sleepad 在线 LeftBed）",
+		pF, dec.Fire)
 }

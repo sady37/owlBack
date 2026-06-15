@@ -65,49 +65,35 @@ func TestEmissionHRRRAbsentGate(t *testing.T) {
 	}
 }
 
-// E4：δ floor-strip → Fallen 抬、AtBed 压。
-func TestEmissionDeltaFloorStrip(t *testing.T) {
-	em := NewEmission(bed1Geom())
-	js := NewJointSpace(1)
-	logPhi := em.LogPhi(js, Observation{RadarOnline: true, FloorStripXY: true, Sleepad: []BedReading{BedNoReport}})
-	dF := logPhi[js.idx(SFallen, 0)]
-	dBed := logPhi[js.idx(SBed, 0)]
-	if dF <= 0 || dBed >= 0 || dF <= dBed {
-		t.Errorf("δ floor-strip：logPhi(F)=%.4f 应>0、logPhi(AtBed)=%.4f 应<0、且 F>AtBed", dF, dBed)
-	}
-}
-
-// E5：cd2b 离线态 —— sleepad 离线 + HR/RR absent 无独立源 + pose lying + floor-strip XY。
-// 经一帧 Correct，SFallen 后验应超 SBed（δ≫0 几何救回，不靠 sleepad/HRRR）。
-func TestEmissionCd2bOfflineFallen(t *testing.T) {
-	model := DefaultModel()
-	f := NewFilter(model, 1)
+// E4/E5（§32 框架涌现，替原 δ floor-strip + 离线补丁测试）—— cd2b 零补丁涌现（AC-拆1）。
+// 框架纯路径：sleepad 在线 InBed→LeftBed，雷达 pose 躺+静止，**零 floor-strip、零离线**。
+// 验 LeftBed→B vac→§4 Ψ 压 SBed 留 SFallen→pose 躺静止→(SFallen,vac) 自涌现 ≥55%。
+func TestFrameworkEmergenceCd2b(t *testing.T) {
+	geom := bed1Geom() // Overlap=1 → Ψ(SBed,vac)=1-o_j=0
+	f := NewFilter(DefaultModel(), 1)
 	js := f.Space()
-	geom := bed1Geom()
+	cp := NewCoupling(geom)
 	em := NewEmission(geom)
-	cp := NewCoupling(geom) // κ=1 全物理表 → ψ_phys(F,occ)=ε_art 拉 B→vac
+	gxy := []float64{1.0}
 
-	// 初始：床占用主导（陈旧 occ），人原在床。
-	for i := range f.alpha {
-		f.alpha[i] = math.Inf(-1)
+	// 阶段A 在床睡：sleepad InBed + 躺 + 静止 → B occ、S→Bed。
+	inBed := Observation{Sleepad: []BedReading{BedInBed}, RadarOnline: true, PoseLying: true, StillSec: 60, NearBed: true}
+	for s := 1; s <= 30; s++ {
+		f.Step(int64(s)*1000, BedOnline{true}, cp.LogPsi(js, gxy), em.LogPhi(js, inBed))
 	}
-	f.alpha[js.idx(SBed, 1)] = 0
-	f.alpha.LogNormalize()
+	if pb := js.MarginalB(f.Alpha(), 0); pb < 0.99 {
+		t.Fatalf("阶段A P(B occ)=%.4f 应≈1（在床）", pb)
+	}
 
-	o := Observation{
-		RadarOnline: true, PoseLying: true, StillSec: 120,
-		NearBed: true, HRRRObserved: true, HRRRPresent: false, VitalSourceOnline: false, // radar absent 零信息
-		FloorStripXY: true,                      // δ：床沿地条（cd2b 主解）
-		Sleepad:      []BedReading{BedNoReport}, // sleepad 离线
+	// 阶段B 离床摔：sleepad LeftBed + 雷达仍躺 + 静止 + 近床。**零 floor-strip**。
+	left := Observation{Sleepad: []BedReading{BedLeftBed}, RadarOnline: true, PoseLying: true, StillSec: 120, NearBed: true}
+	for s := 31; s <= 120; s++ {
+		f.Step(int64(s)*1000, BedOnline{true}, cp.LogPsi(js, gxy), em.LogPhi(js, left))
 	}
-	gxy := []float64{1.0} // 雷达能定位到床
-	// 多帧推进（离线 B 弛豫 + Ψ ε_art + δ 持续把 S 拉向 Fallen）。
-	for step := 0; step < 90; step++ {
-		f.Step(int64(step+1)*1000, BedOnline{false}, cp.LogPsi(js, gxy), em.LogPhi(js, o))
+	pF := js.PFallen(f.Alpha())
+	if pF < 0.55 {
+		t.Errorf("框架涌现失败：cd2b 零补丁 P(SFallen)=%.4f 应≥0.55（LeftBed→B vac→Ψ 涌现）", pF)
 	}
-	ms := js.MarginalS(f.alpha)
-	if ms[SFallen] <= ms[SBed] {
-		t.Errorf("cd2b 离线态：P(Fallen)=%.4f 应 > P(AtBed)=%.4f（δ 几何救回）", ms[SFallen], ms[SBed])
-	}
-	t.Logf("cd2b 离线态 ✓ P(Fallen)=%.4f > P(AtBed)=%.4f（不靠 sleepad/HRRR，δ≫0 几何）", ms[SFallen], ms[SBed])
+	t.Logf("AC-拆1 ✓ 框架零补丁涌现：P(SFallen)=%.4f P(SBed)=%.4f P(B occ)=%.4f（无 floor-strip/无离线）",
+		pF, js.MarginalS(f.Alpha())[SBed], js.MarginalB(f.Alpha(), 0))
 }

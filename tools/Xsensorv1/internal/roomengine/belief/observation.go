@@ -28,7 +28,5 @@ type Observation struct {
 	HRRRObserved      bool // 本 tick 有 vital 通道读数；false=无通道 → 中性
 	HRRRPresent       bool // HR>0 ∨ RR>0
 	VitalSourceOnline bool // 房内**独立在线** vital 源(sleepad)；§D：radar 自身 absent 不得否决 AtBed
-
-	// δ 位置（cd2b 主解，A 阶段0 实测 Mahalanobis 3.35 → δ≫0 可判）：
-	FloorStripXY bool // 雷达 XY 落"床沿地条"簇（偏 Fallen）；否则 pad/其它无此偏好
+	// 注（§32）：原 FloorStripXY（δ floor-strip）已删——cd2b 靠 LeftBed→B vac 经 Ψ 相容涌现，非雷达 XY 几何。
 }
