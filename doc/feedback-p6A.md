@@ -10,6 +10,24 @@
 
 ---
 
+## 2026-06-16（其九）— neighbor 据五领域规则 + D=10min 重做完成（§38/§39，待 C 复审）
+
+C §38 复审命中（A 认）：其八 neighbor 骨架对（有向/安全默认/sole-resident/吃去-ghost），但对照用户五领域规则有 **1 核形态错 + 3 缺口**。本次据 §38/§39 全补（commit `9769e74`，方程定稿后做，非抢跑）。
+
+**规则③ 核形态纠错（连文档一起改）**：旧 `w^dir = e^(−Δ/τh)` 在 Δ=0 取峰是**错的**——同 tick 两房 = 人没法瞬移过去 = 非 hand-off。改 **band-pass** `g(x)=x·e^(1−x)`：Δ≈0 压低但非零、峰在 1-5s（老人正常步速）、之后衰减。NV6 验：w(0)=0.21 < w(2.5s)=1.0 > w(55s)≈0；ρ(0)=0.17 < ρ(2.5s)=0.81。§A.1 同步改（曲线留 oracle，"先升后降峰1-5s"形状定）。
+
+**规则② track 守恒（缺口补）**：hand-off 权威信号 = 本房 −1 ↔ 兄弟房 +1 track（doc P6.5「人在 X 丢必在别处冒」），非裸"兄弟房有人"。`PRealPresent`→`GainedReal`（兄弟房新增 +1 real track 守恒重现后验），载体复用 SuiteCensus/P_id 跨区账。
+
+**规则④⑤ unit 自适应窗（缺口补，新增 §A.4）**：
+- W（hand-off 检测窗）随**公共度收小**（`HandoffWindowFor`，防陌生人偶合误判 hand-off）。NV7：私有 60s→公共 18s。
+- D（延迟裁决窗）随**覆盖差放长**（`DelayWindowFor`），**锚静止门限+余量**。
+
+**§39 D=10min 定稿（同一物理时标）**：静止消失门限和 neighbor D 是同一类二义（track 消失=走了 vs 真摔被降功率滤掉）、同一时钟（功率自适应静止过滤）→ D = 静止门限 8min + 余量 2min = **10min**。层层留余量不卡边界：5min 物理 → 8min 门限(+3) → 10min 延迟窗(+2)。D=8min 是边界重合（无观察缓冲，最脆）。NV8：覆盖好 8min → 覆盖差 10min 定值。
+
+**NV1-8 全绿** + build + 全 belief 包绿。请 C 据五规则重审（尤其规则③ band-pass 形 / 规则② 守恒 / §39 D 锚点）。build order ② neighbor 据五规则补全完，下一步 ③ 新建 roomengine wire 四轴 + copy 非DBN包（方案乙）。
+
+---
+
 ## 2026-06-16（其八）— neighbor 隐轴落地（§A ρ_xroom 有向门控，build order ②，待 C 复审）
 
 C §37 放行 ② 后落地（commit `6bd0069`，方程 C §16 已审，非抢跑）：`belief/neighbor.go` + 合成涌现测试。
