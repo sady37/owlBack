@@ -8,18 +8,22 @@ import (
 
 // census.go — 房内多 track 人数 N_r（§G 主职：排 ghost，防 1 真人+1 影子被当 2 人 → C_FN 误折扣漏报）。
 //   身份 = 最小作功距离 logicID（§G六）：新 track 发新号 / 平时跟随 / 相遇按最近距离保号。
-//   ghost(mirror) 仅 track 数 == 2 处理：1=永发（不进 ghost）；2=跑 mirror；3+=不处理（人多风险低）。
-//   co-existence ρ = 两 track 速度同步度（本层算，镜像与源同时同速运动）；
-//   IsReflection（哪条是反射、破对称）= 反射几何 = MM 拓扑，W3.4b 填（本层不算几何）。
+//   两类 ghost：mirror（co-existence ρ + IsReflection）**仅 track 数==2**（§G六，1=永发/3+=不处理）；
+//     运动伪迹（超速异常量，§G七桶一）**单 track 每帧**——数量×时间累积、非硬阈，无真人源（§54 独立分量）。
+//   co-existence ρ = 两 track 速度同步度（本层算）；IsReflection（哪条是反射）= MM 拓扑 W3.4b 填。
 
 // TrackCensusParams 形态参数（form-anchor，标定留 oracle [[fall_data_is_artificial_test]]）。
 type TrackCensusParams struct {
-	MoveCm  int // 偏离出生位 > 此 = Displaced（走动/位移）
-	AssocCm int // 帧间关联最大合理位移（新坐标离最近现有 track > 此 = 新 track 发号）
+	MoveCm       int     // 偏离出生位 > 此 = Displaced（走动/位移）
+	AssocCm      int     // 帧间关联最大合理位移（新坐标离最近现有 track > 此 = 新 track 发号）
+	SpeedCeilCm  int     // 室内合理速度上限（cm/帧≈cm/s）；超出 = 运动伪迹异常量（§G七桶一）
+	ArtifactGain float64 // 超速幅度 → 伪迹 aScore 累积增益（数量×时间，非硬阈）
 }
 
 // DefaultTrackCensusParams 形态默认（非权威值，留 oracle）。
-func DefaultTrackCensusParams() TrackCensusParams { return TrackCensusParams{MoveCm: 50, AssocCm: 100} }
+func DefaultTrackCensusParams() TrackCensusParams {
+	return TrackCensusParams{MoveCm: 50, AssocCm: 250, SpeedCeilCm: 100, ArtifactGain: 0.002}
+}
 
 // TrackObs 一帧一条 raw track（坐标 + MM 的反射标注）。
 type TrackObs struct {
@@ -66,9 +70,10 @@ func (c *TrackCensus) Update(obs []TrackObs) {
 	for i, o := range obs {
 		t := c.tracks[ids[i]]
 		ro := belief.RealnessObs{
-			Displaced: math.Hypot(float64(o.X-t.birthX), float64(o.Y-t.birthY)) > float64(c.p.MoveCm),
+			Displaced:       math.Hypot(float64(o.X-t.birthX), float64(o.Y-t.birthY)) > float64(c.p.MoveCm),
+			ArtifactQuantum: c.artifactQuantum(speeds[i]), // §G七桶一：单 track 超速异常量，数量×时间累积
 		}
-		if len(obs) == 2 { // 1=永发不喂 / 3+=不处理不喂
+		if len(obs) == 2 { // mirror 仅 track==2（§G六）；1=永发不喂 / 3+=不处理不喂
 			ro.CoexistRho = rho
 			ro.IsReflection = o.IsReflection
 		}
@@ -102,7 +107,7 @@ func (c *TrackCensus) associate(obs []TrackObs) []int {
 	return ids
 }
 
-// Nr 房内真人数 = 本 tick 在场且非 mirror 的 track 数（PReal ≥ 0.5）。
+// Nr 房内真人数 = 本 tick 在场且非 ghost（mirror+伪迹）的 track 数（PReal ≥ 0.5）。
 //
 //	（Blind 续存的 lost-Fallen track 计入留 S^(i) 整合后；本片只数在场，不数已消失。）
 func (c *TrackCensus) Nr() int {
@@ -113,6 +118,16 @@ func (c *TrackCensus) Nr() int {
 		}
 	}
 	return n
+}
+
+// artifactQuantum 本帧运动伪迹异常量（§G七桶一）：速度超室内合理上限的幅度 × 增益（数量×时间累积、
+//
+//	非硬阈——单帧不判，持续超速才积成 ghost）。新生帧 speed=0 → 0；teleport >AssocCm 已成新 track 不在此。
+func (c *TrackCensus) artifactQuantum(speed float64) float64 {
+	if speed <= float64(c.p.SpeedCeilCm) {
+		return 0
+	}
+	return (speed - float64(c.p.SpeedCeilCm)) * c.p.ArtifactGain
 }
 
 // speedSync 两 track 速度同步度 ∈[0,1]：同时同速运动 → 1（镜像与源同步）；速度差大或都不动 → 0。

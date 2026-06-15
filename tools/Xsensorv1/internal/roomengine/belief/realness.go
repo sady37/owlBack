@@ -2,20 +2,18 @@ package belief
 
 import "math"
 
-// realness.go — realness 隐轴（DBN-Zone-Room §G 重定，2026-06-14）：两类 {Real, Mirror}，Static 溶解。
+// realness.go — realness 隐轴（DBN-Zone-Room §G/§G七）：真人 vs 两类 ghost（mirror 有真人源 / 伪迹无真人源）。
 //
-// 框架（§G）：留到本层的持续 track 要么真人、要么有真人源的动态镜像——孤立纯金属由 firmware 在底下
-//   30s 过滤（无目标 ID=88），不传到本层；故本层不分「静止金属反射体」（Static 删）。
+// 两类 ghost 独立累积、语义不同（§54 共生律防污染）：
+//   - mirror（mScore，co-existence ρ 累积，仅 track==2）：真人的反射，**有真人源**（共生律 → 贡献 PRoomHasReal）。
+//   - 伪迹（aScore，运动异常量累积，§G七桶一，单 track 每帧）：固件 track-swap/超速，**无真人源**（不贡献 PRoomHasReal）。
+// 两类对下游：pFallReal（压自己的摔）都压；N_r 都排；**PRoomHasReal 只 mirror 贡献真人源**。
 //
-// 主职 = N_r 排除 ghost（非压 ghost 自己的摔）：ghost 被当第 2 人 → N_r 虚增 → decide 折扣 C_FN →
-//   独处真人风险被误降 → 漏报。N_r 计数排除留 W3.4 多 track。
+// 数量×时间、非硬 gate（[[fall_data_is_artificial_test]]）：两 score 皆「每帧异常量随时间累积」，
+//   持续越强信心越高、偶发一帧 ≈ 不判（同 §3 κ EMA 范式）。
 //
-// 两轴 FN-safe 非对称默认（「一切看风险」）：fall 轴 pFallReal 默认中性 ≡1，**仅** co-existence
-//   （mirror 共现）正证据才 <1。「无 ghost 证据」≠「是 ghost」——绝不 leak 向均匀凭空造 ghost 质量
-//   （§G 删 leak 治本，治 §50 误抑制；连带删旧 survival/Static 凑 Real 的反 leak 补偿）。
-//
-// 闸门：自主走动（Displaced 且非同步反射）→ movedFromBirth 锁 Real，此后共现也不重判 Mirror
-//   （已确认真人摔倒静止/消失不被当 ghost 否定，cd2b 病另一面防护）。
+// 闸门：自主走动（plausible 位移、非伪迹速度、非同步反射）→ movedFromBirth 锁 mirror（mScore=0），
+//   此后共现不重判 Mirror（已确认真人摔倒静止/消失不当 mirror 否定，cd2b 病另一面）。
 
 // realness 形态锚（铁律 [[fall_data_is_artificial_test]]：非权威值，留 oracle）。
 const (
@@ -23,55 +21,73 @@ const (
 	rcAutonomousRho = 0.5 // 共动强度 > 此 + IsReflection = 同步反射（非自主），不算「自主走动」
 )
 
-// RealnessObs 一帧 realness 证据（adapter 由出生档案 + MM 拓扑译入；此处只认 schema）。
+// RealnessObs 一帧 realness 证据（adapter 由出生位/MM/census 译入；此处只认 schema）。
 type RealnessObs struct {
-	Displaced    bool    // 本帧相对 BirthPos 有位移（走动/跌倒位移）→ 自主走动锁 Real
-	CoexistRho   float64 // 与配对 track 共动强度 [0,1]（mirror；MM 邻居在 W3.4b 填，单房=0）
-	IsReflection bool    // 镜面几何指向本 track 是反射（破对称；MM 在 W3.4b 填，单房=false）
+	Displaced       bool    // 本帧相对 BirthPos 有位移（走动/跌倒位移）→ 自主走动锁 Real
+	CoexistRho      float64 // 与配对 track 共动强度 [0,1]（mirror；MM 邻居 W3.4b 填，单房=0）
+	IsReflection    bool    // 镜面几何指向本 track 是反射（mirror；MM 填，单房=false）
+	ArtifactQuantum float64 // 本帧运动伪迹异常量 ≥0（超速幅度；census §G七桶一算，单 track 每帧）
 }
 
-// RealnessTrack 单 track realness 后验（Real vs Mirror）+ 走动闩。
+// RealnessTrack 单 track realness 后验 + 走动闩。两类 ghost 证据独立累积：
 //
-//	mScore = 共现镜面证据累积（≥0，起 0）；P(Mirror)=1-e^{-mScore}，pFallReal=P(Real)=e^{-mScore}。
-//	起 mScore=0 → P(Real)=1：无 co-existence 证据 → 中性不压（§G「无 ghost 证据不造 ghost 质量」）。
+//	mScore = mirror（有真人源）；aScore = 伪迹（无真人源，§54 独立分量防共生律污染）。
+//	pFallReal = PReal = e^{-(mScore+aScore)}（两类 ghost 都压自己的摔）；无证据 → 1 中性不压。
 type RealnessTrack struct {
 	mScore         float64
-	movedFromBirth bool // 单调闩：曾自主走开出生点 = 确认真人，此后不重判 Mirror
+	aScore         float64
+	movedFromBirth bool // 单调闩：曾自主走开出生点 = 确认真人，此后不重判 mirror
 }
 
-// NewRealnessTrack 起中性真人（P(Real)=1）。无出生先验分叉——默认即 Real（§G：无 ghost 证据不压）。
+// NewRealnessTrack 起中性真人（PReal=1）。
 func NewRealnessTrack() *RealnessTrack { return &RealnessTrack{} }
 
 // Update 一帧证据更新。
 func (r *RealnessTrack) Update(o RealnessObs) {
-	// 自主走动 = Displaced 且非同步反射（镜像也 Displaced，但那是 synced 非自主）→ 确认真人。
-	if o.Displaced && !(o.IsReflection && o.CoexistRho > rcAutonomousRho) {
+	// 自主走动 = plausible 位移（非伪迹速度）且非同步反射 → 确认真人，锁 mirror。
+	if o.Displaced && o.ArtifactQuantum == 0 && !(o.IsReflection && o.CoexistRho > rcAutonomousRho) {
 		r.movedFromBirth = true
 	}
 	if r.movedFromBirth {
-		r.mScore = 0 // 已确认真人：锁 Real，co-existence 不能再判 Mirror
-		return
+		r.mScore = 0 // 已确认真人：锁 mirror（不重判 Mirror）
+	} else if o.CoexistRho > 0 && o.IsReflection {
+		r.mScore += rcMirrorGain * o.CoexistRho // 共现镜面 → mirror 累积
 	}
-	if o.CoexistRho > 0 && o.IsReflection {
-		r.mScore += rcMirrorGain * o.CoexistRho // 共现镜面 → Mirror 累积（唯一拉低 P(real) 的正证据）
-	}
+	r.aScore += o.ArtifactQuantum // 伪迹累积：独立于 mirror/movedFromBirth（运动异常无真人源）
 }
 
-// PReal 真人后验 = pFallReal（喂 SFallen 发射调制；无 co-existence → 1 不压）。
-func (r *RealnessTrack) PReal() float64 { return math.Exp(-r.mScore) }
+// PReal 真人后验 = pFallReal（喂 SFallen 发射调制；无 ghost 证据 → 1 不压）。
+func (r *RealnessTrack) PReal() float64 { return math.Exp(-(r.mScore + r.aScore)) }
 
-// PMirror 动态镜像后验。
-func (r *RealnessTrack) PMirror() float64 { return 1 - math.Exp(-r.mScore) }
+// PMirror 镜像后验（有真人源 ghost）。
+func (r *RealnessTrack) PMirror() float64 { return r.ghostShare(r.mScore) }
 
-// PGhost 非真人后验（Static 溶解 → ghost 仅 mirror）。
-func (r *RealnessTrack) PGhost() float64 { return r.PMirror() }
+// PArtifact 伪迹后验（无真人源 ghost，§G七桶一）。
+func (r *RealnessTrack) PArtifact() float64 { return r.ghostShare(r.aScore) }
 
-// PRoomHasReal 共生律（§G）：任一 track（Real 或 Mirror）皆蕴含一个真人源（金属已被 firmware 过滤）
-//
-//	→ 有任一 track 即房内有真人。用途：真人 track 丢失但镜像存活 → 仍判房内有真人 → fall 不被「无 track」抑制。
-func PRoomHasReal(tracks []*RealnessTrack) float64 {
-	if len(tracks) == 0 {
+// ghostShare 非真人质量 (1-PReal) 按两 score 占比分给 mirror/伪迹。
+func (r *RealnessTrack) ghostShare(s float64) float64 {
+	tot := r.mScore + r.aScore
+	if tot == 0 {
 		return 0
 	}
-	return 1
+	return (1 - math.Exp(-tot)) * s / tot
+}
+
+// PGhost 非真人后验（mirror + 伪迹）。
+func (r *RealnessTrack) PGhost() float64 { return 1 - r.PReal() }
+
+// PRoomHasReal 共生律（§54）：mirror 蕴含真人源、伪迹**不**蕴含 → impliesReal = PReal + PMirror。
+//
+//	用途：真人 track 丢失但镜像存活 → 仍判房内有真人 → fall 不被「无 track」抑制；纯伪迹 track 不抬此后验。
+func PRoomHasReal(tracks []*RealnessTrack) float64 {
+	noReal := 1.0
+	for _, t := range tracks {
+		impliesReal := t.PReal() + t.PMirror() // 伪迹(PArtifact)无真人源，不计入
+		if impliesReal > 1 {
+			impliesReal = 1
+		}
+		noReal *= 1 - impliesReal
+	}
+	return 1 - noReal
 }

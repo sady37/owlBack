@@ -52,7 +52,28 @@ func TestRealnessNoLeakStaysReal(t *testing.T) {
 	t.Logf("RV4 ✓ 无 leak + 闸门：确认 real→静止 60 帧后 P(real)=%.4f 仍 1（真人摔倒不当 ghost）", r.PReal())
 }
 
-// RV5：共生律——丢真人但镜像存活 → PRoomHasReal 仍高（任一 track 皆蕴含真人源）。
+// RV6【§54 共生律不污染】：伪迹 ghost（运动异常）= 独立分量——压自己摔（PReal 低）、判 PArtifact 非 PMirror、
+//   且**对 PRoomHasReal 不贡献真人源**（伪迹无真人源，区别 mirror）。
+func TestRealnessArtifactIndependent(t *testing.T) {
+	r := NewRealnessTrack()
+	for s := 0; s < 10; s++ {
+		r.Update(RealnessObs{ArtifactQuantum: 0.5}) // 持续运动伪迹异常量
+	}
+	if r.PReal() > 0.3 {
+		t.Errorf("持续伪迹 PReal=%.4f 应低（压自己的摔）", r.PReal())
+	}
+	if r.PArtifact() < 0.7 {
+		t.Errorf("伪迹后验 PArtifact=%.4f 应高", r.PArtifact())
+	}
+	if r.PMirror() > 0.01 {
+		t.Errorf("伪迹不该算成 mirror，PMirror=%.4f 应≈0（独立分量非 mScore）", r.PMirror())
+	}
+	if got := PRoomHasReal([]*RealnessTrack{r}); got > 0.3 {
+		t.Errorf("纯伪迹 track PRoomHasReal=%.4f 应低（无真人源，§54 共生律不污染）", got)
+	}
+}
+
+// RV5：共生律——丢真人但镜像存活 → PRoomHasReal 仍高（mirror 蕴含真人源）。
 func TestRealnessSymbiosis(t *testing.T) {
 	human := NewRealnessTrack()
 	mirror := NewRealnessTrack()

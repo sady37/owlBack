@@ -51,6 +51,16 @@ func TestCN3TwoIndependent(t *testing.T) {
 	}
 }
 
+func TestCN5ArtifactGhostExcluded(t *testing.T) {
+	// 单 track 持续超速（200cm/帧 > SpeedCeil=100，< AssocCm=250 仍关联）→ 伪迹 ghost 累积 → 排除出 N_r。
+	c := runTrackCensus(12, func(f int) []TrackObs {
+		return []TrackObs{{X: 100 + f*200, Y: 100}}
+	})
+	if c.Nr() != 0 {
+		t.Errorf("持续超速伪迹应判 ghost 排除 → N_r=0（§G七桶一），got %d", c.Nr())
+	}
+}
+
 func TestCN4ThreeTracksGhostNotProcessed(t *testing.T) {
 	// 3 track（含一条反射标注）：ghost 仅 track==2 处理、3+ 不处理 → mirror 不排 → N_r=3。
 	c := runTrackCensus(10, func(f int) []TrackObs {
