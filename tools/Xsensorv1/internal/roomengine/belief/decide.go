@@ -79,6 +79,7 @@ type Decision struct {
 	InstFire     bool    // 本帧瞬时判据满足（未含持续）
 	Band         string  // 落在哪档：report(≥55) / no(≤45) / tie(45-55可判) / indeterminate(高度不可判)
 	PFallen      float64 // P^F_t
+	PeopleCount  int     // N_r（人数单源 = TrackCensus.Nr()，已排 ghost；forensic + 拍法 A 守门校验）
 	CFN          float64 // C_FN(risk)（仅 tie 档参与）
 	Margin       float64 // P^F − 报阈（诊断：>0 越确定该报）
 	Lambda       float64 // Λ_t 似然比
@@ -88,9 +89,9 @@ type Decision struct {
 
 // 55% 三分阈 + 可判阈（form-anchor，留 oracle）。
 const (
-	pFireHi          = 0.55 // P^F ≥ → 报（证据自足）
-	pFireLo          = 0.45 // P^F ≤ → 不报
-	lambdaInformative = 3.0 // Λ > 此 = 可判；否则高度不可判（§26 gate 默认不报）
+	pFireHi           = 0.55 // P^F ≥ → 报（证据自足）
+	pFireLo           = 0.45 // P^F ≤ → 不报
+	lambdaInformative = 3.0  // Λ > 此 = 可判；否则高度不可判（§26 gate 默认不报）
 )
 
 // Decider 持有持续计时状态（跨帧）。
@@ -132,6 +133,7 @@ func (d *Decider) Step(nowMs int64, pFallen, lambda float64, rc RiskContext) Dec
 		InstFire:     inst,
 		Band:         band,
 		PFallen:      pFallen,
+		PeopleCount:  rc.PeopleCount,
 		CFN:          cfn,
 		Margin:       pFallen - pFireHi, // 诊断：距报阈的距离
 		Lambda:       lambda,

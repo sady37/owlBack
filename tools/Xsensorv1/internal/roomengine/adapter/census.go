@@ -109,7 +109,11 @@ func (c *TrackCensus) associate(obs []TrackObs) []int {
 
 // Nr 房内真人数 = 本 tick 在场且非 ghost（mirror+伪迹）的 track 数（PReal ≥ 0.5）。
 //
-//	（Blind 续存的 lost-Fallen track 计入留 S^(i) 整合后；本片只数在场，不数已消失。）
+//	Blind 续存（摔倒静止降功率被滤的 lost-Fallen track 仍算 1 人，§G六②）**不靠 census TTL**——
+//	架构师 2026-06-15 裁定「随 S^(i) 涌现，本刀不加 TTL」：N_r=Σ1[S^(i)∉{E,L}]（DBN-Zone-Room line57）
+//	本就定义在 S^(i) 上，blind 续存计数由 step2 多 track 进 belief 主管线后经 S^(i) 转移自持涌现
+//	（belief 自持非 staleness 补丁，呼应 §32 删 TTL）。单 faller 续存已由 belief 自持、且其计不计入
+//	N_r 不改自身上报（≤1 人不折扣 / ≥55% 必报）。故本片只数在场，不在 census 层补续存窗。
 func (c *TrackCensus) Nr() int {
 	n := 0
 	for _, t := range c.tracks {

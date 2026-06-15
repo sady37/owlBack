@@ -112,7 +112,9 @@ type sleepadState struct {
 
 // BuildTimeline 装一段 cd2b replay 时间线：cd2b 雷达帧为主 tick，sleepad 持住最后 bed_status（§32 二态，
 // 报过即在线、不 TTL 过期），床矩形从 layout。
-// census：单住户独处（cd2b 场景），PeopleCount=1，AloneContinuousMin 随时长增长，Night=false（保守）。
+// census：单住户独处（cd2b 场景）——Tracks 单条 → TrackCensus.Nr()=1（人数单源，§56），
+//
+//	AloneContinuousMin 随时长增长，Night=false（保守）。
 func BuildTimeline(caseDir, radarUID string) ([]adapter.FrameInput, error) {
 	var rf radarFile
 	if err := loadJSON(filepath.Join(caseDir, "window.json"), &rf); err != nil {
@@ -192,12 +194,12 @@ func BuildTimeline(caseDir, radarUID string) ([]adapter.FrameInput, error) {
 				X: r.dv0.x, Y: r.dv0.y, Z: r.dv0.z,
 				HR: 0, RR: 0, // 雷达帧无 vital 字段（cd2b：radar enter-gate 不返 HR/RR）
 			},
+			Tracks:   []adapter.TrackObs{{X: r.dv0.x, Y: r.dv0.y}}, // cd2b 单住户 → N_r=1（census 自排 ghost）
 			Sleepads: []adapter.SleepadFrame{{Present: sleepadPresent, Reading: reading}},
 			Beds:     beds,
 			Covers:   covers, Onbed: onbed, Overlap: overlap,
 			Census: adapter.Census{
 				AloneContinuousMin: float64(r.ts-startMs) / 60000.0,
-				PeopleCount:        1,
 			},
 		})
 	}

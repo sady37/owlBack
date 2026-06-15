@@ -30,23 +30,28 @@ type RadarTrack struct {
 
 // SleepadFrame 单床 sleepad raw 量（§32 二态：设备在线 OR 没有，不建模中途掉线）。
 type SleepadFrame struct {
-	Present bool               // 房间有此 sleepad（config-static）→ ρ=1（K^obs）。false=radar-only 床（ρ=0）。
-	Reading belief.BedReading  // InBed / LeftBed / NoReport(unknown，首报前；§30 unknown=后验不确定)
+	Present bool              // 房间有此 sleepad（config-static）→ ρ=1（K^obs）。false=radar-only 床（ρ=0）。
+	Reading belief.BedReading // InBed / LeftBed / NoReport(unknown，首报前；§30 unknown=后验不确定)
 }
 
 // Census 风险因子（risk_evaluator 同源）。
+// PeopleCount 不在此——人数 N_r 单源 = TrackCensus.Nr()（§G 排 ghost），由 engine 算后经
+// BuildRiskContext 注入（规则 #1.3 单源真相：不留可外部设值的第二计数）。
 type Census struct {
 	AloneContinuousMin float64
 	Night              bool
-	PeopleCount        int
 	Disabled           bool
 }
 
 // FrameInput 一帧全部 raw 输入（decoupled；scaffold wire 时由 engine/track_manager 填）。
 // Sleepads/Beds/Covers/Onbed/Overlap 长度均 = numBeds。
+// Tracks = 本 tick 全部 raw track（喂 TrackCensus 数 N_r/排 ghost）；Track 是 belief S/B/realness
+//
+//	主轴用的那条（step2 多 track 进 belief 主管线后两者归一，DBN-wire-roadmap §6 步2）。
 type FrameInput struct {
 	NowMs    int64
 	Track    RadarTrack
+	Tracks   []TrackObs
 	Sleepads []SleepadFrame
 	Beds     []Rect
 	Covers   []float64
@@ -102,7 +107,6 @@ func Gxy(fi FrameInput, p Params) []float64 {
 	return g
 }
 
-
 // nearBed HR/RR 空间门控：XY 在某床 NearBedMargin 内。
 func nearBed(fi FrameInput, p Params) bool {
 	if !fi.Track.Online {
@@ -148,22 +152,24 @@ func BuildObservation(fi FrameInput, p Params) belief.Observation {
 	}
 	nb := nearBed(fi, p)
 	return belief.Observation{
-		Sleepad:           sl,
-		RadarOnline:       fi.Track.Online,
-		PoseLying:         fi.Track.Online && fi.Track.Pose == p.PoseLying,
-		StillSec:          fi.Track.StillSec,
-		NearBed:           nb,
+		Sleepad:     sl,
+		RadarOnline: fi.Track.Online,
+		PoseLying:   fi.Track.Online && fi.Track.Pose == p.PoseLying,
+		StillSec:    fi.Track.StillSec,
+		NearBed:     nb,
 		// HRRRObserved 仅当雷达**真返** HR/RR（铁律 [[radar_hr_rr_bed_enter_gated]]：radar enter-gate，
 		// 近床但无 vital = 结构性未测 = 零信息，**非「观测到 absent」**；否则 §D 会在合法在床期误否决 AtBed）。
-		HRRRObserved: fi.Track.HR > 0 || fi.Track.RR > 0,
-		HRRRPresent:  fi.Track.HR > 0 || fi.Track.RR > 0,
+		HRRRObserved:      fi.Track.HR > 0 || fi.Track.RR > 0,
+		HRRRPresent:       fi.Track.HR > 0 || fi.Track.RR > 0,
 		VitalSourceOnline: vitalSrc,
 	}
 }
 
-// BuildRiskContext Census → belief.RiskContext。
+// BuildRiskContext Census + N_r（人数单源 = TrackCensus.Nr()，§56 候选①）→ belief.RiskContext。
+// nr 由 engine 经 TrackCensus.Nr() 算出（已排 mirror/伪迹 ghost，§G 主职）；decide 仅在 45–55%
+// 两可窗用它折扣 C_FN（拍法 A，§26/§56），≥55% 证据自足不折扣 → N_r=2 真摔照报（pillar D）。
 // AC-3：alone<0（adapter 时钟回拨）守卫落**边界**（规则 #1.4），cFN 内部保持纯形态（B round3 + B/C 共识）。
-func BuildRiskContext(fi FrameInput) belief.RiskContext {
+func BuildRiskContext(fi FrameInput, nr int) belief.RiskContext {
 	alone := fi.Census.AloneContinuousMin
 	if alone < 0 {
 		alone = 0
@@ -171,7 +177,7 @@ func BuildRiskContext(fi FrameInput) belief.RiskContext {
 	return belief.RiskContext{
 		AloneContinuousMin: alone,
 		Night:              fi.Census.Night,
-		PeopleCount:        fi.Census.PeopleCount,
+		PeopleCount:        nr,
 		Disabled:           fi.Census.Disabled,
 	}
 }

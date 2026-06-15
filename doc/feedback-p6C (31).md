@@ -2179,55 +2179,40 @@ engine.go:48 注释仍写「TrackArchive 译出生档案/**still-box**」，但 
 
 # §55 增补（C 复审 §G七桶一码层兑现 000602f）— aScore 独立分量 + 共生律防污染探针实证 + FN-safe 累积，通过
 
-> A 推桶一兑现（000602f）+ 文档两补缺（191163a）。C 开审前读锁定结构对齐，pull 自跑 + 探针核 §54 硬点（共生律防污染）+ adversarial。
+> A 推桶一兑现（000602f）+ 文档两补缺（191163a：§G六指 §G七标记 / §G七共生律句）。C **开审前读锁定结构对齐**，pull 000602f 自跑 + 探针核 §54 硬点（共生律防污染）+ adversarial（伪迹锁 Real / 偶发噪声）。**非照搬 RV6/CN5。**
 
-**共生律防污染探针实证（§54 硬点）**：三类 track 质量分配——伪迹 PArtifact=1·PRoomHasReal 贡献=0（不污染）；mirror PMirror=1·贡献=1（蕴含真人）；真人 PReal=1。关键边界：仅伪迹 track→PRoomHasReal=0（实证），共生律未污染，三类质量正交分离。aScore 独立于 mScore；PReal=e^{-(mScore+aScore)} 两类 ghost 都压自己的摔；movedFromBirth 加 ArtifactQuantum==0 门控防伪迹靠假位移逃成真人。FN-safe 累积（真实参数 ceil=100/gain=0.002，超速 quantum≈0.1/帧：1帧 PReal=0.905 快走≈不判 / 30帧 0.050 持续才判）。参数留 oracle。零回归 cd2b=0.5203。**§54 两补缺 + 硬点全兑现，通过。**
+## 一、文档两补缺已落（C §54 标的）
 
----
+- §G六:378 加指向 §G七 标记（「1track 永发」只对 mirror/静止，运动伪迹另分支）✅
+- §G七桶一补共生律句（伪迹独立分量、不贡献 PRoomHasReal）✅
 
-# §56 增补 — C 对候选①（N_r→PeopleCount 接 decide）的预声明验收规格 + decide gap 拍法 A 已是既有结构
+## 二、★ 共生律防污染 — C 探针实证（§54 硬点，PASS≠机制对）
 
-> 架构师定候选① + 拍 decide gap = 拍法 A（tie-break only，FN-safe）。C 核 decide 现状出预声明闸。
+A 用 `aScore` 独立分量 + `PRoomHasReal=Π(1-(PReal+PMirror))`。C 探针直接打印三类 track 质量分配：
 
-**拍法 A 已是 §26 既有结构（C 实证）**：decide.go ≥55%→report（C_FN 不需要）；C_FN 仅 tie 档（45–55%）参与。多人折扣天然进不到 ≥55% 档——拍法 A 已落地，候选① **不改 decide 折扣逻辑**，只接 N_r→PeopleCount。
+| track | PReal | PMirror | PArtifact | PRoomHasReal 贡献 |
+|---|---|---|---|---|
+| 伪迹 | 0 | 0 | **1.0** | **0**（无真人源，不污染）✅ |
+| mirror | 0 | **1.0** | 0 | **1.0**（蕴含真人源）✅ |
+| 真人 | 1.0 | 0 | 0 | 1.0 |
 
-**五柱**：A N_r→PeopleCount 单源（不引第二计数）；B ★ Blind 续存 track 计入 N_r（§G六②，摔倒的人不蒸发，§55 时 Nr() 只数在场，本刀必接）；C ghost 真排除（CN2 影子/CN5 伪迹→PeopleCount=1 端到端到 decide）；D ★ 拍法 A 守门（N_r=2 + 一人 ≥55% 真摔→必 report，C_FN 不参与；被折到不报=否决）；E 零回归。
+**关键边界：仅伪迹 track → PRoomHasReal=0**（实证）。正是 §54 要防的污染点——若 A 图省事塞进 mScore，这里会错成 1.0（伪迹被当蕴含真人→房内有真人虚高）。现伪迹走独立 aScore、`PRoomHasReal` 只算 PReal+PMirror，**共生律未污染**。三类质量正交分离干净。✅
 
----
+## 三、adversarial 边界（C 探针，非照搬）
 
-# §57 增补 — Xsensorv1 剩余工作 canonical 路线图（架构师审定，全小活；空间分支作废）
+- **超速伪迹+Displaced → PReal=0.0000 未锁 Real** ✅：`movedFromBirth` 加 `ArtifactQuantum==0` 门控生效——伪迹即便有位移也不算「真走」，锁不成真人、继续判 ghost。真人慢走（ArtifactQuantum=0）→ PReal=1 正常锁。**FN-safe 关键边界守住**（伪迹不能靠假位移逃成真人）。
+- **FN-safe 累积（真实参数 SpeedCeilCm=100/ArtifactGain=0.002）**：speed=150 → quantum=0.1/帧。实测 1帧 PReal=0.905（快走一步≈不判）/ 5帧 0.607 / 15帧 0.223 / 30帧 0.050（持续才判 ghost）。**符 §G七「数量×时间累积、偶发不判、持续才判」**，gain 小靠时间累积、非硬阈。✅
+  - （C 自纠：初探针用 quantum=5.0 失真致「单帧砸 0.0067」假警报；真实 census quantum≈0.1，FN-safe 成立，假警报撤回。教训：探针值须用真实 census 算法产出，不可臆造。）
+- **参数留 oracle**：`DefaultTrackCensusParams` 注明「非权威值，留 oracle」——安全阈不标定，符 [[fall_data_is_artificial_test]]。✅
 
-> 架构师令列剩余工作大白话审核。经数轮裁剪（neighbor=纯时间窗非空间路由 / 镜像已处理 / 设备≤6 有限），剩余全降为小活。本节立 canonical 路线图，作废空间分支。
+## 四、零回归 + §54 四复审点
 
-## 一、已完工（不在剩余）
+- 全包 build+test 绿；RV6/CN5 过；RV1-5/CN1-4 + EG1/HR-2（finalP=0.5203 fire@531s）**一字不差**（真人 speed<ceil 无伪迹，cd2b 不变）。
+- §54 四复审点全过：① 桶一 score 独立于 mScore ✅ ② 对 PRoomHasReal 不贡献真人源 ✅（探针实证）③ 累积非硬 gate ✅ ④ FN-safe ✅。
 
-四隐轴 belief 单元 ✅ / 四轴融合接 filter.Step ✅ / 单房 engine 主循环 + cd2b 复现 ✅ / realness §G 重定（删 Static+leak，两类 Real/Mirror）✅ / ghost 桶一（单 track 运动伪迹，数量×时间累积）✅ / 多 track census 独立组件（数人头排 ghost）✅ / **mirror（桶二，墙上镜像几何）架构师已处理** ✅。
+## 五、C 净判
 
-## 二、剩余工作（按顺序，全小活）
+**§G七桶一码层兑现通过。** aScore 独立分量、PReal=e^{-(mScore+aScore)} 两类 ghost 都压自己的摔、PMirror/PArtifact 按占比分非真人质量、**PRoomHasReal 只 mirror 贡献真人源（共生律防污染探针实证）**；movedFromBirth 加 ArtifactQuantum 门控防伪迹逃成真人；累积式 FN-safe（偶发不判持续才判）；参数留 oracle；零回归。文档两补缺已落。**§54 标的两缺 + 硬点全兑现。**
 
-| 步 | 内容 | 量级 | 关键限制（裁剪依据） |
-|---|---|---|---|
-| **1** | N_r→PeopleCount 接 decide（候选①，正在做） | 小 | decide 逻辑不改（拍法 A 已是结构，§56） |
-| **2** | 多 track 接进 FrameInput/engine 主管线 | **小**（原估中等，重估降级） | **设备≤6 有限、ghost track==2 为界 3+ 不处理→全表枚举非通用 N**（同 §2:159 \|B\|≤3 全表思路） |
-| **3** | ~~镜像几何判别~~ | — | **架构师已处理**（IsReflection = track==2 + ghost 出生墙外 + ghost-radar 连线交墙点；墙几何来自 layout 非 MM；只处理墙上 mirror 一种，其余不处理） |
-| **4** | 跨设备消失关联（纯时间窗 D=10min） | **小**（原估小-中，重估降级） | **≤6 设备事件流时间比对；不碰房间相邻/空间路由（作废）；§A 方程已落，接线非攻坚** |
-| **5** | 收尾：作废分支文档清账 + 零回归 | 小 | 清空间 hand-off / MM 扩 enter / §47-48 身份 plumbing 残留 |
-
-## 三、★ 作废分支（空间假设，C 自编误导，本节正式作废）
-
-C 数轮把"多房/neighbor"误套空间解，经架构师裁剪全废，记诚实歧路（不删）：
-- **空间 hand-off / 房间相邻矩阵**：作废。neighbor = **纯时间窗**（unit 内任一设备时间窗 D=10min 内有无新出现→判消失 vs 转移），不看哪个房相邻。
-- **MM 扩 enter 前置**：作废。neighbor 不需空间，MM 到 bed 为止不阻塞。
-- **§47-48 身份 plumbing 工单 / nearestAliveTrack 移植**：作废（§G六 软边缘化/最小作功 logicID 已溶解，C §51 已记）。
-- **"镜像=中等算法攻坚"**：作废（C 脑补正向反射几何；架构师实判=ghost 墙外出生+连线交墙，标准几何，已处理）。
-- 教训再记：**剩余工作量级须按架构师的限制（设备≤6/track==2 界/纯时间窗/layout 给墙）估，不可按通用 N/空间路由脑补**——C 多次高估皆因漏限制。
-
-## 四、不在 Xsensorv1 范围（摘出，架构师认同）
-
-- 安全阈值/曲线参数真实数据标定——一路留 oracle，归生产（[[fall_data_is_artificial_test]]）。
-- MM 几何、上生产集成——Xsensorv1 之外。
-
-## 五、净结论
-
-**Xsensorv1 剩余 = 四件小接线（1 接决策 / 2 接管线 / 4 时间窗消失 / 5 收尾）+ 镜像已处理。无中等以上攻坚。** 框架（DBN 四轴 + §A 时间窗 neighbor + §G realness + ghost 三分）已立，剩按有限规模（≤6 设备）拼装已有零件。C 待架构师推 §55-57，候选①继续。
+**进度**：ghost 信号体系桶一（单 track 运动伪迹）框架（§G七）+ 码层（§55）闭环 ✅。桶二（出生地几何）随 MM、桶三（metal 静止）保持删。**下一步候选（架构师定）**：① N_r→RiskContext.PeopleCount 接 decide C_FN 折扣（让排 ghost 真影响裁决）② 多 track 接 FrameInput/engine 管线。C 复审重点预告（候选①）：N_r→PeopleCount 单源 + Blind 续存 track 计入 N_r（§G六② 摔倒的人不蒸发）+ decide gap（多住户折扣只 45–55% tie-break 还是否决 ≥55%，C 倾向 FN-safe 不否决高置信真摔，架构师拍）。
 
