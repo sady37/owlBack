@@ -188,7 +188,7 @@ $$\delta_{\text{pad/floor}}=D_{\mathrm{KL}}\!\big(P(\text{XY}\mid\text{on-pad})\
 
 - **单床退化**：$|\mathcal B|{=}1\Rightarrow a_1\!\approx\!1$、$B$ 向量降标量 → 回 18 态 $(S,B)$。
 - **一雷达多床**：$(r,s_1)/(r,s_2)$ 各维护 $\kappa_{r,s_1}/\kappa_{r,s_2}$，$\Psi$ 对各 $B^j$ 按各自 $\kappa$ 耦合；时间共现在几何分不开时把跌倒证据**路由到正确的床**。
-- **人数 $N_r$ / 真伪 ghost**：同构造换轴——$S^{(i)}$ 多份，$N_r=\sum_i\mathbb 1[S^{(i)}\notin\{E,L\}]$，realness $T^{(i)}$ 由跨 track $\rho$（与 $\kappa$ 同源的共现/镜面）耦合，$P(\text{ghost})$ 从 co-existence 涌现。与本床轴正交，同一滤波形式。
+- **人数 $N_r$ / 真伪 ghost**：同构造换轴——$S^{(i)}$ 多份，$N_r=\sum_i\mathbb 1[S^{(i)}\notin\{E,L\}]$，realness $T^{(i)}$ 由跨 track $\rho$（与 $\kappa$ 同源的共现/镜面）耦合，$P(\text{ghost})$ 从 co-existence 涌现。与本床轴正交，同一滤波形式。（**realness 三类 → 两类 {Real, Mirror}、主职 = $N_r$ 排除 ghost、Static 溶解，见 §G**）
 
 ---
 
@@ -340,6 +340,42 @@ $$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\te
 - **$w_{\text{pose}}$ 取定 C2（B 第2轮裁定）**：§5 的 $w_{\text{pose}}/w_{\text{dwell}}/w_{\text{hrrr}}$ 的 $\text{covers}(r,\cdot)$ 多床下取 **$\max_j\text{covers}(r,j)$**（实现 `geom0Covers()`），理由 = **保持 $\Phi$ 的 S/B 分轴清洁**（雷达轴只挂 $S$、不按床 $j$ 分解，否则 AtBed 用对应床 covers、$F$ 用 max covers 会把床轴拖进 $S$ 发射）。已知代价：多床房**雷达 coverage 高估**（被全覆盖的床"借" coverage 给弱覆盖床 → 弱覆盖床的 pose/dwell 弱信号被满权放大，可能推高其 $F$/AtBed 信念）。**触发条件式退路**：后续多床 case 若出现此高估致 FP，再引入 per-state covers（AtBed↔对应床、$F$↔max）。当前单 case 无多床证据，保 max。
 - **$\varepsilon_{art}$ 量级 C3**（标定）：用"在床段 pose=Lying 帧占比"反推（压得住床上翻身误读、不被 $\Phi$ 正向似然在 log 域淹没），与 $L_{in}$ 联合定，非凭空 $10^{-3}$。
 
+### §G realness 轴重定 — Real vs Mirror（Static 溶解）+ $N_r$ 排除为主职 + 金属三场景分层（2026-06-14 框架对齐）
+
+> 来源：项目组与架构师链上对齐（非单 case 反推）。修正 §10 的 realness 三类 {Real, Mirror, Static} → **两类 {Real, Mirror}**；并把 realness 的主职从「压 ghost 自己的摔」改正为「**把 ghost 排除出人数 $N_r$**」。两固件时标由架构师 domain 拍定，本节锚。
+
+**一、Static 溶解（删第三类）**。孤立纯金属反射体这一类**不该活在本层**，两条独立理由：
+1. **firmware 已在底下处理**：无人时 firmware **30s 内过滤纯金属回波**（= 无目标 ID=88 态，[[AI_health]]「1s 有人 / 30s 无人 ID=88」）。孤立静止金属不形成持续 track 传到本层——Static 类当初要防的场景，硬件已防死。
+2. **静止判 Static = 病根**：用「困 BirthPos + 久静 + 近墙」判 Static，**分不开静止金属与摔倒静止的人**（签名同）。单 track 静止判 ghost = [[fall_detection_risk_stratified_design]] 的病根，会误抑制无走动的床边真摔。删。
+
+**二、realness 主职 = $N_r$ 排除 ghost（非压 ghost 的摔）**。危险不在 ghost 自己 false-fire，在 **ghost 被当成第 2 个人 → $N_r$ 虚增 → 独处真人风险被误降**：decide（§8/§26）对 `PeopleCount>1` 折扣 $C_{FN}$（×1/N，仅 45–55% 两可窗，「有人代发现」）。真人其实独处却被当 2 人 → 该报的边界摔不报 → **FN**。故 realness 要保证 $N_r$ 只数**不同的真人**，排除 mirror（同人反射）/金属。`PRoomHasReal`（有没有真人）≠ $N_r$（几个真人）；$C_{FN}$ 读后者。
+
+**三、两轴 FN-safe 非对称默认（「一切看风险」落地）**。realness 不确定时，两根轴各自往**高 fall-risk** 倒：
+
+| 轴 | 暧昧默认 | FN-safe 因 |
+|---|---|---|
+| 它自己的 fall（pFallReal 调制 SFallen 发射）| **不压 $\equiv1$**，仅正向 ghost 证据才 $<1$ | 万一真人在摔，别抑制 |
+| 它当别人的「陪护」（$N_r$ 计数）| **不计入**，仅正向「独立真人」证据才计入 | 万一非真人，别替别人折 $C_{FN}$ |
+
+> 正向证据：ghost = co-existence $\rho$（mirror 共动，§10/§A.1）或 cell-AreaDeny 拓扑（外生只读层）；独立真人 = 独立入口出生 + 独立运动史 / 非共现几何。**「无 ghost 证据」≠「是 ghost」**——realness.go 现有 leak 向均匀漂、零证据时凭空造 ghost 质量（$P(\text{real})$ 0.5→0.33），违「$P(\text{ghost})$ 从 co-existence 涌现」（§10），是**非框架残留，待码层改**。
+
+**四、金属三场景分层（互不重叠，每场景都有人管）**：
+
+| 场景 | 处理层 |
+|---|---|
+| 空房纯金属 | **firmware 30s 过滤**（无目标 ID=88，不归本层）|
+| 有人 + 金属 | **co-existence（$\ge2$ track）→ 共现排除出 $N_r$**（Mirror/$\rho$ + 计数保守默认）|
+| 静止/摔倒的人**消失**（~5min 降功率滤）| **Blind 子态 + neighbor $D{=}10$min 闸**（§A，同一物理时标）|
+
+**五、两固件时标锚（架构师 domain 拍定，文档直接锚，非待标定）**：
+- **30s**：无人时 firmware 过滤纯金属回波（= 无目标 ID=88 态）。
+- **~5min**：静止的*人*被降功率滤掉（已锚在 §A / $D{=}10$min 的 5min 物理底）。
+- 二者**不同场景**：30s 治无人金属，~5min 治静止人消失的二义；勿混。
+
+**六、身份/连续性内化（非外挂 logicID）**。track 身份延续 = 各 $S^{(i)}$ 转移自持（§10 多份，Fallen 留 Fallen + Blind 携占用），**非** production 的 logicID/nearestAliveTrack 最近距离关联（那是单-track-HMM 时代的硬结论补丁，与已废硬 $O_b$、`belief_neighbor` ObsNeighbor 同病，§A）。track↔观测归属走**软边缘化**（仿 §4 软床归属 $a_j$），非硬匹配。
+
+---
+
 ### 整合后轴/裁决一览
 
 | 轴 | 证据 | 状态 |
@@ -348,3 +384,4 @@ $$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\te
 | 时间（dwell 符号）| 久静 × cell 容忍 | 已内化（survival）；cell 容忍可靠性 = 框架前提 |
 | 裁决（§8 $C_{FN}$）| 风险因子 | 主框架；$C_{FN}$ 连续代价函数须 decide 落地 |
 | 跨房（§A neighbor ρ_xroom）| 兄弟房**有向** hand-off | 框架命题 + **方程已落（§A.1 ρ_xroom / §A.2 $T_S$ 门控 / §A.3 §10 接口）**；曲线参数待标定 |
+| realness（§G Real vs Mirror）| co-existence $\rho$ / cell-AreaDeny 拓扑 | **框架重定（§G）**：主职 = $N_r$ 排除 ghost；两轴 FN-safe 默认；Static 溶解（金属交 firmware 30s / co-existence / Blind 三场景）；leak 凭空造 ghost 待码层改 |
