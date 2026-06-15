@@ -8,6 +8,7 @@ import (
 
 	"owlBack/tools/Xsensorv1/internal/roomengine/adapter"
 	"owlBack/tools/Xsensorv1/internal/roomengine/belief"
+	"owlBack/tools/Xsensorv1/internal/roomengine/engine"
 )
 
 // replay.go — cd2b 三态 replay harness（集成步骤2，最瘦路径，用户裁定 replay harness）。
@@ -203,38 +204,17 @@ func BuildTimeline(caseDir, radarUID string) ([]adapter.FrameInput, error) {
 	return out, nil
 }
 
-// Frame replay 单帧结果（probe + 裁决）。
-type Frame struct {
-	Probe    belief.FrameProbe
-	Decision belief.Decision
-}
-
-// Run 驱动时间线 → adapter→belief→probe→decide。返回逐帧结果 + 最终 marginal S。
-func Run(timeline []adapter.FrameInput) ([]Frame, belief.Vector) {
-	p := adapter.DefaultParams()
+// Run 驱动时间线经单房 engine.Room（W3.2：主循环单源 = engine 包）。返回逐帧结果 + 最终 marginal S。
+// 单房 neighbor=0 / realness 中性=1（W3.3/W3.4 接通跨房 census 与出生档案后填实）。
+func Run(timeline []adapter.FrameInput) ([]engine.Frame, belief.Vector) {
 	nb := 0
 	if len(timeline) > 0 {
 		nb = len(timeline[0].Beds)
 	}
-	geom := adapter.BedGeoms(timeline[0])
-	f := belief.NewFilter(belief.DefaultModel(), nb)
-	js := f.Space()
-	cp := belief.NewCoupling(geom)
-	em := belief.NewEmission(geom)
-	dec := belief.NewDecider()
-
-	frames := make([]Frame, 0, len(timeline))
+	r := engine.NewRoom(adapter.BedGeoms(timeline[0]), nb)
+	frames := make([]engine.Frame, 0, len(timeline))
 	for _, fi := range timeline {
-		logPsi := cp.LogPsi(js, adapter.Gxy(fi, p))
-		logPhi := em.LogPhi(js, adapter.BuildObservation(fi, p))
-		f.Step(fi.NowMs, adapter.Online(fi), logPsi, logPhi, 0, 1) // neighbor/realness 中性(W3.3/W3.4 接通)
-		pF := js.PFallen(f.Alpha())
-		lam := belief.ComputeLambda(js, logPsi, logPhi)
-		d := dec.Step(fi.NowMs, pF, lam, adapter.BuildRiskContext(fi))
-		frames = append(frames, Frame{
-			Probe:    belief.Snapshot(js, f, cp, d, lam, fi.NowMs),
-			Decision: d,
-		})
+		frames = append(frames, r.Tick(fi, 0, 1))
 	}
-	return frames, js.MarginalS(f.Alpha())
+	return frames, r.MarginalS()
 }
