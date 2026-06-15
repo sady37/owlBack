@@ -1396,3 +1396,54 @@ track 消失这一刻是「ghost 没了」还是「真人摔了」，取决于**
 **A 的 ghost.go = 镜像消歧子集（保留，GH3 病根规避对），非完整 realness 轴。** ghost 隐轴**未做完**，待补：①金属/静止反射（单 track，非 co-existence）②时间过滤建 real 信心 ③real 信心闸门（护已确认真人摔倒不被当 ghost）。
 
 **A 抢跑提醒**：ghost 物理机制讨论未收敛 A 即交码，导致只覆盖最早「镜像几何」一类，漏了用户后续纠正的功率自适应/时间过滤主线。C 建议 A 据本节补全，**realness×fall 耦合（real 信心闸门）是重点，关乎漏报**。C 待 A 补全复审。
+
+---
+
+# §37 增补（C 复审 realness.go，实体入库后）— 三缺口全补对，RV4 闸门真实现，通过
+
+> A 补提交 realness.go（88df6b6，a852721 漏 add）。C 独立 pull + 读实现 + 跑 RV1-5。**这次实体在库，C 据实代码复审。判：通过。**
+
+## 一、C 独立验证
+
+realness.go(145行)+test(94行)入库。全测试绿（含 RV1-5）。RV 独立跑：RV1 真人 P(real)=1.0 / RV2 金属 P(static)=0.978 / RV3 镜像 P(mirror)=0.922 / RV4 闸门 P(real)=1.0 / RV5 共生 PRoomHasReal=0.99。与 A 报一致。
+
+## 二、RV4 real 信心闸门（§35 标最危险）C 读实现核 — 真实现非测试凑
+
+```go
+autonomous := o.Displaced && !(o.IsReflection && o.CoexistRho > rcAutonomousRho)
+if autonomous { r.movedFromBirth = true }   // 单调闩
+if r.movedFromBirth { psi[RCReal]=rcConfirmedReal; leak=0 }  // 强锁+不leak
+// Static 判定仅在 else(未确认)分支
+```
+
+- **`movedFromBirth` 单调闩**：自主走动一次→永久确认 real，不复位。
+- **确认后 `leak=0`**：信心不被静止侵蚀 → 真人摔倒静止 60 帧 P(real) 不掉（RV4=1.0）。
+- **`autonomous` 排除同步反射**（`!(IsReflection && CoexistRho>0.5)`）：镜像共动也 Displaced 但非自主，不误置闩。区分精细，对。
+- **Static 判定仅 `else`（未确认）分支**：已确认 real 进不了 Static → **真人摔倒静止消失绝不被重判 ghost = cd2b 病另一面防护落地**。
+
+**C 判：RV4 是真机制实现，不是测试凑过。闸门结构性自带（闩+leak=0），非硬阈，守 A 其六 + 安全阈不可标定铁律。**
+
+## 三、三缺口逐条核（§35）
+
+| 缺口 | 补全 | C 核 |
+|---|---|---|
+| ① 静止金属 | RCStatic：困 BirthPos+久(AgeLongStatic)+近墙(ConfinedNearWall)，static_reflector 三签名，不靠 co-existence | ✅ 单 track 静止覆盖，RV2=0.978 |
+| ② 功率自适应+时间过滤 | CrossedStillPeriod survival 慢证据→Real（ghost/金属活不过静止期） | ✅ 两层证据（快出生+慢survival）|
+| ③ real 信心闸门 | movedFromBirth 闩+leak=0+Static仅未确认分支 | ✅ 见二，真人摔倒不当 ghost |
+
+## 四、RV5 共生律 C 核一个精确细节（A 做对）
+
+```go
+impliesReal := t.p[RCReal] + t.p[RCMirror]  // static 不蕴含真人
+```
+**镜像蕴含「有真人源」（决定14），金属不蕴含**（金属死物无需真人）。A 只让 Mirror 抬 PRoomHasReal，Static 不抬——区分精确。丢真人只剩镜像→PRoomHasReal=0.99（真人仍在，fall 不抑制，呼应 partial_monitoring）。
+
+## 五、C 净判
+
+**realness 隐轴通过。§35 三缺口全补对，RV4 闸门真实现（非测试凑），RV5 static/mirror 区分精确，连续 P(real) 非硬阈。** 统一原理「真人=入口出生+会动；非人违反其一」落地干净。
+
+**待 wiring（roomengine 新建阶段，非现在）**：RealnessObs ← track 出生档案(BirthScore/MaxImpliedSpeedFromBirth)+cell(AreaEnter/AreaDeny)；P(real)×fall 发射；消失→Blind→Fallen ramp。axis 数学已 belief 单元独立验。
+
+**build order 进度**：① ghost/realness 隐轴 ✅（本节通过）→ ② neighbor 隐轴（§A ρ_xroom 有向门控，方程 C §16 审过）→ ③ 新建 roomengine wire 四轴+copy 非DBN包 → ④ 全回归。
+
+C 放行进 ② neighbor 隐轴。
