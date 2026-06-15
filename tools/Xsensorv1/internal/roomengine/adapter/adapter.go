@@ -16,8 +16,11 @@ import (
 // 注（§32 拆补丁）：原 floorStrip（δ floor-strip 运行时派生）已删——cd2b 靠 sleepad LeftBed→B vac 经
 // §4 Ψ 相容涌现 SFallen（零补丁，C 独立测试 0.995 验证），不靠雷达 XY 精确空间。floor-strip 是补丁。
 
-// Rect 床矩形（canvas cm），来自 RoomConfig.Beds[] / engine.deviceBeds[]。
+// Rect 矩形（canvas cm）：床来自 RoomConfig.Beds[] / engine.deviceBeds[]；墙来自 RoomConfig.Walls[]（桶二镜像几何）。
 type Rect struct{ X1, Y1, X2, Y2 int }
+
+// Point 画布坐标点（canvas cm）。雷达自身位置（桶二镜像几何：radar→ghost 连线求交）。
+type Point struct{ X, Y int }
 
 // RadarTrack 单 track raw 量（observation.Track 投影）。
 type RadarTrack struct {
@@ -56,6 +59,9 @@ type FrameInput struct {
 	Onbed    []float64
 	Overlap  []float64
 	Census   Census
+	// 桶二镜像几何（§69/§70）：墙矩形 + 雷达自身位置（房 config-static；无 wall→IsReflection 恒 false=零回归）。
+	Walls    []Rect
+	RadarPos Point
 }
 
 // Params 派生层参数（form-anchor，标定留 oracle）。
