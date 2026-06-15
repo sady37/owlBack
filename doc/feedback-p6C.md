@@ -1643,3 +1643,135 @@ A **无兼容 shim，显式改全 7 处调用点**。没用默认参数掩盖签
 **W3.2 gate② 通过**（cd2b 真 engine 复现、replay 复用 Room 单源、零回归不依赖 copy）。**copy 裁 (b) lean-extract 下沉 W3.3**（A 推荐对，floor-strip 教训延伸），+ 边界约束（抽干净函数非 copy-paste-modify，保单源）。
 
 **进度**：W3.1 ✅ / W3.2 ✅（gate②）。下一步 **W3.3 realness 接通**：lean-extract 出生档案/still-box → adapter 译 RealnessObs → Room.Tick 喂 pFallReal；GH/RV 等价 case 在 engine 端到端（ghost 不喂 fall / RV4 真人摔不被滤）。C 待 W3.3 复审（重点：lean-extract 是否干净单源 + RealnessObs 每字段有源 + RV4 闸门 engine 端到端不破）。
+
+---
+
+# §45 增补 — C 对 W3.3 realness 接通的验收规格（提交前预告，§41 预声明模式）【实审见 §46】
+
+> W3.3 尚未推送。C 先出验收闸门，A 据此交付。C 已 pull HEAD 631f706（§44 入库）、读 belief/realness.go 契约 + wisefido-sensor/track_manager.go(2442) 源面，确认验收三柱。三道 gate 仍按 §42 裁：本节是 gate②→gate③ 之间 W3.3 子闸。
+
+## 一、三柱（对应你点的复审重点①②③）
+
+**柱① lean-extract 干净单源（§44 边界约束的落地核）。** 抽 = 把 still-box / 出生档案算法**提成自包含干净函数搬入 Xsensorv1**，源头不再平行存在；≠ copy-paste-modify 分叉。C 核形态（任一中即不通过）：
+- (a) 抽出的函数体与 track_manager.go 原逻辑**语义等价**（StillBox 30s 滚动 50×50 抗抖动、StillBoxRunStart==0 判非静止、birth-coherence 维护时序），不是凭记忆重写一版近似的。
+- (b) **没把 alarm/card/gate-list 死代码一起搬进来**（§44 floor-strip 教训核心：不搬 tangle）。grep 抽出文件不应出现 alarm/card/旧 fall gate 残留。
+- (c) 抽出后**不留两份**：若 Xsensorv1 与 wisefido-sensor 同名算法各一份且无单源声明 → drift 隐患，记歧路（不删，诚实）。Xsensorv1 是验证载体不回写 Tsensor，故\"搬\"合法，但搬来必须自包含、源头单一。
+
+**柱② RealnessObs 每字段有 raw 源（绝不 stub）。** 这是 W3.3 最易暗病处：adapter 若把字段填死 `false/0` 占位，单元 RV1-4 仍可能 PASS，但 engine 端到端 realness 失效。C 逐字段核 raw 源：
+
+| RealnessObs 字段 | 必须的 raw 源 | stub 后果（暗病） |
+|---|---|---|
+| `Displaced` | 本帧位置 vs BirthPos 位移（track_manager 现位 + BirthPos.X/Y） | stub=false → `autonomous` 永假 → **movedFromBirth 闩永不置 → RV4 闸门从不武装**（最危！真人摔倒被当 ghost 漏报） |
+| `ConfinedNearWall` | 困 BirthPos 邻域 + 近墙（grid 墙距 / AreaDeny） | stub → Static 永判不出 / 误判 |
+| `AgeLongStatic` | 存活时长 ≥5min 仍困（LastUpdateMs−BirthPos.TMs + still） | stub → 同上 |
+| `CoexistRho` | 跨 track 共动强度 [0,1]（与 κ 同源共现，§37/§40） | stub=0 → Mirror 永判不出 |
+| `IsReflection` | 镜面几何指向本 track（mirror_detect copy，§42 gap1） | stub → 共生律破 / 自主走动误判 |
+| `CrossedStillPeriod` | 跨静止降功率期仍在（still-box 时间过滤，§42 gap3 plumbing） | stub=false → survival 慢证据失效 → ghost/金属漏滤 |
+
+并核 `NewRealnessTrack(bornNearEntrance, inAreaDeny)` 两先验源：bornNearEntrance=NearestEntryDist(BirthPos) 阈内；inAreaDeny=BirthPos∈金属区。两者皆 stub=false → 所有 track 走 default {0.5,0.25,0.25} → 出生快证据全失、realness 退化靠后续，**出生档案接通名存实亡**。
+
+> C 验收硬线：**每字段在 adapter 代码里能指回一个 raw 源表达式**（lean-extract 出的量或 cell 标注），不能是字面常量。C 会逐字段 grep adapter 译入点。
+
+**柱③ RV4 闸门 engine 端到端不破（cd2b 病另一面，安全攸关）。** 单元 RV4（belief/realness_test.go:52）已证 belief 层：走动确认 real → 静止60帧 → P(real) 保持高。W3.3 要证**同一保护在 engine.Room.Tick 端到端活着**：合成「真人入口出生→走动(Displaced 真)→静止消失」喂 Room.Tick，消失后 pFallReal 仍压 SFallen（fall×P(real) 不被静止抑制）→ SFallen ramp 不被 ghost 否定。**这是柱②的 Displaced raw 源真接通的端到端证明**——若 Displaced 是 stub，此 case 必露馅（movedFromBirth 没武装，静止后 P(real) 塌，SFallen 起不来）。故柱③ case 同时验柱②的最危字段。
+
+## 二、C 复审手法（提交后执行，预告防 A 凑测）
+
+1. 自 pull + 自跑：临改 tools/Xsensorv1/go.mod `go 1.25.0→1.22`（GOTOOLCHAIN=local），全包测试，跑完 `git checkout -- go.mod`。RV1-4 + GH + engine 端到端全绿，且 cd2b/multibed/NV 零回归（realness 接通不得回归既绿）。
+2. 读 adapter.go 译入实现核：逐 RealnessObs 字段指 raw 源（柱②表），抓字面常量 stub。
+3. 读 lean-extract 出的 still-box/出生档案函数核单源（柱①），grep alarm/card/gate-list 残留。
+4. 测试 PASS≠机制对：端到端 RV4 case 必须是\"Displaced 真接通驱动 movedFromBirth\"，非测试里直接置闩跳过 adapter（那会掩盖 stub）。
+
+## 三、预声明否决条件（命中即 W3.3 不通过，退回）
+
+- 任一 RealnessObs 字段是字面常量 stub（柱②）→ 否决（即便全测试绿）。
+- lean-extract 成 copy-paste-modify 分叉 / 搬进 alarm-card tangle（柱①）→ 否决。
+- 端到端 RV4 靠测试内直接置 movedFromBirth 闩、绕开 adapter Displaced 链（柱③假绿）→ 否决。
+- realness 接通引入对既绿（cd2b 0.9992 / multibed / NV）的回归 → 否决。
+
+C 待 A 推送 W3.3，按本规格出 §46 净判。
+
+
+---
+
+# §46 增补（C 复审 W3.3 realness 房内接通 gate）— 三柱全守 + 反事实证 rebirth 修复 load-bearing，通过
+
+> A W3.3（fbe58f4）：lean-extract adapter/realness.go TrackArchive（出生档案+still-box 原语）→ belief.RealnessTrack → Tick 内 Observe→Update→pFallReal=PReal()→折 SFallen。C pull fbe58f4 + 装 go1.22（容器无 go，apt golang-go 1.22 + 临改 go.mod 1.25→1.22 GOTOOLCHAIN=local，跑完 git checkout 还原）+ 自跑全包 + 读三文件实现核 + 反事实注入证修复 load-bearing。
+
+## 一、自跑全绿（C 独立，非照搬 A 数）
+
+whole module build PASS；`go test ./...` 四包全 ok（adapter/belief/engine/replay）。verbose 核关键数(C 自测，非 A 报)：
+- **RV4 belief**：P(real)=1.0000 保持、P(static)=0.0000 被挡 ✓
+- **RA1-4 archive 单元**：全 PASS（RA1 位移闸 / RA2 AgeLongStatic / RA3 CrossedStill / RA4 断流不重生）
+- **EG1 engine 端到端**：P(SFallen)=0.9992 fire=true（cd2b 真 engine 复现，零回归）
+- **HR-2 replay cd2b 真 fixture**：551 帧 finalP(Fallen)=0.5203 fire=true@+531s ✓
+
+## 二、★ 反事实证：rebirth 修复是 load-bearing，bug 真实（C 独立复现 A 报的漏报）
+
+A 报"初版 RebirthGapMs 误判重生擦 Real 信心→finalP=0.0054 漏报，删 rebirth 治本"。C 不照搬，**注入反事实验证**：临时往 TrackArchive.Observe 加回"gap>10s 当重生"逻辑跑 HR-2 →
+
+```
+HR-2 finalP(Fallen)=0.0054  fire=false   FAIL（AC-拆3 应 fire 未 fire）
+```
+
+**精确复现 A 报的 0.0054 漏报数。** 删注入还原 → finalP=0.5203 fire=true 复绿。证三事：① bug 真实非 A 虚报 ② **HR-2 replay 是真 RV4 端到端守门**（EG1 合成 80cm 位移两种情况都绿、抓不到——A 自承，C 证实：合成 case 不触发稀疏 gap）③ "单 track 一次出生绝不重生"修复 load-bearing，非偶然通过。**这是 §45 柱③否决条件"端到端 RV4 假绿"的正面排除——HR-2 真实驱动、可被 break。**
+
+## 三、三柱逐项核（§45 验收规格）
+
+**柱① lean-extract 干净单源 ✅**
+- TrackArchive 自包含：import 仅 `math`+`belief`，**无** wisefido-sensor track_manager 依赖。grep alarm/card/gate-list/Tsensor 在 realness.go 仅出现在"声明没搬这些"的注释里，**无实代码引用**。
+- 语义单源核（非 copy-paste-modify 分叉）：C 对照 Tsensor `updateContinuousIndicators` 原算法——per-axis 包络 `max(dx,dy)` 非对角线（防 50×40 倒地框对角线 64 误判，**同一不变量、同一 rationale**）、30s 滚动窗、`len≥2` 闸、run-start 回填最早帧——extract `updateStillBox` 四点全等价。**诚实裁剪**：丢 StillBoxBreakDurMs/dwell 回馈、logger、MaxKalmanResidual、MaxImpliedSpeedFromBirth（皆喂被取代的旧 gate-list 评分）= 留 still-run 原语、弃所喂 tangle，正是 §44 边界"提干净函数非搬 tangle"。**判：干净自包含函数，源头单一语义，非分叉。**
+
+**柱② RealnessObs 每字段有源（无字面 stub）✅**
+- 三房内源 **live**：`Displaced`←`dispFromBirth>MoveCm`（现位 vs 出生位）｜`AgeLongStatic`←`age≥LongStaticMs && confinedToBirth`｜`CrossedStillPeriod`←`a.crossed`（updateStillBox per-axis 单调置位）。三者皆指回 raw 表达式，**非字面常量**。
+- 三 MM 拓扑字段（CoexistRho/IsReflection/ConfinedNearWall）：**struct 字面里缺省 = Go 零值**，注释明标 W3.4b 经 MM 邻居填。**这是诚实中性非暗 stub**：对已确认 real 的人，三者=false/0 = "无 ghost 抑制证据" = 安全默认（1track 永发，不误抑制真摔）。区别于柱②否决的"Displaced stub 死"——那个会武装失败漏报；这三个零值方向是"不抑制"=安全侧。**判：每字段有源或诚实 MM-deferred，无危险 stub。**
+
+**柱③ RV4 engine 端到端不破 ✅**
+- Displaced 真链驱动 movedFromBirth：EG1 X=50 出生→X=130（80cm>MoveCm=50）经 adapter 真算 Displaced=true→Update 置闩，**非测试内直接置闩**（§45 柱③假绿否决项排除）。
+- HR-2 真 fixture 端到端守住（finalP=0.5203 fire）+ 第二节反事实证其可被 break = 真守门非假绿。
+- 接口变更核：A 删 Tick 的 pFallReal 入参（realness 房内涌现，不同 rhoXroom 外部）——C 核 engine.go：pFallReal 由 Room 内 arch+rt 算（`Observe→Update→PReal`），offline 帧中性 1.0 不抑制。**realness 房内化正确**（不像 neighbor 需外部 census），符 DBN"房内轴内化"。
+
+## 四、C 净判
+
+**W3.3 gate 通过。** 三柱全守：① lean-extract 干净自包含单源（per-axis still-box 语义等价 Tsensor、诚实裁 tangle、无分叉）② RealnessObs 三房内源 live、三 MM 字段诚实零值中性（安全侧非危险 stub）③ RV4 engine 端到端真守门（EG1 真 Displaced 链 + HR-2 真 fixture，**反事实注入 rebirth 复现 0.0054 漏报证修复 load-bearing**）。全包零回归（cd2b 0.9992 / multibed / NV 既绿不破）。rebirth 漏报是 A 自抓自治本、HR-2 replay 印证为 RV4 端到端守门（§44"floor-strip 教训：belief 单元结果能否在真 engine 复现"的 realness 面闭环）。
+
+**进度**：W3.1 ✅ / W3.2 ✅(gate②) / W3.3 ✅(realness 房内接通)。下一步 **W3.4a 多房编排**（§42 裁决独立成步防大爆炸）：N 个 Room + 跨房 census 产 rhoXroom；W3.4b 再经 MM 邻居填 realness 三拓扑字段（CoexistRho/IsReflection/ConfinedNearWall，本轮诚实留零的那三个）。C 待 W3.4a，复审重点预告：① 多房 census 单源（rhoXroom 产出不引第二套主循环 drift）② MM 拓扑字段接通后 Mirror/Static 判别 engine 端到端 ③ neighbor 延迟闸 D=10min 在多房编排不破（§40）。
+
+
+---
+
+# §47 增补（C 自我修正 / 补 §46 漏审）— rebirth 是"入口丢弃 track_id"的下游损害,A 解释口径需修正(W3.3 结论不变,记真 gap)
+
+> 触发：审查方质疑"我们不是有 logicID 专门防 ghost↔real switch、最近距离优先保护吗?为何还需 rebirth/为何 rebirth 能炸"。C 据此回查 logicID 实现,发现 §46 漏审一层 plumbing gap。**W3.3 通过结论不变**(当前 Xsensorv1 范围内 A 修复正确),但 A 的归因口径把"现成保护"误述成"未来的事",须记真 gap 防复发。
+
+## 一、C 回查事实(自 grep,非照搬 A/审查方)
+
+**production(wisefido-sensor/Tsensor)有完整的身份-数据关联保护**,正是审查方说的:
+- `makeLogicID`(track_manager.go:427)：出生锚定稳定逻辑身份 = uidlast4+track_id+时戳。
+- `nearestAliveTrack`(:441)：**最近距离优先**——无 enter 事件的新 track 找画布最近且已有 logic_id 的一条继承身份,专治 firmware track_id 重用/跳变/分裂。
+- `hasOtherLiveTrackWithLogicID`(:461)：换 ID 守恒闸,防 lost_fall 误判(且铁律不依赖 ghost verdict)。
+
+**但 Xsensorv1(W3.3 验证载体)：logicID 完全 ABSENT**(C grep 全仓 `tools/Xsensorv1` 零命中)。更关键链:cd2b 真 fixture 的 `data_value` **带 `track_id`**(replay.go:30 解析了),但 Xsensorv1 `RadarTrack` struct **无 ID 字段**(adapter.go:23-31),replay build RadarTrack(:190)**把 track_id 静默丢弃**,从不喂 engine。无显式裁定记此丢弃;realness.go:42 仅一句"MM/TrackID territory(W3.4+)"带过。DBN ground truth 对 track 身份/数据关联**零提及**。
+
+## 二、★ 正确归因(修正 A 的"删 rebirth 治本"口径)
+
+A 解释:"单房没 TrackID,我怎么知道是不是同一个人 → 拿 gap 当重生判据 → 炸 → 删 rebirth 治本"。**前半句字面成立(Xsensorv1 确无 ID),但掩盖了 plumbing gap**:
+
+- 真实 cd2b 尾段若**带 track_id 经 nearestAliveTrack 最近距离关联**,摔倒静止那条稀疏帧(gap 32s)会关联回**同一 logic_id**(画布最近)→ **根本不触发重生** → Real 信心自然跨消失存活。**rebirth 这个坏启发式,本就是"入口丢了 track_id、下游只能用时间 gap 瞎猜身份"的产物。**
+- 故根因不是"rebirth 逻辑本身",是 **Xsensorv1 RadarTrack/replay 在入口丢弃了唯一能正确做数据关联的信号(track_id → 最近距离 + 稳定 logic_id)**。A 的"删 rebirth"是**信息被丢弃后的损害控制**(在无身份世界里安全默认保 Real),不是真·治本;真治本是把 track_id plumbing 接通 + 移植 nearestAliveTrack。
+- **病同源**:与历史"realness.go 漏 git add""still-box plumbing 断(§42 gap3)"同类——soft evidence/raw 信号在入口被丢,下游被迫用更差启发式补。A 把现成 production 保护(nearestAliveTrack 最近距离)说成"W3.4+ 未来的事",是口径错(它已实现,只是没接进 Xsensorv1),不是事实错。
+
+## 三、C 净判(W3.3 结论维持 + 记 gap + 升级 W3.4 复审重点)
+
+**W3.3 gate 维持通过**:在**当前 Xsensorv1 信息集(无 track_id)**下,A 删 rebirth、单 track 一次出生、安全默认保 Real 是该范围内**唯一正确**的损害控制——保 Real=当真人处理绝不抑制跌倒,最坏误报(对另一真人)非漏报,方向对。§46 三柱核仍成立。
+
+**但记两条真 gap(诚实,不删歧路)**:
+1. **plumbing gap**:Xsensorv1 入口丢弃 fixture 已有的 track_id。这使"最近距离 + 稳定 logic_id"数据关联在验证载体不可用,逼出 rebirth 坏启发式。**这是 cd2b 漏报的真根因层,A 解释未点明。**
+2. **口径 gap**:A 把已在 production 实现的 nearestAliveTrack(最近距离优先防 track_id 跳变)表述为"MM/TrackID territory(W3.4+)未来的事"。应改述为:"production 已有 logicID/nearestAliveTrack 最近距离关联;Xsensorv1 本轮未接通(入口丢 track_id),故退化为安全默认保 Real;W3.4+ 接通后由身份关联取代时间-gap 猜测。"
+
+**升级 W3.4 复审重点(原 §46 末三点之上 + 此 gap)**:
+- W3.4+ 接 track_id plumbing 时,**必移植 production nearestAliveTrack 最近距离关联**(非另造一套),核单源(柱①教训:lean-extract 非 copy-paste-modify)。
+- 接通后须证:cd2b 尾段稀疏帧经最近距离关联回同一 logic_id、**不再依赖"安全默认保 Real"兜底**也不漏报(即从"损害控制"升级到"真·身份连续")。
+- **铁律守恒**:nearestAliveTrack 不得引 ghost verdict 进 Fall 路径(production 已守此,移植勿破);最近距离关联不得反向制造 ghost↔real switch 漏洞(审查方原始担心——核 production hasOtherLiveTrackWithLogicID 守恒闸是否一并移植)。
+
+**进度**:W3.1✅/W3.2✅/W3.3✅(通过,记 plumbing+口径两 gap)。C 待 W3.4a,复审重点已升级(track_id 关联移植单源 + 身份连续取代 gap 猜测 + ghost 守恒铁律不破)。
+
