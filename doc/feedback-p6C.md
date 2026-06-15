@@ -2130,3 +2130,47 @@ engine.go:48 注释仍写「TrackArchive 译出生档案/**still-box**」，但 
 
 **进度**：realness 轴 §G 框架重定（§51）+ 码层落地（§52）闭环 ✅。下一步 **W3.4a 多房编排**（N Room + 跨房 census 产 rhoXroom）+ **③ N_r 计数排除**在多 track 落地（暧昧 track 不计入，仅独立真人正证据计入——§G 三 + C §51 验收点）。C 待 A W3.4a，复审重点预告：① census 单源（rhoXroom 产出不引第二套主循环 drift，§44 教训）② N_r 从多 track 派生时保守计数（mirror/暧昧排除，防独处真人被当 2 人折 C_FN）③ §A neighbor 有向门控 + D=10min 在多房不破（§40/§A）。
 
+
+---
+
+# §53 增补（C 自我修正，补入卷）— 多 track 第一刀「ghost 全押 MM 头号 FN 隐患」判过重，改记三桶分级
+
+> C 复审多 track 第一刀（f1ac723）曾口头标「ghost 判别全押 MM 的 IsReflection = 头号 FN 隐患、须 W3.4b 解」。架构师三分纠正后，此判**过重且漏看出路**，修正入卷（C 账自清，不删歧路）。
+
+**判过重的根源（三错叠加）**：① 漏看桶一（speed/跳跃 = 单 track raw XY 现成 FN-safe 信号，不等 MM）② 错置桶二（把"出生地判据"当 census-now，实际墙外/入口/金属点要几何，是 MM/cell 活）③ 误读桶三（把 §G 删对的 metal still-box 久静当"覆盖缺口"，实为故意删的病根）。三错叠加 → 误以为 ghost 判别只有 ρ×IsReflection 一条路、全押 MM。
+
+**修正 = 三桶分级（架构师拍，§G七 已立框架）**：
+- **桶一**（请回，FN-safe）：单 track 运动伪迹 ghost（speed 超室内上限 + 跳跃/瞬移），census 层 raw XY 即算、不等 MM；数量×时间累积非硬 gate。**细化「1track 永发」：静止永不判 ghost（病根）/ 持续快移·瞬移可判（FN-safe）**。
+- **桶二**（几何依赖）：出生地（入口/墙外/金属点）随 MM/cell/layout，非 census-now。
+- **桶三**（病根保持删）：metal still-box 久静分不开金属 vs 摔倒静止真人，归 firmware 30s + AreaDeny，不归 census 静止。
+
+**正确结论**：ghost 不是「全押 MM 头号隐患」，是**当前 census 实现未兑现桶一**——补上桶一即有不依赖 MM 的独立 FN-safe 判据。§53 原过重判定撤。
+
+---
+
+# §54 增补（C 框架审 §G七 ghost 信号体系三分）— 三分对 + 累积范式对，标两处框架补缺（一文档一致性、一共生律污染）
+
+> A 推 §G七（ece9c47）立 ghost 判别三分 + 数量×时间非硬 gate + §53 修正。C **开审前读 §G六/realness.go 锁定结构对齐**，据 §G七 审框架（码层未动，先审地基防返工）。三咬合点核：累积范式 / §G六-§G七 一致性 / 桶一塞进 realness 的结构。
+
+## 一、三分 + 累积范式 — 框架对
+
+- **桶一/二/三分级对**（C §53 已认架构师三分）：桶一 census-now FN-safe、桶二几何依赖随 MM、桶三病根保持删。✅
+- **累积范式对**（咬合点①）：§G七「数量×时间累积成连续后验、非硬 gate」与现 `mScore += gain·量 → P=1-e^{-mScore}`（§3 κ EMA 同范式）形态一致。**不设 speed≥X 硬阈**符 [[fall_data_is_artificial_test]]（标定陷阱回避）。✅
+- **「1track 永发」细化对**：静止永不判（病根）/ 快移·瞬移可判（FN-safe），把原铁律拆成静止/运动两面，与桶三病根不冲突。✅
+
+## 二、★ 标两处框架补缺（C 框架审，census 兑现前必补）
+
+**① 文档一致性（§G六:378 vs §G七:384 字面冲突）**：§G六:378 仍写死「1 track 不进 ghost（永发）」，§G七:384 才细化「快移可判」。两节字面冲突，单读 §G六:378 会漏掉快移例外。**建议 A 在 §G六:378 加指向 §G七 的细化标记**（类比 §10:191→§G、§G→§A.3 的既有做法）。文档债，A 顺手补。
+
+**② ★ 共生律污染（桶一伪迹 ghost 不能复用 mirror 的 mScore/PMirror）**——这是 census 兑现前框架必补的真缺：
+- 现 `mScore` 是 **mirror 专用**：`PMirror()=1-e^{-mScore}`，`PRoomHasReal` 共生律明写「任一 track（Real 或 Mirror）皆蕴含一个真人源」（mirror 必有真人）。
+- 桶一伪迹 ghost（固件 track-swap/超速）**不蕴含真人源**——它不是谁的镜像。若 census 兑现时图省事把桶一也累积进**同一 mScore** → ① 语义错：超速伪迹被 `PMirror()` 报成「某真人的镜像」，但它没真人源；② **共生律污染**：`PRoomHasReal` 把伪迹当蕴含真人 → 房内有真人后验虚高 → 扰动「真人丢 track 但镜像存活→fall 不被抑制」的判断。
+- **框架补**：桶一 ghost 须是 realness 里**独立分量**（独立 score，非 mScore），且**对 PRoomHasReal 不贡献真人源**（伪迹无真人源，区别于 mirror）。§G七 立了「桶一与 mirror 正交」，但**没说桶一在后验里独立、对共生律不贡献真人**——这一句框架必须补，否则码层会塞进 mScore 把共生律搞坏。
+- **两类 ghost 对 PRoomHasReal 的贡献不同**：mirror 蕴含真人（共生律）→ PRoomHasReal 贡献；伪迹不蕴含真人 → 不贡献。pFallReal（压不压自己的摔）两类都压（都不是真人）；但 PRoomHasReal（房内有无真人）只 mirror 贡献。**这个区别 §G七 要写明，census 才能正确实现。**
+
+## 三、C 净判
+
+**§G七 框架审通过**（三分对、累积范式对、1track 永发细化对）。**标两补缺**：① §G六:378 加指向 §G七 标记（文档一致性，顺手）② ★ 桶一伪迹 ghost 独立分量、对 PRoomHasReal 不贡献真人源（共生律防污染，census 兑现前框架必补——否则码层塞进 mScore 搞坏共生律）。
+
+**进度**：ghost 信号体系框架三分立（§G七）+ §53 过重判定修正入卷。**下一步 census 兑现桶一前，A 先补 §G七 共生律那句**（②），C 再据补全的 §G七 审 census 码层。复审重点预告：① 桶一 score 独立于 mScore（不混 mirror）② 桶一对 PRoomHasReal 不贡献真人源 ③ 累积式非硬 gate（无 speed≥X 硬阈）④ 桶一 FN-safe（持续快移敢判、偶发噪声不误判）。
+
