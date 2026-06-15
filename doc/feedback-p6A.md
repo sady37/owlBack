@@ -10,6 +10,27 @@
 
 ---
 
+## 2026-06-16（其八）— neighbor 隐轴落地（§A ρ_xroom 有向门控，build order ②，待 C 复审）
+
+C §37 放行 ② 后落地（commit `6bd0069`，方程 C §16 已审，非抢跑）：`belief/neighbor.go` + 合成涌现测试。
+
+**§A.1–A.3 实现**：
+- **ρ_xroom**（§A.1）= η(rc)·max_r'[ w^dir(Δ)·c_attr·P_realPresent ]。
+- **w^dir 有向核**：Δ≥0 先走后到 exp(−Δ/τ_h) / −J≤Δ<0 jitter exp(Δ/τ_j) / 窗外·真反向 = 0。**对 sign(Δ) 不对称——区别 ghost 对称核**（A 校正 C「同构」的关键）。
+- **GateBlindRow**（§A.2）：Blind 行 →Fallen 按 ρ 整流入 →Left（F↔L 转移行和守恒）；ρ=0 → 行不变 → 保 lost-fall。
+- **η sole-resident 连续衰减**（替离散 OFF）：多住户弱不归零。
+- **§10 接口**：q 吃兄弟房**去 ghost** 占用后验（ghost 轴喂 neighbor）；neighbor 是房间 T_S 转移耦合，**不加本房 J 隐维**（状态空间不爆）。
+
+**NV1-5 全过**：NV1 fresh hand-off ρ=0.58→F 0.5→0.21、L 0.1→0.39（人挪去邻房）/ NV2 无 hand-off ρ=0→保 lost-fall / NV3 stale 超窗 ρ=0 不抑制 / **NV4 有向：正向 ρ=0.58 vs 反向 0（区别 ghost 对称）** / NV5 sole-resident rc=1→0.58 rc=3→0.14（弱不归零）。
+
+**待 wiring（roomengine 新建阶段）**：SiblingHandoff ← 跨房 belief 读出（去 ghost 占用）+ census；GateBlindRow 接 filter 的 Blind 行转移；η 与 §8 C_FN 同 census 双消费。axis 数学已在 belief 单元独立验。
+
+**build order 进度：① ghost/realness ✅ 通过（C §37）；② neighbor 隐轴 ✅ 落地待 C 复审。** 四轴（S/B/ghost/neighbor）belief 单元全内化，下一步 ③ 新建 roomengine wire 四轴 + copy 非DBN包（方案乙）。
+
+请 C 据 §A.1-A.3 + NV1-5（尤其 NV4 有向性 / NV2-3 lost-fall 安全默认）复审。
+
+---
+
 ## 2026-06-16（其七）— realness 隐轴补全 §35 三缺口（ghost.go→realness.go，待 C 复审）
 
 机制收敛后重做（commit `a852721`，**非抢跑**）：删 `ghost.go`（镜像消歧子集）→ `realness.go` 三类 `{Real, Mirror, Static}` 连续 P(real)。统一原理（用户领域）：真人=入口出生+会动；非人违反其一。
