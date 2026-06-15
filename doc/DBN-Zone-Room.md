@@ -285,7 +285,7 @@ $$S'\in\{\text{BlindRest},\text{BlindOpen}\};\quad \text{行其余项不变，�
 
 | # | 接口 | 内容 |
 |---|---|---|
-| ① | ghost 轴 → neighbor 轴 | $q_{r'}$ 吃兄弟房 $P_{r'}(\text{real-present})\cdot(1{-}P(\text{ghost}))$——§10 房内 ghost 后验喂 §A 房间 hand-off；兄弟房 ghost 不算落点 |
+| ① | ghost 轴 → neighbor 轴 | $q_{r'}$ 吃兄弟房 $P_{r'}(\text{real-present})\cdot(1{-}P(\text{ghost}))$——§10 房内 ghost 后验喂 §A 房间 hand-off；兄弟房 ghost 不算落点。**注（§G 澄清）**：此处刻意用 `real-present`（有没有真人可接），**非** $N_r$（几个）——hand-off 落点只问兄弟房能不能接一个人；$C_{FN}$ 折扣才读 $N_r$。两消费者要的量不同，非冲突 |
 | ② | 不加隐维（状态空间不爆） | $B^j$/$S^{(i)}$/$T^{(i)}$ 是房内 $J$ 的**隐维复制**；$\rho^{\text{xr}}$ 是房**间** $T_S$ 的**转移耦合**，吃兄弟房 belief 读出标量，**不进本房 $J$ 基数**（$9\cdot2^{|\mathcal B|}$ 不变） |
 | ③ | 同 census 双消费 | $\eta(\text{rc})$（§A.1）与 §8 $C_{FN}$ 的 resident 数同源：多住户既弱化 $\rho^{\text{xr}}$ 归因（belief 更不确定、$P^F$ 不被压死）**又**折扣 $C_{FN}$（漏报代价降不归零）——两层一致下拉，§B「期望损失主框架 + 证据层」分工保持：$\rho^{\text{xr}}$ 路由 belief（发生了什么），$C_{FN}$ 裁代价不对称（残余 $P^F$ 报不报） |
 
@@ -348,7 +348,7 @@ $$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\te
 1. **firmware 已在底下处理**：无人时 firmware **30s 内过滤纯金属回波**（= 无目标 ID=88 态，[[AI_health]]「1s 有人 / 30s 无人 ID=88」）。孤立静止金属不形成持续 track 传到本层——Static 类当初要防的场景，硬件已防死。
 2. **静止判 Static = 病根**：用「困 BirthPos + 久静 + 近墙」判 Static，**分不开静止金属与摔倒静止的人**（签名同）。单 track 静止判 ghost = [[fall_detection_risk_stratified_design]] 的病根，会误抑制无走动的床边真摔。删。
 
-**二、realness 主职 = $N_r$ 排除 ghost（非压 ghost 的摔）**。危险不在 ghost 自己 false-fire，在 **ghost 被当成第 2 个人 → $N_r$ 虚增 → 独处真人风险被误降**：decide（§8/§26）对 `PeopleCount>1` 折扣 $C_{FN}$（×1/N，仅 45–55% 两可窗，「有人代发现」）。真人其实独处却被当 2 人 → 该报的边界摔不报 → **FN**。故 realness 要保证 $N_r$ 只数**不同的真人**，排除 mirror（同人反射）/金属。`PRoomHasReal`（有没有真人）≠ $N_r$（几个真人）；$C_{FN}$ 读后者。
+**二、realness 主职 = $N_r$ 排除 ghost（非压 ghost 的摔）**。危险不在 ghost 自己 false-fire，在 **ghost 被当成第 2 个人 → $N_r$ 虚增 → 独处真人风险被误降**：decide（§8/§26）对 `PeopleCount>1` 折扣 $C_{FN}$（×1/N，仅 45–55% 两可窗，「有人代发现」）。真人其实独处却被当 2 人 → 该报的边界摔不报 → **FN**。故 realness 要保证 $N_r$ 只数**不同的真人**，排除 mirror（同人反射）/金属。`PRoomHasReal`（有没有真人）≠ $N_r$（几个真人）。**两量各有消费者、非二选一**（C §G 复审澄清）：$C_{FN}$ 折扣读 $N_r$「几个」；§A.1(b) neighbor hand-off 落点判定读 `PRoomHasReal`「兄弟房有没有真人可接」——各取所需，见 §A.3 接口①注。
 
 **三、两轴 FN-safe 非对称默认（「一切看风险」落地）**。realness 不确定时，两根轴各自往**高 fall-risk** 倒：
 
