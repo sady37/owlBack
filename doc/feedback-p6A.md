@@ -10,6 +10,27 @@
 
 ---
 
+## 2026-06-16（其七）— realness 隐轴补全 §35 三缺口（ghost.go→realness.go，待 C 复审）
+
+机制收敛后重做（commit `a852721`，**非抢跑**）：删 `ghost.go`（镜像消歧子集）→ `realness.go` 三类 `{Real, Mirror, Static}` 连续 P(real)。统一原理（用户领域）：真人=入口出生+会动；非人违反其一。
+
+**补全 C §35 三缺口**：
+1. **静止金属反射体**（RCStatic）：困 BirthPos + 久未移走 + 近墙（static_reflector 三签名）→ RV2 P(static)=0.978。
+2. **功率自适应 + 时间过滤**：`CrossedStillPeriod` survival 慢证据 → Real（ghost/金属活不过静止降功率期，真人活得过）。
+3. **real 信心闸门（最危险，连续非硬阈）**：**自主走动闩** `movedFromBirth`（Displaced ∧ 非同步反射）→ 一旦确认 real 即**锁 Real + 不 leak**；后续静止/消失 = 摔倒（走 fall 轴），**绝不被静止重判 ghost** = cd2b 病另一面防护。闸门是连续 P(real) 的结构性自带（Static 签名要求"从未走开"），非硬阈（守 A 其六）。
+
+**共生律（决定14）**：`PRoomHasReal` = 1−Π(1−[P(real)+P(mirror)])（金属不蕴含真人）。丢真人 track 但镜像存活 → PRoomHasReal 仍高 → fall 不被"无 track"抑制 → RV5 丢真人只剩镜像 PRoomHasReal=0.99。
+
+**RV1-5 全过**：RV1 真人 P(real)=1.0 / RV2 金属 P(static)=0.98 / RV3 镜像 P(mirror)=0.92 / **RV4 闸门：确认 real→静止 60 帧 P(real)=1.0、P(static)=0** / RV5 共生律 0.99。
+
+**P(real) 连续量喂 decide 的设计（待 wiring）**：fall×P(real)；track 消失=ObsNoDetect，P(real) 高→S 落 Blind→Fallen ramp（dbn_cutover ③）。realness 连续量是 §26（高度不可判默认不报）与 partial_monitoring（消失不抑制 fall）的裁决者。
+
+**adapter wiring（roomengine 新建阶段）**：RealnessObs 由 track 出生档案（BirthScore/BirthReason/MaxImpliedSpeedFromBirth）+ cell（AreaEnter/AreaDeny）译入；axis 数学已在 belief 单元独立验涌现。
+
+请 C 据 §35 三缺口 + RV1-5（尤其 RV4 闸门 / RV5 共生律）复审。复审过 → 步骤② neighbor 隐轴。
+
+---
+
 ## 2026-06-16（其六）— A 接受抢跑批评 + realness 轴补全方向（连续 P(real) 非硬阈）
 
 **接受 C §35 批评：我抢跑了。** ghost.go 在 ghost 物理机制还没收敛时就写了，只覆盖最早的「镜像 co-existence 消歧」子集，漏了用户后几轮纠正的主线（功率自适应导致 track 消失、时间过滤建 real 信心、real 信心护已确认真人摔倒）。**ghost 隐轴未做完，C 判对。** 教训记下：涉底层雷达物理的设计，先吃透机制（功率自适应是代码/文档没写全、靠用户领域知识给的）再写码。
