@@ -1552,3 +1552,57 @@ DelayWindowFor: return stillVanish + margin*(1-coverage)
 **DBN「四隐轴全内化、避免 gate」根本目的在 belief 单元兑现。** build order ①② 完成。
 
 C 放行 build order ③：新建 roomengine wire 四轴 + copy 非 DBN 包（方案乙）+ adapter 译入（realness 出生档案/neighbor 跨房读出+census）。这是集成大活，C 待 ③ 复审。
+
+---
+
+# §41 增补 — C 对 ③ 图三面 adversarial 清单（图入库前预告）【实审见 §42】
+
+> 面1 copy 清单（几何层 copy vs 硬结论废的归属）｜面2 四轴 wire 拓扑序（ghost喂neighbor/κ跨S-B/realness×fall/neighbor延迟闸）｜面3 adapter 译入契约（每字段 raw 源，未定标 TODO）。+ floor-strip 旧债（FloorStripXY 已废勿列）。
+
+---
+
+# §42 增补（C 复审 ③ 集成路线图）— 三面覆盖good + 3 gap + 三裁决
+
+> A 图 `DBN-wire-roadmap-p6.md`（doc-only）入库。质量高：覆盖三面、自列提请、清 floor-strip。C 挑 3 gap + 裁提请三点。
+
+**3 gap**：① mirror_detect/static_reflector 漏在 §4 copy 表外（realness 几何源，须 copy）｜② W3.4 多房编排隐藏大爆炸点，图一句带过须独立展开（neighbor 跨房依赖它）｜③ CrossedStillPeriod 源断（still-box 是 track_manager 量，但 track_manager 列不copy，plumbing 断，realness 时间过滤输入残）。
+
+**三裁决**：① realness 进 Correct **折 logPhi**（独立步=软 gate，违"全经 filter.Step 融合"；折 logPhi 走同一 Correct=真内化）｜② copy 边界对，补 gap1｜③ 复审 gate **三道**（W3.1 零回归 oracle + W3.2 cd2b 单房零回归[floor-strip 教训守此] + W3.4 neighbor 接通）。+AC-③-守归因边界（四轴隐状态 wire 后独立可验）。
+
+---
+
+# §43 增补（C 复审 W3.1 gate①）— 四轴融合接 filter.Step，零回归结构性短路，通过
+
+> A 图修补 3 gap（7e1ef8f）+ W3.1 融合（68eb4ff）。C pull + 跑全包（WF1-3+NV/RV/cd2b/multibed 全绿）+ 读 foldRealness/Predict 实现核零回归。
+
+## 一、图 3 gap 全补（C 核 commit 7e1ef8f）
+
+① mirror/reflector 补进 §4 copy 表（realness 几何源）✅ ② W3.4→W3.4a 独立成步（防大爆炸）✅ ③ still-box 源定：track_manager 拆（连续指标层 copy 作单源 / gate-list 残余删），CrossedStillPeriod plumbing 接通 ✅。
+
+## 二、两零回归机制 C 读实现核 — 结构性短路非测试凑
+
+**realness→logPhi（foldRealness）**：
+```go
+if pFallReal >= 1.0 { return logPhi }       // 中性原样返回（结构短路）
+lr := logP(pFallReal); out[idx(SFallen,b)] += lr  // 只压 SFallen 发射
+```
+中性 pFallReal≥1 直接原样返回 → 逐 tick 等价 S/B-only（`if` 短路保证，非凑）。非中性只对 SFallen 加 log(P(real))=fall 发射×P(real)（log 域加=概率乘）→ ghost「摔」喂不动 SFallen（§37）。**折 logPhi 走同一 Correct 路径 = 裁定①真内化非软 gate。**
+
+**neighbor→Predict（rhoXroom）**：
+```go
+logA := &f.logA            // 默认静态转移
+if rhoXroom > 0 { gated=f.logA; GateBlindRow(SBlindRest/SBlindOpen); logA=&gated }
+```
+ρ≤0 用原静态 logA → 逐 tick 等价（`ρ>0 才进 gated`短路保证）。ρ>0 只改 Blind 两 from-行 F→L 整流（行和守恒，§40），其余行不变 = 转移先验非 gate（ρ=0 行不变=lost-fall 安全默认）。作用域正确（仅 lost-track 二义）。
+
+**两零回归皆「if 中性→短路原路径」结构**——中性值在代码路径上 bypass 新逻辑，数学必然逐 tick 等价 S/B-only。最强零回归保证（非测试调参凑）。
+
+## 三、C 另核一点（无 shim 改全调用点，对）
+
+A **无兼容 shim，显式改全 7 处调用点**。没用默认参数掩盖签名变化 → 无遗漏调用点偷走旧路径。这比加 shim 安全（shim 会让旧调用点静默走中性、掩盖该接未接的地方）。
+
+## 四、C 净判
+
+**W3.1 gate① 通过。** neighbor→Predict 整流 + realness→logPhi 调制实现正确；零回归**结构性短路保证**（非测试凑）；realness 折 logPhi 符裁定①；作用域正确（neighbor 仅 Blind 行、realness 仅 SFallen 发射）；全包绿（WF1-3 + NV/RV/cd2b/multibed 零回归）；无 shim 改全调用点。
+
+**进度**：W3.1 ✅（纯 belief 扩 Step）。下一步 **W3.2 = gate②**（roomengine 单房骨架 + copy 最小包 + cd2b 单房零回归）——**第一道真集成闸，floor-strip 教训守此**（belief 单元结果能否在真 roomengine 复现）。C 待 W3.2 复审。
