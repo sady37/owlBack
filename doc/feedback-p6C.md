@@ -1504,3 +1504,51 @@ A 做对骨架：有向性NV4/安全默认NV2-3/sole-resident NV5/吃ghost去伪
 5. 保留骨架：有向性/安全默认（窗耗尽=fire 非 suppress）/sole-resident max/吃 ghost 去伪占用。
 
 C 待 A 据此重做复审（改了 C §16 审过 §A.1，A 同步改文档）。
+
+---
+
+# §40 增补（C 复审 neighbor 重做）— 五规则全补对，band-pass 纠错 + D 锚静止门限，通过
+
+> A 据 §38 五规则 + §39 D=10min 重做（9769e74）。C 独立 pull + 跑 NV1-8 + 读实现核三处。
+
+## 一、NV1-8 全绿（C 独立跑）
+
+NV1 hand-off ρ=0.807 / NV2-3 安全默认 ρ=0 不抑制 / NV4 有向 正0.807vs反0 / NV5 sole-resident rc1=0.807→rc3=0.199 / **NV6 band-pass w(0)=0.208<w(2.5s)=0.996>w(55s)≈0** / NV7 W 私有60s→公共18s / NV8 D 覆盖好8min→覆盖差10min。
+
+## 二、三处核心 C 读实现核
+
+**规则3 band-pass 纠错（A 原 Δ=0 峰 真 bug）✅**
+```go
+gammaPeak1(x)=x·e^(1-x)  // x=0→0,峰@x=1,后衰减
+wDir: x=(Δ+offset)/τ_peak → Δ=0 压低非零,峰@Δ=τ_peak-offset(~1-5s)
+```
+NV6 实测 Δ=0 不再是峰（0.208<峰0.996）。**同 tick 两房=瞬移=压低、1-5s 峰**——规则3 物理落地。有向性保留（反向从 Δ=0 压低值按 τ_j 衰减，NV4 反向=0）。
+
+**规则2 track 守恒 ✅**：`PRealPresent→GainedReal`——兄弟房**新增 real track**（守恒重现，P6.5「人在X丢必在别处+1」）= P(丢的人在此重现)，非裸占用。
+
+**规则4 W 公共自适应 ✅**：`W=base·(1-0.7·publicness)`，公共度高最多收 0.3×（NV7 60s→18s）。防陌生人偶合误判 hand-off。
+
+**规则5+§39 D=10min ✅（实现比 C 定稿更细）**：
+```go
+DelayWindowFor: return stillVanish + margin*(1-coverage)
+```
+覆盖好→D=静止门限8min（无需久等）；覆盖差→8min+满余量2min=10min（neighbor 唯一裁决）。**D 锚静止门限（同一物理时标，§39），余量随覆盖度连续给**（非 8/10 二档硬跳，比 C 定稿的更优）。
+
+## 三、C 净判
+
+**neighbor 五规则全补对：band-pass 纠错（规则3 真 bug 修）、track 守恒（规则2）、W/D unit 自适应（规则4/5）、D 锚静止门限+余量（§39 同一物理时标）。NV1-8 全绿，曲线留 oracle、形状（先升后降峰1-5s）定死。保留对的骨架（有向/安全默认/sole-resident max/吃ghost去伪占用）。通过。**
+
+**A 三轮 neighbor 收敛**：第一轮骨架对但漏五规则（§38）→ 用户给规则 + A 自查认 band-pass bug → 本轮全补对。**「给规则让 C/A 自判」方法（ghost 教训）再次奏效——逼出真 bug（Δ=0 峰）而非听报数放行。**
+
+## 四、四轴全内化完成
+
+| 轴 | 状态 |
+|---|---|
+| S（人态） | ✅ |
+| B（床占用） | ✅ cd2b 框架涌现（§32）|
+| ghost/realness | ✅ 三类+闸门（§37）|
+| neighbor | ✅ 延迟闸+band-pass+守恒+自适应（本节）|
+
+**DBN「四隐轴全内化、避免 gate」根本目的在 belief 单元兑现。** build order ①② 完成。
+
+C 放行 build order ③：新建 roomengine wire 四轴 + copy 非 DBN 包（方案乙）+ adapter 译入（realness 出生档案/neighbor 跨房读出+census）。这是集成大活，C 待 ③ 复审。
