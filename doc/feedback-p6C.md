@@ -1606,3 +1606,40 @@ A **无兼容 shim，显式改全 7 处调用点**。没用默认参数掩盖签
 **W3.1 gate① 通过。** neighbor→Predict 整流 + realness→logPhi 调制实现正确；零回归**结构性短路保证**（非测试凑）；realness 折 logPhi 符裁定①；作用域正确（neighbor 仅 Blind 行、realness 仅 SFallen 发射）；全包绿（WF1-3 + NV/RV/cd2b/multibed 零回归）；无 shim 改全调用点。
 
 **进度**：W3.1 ✅（纯 belief 扩 Step）。下一步 **W3.2 = gate②**（roomengine 单房骨架 + copy 最小包 + cd2b 单房零回归）——**第一道真集成闸，floor-strip 教训守此**（belief 单元结果能否在真 roomengine 复现）。C 待 W3.2 复审。
+
+---
+
+# §44 增补（C 复审 W3.2 gate②）— cd2b 真 engine 复现，裁 copy = lean-extract 下沉 W3.3
+
+> A W3.2（edbc56b）：单房 engine.Room 主循环 + cd2b 零回归（gate②）。A 提请裁 copy 方式（bulk vs lean-extract）。C pull + 读 engine.go/EG1/replay 实现核。
+
+## 一、gate② C 核 — cd2b 在真 engine 复现
+
+- `Room.Tick(fi, rhoXroom, pFallReal)` = 四轴主循环单源（`f.Step(...logPsi, logPhi, rhoXroom, pFallReal)`）；单房 rhoXroom=0/pFallReal=1（neighbor/realness 中性）。
+- **EG1**：合成「InBed→LeftBed+雷达躺静止近床」经 Room.Tick → SFallen 涌现 fire = **belief 单元 0.9992 在真 engine 主循环复现**（不靠 fixture）。replay cd2b 真 fixture 经 engine.Room 不变。
+- replay 重构复用 Room（主循环单源 #1.3），无两套主循环 drift。**gate② 达成。**
+
+## 二、A 两发现 C 核 — 都属实
+
+**① replay 吃原始 JSON→FrameInput，cd2b 0.9992 没用 cell/grid/track copy。** `replay.go` 直接 `window.json→[]adapter.FrameInput`（json decode pose/x/y），adapter 从原始坐标译 Observation。**gate② 零回归不依赖那堆 copy。**
+
+**② 那堆 copy（track_manager 2442 行缠 alarm/card）真正是给 realness（W3.3）的出生档案/still-box 用的。** 属实。
+
+## 三、★ 裁 copy 方式：(b) lean-extract 下沉 W3.3（A 推荐对）
+
+**floor-strip 教训直接延伸**：
+
+1. **bulk-copy 2442 行 = 搬 tangle 进来。** track_manager 缠 alarm/card/gate-list（要废的旧 fall 逻辑）；bulk-copy 把死代码搬进 Xsensorv1 再拆 = **「在屎山里动手术」**——丢方案乙「白纸新建胜过缠旧逻辑就地改」的优势（§33）。
+2. **realness 只需少量语义**：出生档案（BirthPos/BirthScore/MaxImpliedSpeedFromBirth）+ still-box 计算（几十行几何/时间逻辑，非 2442 行）。lean-extract 只抽这些，不搬 alarm/card/gate-list。
+3. **时机下沉 W3.3 对**：copy 为 realness 服务（发现②），realness W3.3 才接通；W3.2 已证不需 copy。**用到什么抽什么，不预先 bulk-copy 用不上的。**
+4. **与 §42 gap3 裁决一致**：当时裁 still-box 源=「track_manager 拆（连续指标层 copy/gate-list 删）」本就是 lean-extract；A 明确为「lean-extract 不 bulk-copy」+ 下沉 W3.3，是 gap3 的正确落实。
+
+## 四、★ C 给 lean-extract 边界约束（防走偏成新 drift）
+
+**lean-extract 抽的是「语义/算法逻辑」，必须保持单源**：不能把 track_manager 的 still-box/出生档案算法**抄一份改改**（那会成两套实现 drift，违 #2.4 producer/maintainer 单源）。抽 = 把那段逻辑**提成干净函数搬过来，源头不再是平行实现**。Xsensorv1 是验证载体（不上生产、不回写 Tsensor），故"搬"可接受，但搬来的必须是**自包含干净函数**，不是 copy-paste-modify 的分叉。
+
+## 五、C 判 + 待 A
+
+**W3.2 gate② 通过**（cd2b 真 engine 复现、replay 复用 Room 单源、零回归不依赖 copy）。**copy 裁 (b) lean-extract 下沉 W3.3**（A 推荐对，floor-strip 教训延伸），+ 边界约束（抽干净函数非 copy-paste-modify，保单源）。
+
+**进度**：W3.1 ✅ / W3.2 ✅（gate②）。下一步 **W3.3 realness 接通**：lean-extract 出生档案/still-box → adapter 译 RealnessObs → Room.Tick 喂 pFallReal；GH/RV 等价 case 在 engine 端到端（ghost 不喂 fall / RV4 真人摔不被滤）。C 待 W3.3 复审（重点：lean-extract 是否干净单源 + RealnessObs 每字段有源 + RV4 闸门 engine 端到端不破）。
