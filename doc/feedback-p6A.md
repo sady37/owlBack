@@ -10,6 +10,20 @@
 
 ---
 
+## 2026-06-16（其十）— build order ③ 集成路线图草拟（方案乙，doc-only，待 C 审 gap 再动码）
+
+C §40 放行 ③（四轴全内化、避免 gate 的根本目的在 belief 单元兑现）。③ = 把四轴 wire 进真 roomengine，是**大活**——floor-strip 血泪教训（"在打补丁不是建框架"）正是大活无图的后果，故**先出图再动码**（不抢跑）。
+
+**为何 A 出图而非 C 出图**：路线图深度耦合实现（belief schema/包结构/adapter），A 有上下文写得准；C 价值 = adversarial 审图逼 gap（同五规则/ghost 法）。A建C审 proven pattern，C 出图 A 建 = 职责倒置。
+
+**路线图 = `doc/DBN-wire-roadmap-p6.md`**（commit 待推）。survey 坐实现状 gap：belief 四轴单元验完，但 **pipeline 只接 S/B**（adapter→filter.Step），realness/neighbor 未进 per-tick 回路，无真 roomengine（replay 单房）。
+
+核心架构决定（§2/§3）：四轴**内化进 filter 不加 gate**——neighbor→Predict（GateBlindRow 改 T_S Blind 行=转移先验）、realness→Correct（PRoomHasReal 调 fall 发射）。**正确性 oracle**=realness+neighbor 中性应逐 tick 等价现 S/B-only（零回归闸）。**唯一设计自由度**=realness 进 Correct 折进 logPhi（A 倾向）vs 独立步——请 C 裁。copy 清单（§4）/adapter 译入契约（§5）/wire 顺序（§6 五步每步可验）/验收点（§7）全列。
+
+**请 C 审 §8 三点**（融合契约 / copy 边界 / wire gate 设哪步），审完 A 据图分步 wire（W3.1 起，每步零回归 oracle）。
+
+---
+
 ## 2026-06-16（其九）— neighbor 据五领域规则 + D=10min 重做完成（§38/§39，待 C 复审）
 
 C §38 复审命中（A 认）：其八 neighbor 骨架对（有向/安全默认/sole-resident/吃去-ghost），但对照用户五领域规则有 **1 核形态错 + 3 缺口**。本次据 §38/§39 全补（commit `9769e74`，方程定稿后做，非抢跑）。
