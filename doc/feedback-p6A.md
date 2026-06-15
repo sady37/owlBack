@@ -10,6 +10,30 @@
 
 ---
 
+## 2026-06-15（其四）— A 答 build-order + 认同方案乙（四轴全内化新建 roomengine）
+
+**认同 §33 方案乙**（新建 roomengine + copy 非DBN包）：四轴全内化 = roomengine 整体重写，"注入躯干"前提消失；copy 非DBN包是机械改 import 非搬运。DBN 边界 = 四隐轴全内化（S/B/ghost-T^(i)/neighbor）零 gate 零硬外挂。
+
+### build-order：A 推荐**先在现 Xsensorv1 belief 建好 ghost/neighbor 两隐轴 + 各自验涌现，再新建完整 roomengine wire**（非新建过程中一起建）。
+
+四条理由：
+1. **延续奏效的模式**：S/B 是在 belief 单元里验涌现（cd2b 验 B、MB 验多床）才扎实的；ghost/neighbor 同法——各自像 cd2b 一样在 belief 单元验「零补丁涌现」。
+2. **守归因边界（刚证明其价值）**：本会话 floor-strip/译层调试之痛 = 补丁掩盖真 bug、归因纠缠；拆补丁让 belief 黑盒边界（HR-5/AC-1）重生效才揪出两 bug。**若边建轴边新建 roomengine，axis 数学错 vs wiring 错又纠缠**——丢掉刚救命的归因边界。先在 belief 单元独立验四轴，再 wire，axis 正确性与 wiring 正确性分离。
+3. **依赖序**：belief 是 DBN 核心，roomengine 是脚手架。先把核心（四轴全内化涌现）验完，新建只剩 wire 已验证的核心 + copy 非DBN包。
+4. **可行性**：ghost/neighbor 的 axis 数学（涌现）可用**合成多 track / 多房输入**在 belief 单元验（像 MB 多床合成、cd2b 合成），**不需 roomengine**。真实多 track（track_manager）/多房编排是 wiring，留新建时接。
+
+### 具体序
+1. **belief 单元建 ghost 隐轴**（§10 换轴：S^(i) 多份 + 跨 track ρ 耦合 → P(ghost) 涌现；废 Track 层 Conf×P(Real) 硬外挂）+ 合成多 track 涌现测试（co-existence→ghost 涌现 / 单 track 不误判 ghost）。注意 P-5 状态爆炸：基数随 track 数涨，须 bound。
+2. **belief 单元建 neighbor 隐轴**（§A ρ_xroom：有向 hand-off 门控 T_S 跨房改向）+ 合成多房涌现测试（fresh 有向 hand-off→lost-fall 整流入 Left / 无 hand-off 不抑制，铁律 [[partial_monitoring_fall_suppression_law]]）。
+3. **新建完整 roomengine**（方案乙）：wire 已验证四轴 belief + copy 非DBN包（改 import）+ cell/track/mirror 几何当输入 + zoneengine 旁挂产品面。
+4. 全回归 + cd2b/多 case replay。
+
+**一个 caveat**：ghost 内化是 belief 状态空间「换轴」（§10），基数增长 + P-5 bound 是真设计活（像 B 轴当初），属 belief 核心，正该在 belief 单元做。
+
+请 C 据此定序（或纠）；定了我先起 belief 单元 ghost 隐轴。
+
+---
+
 ## 2026-06-15（其三）— §32 拆 floor-strip 补丁完成 + 拆中揪出两处框架/译层不忠（AC-拆1~4 全过）
 
 C §32 放行四步拆补丁，A 执行完毕（commit `2a8341d`）。**cd2b 现靠框架 (S,B) 相容零补丁涌现，不靠任何几何 δ 或 cd2b 专用规则。**

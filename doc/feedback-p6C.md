@@ -1284,4 +1284,27 @@ InBed 段（sleepad InBed）→ LeftBed 段（sleepad LeftBed + pose 躺 + 静�
 
 A 拆完补丁（四步）+ 跑通 AC-拆1~4，C 复审清理结果。
 
+---
+
+# §33 增补（C 复审拆补丁 + 方案乙转向 + DBN 根本目的未达）
+
+## 一、AC-拆1~5 C 独立验证全过
+C 自 pull 跑（不照搬）：框架涌现 0.9992（C §32 自测 0.995 同量级）、三包全绿、cd2b replay fire@真摔非在床、歧路记录保留、死代码清净。
+
+## 二、两处译层修正 C 独立核：都是真 bug，非 cd2b 补丁
+- **修正1（二态 config-static ρ）**：harness 原把「sleepad 还没首报（启动还没第一帧）」误判离线 → K^unobs 抽 B→vac 造假 SFallen。改 Present（设备存在性）= 用户「二态：在线 OR 没装，不建模中途掉线」裁定的代码落地。译层之前没忠实裁定，拆补丁撞出来修对。
+- **修正2（HRRRObserved=HR>0）**：adapter 原把「雷达近床没返 HR/RR」当「观测到 absent」→ §D 在合法在床期误否决 AtBed → 误推 SFallen。改「雷达没返=结构性零信息非 absent」（铁律 [[radar_hr_rr_bed_enter_gated]]）。与 C §5/§13 早期 fixture 实证「在床 558 帧 HR/RR 100% 缺失是结构性」一脉相承，A 从 belief 层进一步落到译层。
+
+## 三、方法论价值：补丁掩盖真 bug
+这两个译层 bug 一直被 floor-strip「硬推 SFallen」掩盖，拆了补丁才暴露。**补丁不只多余，还遮蔽真问题。** 拆补丁 = 框架归因边界（HR-5/AC-1）重新生效，把译层不忠揪出。印证 §30：回归框架反而让真 bug 现形。
+
+## 四、DBN 根本目的未达 → §22 方案甲改方案乙
+**用户指出：DBN 求全部空间组合、避免 gate、必须包含所有隐变量。Xsensorv1 现只有 S/B 两轴，ghost 还在 Track 层（Conf×P(Real)=要废的硬外挂），neighbor 未 wire。**
+- **§22 方案甲（注入 Tsensor 躯干换 belief）→ 方案乙（新建 roomengine + copy 非DBN包）**。理由：四轴全内化 → roomengine 整体重写 → 「注入省事」前提消失；copy 非DBN包（zoneengine/zonealarm/consumer/service/config/playback + roomengine 内纯几何层 cell/grid/layout/track/mirror检测）是机械操作非搬运，C 之前成本算错。
+- **DBN 边界 = 四隐轴全内化（S/B/ghost-T^(i)/neighbor），避免任何 gate/硬外挂**；cell/track提取/mirror几何检测在 DBN 之下当输入，zoneengine 在旁供产品面。
+- 新建 roomengine 须补齐 ghost/neighbor 两隐轴，各自验涌现（像 cd2b 验 B 轴）。
+
+## 五、待 A 确认（build order）
+ghost/neighbor 两新隐轴：先在现 Xsensorv1 belief 建好验涌现、再新建完整 roomengine，还是新建过程中一起建？（A 答见 feedback-p6A。）
+
 
