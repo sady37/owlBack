@@ -82,4 +82,10 @@ func TestHR2Cd2bContactAxis(t *testing.T) {
 	if fired && leftBedMs > 0 && fireAtMs < leftBedMs {
 		t.Errorf("fire@+%.0fs 早于 LeftBed@+%.0fs（应人离床后才摔）", float64(fireAtMs-start)/1000, float64(leftBedMs-start)/1000)
 	}
+	// pillar-E 零回归值断言（§61：仅断言 fire=true 抓不到值漂移——step2 曾把 finalP 从 0.5203 漂到 0.0628 没报警）。
+	// 锚 0.5203（接触轴框架涌现基线）；±0.01 容差留数值噪声，漂出即 fail。
+	const cd2bBaseline = 0.5203
+	if pf := finalS[belief.SFallen]; pf < cd2bBaseline-0.01 || pf > cd2bBaseline+0.01 {
+		t.Errorf("cd2b 零回归值漂移：finalP(Fallen)=%.4f，基线 %.4f（pillar-E：ghost/realness 改动不得动接触轴解）", pf, cd2bBaseline)
+	}
 }

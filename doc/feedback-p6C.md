@@ -2308,3 +2308,110 @@ A 问「C 会不会坚持 census 层即接 blind 续存、跟反-TTL 裁定冲�
 
 下一步 = **步2 多 track 进 belief 主管线**（§57 步2，设备≤6 / track==2 界，全表枚举）。**复审重点预告**：① 全表枚举 $9\cdot2^{|B|}$ × track 不爆（≤6/track==2 硬 bound）② **blind 续存的 per-track $S^{(i)}$ 计入 N_r**——架构师裁定的「摔倒的人不蒸发」本义在步2 这里兑现（靠 $S^{(i)}$ 自持，不是 census TTL）③ 每 track realness/ghost 与 census 单源不双算 ④ 步2 后 cd2b 仍 0.5203 零回归。
 
+---
+
+# §60 增补（C 自我订正 §59② 口径矛盾 + 确认步2 计划 + 房间 OR 聚合架构师已拍）
+
+> A 起步2 前抓出 C §59 内部口径矛盾（§59② vs 柱B 终判对 N_r 是否含 blind 续存自相矛盾），未闷头按某一个写、停下请订正——对。C 认矛盾，据自洽的终判收口。
+
+## 一、★ 订正 §59② 口径矛盾（N_r 不含 blind 续存）
+
+**矛盾原文**：
+- §59 柱B 终判：「Nr() 不数 blind 续存 → 摔倒者暂掉出人数 → 当独处 → 更易报 = FN-safe」（N_r **不**含续存）。
+- §59② 预告：「blind 续存的 per-track S^(i) **计入** N_r……摔倒的人不蒸发」（N_r **含**续存）。
+
+**根源**：C 把两件不同的事混用「N_r」一词：
+- **人数 N_r** = 现在屋里几个真人。摔倒者 track 消失→暂掉出人数→当独处→更易报 = FN-safe。
+- **告警连续性** = 摔倒者 track 消失后 fall 告警不能断，靠 per-track Filter 的 S^(i) 经 Blind 自持（消失后续 Predict、保持 Fallen）维持，**与人数无关**。
+
+**订正**：§59② 改为 **「per-track S^(i) 自持保 fall 告警连续（非计入 N_r）」**。**N_r 始终 = census 在场真人**；摔倒者掉出人数 = FN-safe（当独处更易报）。柱B 终判口径为准（自洽）。
+
+**「摔倒的人不蒸发」（§G六②）正解**：不蒸发的是**告警**（他仍被当摔倒者盯着，Filter S^(i) 自持 Fallen），**不是人数**（他从在场人数掉出，反令房子当独处、更易报）。两者皆 FN-safe，作用在不同量上——C §59 未分清，本节分清。
+
+## 二、步2 计划确认（A 提，C 据已锁定切法核 — 这些照写）
+
+| 件 | A 改法 | C 核 |
+|---|---|---|
+| 输入归一 | FrameInput.Tracks 升全量 per-track（pose/x/y/z/HR/RR/stillSec+IsReflection），删单数 Track | ✅ 符 §58 归一 |
+| 每 track 一份 Filter | engine 持 map[logicID]*Filter(+per-track Decider)，出生建、census 给 logicID/PReal，各喂自己 emission + 共享床证据 | ✅ §A.3② 隐维复制并排（N 份各 72 态，非 72^N，不爆）|
+| blind 续存 = 告警连续 | track 消失→其 Filter 续 Predict（无 obs）→S^(i) 自持 Fallen→告警不断；无 TTL；S^(i) 吸收到 Left/Empty 才 drop | ✅ 符反-TTL 裁定 + §60 订正（保告警非计入 N_r）|
+| N_r | 不动 = census.Nr() | ✅ 单源 census（§59 终判）|
+| 零回归 | cd2b 单 track→1 filter→逐 tick 等价→0.5203 | ✅ §59 重点④ |
+
+## 三、★ 一处待架构师拍：房间决策聚合语义
+
+A 提：房间决策 = **OR over 真人 track（PReal≥0.5）**——任一真人 Fallen 且过阈 → 房间 fire。
+
+**C 倾向认同但不替架构师定**：OR 聚合逻辑对、FN-safe（OR 比 AND 更易报、不漏摔）。但「一房多真人时，房间报警 = 任一人摔即报」是**房间级告警语义的模型决定**，归架构师。
+
+**★ 架构师已拍（2026-06-15）：房间 fire = OR over 真人 track（PReal≥0.5）——任一真人 Fallen 且过阈 → 房间 fire，报到房间。** 语义 = 告警挂房间（非挂人）：护士收到「X 房有人摔倒」、进房见人，不在告警层维护「报到具体人」的身份。理由 = ① FN-safe（任一摔即响、不漏）② 不依赖跨时间稳定身份（符「最小作功 logicID、不硬接力」，挂人才需强身份）③ 够用（护士本就要进房，门口喊到即达目的）。**A 照此实现：per-track decider → 房间层 OR 聚合 fire。**
+- C 注：OR 与「人态每 track 各一份 + FN-safe」一致；若架构师另有语义（如各人独立报、或多人时聚合策略不同），需在此分叉。
+
+## 四、C 待
+
+§59② 矛盾已订正（N_r 不含 blind 续存、续存=告警连续）。步2 计划五件全符锁定切法 + **房间 OR 聚合架构师已拍（报到房间、任一真人摔即报）**——A 即可一次写干净步2，无待拍项。C 复审重点（步2 交付后）：① per-track Filter map 隐维复制不爆（≤6/track==2）② blind 续存保告警连续、不计入 N_r（§60 订正口径）③ census/Filter 单源不双算（census 出人数、Filter 出人态）④ cd2b 0.5203 零回归 ⑤ 房间 OR 聚合（任一真人 Fallen 过阈→房间 fire、报到房间）。
+
+---
+
+# §61 增补（C 复审步2 暴露的 cd2b artifact 回归 + 拍 artifact 消费门控）— pillar-E 真破，消费门控（非计算门控）回 0.5203，符 risk-stratified 既有律
+
+> A 步2 把 pFallReal 从 TrackArchive=1 改源到 census PReal，cd2b finalP 0.5203→0.0628（pillar-E 破）。架构师跑真 fixture 诊断、排除自己上轮的 track==2 错修、提消费门控待 C/架构师拍。C 独立核诊断数据 + ground truth 依据，拍消费门控。
+
+## 一、C 独立坐实诊断（真 fixture 探针，非照搬 A）
+C 跑 cd2b window.json：**maxSpeed=90139cm/s（900m/s）、38 帧 >100cm/s、13 帧位移 >250cm（=AssocCm）**。两结论：
+1. 那是**真·物理不可能的雷达噪声读数**，非「正常移动÷小 dt」——故 dt-aware 必要但**不够**（噪声除正确 dt 仍超速，A 实测 dt-fix 只救到 0.1668）。
+2. 13 帧位移>250cm → census 噪声尖峰帧瞬时拆出第 2 logicID。**故 cd2b 非严格全程单 track**：稳定的人是单 track，但噪声尖峰帧瞬造第二条（修正架构师最初「cd2b 从头到尾没 2 track」的直觉——稳定层对，噪声层不对）。
+
+## 二、★ 拍 artifact 消费门控（C 据 ground truth，非新决定=既有律落地）
+**两种门控分清**（架构师已排除计算门控）：
+- **计算门控**（加 track==2 到 artifactQuantum）：错，砍 artifact 的 N_r 排假人头功能。架构师上轮自排除。✅
+- **消费门控**（artifact 照算照喂 N_r；但无共存源时 pFallReal=1 不压孤轨的摔）：**C 拍此对**，且 ground truth 直接支持、非新机制：
+  - §G:382：artifact「偶发一帧异常（噪声/真人快走一步）≈ 不判」——cd2b 13 帧噪声尖峰正是偶发，**压它违反 §G七桶一自己的设计**。
+  - §G:384：「1track **持续**快移可判 / **静止**永不判」——cd2b 是偶发尖峰非持续，不满足可判条件。
+  - feedback-p6A:152：「realness 轴无单 track 静止输入，ghost 只能由 co-existence ρ 涌现，结构上不可能单 track→判 ghost」。
+  - §173 risk-stratified：「单住户独处=最高风险→C_FN 大→低 P^F 也发」=**1track 永发**。
+
+## 三、★ 消费门控精确口径（C 钉死，防写错成逻辑循环）
+**不写「N_r<2 → pFallReal=1」**（循环：artifact 压本轨成 ghost→不算真人→N_r<2→豁免→又变真人）。**写「房内除本轨外无其它确认真人共存（无 co-existence 源）→ 本轨 pFallReal=1」**——无共存源→不可能是镜像→孤轨→永发。这是 §G:382「ghost 只能由 co-existence 涌现」的精确落地：**无共存证据→artifact 不压摔**。artifact 仍算、仍喂 N_r（排假人头不受影响）；只在「喂 pFallReal 压摔」这一消费端对孤轨豁免。
+
+## 四、为何选消费门控、不选 aScore leak 衰减（C 比较）
+A 备选=aScore 加 leak（偶发尖峰遗忘、持续才累积）。C 不选，三理由：① leak 是 §G 刚删的机制（凭空造/消 ghost 质量的病根），给 aScore 加 leak 有复活该病风险 ② cd2b 真噪声除 dt 仍超速，leak 要调到「偶发不累积/持续才累积」又回标定陷阱（违 fall_data_is_artificial_test）③ 消费门控直接落 risk-stratified 既有律（独处=最高风险=永发），非新机制。**代价**（孤身持续幻轨不压其摔→误火）= risk-stratified 明定接受（1track 永发，FP 换不漏真摔），且孤身持续 900m/s 幻轨极罕见、误火 FP 安全侧。
+
+## 五、验收点（A 落码，C 复审）
+① dt-aware 用真实流逝时戳（A 已做，1s/30s 固件间隔皆对）② **cd2b 必回 0.5203**（dt-aware 不够，靠消费门控：孤轨无共存→pFallReal=1）③ **replay 测试补 finalP 值断言**（现只断言 fire=true，值 0.5203→0.0628 漏网=pillar-E 漏检；补 `finalP≈0.5203±tol`）④ 全套绿（RV/CN/EG/RA 零回归）。
+
+## 六、★ 记 §55 验证缺口（诚实，不删歧路）
+§55 C 验 artifact「FN-safe（偶发不判/持续才判）」用的是**合成固定 dt 帧**，**没跑真 fixture**——故没暴露「变长 dt + 真噪声尖峰」把偶发拉成 ghost。**§55「FN-safe 通过」含金量打折**：合成 case 验机制、真 fixture 才守物理失效模式（cd2b 又一次印证）。这正应架构师上轮问的「多人逻辑有无真 fixture 兜底」——artifact 这条当时没真 fixture 验，step2 一接 PReal 即炸。**教训：凡喂 fall 的 ghost 判据，必跑真 fixture（变长 dt + 噪声）验，不可仅合成固定 dt。**
+
+## 七、C 净判
+**artifact 消费门控拍定**（无共存源→孤轨 pFallReal=1，符 risk-stratified 既有律）+ dt-aware（A 已做）+ finalP 值断言（补 pillar-E 漏检）。A 落码后 C 复审五验收（②cd2b 0.5203 / ③值断言 / ④零回归 / 消费门控精确口径不循环 / §55 缺口已记）。
+
+---
+
+# §62 增补（A 落码 §61 消费门控 + 步2 per-track 主体一并交付）— cd2b 回 0.5203、EG1-6 全绿，待 C 复审
+
+> A 据 §61 五验收落码。步2 per-track Filter 主体（§57 步2）其实在回归暴露前已写完，故本次=步2 主体 + §61 消费门控修复一并交付（非「暂停在 artifact」——步2 码已在，修复内嵌其中）。
+
+## 一、按 §61 落的码（消费门控，非计算门控）
+- **artifact 照算照喂 N_r**：`census.go` `artifactQuantum` 对每条 track 无条件算（撤回我上一版误加的 `len(obs)==2` 计算门控——那正是 §61 钉的「计算门控=错修砍 N_r 功能」，C 对）。mirror（CoexistRho/IsReflection）仍 track==2。
+- **消费门控（engine 层）**：`engine.go` Tick 算 `presentCount`；**无共存源（presentCount<2）→ pFallReal=1**（孤轨永发，不压其摔）；有共存源（≥2）→ pFallReal=ts.PReal（ghost 可压）。精确口径用 **raw 在场数** 非 N_r（防 §61 三的逻辑循环）。
+- **dt-aware**：`census.Update(nowMs, obs)` 速度按 cm/s（真实流逝时戳，1s/30s 固件间隔皆对）。
+
+## 二、★ §61 之外，落码暴露的一处必须同口径的点（C 复审请核）
+§61 钉了 pFallReal 的消费门控。但落码发现**房间 OR 聚合的「fire 资格」也必须同条件门控**，否则门控白做：
+- aggregate 原按 `PReal≥0.5` 判 track 是否参与房间 OR。孤轨触发 artifact → PReal 被压低（如 cd2b 0.135）→ 即使 pFallReal=1 让 SFallen 涨起来，聚合层仍因 PReal<0.5 把这条孤轨真摔**筛掉** → 不 fire（EG6 实测先暴露=fire false）。
+- 修：**fire 资格 = 消费门控同条件**——`eligible = presentCount<2 || PReal≥0.5`（无共存源→孤轨永发参与 OR；有共存源→须真人排 ghost）。与 pFallReal=1 同一「无共存→永发」口径，两处一致。EG6 转绿。
+- 这是 §61「孤轨永发」在**聚合端**的必然推论（pFallReal 端豁免了，聚合端不豁免=自相矛盾）。请 C 核此口径是否认（C 注：与你 §61「无共存→永发」一致，只是落到第二个消费端）。
+
+## 三、五验收对账
+① dt-aware 真实流逝时戳 ✅ ② **cd2b 回 0.5203** ✅（消费门控：cd2b 每帧 raw 单 track→presentCount=1→pFallReal=1→不压→0.5203 精确）③ **finalP 值断言已补** ✅（`replay_test` 加 `0.5203±0.01`，堵 pillar-E 漏检）④ 全套绿 ✅（adapter/belief/engine/replay）⑤ 消费门控精确口径不循环 ✅（用 raw presentCount 非 N_r）。
+
+## 四、步2 主体一并交付（§57 步2，待 C 复审）
+- **per-track Filter（§A.3② 隐维复制）**：engine 持 `map[logicID]*Filter`，每 logicID 一份 9·2^|B| 滤波并排（非笛卡尔积）；census 单源给身份/realness/obs。EG1 cd2b 单 track→1 filter→0.9992 不变。
+- **OR 聚合（§60 架构师拍）**：任一 eligible track Fallen 过阈→房间 fire、报到房间。EG5。
+- **blind 续存（§60，反 TTL）**：消失 track 仅 Predict 自持→SFallen 持住→告警连续；S 吸收到 {Left,Empty} 才 drop（状态驱动非 TTL）。EG4：消失后 fire=true / N_r=0。
+- **TrackArchive 删**：单 track realness 归 census 单源（§59③），删 `adapter/realness.go`（#1.2 无死码）。
+- 新增/改测：EG1-6（engine 端到端）、CN5（单 track artifact 排 N_r=0）、CN6（track==2 artifact 排）、replay finalP 值断言。
+
+**待 C 复审**：消费门控 + 聚合资格同口径（二）/ 步2 per-track 主体（四）/ cd2b 0.5203 + 全绿。commit 见推送。
+

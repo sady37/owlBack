@@ -45,12 +45,10 @@ type Census struct {
 
 // FrameInput 一帧全部 raw 输入（decoupled；scaffold wire 时由 engine/track_manager 填）。
 // Sleepads/Beds/Covers/Onbed/Overlap 长度均 = numBeds。
-// Tracks = 本 tick 全部 raw track（喂 TrackCensus 数 N_r/排 ghost）；Track 是 belief S/B/realness
-//
-//	主轴用的那条（step2 多 track 进 belief 主管线后两者归一，DBN-wire-roadmap §6 步2）。
+// Tracks = 本 tick 全部 raw track（§57 步2 归一：每条全量 per-track，既喂 census 数 N_r/排 ghost，
+//   又各自驱动一份 belief S/B/realness 滤波——§A.3② 隐维复制并排，不进 J 基数）。
 type FrameInput struct {
 	NowMs    int64
-	Track    RadarTrack
 	Tracks   []TrackObs
 	Sleepads []SleepadFrame
 	Beds     []Rect
@@ -89,14 +87,14 @@ func maxi(a, b int) int {
 }
 
 // Gxy g^xy 归属可分性派生：每床 XY 集中度。内→Peak / margin 内→Near / 远→0。
-// 近两床时两者都 Near = §4「床间均匀」。雷达离线 → 全 0（看不见）。
-func Gxy(fi FrameInput, p Params) []float64 {
-	g := make([]float64, len(fi.Beds))
-	if !fi.Track.Online {
+// 近两床时两者都 Near = §4「床间均匀」。雷达离线 → 全 0（看不见）。per-track（§57 步2）。
+func Gxy(t RadarTrack, beds []Rect, p Params) []float64 {
+	g := make([]float64, len(beds))
+	if !t.Online {
 		return g
 	}
-	for j, r := range fi.Beds {
-		d := distCm(fi.Track.X, fi.Track.Y, r)
+	for j, r := range beds {
+		d := distCm(t.X, t.Y, r)
 		switch {
 		case d == 0:
 			g[j] = p.PeakInsideGxy
@@ -107,13 +105,13 @@ func Gxy(fi FrameInput, p Params) []float64 {
 	return g
 }
 
-// nearBed HR/RR 空间门控：XY 在某床 NearBedMargin 内。
-func nearBed(fi FrameInput, p Params) bool {
-	if !fi.Track.Online {
+// nearBed HR/RR 空间门控：XY 在某床 NearBedMargin 内。per-track（§57 步2）。
+func nearBed(t RadarTrack, beds []Rect, p Params) bool {
+	if !t.Online {
 		return false
 	}
-	for _, r := range fi.Beds {
-		if distCm(fi.Track.X, fi.Track.Y, r) <= float64(p.NearBedMarginCm) {
+	for _, r := range beds {
+		if distCm(t.X, t.Y, r) <= float64(p.NearBedMarginCm) {
 			return true
 		}
 	}
@@ -140,27 +138,28 @@ func Online(fi FrameInput) belief.BedOnline {
 	return o
 }
 
-// BuildObservation raw 帧 → belief.Observation（§5 分轴输入）。
-func BuildObservation(fi FrameInput, p Params) belief.Observation {
-	sl := make([]belief.BedReading, len(fi.Sleepads))
+// BuildObservation raw 帧 → belief.Observation（§5 分轴输入）。per-track（§57 步2）：t 为本 track 的雷达量，
+// sleepads/beds 为房共享床证据（每 track 滤波各自吃自己的雷达 + 共享床）。
+func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, p Params) belief.Observation {
+	sl := make([]belief.BedReading, len(sleepads))
 	vitalSrc := false
-	for j, s := range fi.Sleepads {
+	for j, s := range sleepads {
 		sl[j] = s.Reading
 		if s.Present && s.Reading != belief.BedNoReport {
 			vitalSrc = true // 独立在线 vital 源（§D：radar absent 须 gate 在此下）= 存在且有实读数
 		}
 	}
-	nb := nearBed(fi, p)
+	nb := nearBed(t, beds, p)
 	return belief.Observation{
 		Sleepad:     sl,
-		RadarOnline: fi.Track.Online,
-		PoseLying:   fi.Track.Online && fi.Track.Pose == p.PoseLying,
-		StillSec:    fi.Track.StillSec,
+		RadarOnline: t.Online,
+		PoseLying:   t.Online && t.Pose == p.PoseLying,
+		StillSec:    t.StillSec,
 		NearBed:     nb,
 		// HRRRObserved 仅当雷达**真返** HR/RR（铁律 [[radar_hr_rr_bed_enter_gated]]：radar enter-gate，
 		// 近床但无 vital = 结构性未测 = 零信息，**非「观测到 absent」**；否则 §D 会在合法在床期误否决 AtBed）。
-		HRRRObserved:      fi.Track.HR > 0 || fi.Track.RR > 0,
-		HRRRPresent:       fi.Track.HR > 0 || fi.Track.RR > 0,
+		HRRRObserved:      t.HR > 0 || t.RR > 0,
+		HRRRPresent:       t.HR > 0 || t.RR > 0,
 		VitalSourceOnline: vitalSrc,
 	}
 }

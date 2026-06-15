@@ -189,12 +189,12 @@ func BuildTimeline(caseDir, radarUID string) ([]adapter.FrameInput, error) {
 		}
 		out = append(out, adapter.FrameInput{
 			NowMs: r.ts,
-			Track: adapter.RadarTrack{
+			// cd2b 单住户 → 单条全量 track（§57 步2 归一）：census 数 N_r=1（自排 ghost）+ 驱动其 belief 滤波。
+			Tracks: []adapter.TrackObs{{RadarTrack: adapter.RadarTrack{
 				Online: true, Pose: r.dv0.pose,
 				X: r.dv0.x, Y: r.dv0.y, Z: r.dv0.z,
 				HR: 0, RR: 0, // 雷达帧无 vital 字段（cd2b：radar enter-gate 不返 HR/RR）
-			},
-			Tracks:   []adapter.TrackObs{{X: r.dv0.x, Y: r.dv0.y}}, // cd2b 单住户 → N_r=1（census 自排 ghost）
+			}}},
 			Sleepads: []adapter.SleepadFrame{{Present: sleepadPresent, Reading: reading}},
 			Beds:     beds,
 			Covers:   covers, Onbed: onbed, Overlap: overlap,

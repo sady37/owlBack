@@ -5,72 +5,176 @@ import (
 	"owlBack/tools/Xsensorv1/internal/roomengine/belief"
 )
 
-// engine.go — 单房 roomengine 主循环（build order ③ W3.2/W3.3，DBN-wire-roadmap §6）。
-// 四隐轴 S/B/realness/neighbor 全经 belief.Filter.Step 融合（避免 gate）：
-//   S/B  ← adapter 译 FrameInput（Observation/Gxy/Online）。
-//   realness ← Room 内 TrackArchive 出生位 → RealnessTrack 后验 PReal（§G 两类 Real/Mirror，Static 溶解）。
-//     单房无 co-existence → PReal≡1 不压（§G 删 leak/Static）；Mirror co-existence 由 MM 在 W3.4b 填。
-//   neighbor ← rhoXroom（W3.4 由跨房 census 读出；单房=0）。
-// 多房编排（W3.4a）在此之上持 N 个 Room + 跨房 census 产 rhoXroom。
+// engine.go — 单房 roomengine 主循环（build order ③ + §57 步2 多 track 进 belief 主管线）。
+// §A.3② 隐维复制：每条 track 各跑一份独立 9·2^|B| 滤波（并排，不做笛卡尔积、不进 J 基数）；
+//   census 是身份/realness/人数单源（§59③：census 出 N_r，Filter 出人态，不双算）。
+// 四隐轴：S/B ← adapter 译 per-track 雷达 + 房共享床证据；realness ← census 每 track PReal（折 SFallen 发射）；
+//   neighbor ← rhoXroom（W3.4 跨房 census 读出；单房=0）。
+// 房间决策（§60 架构师拍）：OR over 真人 track（PReal≥0.5）——任一真人 Fallen 过阈 → 房间 fire，报到房间。
+// blind 续存（§60 反-TTL）：track 消失 → 其 Filter 仅 Predict 自持（S^(i) 留 Fallen）→ 告警连续；
+//   消失 track 的 S^(i) 被吸收到 {Left,Empty} → 人确认离场 → drop（状态驱动，非 TTL）。
 
-// Frame 单帧引擎输出（probe + 裁决）。
+// absorbedThresh 消失 track 的 S 边缘 P(Left)+P(Empty) ≥ 此 = 确认离场 → drop（form-anchor，留 oracle）。
+const absorbedThresh = 0.9
+
+// Frame 单帧引擎输出（房间代表 probe + 房间 OR 聚合裁决）。
 type Frame struct {
 	Probe    belief.FrameProbe
 	Decision belief.Decision
 }
 
-// Room 单房四轴引擎：belief 滤波器 + 派生层（coupling/emission）+ realness 档案 + 裁决器 + 多 track 人数普查。
+// Room 单房多 track 引擎：每 logicID 一份 belief 滤波 + 裁决器；census 管身份/realness/人数。
 type Room struct {
-	f      *belief.Filter
-	js     *belief.JointSpace
-	cp     *belief.Coupling
-	em     *belief.Emission
-	dec    *belief.Decider
-	arch   *adapter.TrackArchive
-	rt     *belief.RealnessTrack // 出生帧创建（按 born facts 起先验）；offline 帧不读
-	census *adapter.TrackCensus  // 房内多 track 人数 N_r（§G 排 ghost）→ decide PeopleCount（§56 候选①）
-	p      adapter.Params
+	model    *belief.Model
+	js       *belief.JointSpace // 共享读出/发射空间（各 track 滤波同维，idx 一致）
+	cp       *belief.Coupling
+	em       *belief.Emission
+	census   *adapter.TrackCensus
+	filters  map[int]*belief.Filter  // 每 logicID 一份 S/B 联合滤波（§A.3② 隐维复制）
+	deciders map[int]*belief.Decider // 每 logicID 一份持续计时裁决
+	nb       int
+	p        adapter.Params
+	lastMarg belief.Vector // 末帧房间代表 track 的 S 边缘（MarginalS 读出）
 }
 
 // NewRoom 建单房引擎。geom = 床几何（adapter.BedGeoms 从 layout 派生）；nb = 床数。
 func NewRoom(geom []belief.BedGeom, nb int) *Room {
-	f := belief.NewFilter(belief.DefaultModel(), nb)
 	return &Room{
-		f:      f,
-		js:     f.Space(),
-		cp:     belief.NewCoupling(geom),
-		em:     belief.NewEmission(geom),
-		dec:    belief.NewDecider(),
-		arch:   adapter.NewTrackArchive(adapter.DefaultRealnessParams()),
-		census: adapter.NewTrackCensus(adapter.DefaultTrackCensusParams()),
-		p:      adapter.DefaultParams(),
+		model:    belief.DefaultModel(),
+		js:       belief.NewJointSpace(nb),
+		cp:       belief.NewCoupling(geom),
+		em:       belief.NewEmission(geom),
+		census:   adapter.NewTrackCensus(adapter.DefaultTrackCensusParams()),
+		filters:  map[int]*belief.Filter{},
+		deciders: map[int]*belief.Decider{},
+		nb:       nb,
+		p:        adapter.DefaultParams(),
 	}
 }
 
-// Tick 一帧推进。rhoXroom（neighbor，单房=0）。realness 房内涌现：TrackArchive 译出生位/Displaced →
-// RealnessTrack 后验 PReal → 折进 SFallen 发射（无在线 track = 不分类，中性 1.0 不抑制）。
+type trackResult struct {
+	d        belief.Decision
+	pF       float64
+	lam      float64
+	eligible bool // 参与房间 OR 的资格：有共存源时须真人(PReal≥0.5 排 ghost)；无共存源=孤轨→永发(§61)
+	f        *belief.Filter
+}
+
+// Tick 一帧推进。rhoXroom（neighbor，单房=0）。每条 track 各跑一份滤波，房间 OR 聚合真人 fall。
 func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
-	pFallReal := 1.0
-	if fi.Track.Online {
-		obs, birth := r.arch.Observe(fi.Track)
-		if birth {
-			r.rt = belief.NewRealnessTrack()
+	r.census.Update(fi.NowMs, fi.Tracks)
+	online := adapter.Online(fi)
+	nr := r.census.Nr()
+	rc := adapter.BuildRiskContext(fi, nr)
+
+	var results []trackResult
+	tracks := r.census.Tracks()
+	presentCount := 0 // 本帧在场 track 数 = 共存源判据（§61 消费门控，用 raw 在场数非 N_r 防循环）
+	for _, ts := range tracks {
+		if ts.Present {
+			presentCount++
 		}
-		r.rt.Update(obs)
-		pFallReal = r.rt.PReal()
 	}
-	r.census.Update(fi.Tracks) // 多 track 人数 N_r（排 mirror/伪迹 ghost，§G）
-	logPsi := r.cp.LogPsi(r.js, adapter.Gxy(fi, r.p))
-	logPhi := r.em.LogPhi(r.js, adapter.BuildObservation(fi, r.p))
-	r.f.Step(fi.NowMs, adapter.Online(fi), logPsi, logPhi, rhoXroom, pFallReal)
-	pF := r.js.PFallen(r.f.Alpha())
-	lam := belief.ComputeLambda(r.js, logPsi, logPhi)
-	d := r.dec.Step(fi.NowMs, pF, lam, adapter.BuildRiskContext(fi, r.census.Nr()))
+
+	var dropIDs []int
+	for _, ts := range tracks {
+		f := r.filters[ts.LogicID]
+		dec := r.deciders[ts.LogicID]
+		if f == nil {
+			f = belief.NewFilter(r.model, r.nb) // 出生：新 logicID 起一份滤波（隐维复制）
+			dec = belief.NewDecider()
+			r.filters[ts.LogicID], r.deciders[ts.LogicID] = f, dec
+		}
+
+		var logPsi, logPhi belief.JointVector
+		pFallReal := 1.0
+		if ts.Present {
+			logPsi = r.cp.LogPsi(r.js, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p))
+			logPhi = r.em.LogPhi(r.js, adapter.BuildObservation(ts.Obs.RadarTrack, fi.Sleepads, fi.Beds, r.p))
+			// §61 消费门控：仅当**有共存源**（房内≥2 在场 track，可能互为镜像/phantom）时，ghost 才压本轨的摔；
+			//   无共存源 = 孤轨 = 不可能是镜像 → pFallReal=1 永发（噪声 XY 把孤身真人压成 ghost=漏真摔，risk-law
+			//   "独处=最高风险=永发"）。artifact 仍在 census 算、仍喂 N_r 排假人头——只是不在此压孤轨的摔。
+			if presentCount >= 2 {
+				pFallReal = ts.PReal
+			}
+		}
+		// 消失态：logPsi/logPhi=nil → Correct 中性，仅 Predict 自持（blind 续存告警连续，无 TTL）。
+		f.Step(fi.NowMs, online, logPsi, logPhi, rhoXroom, pFallReal)
+
+		pF := f.Space().PFallen(f.Alpha())
+		lam := belief.ComputeLambda(f.Space(), neutralIfNil(logPsi, r.js), neutralIfNil(logPhi, r.js))
+		d := dec.Step(fi.NowMs, pF, lam, rc)
+		// 资格 = 消费门控同条件：有共存源(≥2 在场)→须真人(排 ghost 的摔)；无共存源→孤轨永发(§61，
+		//   与 pFallReal=1 一致——否则噪声压低 PReal 又在聚合层把孤轨真摔筛掉，门控白做)。
+		eligible := presentCount < 2 || ts.PReal >= 0.5
+		results = append(results, trackResult{d: d, pF: pF, lam: lam, eligible: eligible, f: f})
+
+		// drop（状态驱动）：消失 track 的 S^(i) 吸收到 {Left,Empty} → 离场确认 → drop（非 TTL）。
+		if !ts.Present {
+			m := f.Space().MarginalS(f.Alpha())
+			if m[belief.SLeft]+m[belief.SEmpty] >= absorbedThresh {
+				dropIDs = append(dropIDs, ts.LogicID)
+			}
+		}
+	}
+	for _, id := range dropIDs {
+		delete(r.filters, id)
+		delete(r.deciders, id)
+		r.census.Drop(id)
+	}
+
+	return r.aggregate(results, nr, fi.NowMs)
+}
+
+// aggregate 房间 OR 聚合（§60）：任一真人 track Fire → 房间 fire；代表 = 真人里(优先 firing)pF 最高者。
+func (r *Room) aggregate(results []trackResult, nr int, nowMs int64) Frame {
+	anyFire := false
+	var rep *trackResult
+	for i := range results {
+		tr := &results[i]
+		if !tr.eligible {
+			continue
+		}
+		if tr.d.Fire {
+			anyFire = true
+		}
+		if rep == nil {
+			rep = tr
+			continue
+		}
+		if tr.d.Fire != rep.d.Fire { // 优先 firing 的作代表（告警可见，含 blind 续存的消失 faller）
+			if tr.d.Fire {
+				rep = tr
+			}
+			continue
+		}
+		if tr.pF > rep.pF {
+			rep = tr
+		}
+	}
+
+	if rep == nil { // 无真人 track（空房/全 ghost）→ 空房决策
+		r.lastMarg = belief.Vector{}
+		return Frame{Decision: belief.Decision{PeopleCount: nr}}
+	}
+	dec := rep.d
+	dec.Fire = anyFire // OR：任一真人摔即房间 fire
+	dec.PeopleCount = nr
+	r.lastMarg = rep.f.Space().MarginalS(rep.f.Alpha())
 	return Frame{
-		Probe:    belief.Snapshot(r.js, r.f, r.cp, d, lam, fi.NowMs),
-		Decision: d,
+		Probe:    belief.Snapshot(rep.f.Space(), rep.f, r.cp, dec, rep.lam, nowMs),
+		Decision: dec,
 	}
 }
 
-// MarginalS 当前 S 轴边缘后验。
-func (r *Room) MarginalS() belief.Vector { return r.js.MarginalS(r.f.Alpha()) }
+// neutralIfNil 消失 track 无发射 → 中性零向量（log 域 0 → ComputeLambda=1 高度不可判；
+// 但 pF≥0.55 走 report 档不读 lam，blind 续存告警照常持续）。
+func neutralIfNil(v belief.JointVector, js *belief.JointSpace) belief.JointVector {
+	if v == nil {
+		return js.NewJointVector()
+	}
+	return v
+}
+
+// MarginalS 末帧房间代表 track 的 S 轴边缘后验。
+func (r *Room) MarginalS() belief.Vector { return r.lastMarg }
