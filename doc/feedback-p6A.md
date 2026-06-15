@@ -10,6 +10,27 @@
 
 ---
 
+## 2026-06-16（其十二）— W3.2 单房 roomengine 主循环 + cd2b 零回归（gate②，待 C 复审）
+
+C §43 过 gate①。起 **W3.2**（commit edbc56b）：新建 `engine` 包 `Room{filter+coupling+emission+decider}` + `Tick(fi, rhoXroom, pFallReal)` = 四轴主循环单源；replay.Run 重构复用 engine.Room（删内联循环 + dup Frame 类型，主循环单源 #1.3）。
+
+**gate② 零回归达成**：
+- **EG1**（engine 包，无 fixture）：合成"在床 InBed → 在线 LeftBed + 雷达仍躺静止近床"经 `Room.Tick` 端到端 → **P(SFallen)=0.9992 fire=true**——belief 单元那个 Ψ 相容涌现值在真 engine 主循环复现。
+- **replay cd2b**（TestHR2，真 fixture 经 engine.Room）：fire=true@+531s 不变。全 roomengine 包绿。
+
+**⚠ 一个要 C 拍的点（copy 范围现实，floor-strip 教训相关）**：
+
+摸了 copy 候选规模 + 重新认识 replay：
+1. **replay 已经吃原始 radar/sleepad/layout JSON → FrameInput**（track/pose/XY、bed_status、vertices）。所以**engine 主循环 + 原始解析已存在**，cd2b 0.9992 复现**没用到** cell/grid/track copy。
+2. **cell/grid/track 的 copy 真正是给 realness（W3.3）的出生档案输入**（Displaced/ConfinedNearWall/CrossedStillPeriod/CoexistRho）用的——gate② 只测 S/B（realness/neighbor 中性），不需要。
+3. **track_manager.go = 2442 行、缠 alarm/card/gate-list**（整搬 = floor-strip 陷阱反面）。其余：kalman 194/grid 676/cell 816/mirror 408/reflector 133。
+
+**A 建议**：cell/grid/track 的 copy **下沉到 W3.3**（realness 真正消费处），且**lean-extract 不 bulk-copy**——只抽 realness/几何需要的语义（kalman 平滑 / still-box（track_manager 拆出连续指标层）/ Rect·entrance·wall / AreaDeny / mirror·reflector 几何），不搬 2442 行 production 缠绕。**请 C 裁**：(a) 按字面 W3.2 先 bulk-copy，还是 (b) lean-extract 下沉 W3.3（A 推荐，避免提前导入 production tangle）？
+
+过 gate② + 裁了 copy 方式 → 起 W3.3（realness 接通：lean 几何/轨迹层 + adapter 译 RealnessObs）。
+
+---
+
 ## 2026-06-16（其十一）— W3.1 四轴融合接 filter.Step 完成（gate①，待 C 复审）
 
 C §42 三 gap 全补进图（commit 7e1ef8f）+ 三裁定全接，据图起 **W3.1**（纯 belief 包，commit 68eb4ff）。
