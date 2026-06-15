@@ -10,6 +10,32 @@
 
 ---
 
+## 2026-06-15（其三）— §32 拆 floor-strip 补丁完成 + 拆中揪出两处框架/译层不忠（AC-拆1~4 全过）
+
+C §32 放行四步拆补丁，A 执行完毕（commit `2a8341d`）。**cd2b 现靠框架 (S,B) 相容零补丁涌现，不靠任何几何 δ 或 cd2b 专用规则。**
+
+### 四步拆补丁
+1. **删 δ FloorStripXY**：`emission.go`（δ 块 + lDelta）/`observation.go`（FloorStripXY 字段）/`adapter.go`（floorStrip + isDown + DownPoses）全删。
+2. **删 harness TTL 离线判定**（`replay.go` sleepadTTLMs）——它建模了用户明令不建模的「中途掉线」。
+3. **E5/AD4 补丁测试 → 框架涌现测试**：belief `TestFrameworkEmergenceCd2b`（LeftBed→B vac→Ψ→SFallen，零 floor-strip）；adapter `TestAdapterCd2bFrameworkEmergence`（接触轴）；replay `TestHR2Cd2bContactAxis`（真摔点 fire、在床不误火）。
+4. **K^unobs 论证改 config-static**（`bed_axis.go` 注释；机制不变，C 裁过的 §C 箭头记法保留）。
+
+### 拆中 AC-1 揪出两处**框架/译层不忠**（非 cd2b 补丁，是 translation 修正）
+拆掉 floor-strip 后 cd2b replay 仍在**在床段误火**（+143s，非真摔）。AC-1 归因边界逐层定位（belief 正确）：
+- **① ρ 非 config-static**：harness 把「sleepad 还没首报」误判离线（ρ=0）→ K^unobs 抽 B→vac → 造假 SFallen（near-absorbing 黏住）。**修**：`SleepadFrame{InBed,Fresh}`→`{Present,Reading}`，sleepad **存在即 ρ=1**（含首报前，§32 二态），Reading 走 InBed/LeftBed/NoReport(unknown，§30)。
+- **② §D HR/RR absent 在合法在床期误否决 AtBed**：adapter 原 `HRRRObserved=nearBed` → 雷达近床但未返 vital 被当「观测到 absent」→ §D 否决 AtBed → SBed 塌、SFallen 漏。**修**：`HRRRObserved=HR>0||RR>0`（铁律 [[radar_hr_rr_bed_enter_gated]]：雷达 enter-gate，近床未测=**零信息**非 absent）。
+- **③ harness 窗到双传感器期**（sleepad 首报起）：fixture sleepad 数据始于人已在床（+144s），更早 radar 缺 sleepad 上下文；真实部署 sleepad 全程在线无此缺口，窗到双传感器期=诚实复现。
+
+### AC-拆1~4 验收（全过）
+- **AC-拆1** 框架纯路径涌现：`P(SFallen)=0.9992`（零 floor-strip）。
+- **AC-拆2** 全测试绿（belief/adapter/replay 三包）。
+- **AC-拆3** harness 去 TTL 后 cd2b replay：`fire@+531s` 在 **LeftBed(+413s) 之后**真摔点，**在床段不误火**。
+- **AC-拆4** 歧路记录 §23-§31 保留不删。
+
+请 C 据 AC-拆1~4 复审清理结果（两处框架/译层修正一并审：ρ config-static + HRRRObserved 零信息）。
+
+---
+
 ## 2026-06-15（其二）— decide 重写到 §26 55% 三分判据（用户裁定，A 执笔）
 
 C §26 / 用户裁定落地：`decide.go` 从「§8 全局期望损失 P^F·C_FN>(1-P^F)·C_FP」改为 **55% 三分**：
