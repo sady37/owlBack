@@ -2576,3 +2576,90 @@ Room2 已2人时 B（第3）不做 ghost detect → PReal=1 → GainedReal 高 �
 
 **Xsensorv1 = 验证载体（方案乙新建 roomengine）的框架验证使命达成**：框架（DBN 四轴 + §A 时间窗 neighbor + §G realness + ghost 三分）已立、cd2b 实证零补丁涌现、全链零回归。
 
+
+---
+
+# §68 增补（C 独立终检 + 使命口径更正）— 步1-4 闭环全绿，但 ghost 三分缺桶二；§67"框架验证使命达成"口径错，更正为"骨架达成 + 步1-4 闭环，桶二待补"
+
+> 架构师裁定：**桶二（墙→镜像占位 → IsReflection）在 Xsensorv1 内做**（不在验证载体之外）。C 据此回核 §67/§68 那个"框架验证闭环/使命达成"口径——**喊早了，本节诚实更正**。C 卷不让误导结论留着。
+
+## 一、🔴 使命口径错在哪：ghost 三分里桶二（IsReflection 几何）一直是 stub、恒 false
+
+C 核码实证（非凭记忆）：
+- `belief/realness.go:53` mirror 判别 `else if o.CoexistRho > 0 && o.IsReflection`——**因 `IsReflection ≡ false` 从未真激活**。
+- `adapter/census.go:88` `ro.IsReflection = o.IsReflection`（纯透传输入，默认 false）；`census.go:32` 注「MM 拓扑：本 track 是另一条的反射（**W3.4b 填；本层不算几何**）」——明确标 stub。
+- 我前面（§63/§66/§67）说的"mirror 闭环"指的是 **ρ 通路 + 接口留好**（CoexistRho 本层算、IsReflection 字段/分支留齐），**IsReflection 真值从没喂过**。
+
+**这不是 bug**（一路诚实标 MM-deferred，§28/§45/§52 都记过），但意味着：**现状 = 骨架达成 + 步1-4 闭环，桶二是验证载体内 ghost 三分的最后一分，补完才算 ghost 三分全闭环**。§67 末"框架验证使命达成"应读作"框架骨架达成、步1-4 闭环、桶二待补"。
+
+## 二、步1-4 那部分达成是实的（C 独立终检仍全绿）
+
+| 维度 | C 独立终检 |
+|---|---|
+| 全模块 | `go test ./...` adapter/belief/engine/replay **61 PASS / 0 FAIL**（-count=1 禁缓存） |
+| cd2b 零回归 | finalP=**0.5203** 精确（值断言锚 0.5203±0.01）|
+| EG1 | P(SFallen)=**0.9992** 精确 |
+| 作废分支 | grep 死码/stub/TODO/nearestAliveTrack 无残留（§67一 已核） |
+| build·vet | 净 |
+
+步1-4（候选① N_r→decide / per-track 主体+消费门控 / 镜像 ρ 通路+接口 / neighbor 纯时间窗）的闭环不因桶二待补而失效——**桶二是"最后一分"，不是"推翻前四"**。
+
+## 三、口径更正净结论
+
+- ✅ **骨架达成**：DBN 四隐轴框架已立（S/B/realness/neighbor），cd2b 零补丁涌现 0.5203/0.9992。
+- ✅ **步1-4 闭环**：候选① / per-track 消费门控 / ρ 通路接口 / neighbor 时间窗，全绿零回归。
+- 🔴 **桶二待补**：IsReflection 几何恒 stub，mirror 判别从未真激活；架构师裁在 Xsensorv1 内做。补完才是 ghost 三分（桶一伪迹 / 桶二镜像 / 桶三病根删）全闭环，Xsensorv1 使命才真达成。
+- **§67"框架验证使命达成"口径同步更正**（不删 §67，按纪律记诚实歧路、追加更正）。
+
+**C 承认账**：§67 那个"使命达成"我喊早了，本节口径正了。这次纠在 ghost 三分全闭环之前，不让 §67 误导委员会。
+
+
+---
+
+# §69 增补 — C 对桶二（墙 → 镜像占位 → IsReflection）的预声明验收规格（架构师定法，C 出闸；§45/§48 模式）
+
+> 桶二切法由架构师定（C 之前脑补的"正向算虚像"被避开）。C 出验收规格：A 照五柱写，写完 C 复审。**桶二补上 = ghost 三分全闭环。**
+
+## 一、架构师定法（C 记死，五步）
+
+1. **ghost 墙外**：ghost 出生点在 wall 矩形之外。
+2. **radar→ghost 连线与 wall 求交**，取**距 ghost 最近的交点 = mirror 点**（雷达在墙内 → 1 个交点）。
+3. **交点→ghost 距离 ≥30cm 才判**镜像（<30cm = 雷达精度/墙太靠内，不判，归边缘不处理）。
+4. **多墙取全局最近**交点。
+5. 算出 `IsReflection=true` → 喂 realness（`CoexistRho>0 && IsReflection` 分支）→ ghost 三分闭环。
+
+**坐标系前提**（架构师已确认满足）：全系统雷达坐标统一转画布坐标，ghost XY 与 wall 矩形同系，直接求交无需对齐。
+
+## 二、接口零件核查（C 已核，已齐 / 缺两输入）
+
+| 零件 | 现状 |
+|---|---|
+| `RealnessObs.IsReflection` 字段 | ✅ 留好（`realness.go:28`，现恒 false） |
+| `adapter` IsReflection 透传 | ✅ `census.go:88`（待改为本层几何算） |
+| mirror 判别分支 | ✅ `realness.go:53` 已闭环，只等 IsReflection 真值 |
+| `Rect{X1,Y1,X2,Y2}`（canvas cm） | ✅ 可复用作 wall 矩形 |
+| `distCm`（点到矩形距离） | ✅ 已有 |
+| **wall 矩形输入** | ❌ 缺 → `RoomConfig` 加 `Walls []Rect`（**区别于 `Beds`**） |
+| **雷达自身坐标** | ❌ 缺 → `RadarTrack` 现只有 track XY，加 radar 位置 |
+
+## 三、五柱验收（柱A-E；任一不过 = 不通过）
+
+- **柱A 几何正确**：点在矩形外判定 + 线段(radar→ghost) 与矩形边求交取**最近 ghost 交点** + ≥30cm 闸；正反 case 验（ghost 墙外+连线穿墙+交点≥30cm → `IsReflection=true`；ghost 墙内 / 连线不穿墙 / 交点<30cm → false）。
+- **🔴 柱B FN-safe（核心）**：**`<30cm 阈是 FN-safe 闸——宁可漏判镜像（多报），不可误判真人为镜像（把真人排出 N_r → 漏报）`**。墙内真人、连线不穿墙的 track、交点<30cm 的边缘 → `IsReflection=false`（绝不误排真人）。<30cm 边缘宁可漏镜像（多报=多查）也不误判真人（=漏报）。
+- **柱C mirror 判别闭环**：`IsReflection=true` + `CoexistRho>0`（track==2 同步）→ `PMirror→1` → 排出 N_r。无 IsReflection（有 ρ）或无 ρ（有 IsReflection）→ 不判 mirror（两者皆必要）。
+- **柱D 多墙全局最近**：连线穿多墙 → 取全局离 ghost 最近交点。
+- **柱E 零回归**：cd2b（无 wall 配置 / 单 track）→ IsReflection 恒 false → **finalP=0.5203 不动**；EG/UV/RV/CN 全绿；build·vet 净。
+
+## 四、否决条件（预声明，命中即不过）
+
+- ❌ `IsReflection` 误判真人为镜像 → 真人被排出 N_r → **漏报 FN**（柱B，最危）。
+- ❌ <30cm 边缘当镜像多判（雷达精度/噪声误判）。
+- ❌ 坐标系未统一画布坐标致几何错。
+- ❌ 引入对 cd2b 0.5203 的改动（柱E）。
+
+## 五、难度判定 + sync 提醒
+
+- **难度**：小活，**dt-aware 一个量级**——标准计算几何（点在矩形外 + 线段求交 + 距离阈）。架构师"从 ghost 反推交点"避开了 C 之前脑补的"正向算虚像"那套难处。
+- **标定边界**：30cm 阈、wall 几何为确定性几何参数（非 oracle 软参），不入 [[fall_data_is_artificial_test]] 真实数据标定。
+- **sync**：§68（使命口径更正）上轮 reset 时丢、§69（本节）未推 → 本次 §68+§69 一起推。推完 A 照五柱写桶二，补上这一分 ghost 三分全闭环，Xsensorv1 使命才真达成。
+
