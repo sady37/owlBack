@@ -45,7 +45,7 @@ func NewRoom(geom []belief.BedGeom, nb int) *Room {
 	}
 }
 
-// Tick 一帧推进。rhoXroom（neighbor，单房=0）。realness 房内涌现：TrackArchive 译出生档案/still-box →
+// Tick 一帧推进。rhoXroom（neighbor，单房=0）。realness 房内涌现：TrackArchive 译出生位/Displaced →
 // RealnessTrack 后验 PReal → 折进 SFallen 发射（无在线 track = 不分类，中性 1.0 不抑制）。
 func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	pFallReal := 1.0

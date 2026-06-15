@@ -2081,3 +2081,52 @@ func TestPC2bNoWalkEarlyFall(t *testing.T) {
 
 **下一步**：§G 立框架，下沉码层时 realness.go 三处待改（C 据 §G 验收）——① 删 Static 类（RCStatic/PStatic/ConfinedNearWall/AgeLongStatic 及 adapter 喂入）② 删 leak 凭空造 ghost（零证据 pFallReal≡1，仅 co-existence ρ/AreaDeny 正证据才 <1）③ N_r 计数保守默认（暧昧 track 不计入，仅独立真人正证据计入）。C 待 A 码层 PR + §A 澄清注。
 
+
+---
+
+# §52 增补（C 复审 §G 码层落地 43ee678）— 三处验收全过 + CrossedStillPeriod 删对 + realness 与 cd2b 彻底脱钩（探针实证），通过
+
+> A 推 §G 码层 PR（43ee678，净删 198 行）+ 一个超 C 字面 list 的判断（删 CrossedStillPeriod/still-box）。C pull 43ee678 + 装 go1.22 自跑全包 + 读改后 realness.go 实现核 + 探针反事实证脱钩 + 单源核死码。**非照搬 A 数。**
+
+## 一、C §51 三处验收（自核实现，非照搬）
+
+**① 删 Static ✅**：RCStatic/PStatic/ConfinedNearWall/AgeLongStatic 全删，realness 收两类 {Real,Mirror}。RealnessObs 只剩 Displaced/CoexistRho/IsReflection。grep 全仓无 Static 残留。
+
+**② 删 leak、pFallReal≡1 中性 ✅（C 读机制核，结构性恒等非凑）**：
+- `mScore` 起 0，`PReal()=e^{-mScore}=e^0=1`。单房 CoexistRho=0（replay 不填）→ mScore **恒 0** → **PReal 结构性恒等 1**（数学必然，`Exp(-0)` 短路保证，非测试调参）。leak「向均匀漂」彻底删。
+- `movedFromBirth` 闸门保留且更强：确认真人后 `mScore=0` 强锁 return，co-existence 也判不动 Mirror（cd2b 病另一面防护在）。
+
+**③ N_r 计数保守默认**：留 W3.4（PeopleCount 仍 Census 外部喂 replay 写死 1，N_r 未从 track 派生）。**本轮不落地是对的**——③ 的洞在 N_r 由多 track 派生时才激活（W3.4a），现在落=无靶提前写。C 认缓。
+
+## 二、★ CrossedStillPeriod 删对（C 独立验 A「失靶」理由，非照搬）
+
+A 删 CrossedStillPeriod + 整个 still-box，超 C §51 字面 list，主动标出待裁。**C 从框架独立推，理由成立**：
+- CrossedStillPeriod 原是 **anti-Static 证据**（ghost/金属活不过静止降功率期，真人活得过 → survival→Real）。
+- Static 删后剩的 ghost 只有 **Mirror**，而 **Mirror 由真人源驱动——真人静止时 mirror 跟着静止但同样「存活」**。故「活过静止期」对 Real 和 Mirror **都成立、分不开** → 失靶。
+- 留着 = no-op 信号 + 一坨 still-box 死机制（违 #1.2 无死码）。**A 删对。** 若 W4 要给 N_r「独立真人」证据复用，需新的有效理由（非现在这个失靶的）——C 同意 A 此裁，记「W4 若需 survival 作独立真人证据，须重立靶」。
+- **死码核**：still-box 实代码（updateStillBox/histPt/stillStart/crossed）全删干净，无残留。`StillSec`（RadarTrack raw 字段）**非 realness 死码**——它被 emission.go:96 dwell 机制（§5 证据层 `StillSec≥stillTau→静止占用`）消费，删 realness still-box 未误伤 dwell。✅
+
+## 三、★ realness 与 cd2b 彻底脱钩（C 探针反事实实证 A 报「不再靠哨兵运气」）
+
+A 报「HR-2 fire 不再靠哨兵伪 Displaced 运气，§50 双重运气拆一重」。C 探针反事实独立验：
+- **旁路 realness（pFallReal≡1）跑 HR-2 → finalP=0.5203，与现状一字不差** → realness 对 cd2b fire **零贡献、已彻底脱钩**。
+- 机制核：单房 replay 永不填 CoexistRho → mScore 恒 0 → PReal=1 恒等，与哨兵坐标/Displaced **全无关**。
+- **§50 双重运气第①重（哨兵伪 Displaced 锁 realness 闩）彻底拆掉**：realness 现结构性≡1，根本不需哨兵帮锁 Real。cd2b fire 纯由床占用矛盾路（§50 已证）撑，realness 不参与。**这是 §G 删 leak 的框架价值在 cd2b 上的兑现。**
+- （附：探针曾把哨兵(0,0)改到出生位，finalP 0.5203→0.6143 变化——C 核这是哨兵坐标经 **S/B 床占用路 g^xy** 影响，**非 realness 耦合**；旁路 realness 零差才是脱钩铁证。）
+
+## 四、零回归（C 自跑，非照搬 A）
+
+- whole module build + `go test ./...` 四包全 ok。
+- EG1 P(SFallen)=**0.9992** fire=true / HR-2 finalP=**0.5203** fire=true@+531s——与 §46/§50 基线**一字不差**。
+- RV1/RV4（改验「无 leak：确认 real 后静止 60 帧 PReal≥0.99 仍 1」，精确验删 leak）/RV5 + RA1·4 全绿。RV4 改写到位：阶段A 走动确认→阶段B 60 帧无证据→PReal 保持 1，正验「无证据不拽低」。
+
+## 五、一处文档债（非否决，A 顺手修）
+
+engine.go:48 注释仍写「TrackArchive 译出生档案/**still-box**」，但 still-box 已删，现仅译出生位/Displaced。过时注释，不影响功能。建议 A 下个 PR 顺手清。
+
+## 六、C 净判
+
+**§G 码层落地通过。** 三处验收：① Static 全删两类收齐 ② leak 删、pFallReal 结构性恒等 1（非凑）、movedFromBirth 闸门更强 ③ N_r 计数缓 W3.4（对）。**CrossedStillPeriod 删对**（C 独立验失靶理由成立，记 W4 若复用须重立靶）。**realness 与 cd2b 彻底脱钩**（C 探针旁路零差实证，§50 双重运气拆一重，删 leak 框架价值兑现）。零回归全绿基线一字不差。死码删净（StillSec 非 realness 死码，dwell 仍用）。一处过时注释顺手清。
+
+**进度**：realness 轴 §G 框架重定（§51）+ 码层落地（§52）闭环 ✅。下一步 **W3.4a 多房编排**（N Room + 跨房 census 产 rhoXroom）+ **③ N_r 计数排除**在多 track 落地（暧昧 track 不计入，仅独立真人正证据计入——§G 三 + C §51 验收点）。C 待 A W3.4a，复审重点预告：① census 单源（rhoXroom 产出不引第二套主循环 drift，§44 教训）② N_r 从多 track 派生时保守计数（mirror/暧昧排除，防独处真人被当 2 人折 C_FN）③ §A neighbor 有向门控 + D=10min 在多房不破（§40/§A）。
+
