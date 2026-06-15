@@ -1447,3 +1447,60 @@ impliesReal := t.p[RCReal] + t.p[RCMirror]  // static 不蕴含真人
 **build order 进度**：① ghost/realness 隐轴 ✅（本节通过）→ ② neighbor 隐轴（§A ρ_xroom 有向门控，方程 C §16 审过）→ ③ 新建 roomengine wire 四轴+copy 非DBN包 → ④ 全回归。
 
 C 放行进 ② neighbor 隐轴。
+
+---
+
+# §38 增补（C 复审 neighbor.go）— 骨架对，对照用户五条领域规则有 1 核形态错 + 3 缺口
+
+> A 交 neighbor.go（NV1-5 过）。用户**给五条领域规则让 C 自判**（避免 ghost 第一轮没吃透就放行）。C 逐条对照 + 查文档证据；A 收规则后亦自查认错。
+
+| 规则 | 文档证据 | A 实现 | 判定 |
+|---|---|---|---|
+| 1 时间越近相关越强 | §A.1 核 | exp(-Δ/τ_h) | ✅ |
+| 2 短时 unit track 数恒定 | `belief_dbn_impl_plan §P6.5`「人在X丢必在别处+1」双侧≤60s + id-swap守恒闸 | **无**（用裸"兄弟房占用"）| ❌ 缺 |
+| 3 同tick两房不相关/1-5s峰 | 用户新增物理修正 | Δ=0峰 | ❌ 核错 |
+| 4 越公共/陌生流大→窗小 | 决定24 public standalone/决定19/决定12c | 固定60s | ❌ 缺 |
+| 5 资源不足→窗放长 | unit_property 维度 | 固定60s | ❌ 缺 |
+
+A 做对骨架：有向性NV4/安全默认NV2-3/sole-resident NV5/吃ghost去伪占用。**A 自查认 wDir 峰在Δ=0 是真bug + hand-off应改 track 守恒 + W应 unit-type 函数。** max C判对（P6.5「人只在一处+守恒」支持）。C §16 认领：审 §A.1 时认了 Δ=0 峰单调衰减核，没抓"同tick非同一人走过"物理，连文档一起修。
+
+---
+
+# §39 增补（C 定稿 neighbor 重做方向）— neighbor = fall 裁决延迟时间闸 + D=10min 定值
+
+> 用户洞察：fall+刚好有人来概率极小；真有人来风险反降（来人施救）；故延迟 fall 裁决尽量等 neighbor，5-10min 正常。**neighbor 从"逐帧整流项"跃迁为"fall 裁决延迟时间闸"。**
+
+## 一、核心跃迁：延迟裁决闸
+
+**lost-track 进 Blind → 不立即 fire，启延迟窗 D 等 neighbor：窗内兄弟房接住（track 守恒+1）= 走（整流入 Left，解扳机）；窗耗尽无接住 = 放扳机，P^F≥55% 即 fire。** 作用域仅 Blind 行（lost-track 二义）；本房可见真摔（cd2b：LeftBed+床边静止，track 没丢）立即裁决不进窗。
+
+## 二、与 §26 合体
+
+- 延迟窗只作用 lost-fall 路径；窗内 P^F **继续 ramp（证据累积），fire 动作被闸住等 neighbor**——延迟扣扳机时刻非证据累积。
+- 窗内 hand-off → 整流 Fallen→Left 不 fire（走）；窗耗尽无 hand-off → 放闸 P^F≥55% fire（摔）。
+- 能等不危险：有人来→施救→延迟无害；没人来→延迟 fire 胜误报；误报烧穿告警可信度（§26）> 延迟。
+
+## 三、★ D=10min 定值（用户裁定，二义时标错开）
+
+**静止消失门限（8min）与 neighbor 延迟窗 D 是同一物理时标的二义**（track 消失 = 走了/站着 vs 真摔）。
+- D=8min = 边界重合：延迟窗结束 = 人被降功率滤掉，**两二义事件撞同一点，无观察缓冲，判断最脆**。
+- **D=10min = 静止门限 8min + 2min 余量**：人 8min 静止消失后，再观察 2min 确认兄弟房无迟到 hand-off 才放扳机 fire。余量给"消失之后再确认"缓冲。
+- 一脉的留余量工程哲学：5min（物理：静止被滤）→ 8min 门限（+3min 防误判）→ 10min 延迟窗（+2min 缓冲）。层层留余量，不卡物理边界。
+
+## 四、三时间尺度
+
+| 尺度 | 值 | 含义 |
+|---|---|---|
+| band-pass W | ~60s | 兄弟房 track+1 距丢轨滞后，判同一次 hand-off |
+| **延迟窗 D** | **10min（上界）** | 丢人后扳机等多久 = 静止门限+余量 |
+| D=5min 下界 | 5min | 覆盖好/人流大 unit（不需久等）|
+
+## 五、A 重做清单（C 定稿，不抢跑）
+
+1. **延迟裁决闸**：lost-track→Blind 启 D 窗（5-10min，unit 自适应，上界10min=静止门限+余量），窗内查 neighbor，接住整流判走、耗尽放扳机 fire。
+2. **hand-off=track 守恒**（规则2）：本房−1↔兄弟房+1（复用 P6.5/SuiteCensus），非裸占用。
+3. **wDir band-pass**（规则3）：Δ=0≈0、峰1-5s、后衰减 + 同步改文档 §A.1。
+4. **W/D unit 自适应**（规则4/5）：公共/陌生流大→小；资源不足/覆盖差→D 放长（上界10min）。挂 unit_property+coverage，按用户领域知识收。
+5. 保留骨架：有向性/安全默认（窗耗尽=fire 非 suppress）/sole-resident max/吃 ghost 去伪占用。
+
+C 待 A 据此重做复审（改了 C §16 审过 §A.1，A 同步改文档）。
