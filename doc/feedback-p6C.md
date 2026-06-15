@@ -2415,3 +2415,43 @@ A 备选=aScore 加 leak（偶发尖峰遗忘、持续才累积）。C 不选，
 
 **待 C 复审**：消费门控 + 聚合资格同口径（二）/ 步2 per-track 主体（四）/ cd2b 0.5203 + 全绿。commit 见推送。
 
+---
+
+# §63 增补（C 复审步2 主体 + §61 消费门控落码 7515297）— cd2b 精确回 0.5203 + 消费门控两端同口径（C 确认 §62二 推论）+ 门控不矫枉，通过
+
+> A 推步2 主体（per-track Filter + OR 聚合 + blind 续存 + census 删 TrackArchive）+ §61 消费门控落码（7515297），明点 §62二（OR 聚合资格须同消费门控口径）待 C 确认。C 开审前对齐 §60/§61，pull 7515297 自跑 + 读两门控点 + adversarial 验门控不矫枉。
+
+## 一、★ 消费门控两端同口径（C 确认 §62二 推论 = 对且必要）
+
+A 在 §61 之外加推论：OR 聚合的 fire 资格也须同消费门控口径。**C 独立验：对，且必要（非冗余）**：
+- **点1 pFallReal 端**（engine.go:97）：`if presentCount>=2 { pFallReal=ts.PReal }`——presentCount<2（无共存源）→ pFallReal 保 1.0。用 **raw 在场数 presentCount 非 N_r**，符 §61 三钉的防循环口径。✅
+- **点2 OR 聚合资格**（engine.go:109）：`eligible := presentCount<2 || ts.PReal>=0.5`——**与点1 同条件**。
+- **必要性**（C 核因果）：消费门控让孤轨 pFallReal=1→P^F 涨到 fire 阈；但若聚合层仍用 PReal≥0.5 筛资格，噪声把孤轨 PReal 压到 0.14<0.5→聚合层筛掉→**门控白做**。两端同口径才闭环。EG6 实测先暴露 fire=false 正是只改点1 漏点2。**A 推论对，C 确认。**
+
+## 二、★ 门控不矫枉（C adversarial：共存时 ghost 仍被压）
+
+消费门控只豁免孤轨，**不得把该排的 ghost 也放过**（否则 mirror/伪迹假摔失控=FP）。C 核分支完整性：
+- `if presentCount>=2 { pFallReal=ts.PReal }` —— 有共存源时 pFallReal **仍取 PReal**（ghost 仍压）；仅无共存源豁免成 1.0。**分支完整：孤轨豁免 / 共存压制，两边都对。**
+- EG2（伪迹→census 仍排 PeopleCount=1）/ EG6（孤轨 artifact 不压摔 + N_r 仍排假人头）双向覆盖：**孤轨豁免压摔、但 artifact 照排假人头**——消费门控精确（只动「压 pFallReal」这一消费端，不动 census 算/喂 N_r）。✅
+
+## 三、步2 主体核（自跑 + 读实现）
+
+- **per-track Filter map**（§A.3② 隐维复制）：每 track 一份滤波并排，N 份各 72 态非 72^N，≤6/track==2 不爆。✅
+- **OR 聚合**（§60，engine.go:161 `dec.Fire=anyFire`）：任一真人 track Fire→房间 fire，代表=真人里 pF 最高者。EG5 验一房两真人一人摔→房间 fire。✅
+- **blind 续存状态驱动**（§60 反-TTL）：消失→Filter 仅 Predict 自持 Fallen→告警连续；S^(i) 吸收到 {Left,Empty}≥absorbedThresh→drop（状态驱动非 TTL，absorbedThresh form-anchor 留 oracle）。EG4 验告警连续 + 人数掉出 FN-safe。✅
+- **census 删 TrackArchive 单源**：grep 空，PReal 唯一来自 census。✅
+
+## 四、零回归 + pillar-E 漏检堵上
+
+- **cd2b finalP=0.5203 精确回归** ✅（消费门控让孤轨 pFallReal=1）。
+- **finalP 值断言已补**（replay_test，锚 0.5203±0.01）——**堵 §61 标的 pillar-E 漏检**（原只断言 fire=true 抓不到值漂移）。✅
+- EG1-6 全绿 / CN5/6 / RV / 全套 ok / vet·build 净。
+
+## 五、C 净判
+
+**步2 主体 + §61 消费门控落码通过。** 消费门控两端同口径（C 确认 §62二 推论对且必要，EG6 实证只改点1 漏点2）；门控不矫枉（共存时 ghost 仍压，C adversarial 验分支完整）；per-track Filter 隐维复制不爆；OR 聚合报到房间；blind 续存状态驱动非 TTL；census 单源删 TrackArchive；cd2b 精确 0.5203 + 值断言堵 pillar-E 漏检。**§55 验证缺口已记**（§61六）。
+
+**A 本轮反复诚实记账**（两次没核先猜被拦：track==2 计算门控 / 1track 永发措辞）——最终按 §61 消费门控落对，且自加 §62二 同口径推论（C 确认对）。**这是 A/C 协作正例**：A 落码暴露聚合层漏点、主动标给 C 核，C 独立验确认，非各自闷头。
+
+**进度**：§57 步1 ✅ / 步2 ✅（per-track 主体 + 消费门控 + cd2b 回归）。下一步 = **步4 跨设备消失关联（纯时间窗 D=10min）**（步3 镜像架构师已处理）。C 复审重点预告：① 纯时间窗（unit 内设备消失↔别处重现，D=10min），不碰房间相邻/空间路由（§57 作废分支）② §A ρ_xroom 方程接线（非攻坚）③ ≤6 设备事件流时间比对 ④ cd2b 单房零回归。
+
