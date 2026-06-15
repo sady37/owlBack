@@ -2041,3 +2041,43 @@ func TestPC2bNoWalkEarlyFall(t *testing.T) {
 
 **进度不变**:W3.1✅/W3.2✅/W3.3✅。身份 plumbing 工单(§48 柱A-E + §50 修正骨架)排 W3.4a 前。**§48 五柱中柱C 方向已修正(false suppression 非 latch 脆弱)**,余柱不变。C 待 A 交付。
 
+
+---
+
+# §51 增补（C 框架审 §G realness 轴重定）— 与 §10/§A 无打架，通过 + 一处消费者语义澄清建议
+
+> A 推 §G（8a9c3fa）重定 realness 轴（Real vs Mirror、Static 溶解、N_r 排除为主职、两轴 FN-safe 默认、金属三场景分层、两固件时标锚）。架构师令"先读现有 realness/轴落点，确保改得精准、不和 §10/§A 打架"。C 读 §G 全文 + 逐项核三咬合点 + §A real-present 语义。**A 没硬改 §10，而是新增 §G 重定 + 在 §10:191 末尾加指向 §G 的更新标记——避开了直接撞 §10/§A 的风险，做法对。**
+
+## 一、三咬合点 C 核（§G vs §10/§A 无打架）
+
+**咬合点① §10:191 旧三类定义**：A 在原句末加更新标记「三类→两类{Real,Mirror}、主职=N_r 排除、Static 溶解，见 §G」。**无悬空矛盾**：读者从 §10 被导向 §G，canonical 唯一，不留"§10 写三类 vs §G 写两类"的歧义。✅
+
+**咬合点② §A.3 接口① + ③ §A.1(b) q_r' 的 (1-P(ghost))**：§G 删 Static 后 P(ghost)=P(mirror)（单源），**公式形式不变**，内涵从"mirror+static"收成"mirror only"。金属的 ghost 质量改由"有人+金属"场景的 co-existence/ρ 承载（§G 四），P(ghost) 仍有值、§A 两式仍成立。**接口未断。**✅
+
+**咬合点③ 金属三场景 vs §A neighbor**：§G 第三场景「静止/摔倒的人消失(~5min)→Blind+D=10min 闸」直接复用 §A 既有机制、同一物理时标（DBN-Zone-Room:304 的 5min 底）。**与 §A 同源不重叠**。✅
+
+## 二、★ 一处消费者语义澄清建议（非打架，防误读）
+
+§G 第二节立「**N_r（几个）≠ PRoomHasReal（有没有）**，cFN 读 N_r」为核心区别。但 §A.1(b) 的 `P(real-present)=(Σ_{S∉{E,L}}P(S))·(1-P(ghost))` 用的是 **PRoomHasReal 式「有无」语义**（C 核：Σ 是占用概率和∈[0,1] 的后验、连乘去 ghost = "有真人"后验，非 N_r=Σ𝟙[...] 硬计数）。
+
+**这两处不矛盾——服务不同消费者**：
+- **§A neighbor hand-off 落点判定** 要的是「兄弟房**有没有**真人可接」→ 用 PRoomHasReal（有无），对。
+- **§8/§26 cFN 折扣** 要的是「房内**几个**人」→ 用 N_r（计数），对。
+
+但 §G 把"N_r vs PRoomHasReal"立为核心后，§A.1(b) 仍用 real-present（有无），**读者可能误以为 neighbor 也该改用 N_r**。**建议 A 在 §A.3 接口① 或 §G 加一句注**：neighbor hand-off 落点消费 PRoomHasReal（有无，兄弟房能否接），cFN 折扣消费 N_r（几个）；**两消费者要的量不同，各取所需，非冲突**。——这是澄清，不改任何方程。
+
+## 三、C 框架审其余确认（§G 内部自洽）
+
+- **Static 溶解双依据**（§G 一）：firmware 30s 过滤（domain 拍定）+ 静止判 Static 是病根（分不开金属 vs 摔倒静止的人）。**双依据互独立**，不押单一固件假设——比"仅靠 firmware 过滤"稳。且第二依据（静止判 ghost=病根）正是 C §50 探针实测暴露的 false-suppression 风险的框架表述，闭环。✅
+- **两轴 FN-safe 非对称默认**（§G 三）：fall 轴不压≡1 / N_r 轴不计入，二者皆"暧昧往高 fall-risk 倒"，是"1track 永发"在两轴的镜像。**与 [[fall_detection_risk_stratified_design]] 一致**。✅
+- **leak 凭空造 ghost 标"非框架残留待码层改"**（§G 三注）：A 明确把 realness.go 现有 leak（零证据时 P(real)0.5→0.33）标为违「P(ghost) 从 co-existence 涌现」的码层债，**不在文档层假装已解**。诚实，符"框架先于实现"。✅
+- **身份内化非外挂 logicID**（§G 六）：track 身份走 S^(i) 转移自持 + 软边缘化（仿 §4 软床归属），**非** production logicID/nearestAliveTrack 硬关联。**这正面废掉 C §48 身份-plumbing 工单**（C §48 提的移植 nearestAliveTrack = 把单-track-HMM 硬结论补丁请回来，与已废硬 O_b 同病）。A 用框架方式（软边缘化）取代 C 的补丁工单，对——**C §48-50 那条补丁线，§G 六从框架层正式溶掉**。✅
+
+## 四、C 净判
+
+**§G 框架审通过。** 与 §10（加更新标记导向，无悬空矛盾）/§A（接口公式形式不变、金属第三场景复用 §A 同源）**无打架**；§G 内部自洽（Static 双依据、两轴 FN-safe、leak 标码层债、身份软边缘化非外挂）。**一处澄清建议**（§A real-present=有无 vs cFN=N_r，两消费者注明，非改方程）。
+
+**C 自身收口（诚实记，不删歧路）**：C §48-50 的身份-plumbing/哨兵/PC 骨架补丁线，被 §G 六（身份软边缘化）从框架层溶解——作框架动作正式作废，入库审计保留。C 连续数节被 cd2b 拽进打补丁（§47 哨兵→§48 工单→§49/50 PC 骨架），是 [[p6_xsensorv1_phase1_done_neighbor_next]] floor-strip 教训复发；架构师"在打补丁不是建框架"点醒 + §G 链上对齐收口。**教训再记：框架级问题（realness 该分几类、抑制门控）须回 ground truth 推，不可由单 case 实测数反推标定（违 [[fall_data_is_artificial_test]]）。**
+
+**下一步**：§G 立框架，下沉码层时 realness.go 三处待改（C 据 §G 验收）——① 删 Static 类（RCStatic/PStatic/ConfinedNearWall/AgeLongStatic 及 adapter 喂入）② 删 leak 凭空造 ghost（零证据 pFallReal≡1，仅 co-existence ρ/AreaDeny 正证据才 <1）③ N_r 计数保守默认（暧昧 track 不计入，仅独立真人正证据计入）。C 待 A 码层 PR + §A 澄清注。
+
