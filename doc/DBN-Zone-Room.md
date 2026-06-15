@@ -372,7 +372,10 @@ $$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\te
 - **~5min**：静止的*人*被降功率滤掉（已锚在 §A / $D{=}10$min 的 5min 物理底）。
 - 二者**不同场景**：30s 治无人金属，~5min 治静止人消失的二义；勿混。
 
-**六、身份/连续性内化（非外挂 logicID）**。track 身份延续 = 各 $S^{(i)}$ 转移自持（§10 多份，Fallen 留 Fallen + Blind 携占用），**非** production 的 logicID/nearestAliveTrack 最近距离关联（那是单-track-HMM 时代的硬结论补丁，与已废硬 $O_b$、`belief_neighbor` ObsNeighbor 同病，§A）。track↔观测归属走**软边缘化**（仿 §4 软床归属 $a_j$），非硬匹配。
+**六、身份/连续性 + ghost 作用域**（订正：原写「软边缘化、非 logicID」是过度设计——track 关联用最近距离是标准做法，非 §47 那个病，改回最小作功距离 logicID）。
+- **身份关联（哪条人影是哪个人）= 最小作功距离 logicID**：新 track 出现发新 logicID；平时各 track 分得开、logicID 跟随不变；仅两 track 相遇（≤50cm 可能认错）时按**最小作功距离**保号（新坐标离上一 tick 哪条 track 近，就接哪条的 logicID——人不瞬移，最近即同一人）。这是标准 track 关联**预处理**，**非** §47 担心的「硬结论外挂」病：那病是把占用**结论**硬塞进 DBN 当观测；track 关联只决定观测归哪条 track，不进隐状态。
+- **消失续存 = $S^{(i)}$ 转移自持**：track 消失（摔倒静止降功率被滤）时，该 track 的 $S^{(i)}$ 经转移自持（Fallen 留 Fallen + Blind 携占用），不靠重关联续命。
+- **ghost（mirror）仅在 track 数 $=2$ 时作用**：1 track 不进 ghost（永发）；正好 2 track 跑 mirror 判别（co-existence $\rho$ + 反射几何，排除影子出 $N_r$）；**3+ track 不处理**（人多、风险低，不为它把 mirror 逻辑复杂化）。
 
 ---
 
