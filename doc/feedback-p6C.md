@@ -2269,3 +2269,42 @@ C 数轮把"多房/neighbor"误套空间解，经架构师裁剪全废，记诚�
 
 ① N_r→PeopleCount 单源 ✅（删第二计数）② Blind 续存计入 N_r → **改为「随 S^(i) 涌现」**（架构师裁，见三）③ ghost 真排除端到端 ✅（EG2）④ 拍法 A 守门 ✅（EG3）⑤ 零回归 ✅（0.5203）。**commit 812d375，待 C 复审 + 架构师确认 pillar B 口径。**
 
+---
+
+# §59 增补（C 复审候选① 812d375+8296e77）— 五柱通过 + 柱B 口径 C 支持架构师反-TTL 裁定（不顶）+ 标误入副本
+
+> A 推候选①请复审，明点要 C 核柱B 口径（A 按架构师裁定「Blind 续存留 step2、census 不加 TTL」落地，问 C 会不会坚持 census 层即接而与反-TTL 裁定冲突）。C 开审前先对齐架构师裁定，再核五柱 + 探针验机制。
+
+## 一、五柱逐条核（全过）
+
+| 柱 | C 复审 | 验到点 |
+|---|---|---|
+| **A 单源** | PeopleCount 外设字段已删（`adapter.go:38` 注释明示「不在此」），唯一来自 `Nr()`（`:180`）。`grep PeopleCount` 仅 belief.RiskContext + census | ✅ |
+| **C 排 ghost 端到端** | **EG2** `TestEnginePillarCGhostExcludedToDecide` 断言真人+运动伪迹 → `dec.PeopleCount==1`（端到端到 decide，排 ghost 防虚增降级独处真人） | ✅ |
+| **D 拍法A守门** | **EG3** `TestEnginePillarDHoldsAtReportBand` 硬核到点：N_r=2 + P^F≥0.55 → `Band=="report" && Fire`，注释明写「多人折扣绝不折掉证据自足档」——测试会 fail 如果被折。这正是拍法 A 的 FN-safe 守门 | ✅ |
+| **E 零回归** | cd2b replay=0.5203、EG1=0.9992、belief/adapter/engine/replay 全绿 | ✅ |
+
+## 二、★ 柱B 口径——C 支持架构师反-TTL 裁定，不顶（A 明点要核的关键）
+
+A 问「C 会不会坚持 census 层即接 blind 续存、跟反-TTL 裁定冲突」。**C 答：不坚持，且明确支持架构师裁定。**
+
+核 `Nr()` 实现：`if t.lastTick == c.tick && PReal()>=0.5` ——只数本 tick 在场、不加任何 TTL/续存窗。完全符合架构师裁定「随 S^(i) 涌现、census 这刀不加 TTL、blind 续存留 step2」。
+
+**C 自推的理由（不只是服从）**：在 census 层加「摔倒的人续存窗」= 给 census 装一个「消失了还算多久才删」的定时器 = 正是 §32 反复删掉的 staleness/TTL 补丁（[[bed_stale_leftbed_vetoes_radar_inbed]] 同病）。摔倒者的人头续存，本质是 $S^{(i)}$（人态隐状态）经 Blind 自持的事——那是 belief 层 step2 per-track $S^{(i)}$ 该管的，不是 census（数当前在场人头的预处理组件）该管。**census 数在场、$S^{(i)}$ 自持管续存，职责分清，不引补丁。架构师裁定对，C 不顶。**
+
+**安全方向也核了**：这刀 `Nr()` 不数 blind 续存 → 摔倒者暂从人数掉 → 当独处 → C_FN 不折扣 → **更易报 = FN-safe（不漏摔倒者）**。「摔倒的人不蒸发」（§G六②本义）在 step2 接 per-track $S^{(i)}$ 后由 $S^{(i)}$ 涌现达成，不靠 census TTL。
+
+→ **给 A：C 不坚持 census 层接 blind 续存，与架构师反-TTL 裁定无冲突，A 照裁定落地即可（候选①现状正确）。**
+
+## 三、★ 标一处该清（误入副本，违反 C 卷单文件 canonical）
+
+`812d375` 误把一个 **`doc/feedback-p6C (31).md`**（190KB、2218 行、带空格命名、只到 §55 的旧子集副本）一起 commit 进来了。canonical 是 `feedback-p6C.md`（更新、到 §58/59）。双卷并存会漂移，违反单文件 canonical。
+
+**请 A 推送时 `git rm "doc/feedback-p6C (31).md"` 清掉。** C 只写 canonical 那个，没碰副本。
+
+## 四、C 净判 + 步2 预告
+
+**候选① 复审通过**（五柱全过、柱B 口径 C 支持架构师反-TTL 裁定不顶、零回归）。一件待清=误入副本（第三节）。
+
+下一步 = **步2 多 track 进 belief 主管线**（§57 步2，设备≤6 / track==2 界，全表枚举）。**复审重点预告**：① 全表枚举 $9\cdot2^{|B|}$ × track 不爆（≤6/track==2 硬 bound）② **blind 续存的 per-track $S^{(i)}$ 计入 N_r**——架构师裁定的「摔倒的人不蒸发」本义在步2 这里兑现（靠 $S^{(i)}$ 自持，不是 census TTL）③ 每 track realness/ghost 与 census 单源不双算 ④ 步2 后 cd2b 仍 0.5203 零回归。
+
