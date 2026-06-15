@@ -33,35 +33,40 @@
 - 扩：加 `rhoXroom float64`（lost-track 时 >0，Predict 吃它做 GateBlindRow）+ `realness RealnessSummary`（`PRoomHasReal` + per-state fall 调制，Correct 吃它调 fall 发射）。
 - 中性值（rhoXroom=0、realness 恒等）→ 回退现行为（§2 oracle）。
 
-**⚠ 唯一有设计自由度的点**：realness 进 Correct 是 ①折进 logPhi（fall 发射项 ×P(real)）还是 ②独立调制步。倾向①（保持"全经 Ψ·Φ 融合"的单一路径，不另起步骤），但请 C 裁。
+**C §42 裁定 = ①折进 logPhi（定）**：独立调制步 = filter.Step 外另起修正 = 本质**软 gate**，违背"四轴全经 filter.Step 融合"；折进 logPhi（fall 发射项 ×P(real)）走同一 Correct 路径才是真内化。realness 成为发射的一部分，不另起步骤。
 
 ## 4. copy 清单（方案乙，源 = `wisefido-sensor/internal/roomengine/`）
 
 | 处置 | 文件/能力 | 理由 |
 |---|---|---|
-| **copy** | kalman + track parse | device frame → RadarTrack |
+| **copy** | kalman + track parse (track.go) | device frame → RadarTrack |
 | **copy** | grid / grid_extent / layout_load | canvas → Rect/entrance/wall（喂 realness 出生地·近墙 + adapter Beds）|
 | **copy** | cell / cell_learning | AreaDeny → realness Static 先验（cell 三时标**只读**，[[cell_dbn_timescales_stillbox_single_source]]）|
+| **copy（Gap1 补）** | **mirror_detect / static_reflector** | realness 的 `CoexistRho`/`IsReflection`（镜面几何）+ Static 签名（困 BirthPos·近墙）的**几何输入源**——几何事实，区别于该废的硬结论 `ghost_adjudicator` |
+| **copy/改造（Gap3 补）** | **track_manager 连续指标层**（`updateContinuousIndicators`/`StillBoxRunStart`/`StillSec`）| **still-box 单源产出处**（[[cell_dbn_timescales_stillbox_single_source]]：全系统单算一次）——`CrossedStillPeriod` 的数据源，必须保留；只去掉 gate-list 部分 |
 | **copy** | fall_rules_param / risk | Census → decide C_FN |
 | **改造非 copy** | engine 主循环 | 旧 `beliefShadowTick` → 新 four-axis `filter.Step`；去 gate-list/belief_shadow |
 | **改造非 copy** | suite_census | 喂 `SiblingHandoff`（复用 P_id 跨区账**语义**不照搬实现，§A.3②）|
-| **不 copy** | belief_*.go / ghost_adjudicator / bathroom_gate / fall_exempt / track_manager gate-list 残余 | **被 DBN 四轴取代**（删即删，#1.2）|
+| **不 copy** | belief_*.go / ghost_adjudicator / bathroom_gate / fall_exempt / **track_manager 的 gate-list 残余**（engine_z_drop/silent_leftbed/lost_fall）| **被 DBN 四轴取代**（删即删，#1.2）。注：track_manager **拆**——连续指标层 copy（上行），gate-list 残余删 |
 
 ## 5. adapter 译入契约（raw → 各轴 Obs）
 
 - **RealnessObs（每 track）** ← 出生档案 + cell/grid：
-  `bornNearEntrance`←entrance geom + 出生 XY；`inAreaDeny`←cell；`Displaced`←相对 BirthPos 位移；`ConfinedNearWall`←grid 近墙+困 BirthPos；`AgeLongStatic`←寿命×静止；`CoexistRho`/`IsReflection`←track 配对共动+镜面几何；`CrossedStillPeriod`←still-box 跨静止降功率期仍在。
+  `bornNearEntrance`←entrance geom + 出生 XY；`inAreaDeny`←cell；`Displaced`←相对 BirthPos 位移；`ConfinedNearWall`←static_reflector 近墙+困 BirthPos（Gap1 源）；`AgeLongStatic`←寿命×静止；`CoexistRho`/`IsReflection`←mirror_detect 配对共动+镜面几何（Gap1 源）；`CrossedStillPeriod`←**still-box**（由 §4 copy 的 track 连续指标层**单源**产 `StillSec`/`StillBoxRunStart`，Gap3 源已定，[[cell_dbn_timescales_stillbox_single_source]]）。
 - **SiblingHandoff（lost-track 时，每兄弟房）** ← 跨房 census：
   `ArrivalDeltaMs`=兄弟房 +1 track ts − 本房 lost ts（守恒重现 P6.5）；`CAttr`←源型（sleepad 0.9/room-enter 0.8/radar-only 0.2）；`GainedReal`←兄弟房新增 real track 去 ghost 占用；W=`HandoffWindowFor(base, publicness)`、D=`DelayWindowFor(stillVanish, margin, coverage)`，unit_property/coverage 来源 spatial/device config。
 - **Observation（S/B）**：维持现状。
 
 ## 6. wire 顺序（每步独立可验，防大爆炸）
 
-1. **W3.1 filter 融合**（纯 belief 包，不碰 roomengine）：扩 Step 签名接 realness+neighbor；测试 = 中性零回归 oracle / realness 共生律端到端 / neighbor lost-track 整流。
-2. **W3.2 roomengine 单房骨架**：copy 最小包（track/kalman/grid/layout）；单房 engine 主循环 driving `filter.Step`（接 S/B/realness，neighbor=空）；**cd2b 单房 replay 端到端复现 belief 单元结果**（零回归闸）。
-3. **W3.3 realness 接通**：adapter 译 RealnessObs；GH/RV 等价 case 在 roomengine 端到端（ghost 不喂 fall / 真人摔不被滤 RV4）。
-4. **W3.4 多房 census + neighbor 接通**：engine 多房注册 + device 路由 + suite census；adapter 译 SiblingHandoff；多房 hand-off replay（挪去邻房压 phantom / lost-fall 安全默认 / NV-等价）。
-5. **W3.5 全轴端到端**：cd2b + 多房 fixture 全四轴跑；decide 55%三分；§7 验收全过。
+1. **W3.1 filter 融合**（纯 belief 包，不碰 roomengine）🚩**C 复审 gate①**：扩 Step 签名接 realness(折 logPhi)+neighbor(进 Predict GateBlindRow)；测试 = 中性零回归 oracle / realness 共生律端到端 / neighbor lost-track 整流。低风险可先起。
+2. **W3.2 roomengine 单房骨架**🚩**C 复审 gate②（floor-strip 教训正在此守）**：copy 最小包（track 连续指标/kalman/grid/layout）；单房 engine 主循环 driving `filter.Step`（接 S/B/realness，neighbor=空）；**cd2b 单房 replay 端到端复现 belief 单元结果**（零回归闸——belief 单元能否在真 roomengine 复现的第一道关）。
+3. **W3.3 realness 接通**：adapter 译 RealnessObs（接 mirror_detect/static_reflector/cell/still-box 源）；GH/RV 等价 case 在 roomengine 端到端（ghost 不喂 fall / 真人摔不被滤 RV4）。
+4. **W3.4a roomengine 多房编排**（Gap2 展开——最重 wiring，独立成步防大爆炸）：engine 持多房 map；`device_addr→room` 路由（IPv6 /prefix 解析，[[config_double_path_env_silently_ignored]] 坑）；suite census = 跨房 track 账（P_id 跨区，产 lost ts / arrival ts / per-room 去 ghost 占用）；**跨房读出契约** = 兄弟房去 ghost 占用 + track 守恒（+1 track 匹配丢失）。验 = 多房 fixture census 账平（track 进出账目正确）。
+5. **W3.4b neighbor 接通**🚩**C 复审 gate③**：adapter 译 SiblingHandoff（吃 W3.4a census 读出）；多房 hand-off replay（挪去邻房压 phantom / lost-fall 安全默认 / NV-等价）。
+6. **W3.5 全轴端到端**：cd2b + 多房 fixture 全四轴跑；decide 55%三分；§7 验收全过。
+
+**三道 C 复审 gate（§42 定）**：W3.1（融合零回归 oracle）/ W3.2（cd2b 单房零回归，floor-strip 教训守此）/ W3.4b（neighbor 接通）。
 
 ## 7. 验收点
 
@@ -72,8 +77,12 @@
 - **无 gate 证**：grep 无 gate-list 残余；四轴全经 filter.Step 融合。
 - decide 55%三分 + Λ 不可判默认不报。
 
-## 8. 提请 C 复审的点
+## 8. C §42 复审结论（已裁，3 gap 已补本图）
 
-1. **§2/§3 融合契约**：neighbor→Predict、realness→Correct 的内化方式，尤其 realness 进 Correct 是折进 logPhi（推荐）还是独立步——**定下再 wire**。
-2. **§4 copy/改造/不copy 边界**：尤其 engine/suite_census 改造非 copy、belief_*/ghost_adjudicator 不 copy（被四轴取代）对不对。
-3. **§6 wire 顺序**：C 的复审 gate 设在哪几步（建议 W3.1 oracle 与 W3.4 neighbor 接通各设一道）。
+- **裁1 融合契约**：realness 折进 logPhi（①）—— §3 已锁（独立步=软 gate，违内化）。
+- **裁2 copy 边界**：基本对 + **Gap1** mirror_detect/static_reflector 补入 §4（realness 几何源）。
+- **裁3 复审 gate**：三道 = W3.1 / **W3.2 cd2b 单房零回归（C 加，floor-strip 守此）** / W3.4b —— §6 已标 🚩。
+- **Gap2**：W3.4 多房编排展开为 W3.4a（独立成步）—— §6 已改。
+- **Gap3**：`CrossedStillPeriod` 源 = still-box，载体 track_manager **拆**（连续指标层 copy 作单源 / gate-list 残余删）—— §4/§5 已补。
+
+**图已补全 3 gap + 锁 3 裁定。下一步**：A 起 **W3.1**（纯 belief 包，扩 Step 签名接 realness 折 logPhi + neighbor 进 Predict，中性零回归 oracle），过 gate① 交 C 复审。
