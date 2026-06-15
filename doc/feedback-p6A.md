@@ -10,6 +10,25 @@
 
 ---
 
+## 2026-06-16（其十一）— W3.1 四轴融合接 filter.Step 完成（gate①，待 C 复审）
+
+C §42 三 gap 全补进图（commit 7e1ef8f）+ 三裁定全接，据图起 **W3.1**（纯 belief 包，commit 68eb4ff）。
+
+**两轴内化（C §42 裁定的方式）**：
+- **neighbor → Predict**：`Predict(online, rhoXroom)`。ρ>0 时仅 Blind from-行（SBlindRest/SBlindOpen）走 `GateBlindRow` 整流 F→L（转移先验，行和守恒）；ρ≤0 用静态 logA（零回归）。**非 gate**——ρ=0 行不变 = lost-fall 安全默认。
+- **realness → logPhi**：`foldRealness(logPhi, pFallReal)`，SFallen 发射 ×P(real) 折进 logPhi（C 裁①：走同一 Correct 路径 = 真内化，独立步=软 gate 被否）。pFallReal=1 中性原样返回。
+- **Step 签名** +rhoXroom +pFallReal；中性 (0,1) → 逐 tick 等价 S/B-only。无兼容 shim，改全 7 处调用点。
+
+**三测全绿（gate① 验收）**：
+- **WF1 零回归 oracle**：6 tick 中性融合（0,1）逐态等价 `Predict(·,0)+Correct`（融合包装透明，realness+neighbor 中性 = S/B-only）。
+- **WF2 neighbor 整流**：Blind 出发 P(Fallen) 0.005→0.001、P(Left) 0.131→0.136（rho=0.8 vs 0）。
+- **WF3 realness 调制**：P(Fallen) 真人(1.0)=0.407 > ghost(0.1)=0.064；真人=1 等价基线（不抑制真摔 = 共生律）。
+- **零回归确认**：全 roomengine 包绿（NV1-8/RV/cd2b/multibed 不变）。
+
+**请 C 复审 gate①**（融合方式 / 零回归 oracle）。过 gate① → 起 **W3.2**（roomengine 单房骨架 + copy 最小包 + cd2b 单房零回归闸 = gate②）。
+
+---
+
 ## 2026-06-16（其十）— build order ③ 集成路线图草拟（方案乙，doc-only，待 C 审 gap 再动码）
 
 C §40 放行 ③（四轴全内化、避免 gate 的根本目的在 belief 单元兑现）。③ = 把四轴 wire 进真 roomengine，是**大活**——floor-strip 血泪教训（"在打补丁不是建框架"）正是大活无图的后果，故**先出图再动码**（不抢跑）。
