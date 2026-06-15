@@ -2500,3 +2500,79 @@ Unit 编排器纯时间窗（任一兄弟设备时间比对、不碰空间路由
 ## 四、C 复审重点
 ① 持久化确认（§64 噪声口径在 churn 路径的补强）是否认 ② Unit 纯时间窗不碰空间路由 ③ 单房 ρ≡0 + cd2b 0.5203 ④ UV4 噪声守门真挡住假 hand-off。**commit 见推送。Xsensorv1 框架验证 §57 路线图实质工作（步1-4）闭环，剩步5 文档收尾。**
 
+---
+
+# §66 增补（C 复审步4 码层 cdc0124 + 架构师三情形细化）— UV1-4 全绿 + 统一口径 GainedReal=去 ghost 后验已覆盖三情形 + 情形3 残余记为已知可接受，通过
+
+> A 推步4（Unit 编排器 + 持久化确认抗噪声 churn）+ §65 落码记录。架构师补「ghost 必须同 room、按 Room2 人数分三情形」细化噪声防线。C 开审前对齐 §64/§A，pull cdc0124 自跑 UV1-4 + 核三情形是否被现实现覆盖。
+
+## 一、UV1-4 + cd2b 自跑（C 独立，非照搬）
+
+UV1 hand-off Ρ(A)=0.747→A P(Fallen) 整流入 Left ✅ / UV2 no-handoff 保 lost-fall ✅ / UV3 单房 ρ≡0 ✅ / **UV4 ★噪声防线**：B 噪声 churn 假 track（每帧新 logicID、永不达确认 K）→ 不算合法 GainedReal → ρ(A)=0 → A lost-fall 保留（不漏真摔）✅ / cd2b=0.5203 精确零回归，全套绿。
+
+## 二、★ 架构师三情形 vs 现实现（C 核：统一口径 GainedReal=去 ghost 后验已覆盖，无需显式分支）
+
+架构师更正核心：**ghost 必须在同一 room**（镜像/伪迹跟真人源同房），所以跨房 hand-off 里「B 是不是 ghost」要看 **Room2 内部情形**，不是笼统判。三情形——
+
+| 情形 | Room2 | ghost detect | GainedReal | hand-off | 安全 |
+|---|---|---|---|---|---|
+| 1 | 只 B（track==1） | 不判（1track 永真人） | PReal=1 | 成立（A 真走过去） | ✅ |
+| 2 | 有 C，B 第2 | mirror detect（track==2） | 镜像→PReal<0.5→低 | 不成立（B 是 C 镜像） | ✅（UV4 验噪声边界） |
+| 3 | 已2人，B 第3 | 不判（3+ 不处理） | PReal=1 | 成立（★残余） | △ 见三 |
+
+**C 核：现实现「GainedReal=宿房去 ghost 后验（PReal）」这一个量天然编码三情形，不需在码里显式分支**——情形1（1track PReal=1）/情形2（mirror PReal<0.5）自动得对；情形3 是有意接受的残余。统一口径比显式分三情形更简洁、且没漏。
+
+## 三、★ 情形3 残余记为「已知可接受、非 bug」（诚实记账）
+
+Room2 已2人时 B（第3）不做 ghost detect → PReal=1 → GainedReal 高 → A 的 hand-off 成立 → A 真摔被整流 Left。**这是残余风险**。但架构师论证成立、C 认：此时 Room2 既有 ghost 候选说明 Room2 ≥1 真人 → 整个 **unit ≥2 人** → A 仍可能被同 unit 的人发现 → A 风险较低。**这是 risk-stratified「N_r≥2 折 C_FN（有人代发现）」在 unit 层的延伸**。残余可接受，记账非 bug。
+
+## 四、★ 架构师补的时序保护（比 §64 静态口径深一层，C 核成立）
+
+§64 C 钉的是「用什么值」（GainedReal 用去 ghost PReal≥0.5）；架构师补「为什么噪声来不及」的**时序保护**，两延时叠加：
+- **ghost detect ≥2 周期**：`mScore += rcMirrorGain·CoexistRho`，CoexistRho 是速度同步度，**瞬时噪声尖峰单帧 ρ 累积不起来**（§G七 数量×时间）→ 判不成合法 GainedReal。UV4 的 churn「每帧拆新 logicID、永不达确认 K」正是此机制的实现。
+- **lost-fall D 延时窗**（`DelayWindowFor`，D=10min）：A 丢不立即裁，等 D 窗看有无合法 hand-off。A 瞬间掉 frame（噪声假 lost）在 D 窗内被 A 重现纠正（A 没真丢）。
+- **两延时叠加**：噪声造的瞬时假 hand-off，B 端攒不够确认 + A 端 D 窗纠正 → 两头都来不及成立。**时序论证成立，补强 §64 静态口径。**
+
+## 五、C 净判
+
+**步4 码层通过。** UV1-4 全绿（含 UV4 噪声防线）；统一口径 GainedReal=去 ghost 后验已覆盖架构师三情形（情形1/2 自动对、情形3 残余已知可接受=risk-stratified unit 层延伸）；时序保护（ghost detect ≥2 周期 + lost-fall D 延时）补强 §64；cd2b 0.5203 精确零回归；安全攸关链（GateBlindRow 安全默认 / wDir 窗外=0 / 严格守恒 / 噪声防线）全守。架构师裁定保留现状（偏保守）直接起步5。
+
+**进度**：§57 路线图实质工作 **步1-4 全闭环**（候选① / per-track 主体+消费门控 / 镜像架构师已处理 / 步4 neighbor 纯时间窗）。**Xsensorv1 框架验证完成。** 剩步5 = 文档收尾（清作废空间分支 / §47-48 plumbing 残留 / 零回归终检）。
+
+---
+
+# §67 增补（步5 文档收尾 + 零回归终检）— 作废分支无码层残留 + 全模块绿 + cd2b 0.5203，Xsensorv1 框架验证闭环
+
+> 架构师裁定保留步4 现状（三情形已被统一口径覆盖、偏保守）直接起步5。步5 = 纯收尾：核作废空间分支/§47-48 plumbing 在码层有无残留 + 零回归终检 + 收口。
+
+## 一、作废分支码层核（grep 实证：无残留，因 Xsensorv1 是方案乙新建、从未累积废分支）
+
+| 作废分支（§57三 记诚实歧路，文档保留不删） | 码层残留 |
+|---|---|
+| 空间 hand-off / 房间相邻矩阵 / 空间路由 | **无**（唯一命中 = `unit.go:11` 注释「**不碰**房间相邻/空间路由」=正向说明非残留）|
+| MM 扩 enter 前置 | **无**（neighbor 纯时间窗，不依赖 MM）|
+| §47-48 身份 plumbing 工单 / nearestAliveTrack 移植 | **无**（§G六 最小作功 logicID 已溶解身份硬接力；Xsensorv1 从未引入 nearestAliveTrack）|
+| 「镜像=中等算法攻坚」 | **无**（架构师已处理 IsReflection=ghost 墙外出生+连线交墙）|
+
+- `grep` 死码/stub/TODO迁移/事件名字面量（#1.2/#1.6）：唯一命中 = `decide.go` 的「推翻 §8 全局 C_FN 兜底」**诚实推翻记录**（非死码，文档化已废逻辑），合规。
+- 作废分支按架构师纪律「记诚实歧路、不删」保留在 feedback-p6C（§57三/§G/§51）+ DBN doc，码层零残留。
+
+## 二、零回归终检（全模块）
+
+- `go build ./...` / `go vet ./...` 净。
+- 全模块 `go test ./...`：adapter / belief / engine / replay **全绿**。
+- **cd2b finalP=0.5203 精确零回归**（接触轴框架涌现基线，值断言锚 0.5203±0.01 守门）。
+- engine 包 EG1-6（per-track/消费门控/blind 续存/OR 聚合/cd2b 复现）+ UV1-4（neighbor hand-off/no-handoff/单房 ρ≡0/噪声防线）**9 PASS 0 FAIL**。
+
+## 三、Xsensorv1 框架验证闭环（净结论）
+
+**DBN 四隐轴全空间占用框架已立并验证**：
+- **S 轴**（人态全空间占用）+ **B 轴**（床占用，sleepad>radar 前置，§4 Ψ 相容）→ cd2b 床边真摔**零补丁涌现 0.5203/0.9992**（不靠 floor-strip/δ 几何，靠 LeftBed→B vac→Ψ）。
+- **realness 轴**（§G 两类 Real/Mirror，Static 溶解，N_r 排 ghost；§G七 ghost 三分：桶一伪迹独立分量 census 兑现/桶二 mirror 几何/桶三病根删）+ **消费门控**（§61 无共存源→孤轨永发，risk-stratified）。
+- **neighbor 轴**（§A ρ_xroom 跨房 hand-off，纯时间窗 D=10min，band-pass wDir，GateBlindRow 整流 Blind→Left；噪声防线持久化确认 + 时序保护）。
+- **裁决**（§26 55% 三分 + 期望损失 C_FN，拍法 A）+ **OR 聚合**报到房间。
+
+**§57 路线图实质工作全完成**（步1 候选① / 步2 per-track 主体+消费门控 / 步3 镜像架构师已处理 / 步4 neighbor / 步5 收尾）。**剩余归 Xsensorv1 之外**（§57四）：安全阈值/曲线参数真实数据 oracle 标定（归生产，[[fall_data_is_artificial_test]]）、MM 几何、上生产集成。
+
+**Xsensorv1 = 验证载体（方案乙新建 roomengine）的框架验证使命达成**：框架（DBN 四轴 + §A 时间窗 neighbor + §G realness + ghost 三分）已立、cd2b 实证零补丁涌现、全链零回归。
+
