@@ -377,6 +377,16 @@ $$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\te
 - **消失续存 = $S^{(i)}$ 转移自持**：track 消失（摔倒静止降功率被滤）时，该 track 的 $S^{(i)}$ 经转移自持（Fallen 留 Fallen + Blind 携占用），不靠重关联续命。
 - **ghost（mirror）仅在 track 数 $=2$ 时作用**：1 track 不进 ghost（永发）；正好 2 track 跑 mirror 判别（co-existence $\rho$ + 反射几何，排除影子出 $N_r$）；**3+ track 不处理**（人多、风险低，不为它把 mirror 逻辑复杂化）。
 
+**七、ghost 判别信号体系（§53 修正 + 数量×时间，非硬 gate）**。§G六 的「ghost 仅 track==2」是指 **mirror（成对 co-existence）**；ghost 判别另有**单 track** 分支与之正交。三分：
+
+- **桶一 · 单 track 运动伪迹 ghost（census/logicID 层从 raw XY 即可算，不等 MM）**。信号 = ① 速度超室内合理上限（老人走不了那么快）② 轨迹跳跃/瞬移（固件 track-swap 伪迹）。**判据用数量×时间累积、非硬阈**：不设「speed≥X→ghost」硬 gate（标定陷阱，[[fall_data_is_artificial_test]]）；每帧异常**量**（超速幅度/跳跃幅度）随**时间累积**成连续 ghost 后验（同 mirror $m$Score、§3 $\kappa$ EMA 范式——「越持续/越频繁，信心越强」）。持续越快/跳越多 → ghost 信心越高；偶发一帧异常（噪声/真人快走一步）≈ 不判。
+  - **FN-safe**：① 持续快移 = ghost 或护工，都在 fall 保护圈外，敢判（护工不靠系统兜底，真摔在场即被发现）；② 累积避免真人偶发噪声误判 ghost。
+  - **细化「1track 永发」**：1track **静止**永不判 ghost（病根：分不开金属/摔倒静止真人）；1track **持续快移/瞬移**可判 ghost（FN-safe）。
+- **桶二 · 出生地判据（入口/墙外/金属点）= 几何依赖**。判「墙外」要墙多边形、「入口」要入口几何、「金属点」要 cell-AreaDeny——**非 census-now**，随 MM/cell/layout 接通才算（[[mm_relationship_matrix]]）。
+- **桶三 · metal 的 still-box 久静判 = 病根，保持删**。静止分不开金属 vs 摔倒静止的真人（§G 一），请回来 = 复活 FN。metal 归 **firmware 30s（§G 五）+ cell-AreaDeny 拓扑**，不归 census 静止。
+
+> §53 修正（C 复审 census 单点依赖）：现 census 只算 mirror 的 $\rho$、等 MM 的 IsReflection；**桶一**这套单 track 运动伪迹判据 census 层即可算、不依赖 MM——故「ghost 全押 MM」是**当前实现未兑现桶一**，非框架死结。补本节立框架后由 census 兑现累积式判据。
+
 ---
 
 ### 整合后轴/裁决一览
@@ -387,4 +397,4 @@ $$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\te
 | 时间（dwell 符号）| 久静 × cell 容忍 | 已内化（survival）；cell 容忍可靠性 = 框架前提 |
 | 裁决（§8 $C_{FN}$）| 风险因子 | 主框架；$C_{FN}$ 连续代价函数须 decide 落地 |
 | 跨房（§A neighbor ρ_xroom）| 兄弟房**有向** hand-off | 框架命题 + **方程已落（§A.1 ρ_xroom / §A.2 $T_S$ 门控 / §A.3 §10 接口）**；曲线参数待标定 |
-| realness（§G Real vs Mirror）| co-existence $\rho$ / cell-AreaDeny 拓扑 | **框架重定（§G）**：主职 = $N_r$ 排除 ghost；两轴 FN-safe 默认；Static 溶解（金属交 firmware 30s / co-existence / Blind 三场景）；leak 凭空造 ghost 待码层改 |
+| realness（§G Real vs Mirror）| mirror: co-existence $\rho$+反射几何（成对）／ 单 track 伪迹: speed·跳跃（数量×时间，§G七）／ 出生地·metal: 几何·拓扑 | **框架重定（§G）**：主职 = $N_r$ 排除 ghost；两轴 FN-safe 默认；Static 溶解；ghost 信号三分（§G七：桶一 census 兑现/桶二 几何依赖/桶三 病根删）；leak 凭空造 ghost 已码层删 |
