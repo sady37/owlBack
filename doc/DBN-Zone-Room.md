@@ -232,7 +232,7 @@ $$\delta_{\text{pad/floor}}=D_{\mathrm{KL}}\!\big(P(\text{XY}\mid\text{on-pad})\
 - sole-resident 门从离散 `rc≠1` 硬 OFF 改**连续衰减**：ρ_xroom 按 resident 数衰减（单住户强、多住户弱不归零）+ 进 §8 的 $C_{FN}$（多住户邻房占用压 fall 的"信用"降，漏报代价仍在）。
 - K（现 `dampNbrFallen=0.7`）从似然层固定 damp 常数 → ρ_xroom 驱动的转移概率，与 §3 κ、§10 ghost ρ 同为"几何/事件共现耦合"家族。
 
-下面三式即 C 提出、A 补的方程开口：ρ_xroom 计算式（§A.1）、$T_S$ 跨房门控转移（§A.2）、与 §10 正交扩展接口（§A.3）。标定初值（HandoffWindowMs=60s / JitterMs=5s / K 上确界=0.7 / 源型可信度 sleepad 0.9·room-enter 0.8·radar-only 0.2）见 [[feedback-p6C]] §9 与现役 `belief_neighbor.go`；本节只立**框架与方向/符号**，曲线参数（$\tau_h,\tau_j,\beta$）留标定。
+下面四式即 C 提出、A 补的方程开口：ρ_xroom 计算式（§A.1，**§38 规则①③ band-pass + 规则② track 守恒校正**）、$T_S$ 跨房门控转移（§A.2）、与 §10 正交扩展接口（§A.3）、时间窗随 unit 自适应（§A.4，**§38 规则④⑤ + §39 D=10min 定稿**）。标定初值（HandoffWindow 60s / Jitter 5s / K 上确界 0.7 / 源型可信度 sleepad 0.9·room-enter 0.8·radar-only 0.2）见 [[feedback-p6C]] §9·§38·§39；本节只立**框架与方向/符号**，曲线参数（$\tau_p,\delta_0,\tau_j,\beta$）留 oracle 标定（"band-pass 先升后降、峰 1-5s"的形状定，曲线不标定）。
 
 #### §A.1 ρ_xroom 计算式（有向 hand-off 耦合）
 
@@ -240,21 +240,23 @@ $$\delta_{\text{pad/floor}}=D_{\mathrm{KL}}\!\big(P(\text{XY}\mid\text{on-pad})\
 
 $$\Delta_{r'}=t^{\text{arr}}_{r'}-t^{\text{lost}}_r\qquad(\Delta>0=\text{先走后到}=\text{有向命中})$$
 
-**(a) 有向新鲜度核**（与 ghost 对称核的关键分野——对 $\operatorname{sign}\Delta$ 不对称）：
+**(a) 有向新鲜度核**（与 ghost 对称核的关键分野——对 $\operatorname{sign}\Delta$ 不对称；**§38 规则③ band-pass 校正**：旧式 $e^{-\Delta/\tau_h}$ 在 $\Delta{=}0$ 取峰是**错的**——同 tick 两房 = 人没法瞬移过去 = 不可能是同一人 hand-off）：
 
 $$w^{\text{dir}}(\Delta)=\begin{cases}
-e^{-\Delta/\tau_h} & 0\le\Delta\le W & (\text{先走后到，新鲜度指数衰减})\\[2pt]
-e^{\Delta/\tau_j} & -J\le\Delta<0 & (\text{抖动反向余量，}\tau_j\ll\tau_h\text{ 仅容时钟噪声})\\[2pt]
+g\!\big((\Delta+\delta_0)/\tau_p\big) & 0\le\Delta\le W & (\text{先升后降；}\Delta{=}0\text{ 压低但非零，峰在 }\Delta{=}\tau_p{-}\delta_0\approx1\text{-}5\text{s})\\[2pt]
+g(\delta_0/\tau_p)\,e^{\Delta/\tau_j} & -J\le\Delta<0 & (\text{抖动反向余量，}\tau_j\text{ 仅容时钟噪声})\\[2pt]
 0 & \text{otherwise} & (\text{陈旧 / 真反向}\to\text{非 hand-off，不压 fall})
 \end{cases}$$
 
-$W$=HandoffWindow（60s，固定绝对、不随房距伸缩）、$J$=Jitter（5s）。窗外 = 0：stale「上次在哪」证不了此刻在哪（人可能穿盲区真摔），铁律 [[partial_monitoring_fall_suppression_law]]。
+其中 $g(x)=x\,e^{1-x}$（band-pass 基形：$x{=}0\to0$、峰 $=1$ at $x{=}1$、$x{>}1$ 衰减），$\delta_0$ 小偏移令 $w(0)>0$。**物理（规则①③）**：$\Delta{\approx}0$ 同 tick = 瞬移 = 可疑（压低）；$\Delta{=}1\text{-}5\text{s}$ = 老人正常走过去 = 峰（越近越强）；之后越久越可能别的事 → 衰减。$W$=HandoffWindow、$J$=Jitter（5s）。窗外 = 0：stale「上次在哪」证不了此刻在哪（人可能穿盲区真摔），铁律 [[partial_monitoring_fall_suppression_law]]。曲线（$\tau_p,\delta_0,\tau_j$）留 oracle form-anchor（铁律 [[fall_data_is_artificial_test]]），**"先升后降、峰 1-5s"这个形状是定的**。
 
 **(b) 归因可信加权、去 ghost 的兄弟房占用**（belief 据此可**质疑**邻房归因，非吃算好的标量）：
 
 $$q_{r'}=c_{\text{attr}}(r')\cdot P_{r'}(\text{real-present}),\qquad P_{r'}(\text{real-present})=\Big(\!\!\sum_{S\notin\{E,L\}}\!\!P_{r'}(S)\Big)\cdot\big(1-P_{r'}(\text{ghost})\big)$$
 
 $c_{\text{attr}}$=源型可信度（sleepad InBed 接触式 0.9 / radar room-enter 过门事件 0.8 / radar-only 占用 0.2）。$P_{r'}(\text{real-present})$ 吃兄弟房**去 ghost 后**的占用后验（§A.3 接口①）——兄弟房一个 ghost 不算合法 hand-off 落点。
+
+**§38 规则② track 守恒**（hand-off 权威信号，非裸"兄弟房有人"）：短时 unit track 数恒定，本房 $-1$ track ↔ 兄弟房 $+1$ track = 同一人挪过去（doc P6.5「人在 X 丢了必在别处冒出来」）。故 $P_{r'}(\text{real-present})$ 取的是兄弟房**新增 $+1$ real track 的守恒重现后验** $=P($丢的人在此重现$)$，载体复用 SuiteCensus/P_id 跨区 track 账（别另起）。
 
 **(c) sole-resident 连续衰减**（替离散 `rc≠1` 硬 OFF）：
 
@@ -286,6 +288,20 @@ $$S'\in\{\text{BlindRest},\text{BlindOpen}\};\quad \text{行其余项不变，�
 | ① | ghost 轴 → neighbor 轴 | $q_{r'}$ 吃兄弟房 $P_{r'}(\text{real-present})\cdot(1{-}P(\text{ghost}))$——§10 房内 ghost 后验喂 §A 房间 hand-off；兄弟房 ghost 不算落点 |
 | ② | 不加隐维（状态空间不爆） | $B^j$/$S^{(i)}$/$T^{(i)}$ 是房内 $J$ 的**隐维复制**；$\rho^{\text{xr}}$ 是房**间** $T_S$ 的**转移耦合**，吃兄弟房 belief 读出标量，**不进本房 $J$ 基数**（$9\cdot2^{|\mathcal B|}$ 不变） |
 | ③ | 同 census 双消费 | $\eta(\text{rc})$（§A.1）与 §8 $C_{FN}$ 的 resident 数同源：多住户既弱化 $\rho^{\text{xr}}$ 归因（belief 更不确定、$P^F$ 不被压死）**又**折扣 $C_{FN}$（漏报代价降不归零）——两层一致下拉，§B「期望损失主框架 + 证据层」分工保持：$\rho^{\text{xr}}$ 路由 belief（发生了什么），$C_{FN}$ 裁代价不对称（残余 $P^F$ 报不报） |
+
+#### §A.4 时间窗随 unit 自适应（§38 规则④⑤ + §39 D=10min 定稿）
+
+两个时间窗，两个相反的 unit 依赖（非固定 60s）：
+
+**(1) hand-off 检测窗 $W$（规则④，随公共度收小）**：unit 越公共、陌生人流越大 → $W$ 越小。理由：陌生人多 → 「本房丢 + 兄弟房冒」的巧合共现增多 → 收窄窗防把无关陌生人误判 hand-off。
+$$W(\text{publicness})=W_0\,(1-\alpha\cdot\text{publicness}),\quad \text{publicness}\in[0,1]\ (0{=}\text{私有 suite},1{=}\text{楼层公共，决定24 standalone})$$
+
+**(2) 延迟裁决窗 $D$（规则⑤ + §39 定值，随覆盖差放长）**：lost-track 后等 $D$ 仍无 hand-off/守恒重现 → fire。覆盖差（设备不足、盲区多）→ 二义只能靠 neighbor → $D$ 放长。
+
+$D$ **锚在静止消失门限**（同一物理时标，用户裁定）：静止门限和 $D$ 都在答「track 消失 = 走了 vs 真摔被降功率滤掉」的同一类二义；底下是同一时钟——雷达功率自适应静止过滤。故
+$$D=\text{stillVanish}+(1-\text{coverage})\cdot\text{margin},\qquad \boxed{D_{\max}=8\text{min（静止门限）}+2\text{min（余量）}=10\text{min}}$$
+
+**8 vs 10 = 不卡物理边界的层层留余量**：5min（物理：人静止被降功率滤掉）→ 8min 门限（+3min 防「刚站定就误判」）→ 10min 延迟窗（+2min 给「消失后再确认无迟到 hand-off」缓冲）。$D{=}8$min 是边界重合（窗结束 = 人刚被滤，无观察缓冲，最脆）；$D{=}10$min 错开 2min 留确认缓冲。下界 5min（覆盖好/人流大无需久等）、上界 10min（覆盖差/二义多）。$D$ 由 decide/lost-fall 层消费，非 $\rho^{\text{xr}}$ 本身。
 
 ### §B 裁决定位：期望损失是主框架，emission/dwell/neighbor 是证据层（C §7 修正）
 
