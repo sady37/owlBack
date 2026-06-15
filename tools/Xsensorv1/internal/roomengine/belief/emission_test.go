@@ -79,7 +79,7 @@ func TestFrameworkEmergenceCd2b(t *testing.T) {
 	// 阶段A 在床睡：sleepad InBed + 躺 + 静止 → B occ、S→Bed。
 	inBed := Observation{Sleepad: []BedReading{BedInBed}, RadarOnline: true, PoseLying: true, StillSec: 60, NearBed: true}
 	for s := 1; s <= 30; s++ {
-		f.Step(int64(s)*1000, BedOnline{true}, cp.LogPsi(js, gxy), em.LogPhi(js, inBed))
+		f.Step(int64(s)*1000, BedOnline{true}, cp.LogPsi(js, gxy), em.LogPhi(js, inBed), 0, 1)
 	}
 	if pb := js.MarginalB(f.Alpha(), 0); pb < 0.99 {
 		t.Fatalf("阶段A P(B occ)=%.4f 应≈1（在床）", pb)
@@ -88,7 +88,7 @@ func TestFrameworkEmergenceCd2b(t *testing.T) {
 	// 阶段B 离床摔：sleepad LeftBed + 雷达仍躺 + 静止 + 近床。**零 floor-strip**。
 	left := Observation{Sleepad: []BedReading{BedLeftBed}, RadarOnline: true, PoseLying: true, StillSec: 120, NearBed: true}
 	for s := 31; s <= 120; s++ {
-		f.Step(int64(s)*1000, BedOnline{true}, cp.LogPsi(js, gxy), em.LogPhi(js, left))
+		f.Step(int64(s)*1000, BedOnline{true}, cp.LogPsi(js, gxy), em.LogPhi(js, left), 0, 1)
 	}
 	pF := js.PFallen(f.Alpha())
 	if pF < 0.55 {

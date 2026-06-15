@@ -53,7 +53,7 @@ func TestRoutingTwoBeds(t *testing.T) {
 	gxy := []float64{1.0, 0.0} // 雷达只定位到 bed0
 	online := BedOnline{true, false}
 	for step := 0; step < 30; step++ {
-		f.Step(int64(step+1)*1000, online, cp.LogPsi(js, gxy), em.LogPhi(js, o))
+		f.Step(int64(step+1)*1000, online, cp.LogPsi(js, gxy), em.LogPhi(js, o), 0, 1)
 	}
 	b0 := js.MarginalB(f.Alpha(), 0)
 	b1 := js.MarginalB(f.Alpha(), 1)

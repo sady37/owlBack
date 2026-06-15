@@ -57,8 +57,10 @@ type BedOnline []bool
 
 // Predict 联合时间转移（因子化 T_S ⊗ T_B，log 域）。
 // online[j] = 第 j 床 ρ_t（决定 T_B 用 K^obs/K^unobs）。
+// rhoXroom = neighbor ρ_xroom（§A.2，W3.1）：>0 仅在 lost-track 激活，把 Blind from-行的 →Fallen 整流入
+//   →Left（人挪去邻房非本房真摔）= **转移先验**，非 gate。rhoXroom≤0 → 用静态 logA（逐 tick 等价，零回归 oracle）。
 // B1 契约：len(online) 须 == numBeds（床在线标志逐床显式）；不符 = 上游 wiring 错 → panic（规则 1.4）。
-func (f *Filter) Predict(online BedOnline) {
+func (f *Filter) Predict(online BedOnline, rhoXroom float64) {
 	js := f.space
 	nb := js.numBeds
 	if len(online) != nb {
@@ -67,13 +69,27 @@ func (f *Filter) Predict(online BedOnline) {
 
 	logTB := f.buildLogTBCol(online) // bmaskN×bmaskN 因子化 log T_B 表（提出 S 循环外）
 
+	// neighbor 整流：仅 Blind from-行（SBlindRest/SBlindOpen）按 ρ 改向 F→L，其余行不变。
+	logA := &f.logA
+	var gated [numStates][numStates]float64
+	if rhoXroom > 0 {
+		gated = f.logA
+		for _, sFrom := range [...]State{SBlindRest, SBlindOpen} {
+			g := GateBlindRow(f.model.A[sFrom], rhoXroom) // prob 行 F→L 整流（行和守恒）
+			for sTo := 0; sTo < numStates; sTo++ {
+				gated[sFrom][sTo] = logP(g[sTo])
+			}
+		}
+		logA = &gated
+	}
+
 	next := js.NewJointVector()
 	// ᾱ(sTo, bTo) = LogSumExp_{sFrom, bFrom} ( logA[sFrom][sTo] + logTB[bFrom][bTo] + α )
 	for sTo := 0; sTo < numStates; sTo++ {
 		for bTo := 0; bTo < js.bmaskN; bTo++ {
 			acc := math.Inf(-1)
 			for sFrom := 0; sFrom < numStates; sFrom++ {
-				la := f.logA[sFrom][sTo]
+				la := logA[sFrom][sTo]
 				if math.IsInf(la, -1) {
 					continue
 				}
@@ -136,12 +152,32 @@ func (f *Filter) Correct(logPsi, logPhi JointVector) {
 	f.alpha.LogNormalize()
 }
 
-// Step 一帧推进。dtMs≤0（同帧重入）跳过 Predict。
-func (f *Filter) Step(nowMs int64, online BedOnline, logPsi, logPhi JointVector) {
-	if f.lastTs > 0 && nowMs > f.lastTs {
-		f.Predict(online)
+// foldRealness realness 折进 logPhi（C §42：SFallen 发射 ×P(real)，走同一 Correct 路径 = 真内化，
+//   非软 gate）。pFallReal = 本房 fall 证据来自真人的后验 ∈[0,1]；≥1 中性（假设真人 → 零回归 oracle）；
+//   →0 = ghost 的「摔」喂不动 SFallen（真人摔倒 P(real) 高则不被抑制 = 共生律 [[bed_fusion_authority_model]]）。
+func (f *Filter) foldRealness(logPhi JointVector, pFallReal float64) JointVector {
+	if pFallReal >= 1.0 {
+		return logPhi // 中性：原样返回（零回归 oracle 的一半）
 	}
-	f.Correct(logPsi, logPhi)
+	js := f.space
+	out := js.NewJointVector()
+	if logPhi != nil {
+		copy(out, logPhi)
+	}
+	lr := logP(pFallReal)
+	for b := 0; b < js.bmaskN; b++ {
+		out[js.idx(SFallen, b)] += lr
+	}
+	return out
+}
+
+// Step 一帧推进。dtMs≤0（同帧重入）跳过 Predict。
+// rhoXroom（neighbor，进 Predict）/ pFallReal（realness，折 logPhi）；中性值 (0, 1) → 逐 tick 等价 S/B-only。
+func (f *Filter) Step(nowMs int64, online BedOnline, logPsi, logPhi JointVector, rhoXroom, pFallReal float64) {
+	if f.lastTs > 0 && nowMs > f.lastTs {
+		f.Predict(online, rhoXroom)
+	}
+	f.Correct(logPsi, f.foldRealness(logPhi, pFallReal))
 	if nowMs > f.lastTs {
 		f.lastTs = nowMs
 	}

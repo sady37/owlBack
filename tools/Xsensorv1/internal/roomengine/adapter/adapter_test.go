@@ -104,7 +104,7 @@ func TestAdapterCd2bFrameworkEmergence(t *testing.T) {
 	}
 	for step := 1; step <= 30; step++ {
 		inBed.NowMs = int64(step) * 1000
-		f.Step(inBed.NowMs, Online(inBed), cp.LogPsi(js, Gxy(inBed, p)), em.LogPhi(js, BuildObservation(inBed, p)))
+		f.Step(inBed.NowMs, Online(inBed), cp.LogPsi(js, Gxy(inBed, p)), em.LogPhi(js, BuildObservation(inBed, p)), 0, 1)
 	}
 	if pb := js.MarginalB(f.Alpha(), 0); pb < 0.9 {
 		t.Fatalf("阶段A 后 P(B occ)=%.3f 应高（在床充 occ）", pb)
@@ -118,7 +118,7 @@ func TestAdapterCd2bFrameworkEmergence(t *testing.T) {
 	}
 	for step := 31; step <= 120; step++ {
 		fall.NowMs = int64(step) * 1000
-		f.Step(fall.NowMs, Online(fall), cp.LogPsi(js, Gxy(fall, p)), em.LogPhi(js, BuildObservation(fall, p)))
+		f.Step(fall.NowMs, Online(fall), cp.LogPsi(js, Gxy(fall, p)), em.LogPhi(js, BuildObservation(fall, p)), 0, 1)
 	}
 	pF := js.PFallen(f.Alpha())
 	if pF < 0.55 {

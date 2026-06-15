@@ -32,7 +32,7 @@ func TestJointNormalization(t *testing.T) {
 			online[j] = true
 		}
 		for step := 0; step < 50; step++ {
-			f.Predict(online)
+			f.Predict(online, 0)
 			verifySum(t, f, "nb="+itoa(nb)+" step="+itoa(step))
 		}
 	}
@@ -105,7 +105,7 @@ func TestStaleness30sReproduction(t *testing.T) {
 	offline := BedOnline{false}
 	crossStep := -1
 	for step := 1; step <= 120; step++ {
-		f.Predict(offline)
+		f.Predict(offline, 0)
 		pOcc := js.MarginalB(f.alpha, 0)
 		if crossStep < 0 && pOcc < 0.5 {
 			crossStep = step
@@ -130,7 +130,7 @@ func TestStaleness30sReproduction(t *testing.T) {
 	f2.alpha.LogNormalize()
 	online := BedOnline{true}
 	for step := 1; step <= 30; step++ {
-		f2.Predict(online)
+		f2.Predict(online, 0)
 	}
 	if pOcc := js.MarginalB(f2.alpha, 0); pOcc < 0.5 {
 		t.Errorf("对照失败：在线 30s 后 P(occ)=%.4f < 0.5（在线核不该蒸发 occ）", pOcc)
@@ -149,7 +149,7 @@ func TestVacAbsorbing(t *testing.T) {
 
 	offline := BedOnline{false}
 	for step := 1; step <= 120; step++ {
-		f.Predict(offline)
+		f.Predict(offline, 0)
 	}
 	if pOcc := js.MarginalB(f.alpha, 0); pOcc > 0.05 {
 		t.Errorf("vac 吸收失败：空房离线 120s 后 P(occ)=%.4f 应 ≈0（§C vac→occ=0）", pOcc)

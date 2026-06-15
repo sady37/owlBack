@@ -227,7 +227,7 @@ func Run(timeline []adapter.FrameInput) ([]Frame, belief.Vector) {
 	for _, fi := range timeline {
 		logPsi := cp.LogPsi(js, adapter.Gxy(fi, p))
 		logPhi := em.LogPhi(js, adapter.BuildObservation(fi, p))
-		f.Step(fi.NowMs, adapter.Online(fi), logPsi, logPhi)
+		f.Step(fi.NowMs, adapter.Online(fi), logPsi, logPhi, 0, 1) // neighbor/realness 中性(W3.3/W3.4 接通)
 		pF := js.PFallen(f.Alpha())
 		lam := belief.ComputeLambda(js, logPsi, logPhi)
 		d := dec.Step(fi.NowMs, pF, lam, adapter.BuildRiskContext(fi))
