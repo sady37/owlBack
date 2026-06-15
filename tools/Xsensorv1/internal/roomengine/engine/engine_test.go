@@ -28,14 +28,15 @@ func TestEngineCd2bSingleRoomReproduces(t *testing.T) {
 		}
 	}
 
-	// 阶段A：在床 InBed 充 occ。
+	// 阶段A：在床 InBed 充 occ（雷达 X=50 床心=出生位，未位移）。
 	for step := 1; step <= 30; step++ {
-		r.Tick(mk(int64(step)*1000, belief.BedInBed, 50), 0, 1)
+		r.Tick(mk(int64(step)*1000, belief.BedInBed, 50), 0)
 	}
 	// 阶段B：在线 LeftBed + 雷达仍躺静止近床（cd2b 床边真摔，§32 二态不离线）。
+	// X=130 偏离出生位 80cm > MoveCm → Displaced 锁 Real → pFallReal≈1 不抑制 SFallen（RV4 端到端守住）。
 	var fired bool
 	for step := 31; step <= 150; step++ {
-		fr := r.Tick(mk(int64(step)*1000, belief.BedLeftBed, 130), 0, 1)
+		fr := r.Tick(mk(int64(step)*1000, belief.BedLeftBed, 130), 0)
 		if fr.Decision.Fire {
 			fired = true
 		}

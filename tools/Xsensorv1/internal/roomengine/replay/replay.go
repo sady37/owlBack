@@ -205,7 +205,7 @@ func BuildTimeline(caseDir, radarUID string) ([]adapter.FrameInput, error) {
 }
 
 // Run 驱动时间线经单房 engine.Room（W3.2：主循环单源 = engine 包）。返回逐帧结果 + 最终 marginal S。
-// 单房 neighbor=0 / realness 中性=1（W3.3/W3.4 接通跨房 census 与出生档案后填实）。
+// realness 房内由 engine.Room 自出生档案/still-box 涌现（W3.3 接通）；单房 neighbor=0（W3.4 接通跨房 census）。
 func Run(timeline []adapter.FrameInput) ([]engine.Frame, belief.Vector) {
 	nb := 0
 	if len(timeline) > 0 {
@@ -214,7 +214,7 @@ func Run(timeline []adapter.FrameInput) ([]engine.Frame, belief.Vector) {
 	r := engine.NewRoom(adapter.BedGeoms(timeline[0]), nb)
 	frames := make([]engine.Frame, 0, len(timeline))
 	for _, fi := range timeline {
-		frames = append(frames, r.Tick(fi, 0, 1))
+		frames = append(frames, r.Tick(fi, 0))
 	}
 	return frames, r.MarginalS()
 }
