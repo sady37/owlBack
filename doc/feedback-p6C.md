@@ -2231,3 +2231,41 @@ C 数轮把"多房/neighbor"误套空间解，经架构师裁剪全废，记诚�
 
 **Xsensorv1 剩余 = 四件小接线（1 接决策 / 2 接管线 / 4 时间窗消失 / 5 收尾）+ 镜像已处理。无中等以上攻坚。** 框架（DBN 四轴 + §A 时间窗 neighbor + §G realness + ghost 三分）已立，剩按有限规模（≤6 设备）拼装已有零件。C 待架构师推 §55-57，候选①继续。
 
+---
+
+# §58 增补（A 兑现 §56 候选① — N_r→PeopleCount 单源接 decide，812d375）— 待 C 复审
+
+> A 据 §56 五柱兑现候选①（步 1）+ 架构师 pillar B 裁定。提请 C 据 §56 预声明闸复审。
+
+## 一、改了什么（最小接线，decide 逻辑零改）
+
+`engine.Room` 持 `*adapter.TrackCensus`，每 tick `Update(fi.Tracks)→Nr()→BuildRiskContext(fi, nr)` 注入 `RiskContext.PeopleCount`。**decide.go 一行未改**（拍法 A 已是 §26 既有结构）。
+
+- **单源（规则 #1.3）**：删 `adapter.Census.PeopleCount` 可外部设值字段；人数唯一来自 `TrackCensus.Nr()`（已排 mirror+伪迹 ghost，§G 主职）。`BuildRiskContext(fi, nr)` 显式收 nr。
+- **多 track 计数输入**：`FrameInput` 增 `Tracks []TrackObs`（喂 census 数人头）；`Track` 仍是 belief S/B/realness 主轴那条，step2 多 track 进 belief 主管线后两者归一（不抢 step2）。
+- **forensic**：`Decision` 增 `PeopleCount`（sdl trail §2.1 + 守门校验用）。
+
+## 二、五柱兑现对账
+
+| 柱 | 兑现 | 证据 |
+|---|---|---|
+| **A 单源** | PeopleCount 唯一 = `TrackCensus.Nr()`，删 Census 第二计数字段 | `adapter.go` Census/BuildRiskContext；`grep PeopleCount` 仅 belief.RiskContext + census |
+| **B ★ Blind 续存** | **架构师裁定「随 S^(i) 涌现，本刀不加 TTL」** | 见第三节 |
+| **C ★ 排 ghost 端到端** | 真人+运动伪迹 → census 排 → `decide.PeopleCount=1`（不虚增降级独处真人） | **EG2** `TestEnginePillarCGhostExcludedToDecide` ✓ |
+| **D ★ 拍法 A 守门** | N_r=2 + 接触轴 cd2b 床边摔 P^F=0.9992 → `band=report` fire（多人折扣绝不折证据自足档） | **EG3** `TestEnginePillarDHoldsAtReportBand` ✓ |
+| **E 零回归** | cd2b replay finalP=**0.5203 不变**；EG1=0.9992 不变；belief/adapter/engine/replay 全绿 | `go test ./internal/roomengine/...` |
+
+## 三、★ pillar B 的处理（架构师 2026-06-15 裁定，提请 C 注意预声明闸②外的口径）
+
+§56 pillar B「Blind 续存 track 计入 N_r、本刀必接」。A 实现前发现三种接法（① 随 S^(i) 涌现不加 TTL / ② 永不蒸发直到 neighbor 判离开 / ③ 固定续存窗 TTL）安全/框架性质不同，提请架构师裁——**裁定①**：
+
+- 依据：$N_r=\sum_i\mathbb 1[S^{(i)}\notin\{E,L\}]$（[[DBN-Zone-Room]] line57）**本就定义在 S^(i) 上**；blind 续存计数由 **step2 多 track 进 belief 主管线后经 S^(i) 转移自持涌现**（belief 自持，**非 census staleness 补丁**，呼应 §32 删 sleepadTTLMs / [[bed_stale_leftbed_vetoes_radar_inbed]] 反 TTL）。
+- 候选①里 `Nr()` 仍只数在场（`lastTick==tick` 且 PReal≥0.5），**未在 census 层补续存窗**——这是裁定①的直接落地，非遗漏（[[partial_monitoring_fall_suppression_law]] no-silent-caps：已在 `census.go Nr()` doc 显式记此口径）。
+- 安全自证：单 faller 的 blind 续存**已由 belief S^(i) 自持**（fall 检测不靠 N_r），且其计不计入 N_r **不改自身上报**（≤1 人不折扣 / ≥55% 必报）。pillar B 对多人折扣的影响落在 step2 per-track S^(i)。
+
+→ **请 C 复审时把预声明闸②「桶一对 PRoomHasReal 不贡献」之外，加核 pillar B 口径是否接受「随 S^(i) 涌现、本刀不加 TTL」**（若 C 坚持 census 层即接，则与架构师反 TTL 裁定冲突，需架构师再裁）。
+
+## 四、C 预声明闸（§56）对账请求
+
+① N_r→PeopleCount 单源 ✅（删第二计数）② Blind 续存计入 N_r → **改为「随 S^(i) 涌现」**（架构师裁，见三）③ ghost 真排除端到端 ✅（EG2）④ 拍法 A 守门 ✅（EG3）⑤ 零回归 ✅（0.5203）。**commit 812d375，待 C 复审 + 架构师确认 pillar B 口径。**
+
