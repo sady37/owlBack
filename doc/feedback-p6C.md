@@ -1775,3 +1775,269 @@ A 解释:"单房没 TrackID,我怎么知道是不是同一个人 → 拿 gap 当
 
 **进度**:W3.1✅/W3.2✅/W3.3✅(通过,记 plumbing+口径两 gap)。C 待 W3.4a,复审重点已升级(track_id 关联移植单源 + 身份连续取代 gap 猜测 + ghost 守恒铁律不破)。
 
+
+---
+
+# §48 增补 — C 对「身份 plumbing」工单的预声明验收规格（§45 模式完整闸；排在 W3.4a 多房编排之前）
+
+> A 提第②层(哨兵帧)+ 三处 scope 修正(独立工单/两层单源移植/独立验真机制与安全网)。C 自核 cd2b fixture 坐实第②层、修正 §46 漏点,据此出正式预声明闸。**拍板:W3.4 先走身份 plumbing,后做 W3.4a。** 三道大 gate(§42)之外,身份 plumbing 是 W3.4a 的前置子闸。
+
+## 〇、C 自核坐实 A 第②层 + 修正 §46 自身漏点(诚实记)
+
+C 读 cd2b fixture 尾段(自跑 python 解析 window.json)实测:
+- **哨兵实锤**:末段出现 `track_id=88 / pose=null / x=0 / y=0`——与 production track_manager.go:106「track_id=88 心跳/全零帧=固件明示无目标」**完全吻合**。另有 `pose=null/tid=None/9/10/11` 纯丢失帧。replay.go:190 对**所有这些帧无条件 `Online:true`**,把 (0,0) 当活 track 喂 engine。
+- **「删 rebirth 治好 cd2b」运气成分实锤**:出生位=(-60,240),哨兵(0,0)离出生位=**247cm > MoveCm=50 → Displaced=True**。即尾段 Real 锁不是靠真 track,是靠**哨兵伪坐标(0,0)偶然够远**。出生位若近 (0,0)(雷达原点附近的床),哨兵位移<50→Displaced=False→删 rebirth 照样 PReal 塌→漏报回来。**安全网比 §46 看上去薄。**
+- **修正 §46 自身漏点**:§46 反事实注入 rebirth 复现 0.0054 时,真实致炸机制是「rebirth 把出生位改成哨兵(0,0)→新出生位上哨兵自身位移=0→Displaced=False」=**rebirth+哨兵联合致炸**;§46 归因全给 rebirth,**漏了哨兵这一半**。A 第②层是对 §46 解释力的真修正,C 认。
+- **production 已正确处理 88(Xsensorv1 接错)**:track_manager.go `heartbeat88EvictMs=6_000`——固件明示无目标持续≥6s **即驱逐进 lost_fall/vanish**(=为"人消失"设计的 Blind/Fallen ramp 正路)。**故第②层非"应当如此"是"production 本就如此、Xsensorv1 replay 接反了"**(把 88 当活 track 而非离线消失),与第①层 track_id 入口丢弃同病:raw/哨兵信号在入口被错译。
+
+## 一、工单 scope(采纳 A 三处修正)
+
+**独立「身份 plumbing」工单,排 W3.4a 之前**(身份是地基:realness 跨消失存活 + 跨房 hand-off 都依赖它;塞进正交的多房编排会缠成第二个 tangle)。**两层 plumbing,缺一仍错**:
+- **第①层(§47)**:接 track_id 入口(RadarTrack 加 ID 字段 + replay 透传)+ 移植 production `makeLogicID`/`nearestAliveTrack`(最近距离关联)/`hasOtherLiveTrackWithLogicID`(换 ID 守恒闸)。
+- **第②层(本节/A)**:丢失哨兵(track_id=88 / pose=null / 全零帧)标 `Online:false` 走 Blind,**不当 (0,0) 活 track**。
+- **耦合警告**:只补①不补②→ nearestAliveTrack 会拿哨兵(0,0)去做最近距离关联,关联到伪坐标,照样错(还可能把哨兵伪坐标当"最近"抢真 track 的 logic_id)。**两层必须同一工单一起接。**
+
+## 二、验收柱(§45 模式;每柱命中即否决)
+
+**柱A 单源逐字移植,非另造(柱①教训延伸)**。makeLogicID/nearestAliveTrack/hasOtherLiveTrackWithLogicID/88-evict 逻辑**从 production 提干净函数搬入**,语义等价,非 copy-paste-modify 近似重写。C 将对照 production 原实现逐函数核(如 nearestAliveTrack 的"已有 logic_id 才作候选""调用时新 track 未入表防自指"两约束须保留)。**另造一套近似 = 否决**(drift)。
+
+**柱B 哨兵识别完备 + 走 Blind 正路**。replay/adapter 须识别全部丢失形态(track_id=88 ∪ pose=null ∪ 全零帧),标 `Online:false`;engine 端 offline 帧走既有 radar 离线→Blind→Fallen ramp(§W3.x 已有正路,不新造)。**核**:cd2b 尾段哨兵段标 Offline 后,Blind 轴真激活(非被 (0,0) 活 track 短路)。**任一丢失形态漏识别仍当活 track = 否决。**
+
+**柱C ★ 独立验真机制 + 关安全网验隐藏 FN**(A 第3点,最关键)。须**两路独立证 cd2b 尾段 fire**:
+1. **身份连续路**:接通后,哨兵段经"标 Offline→Blind"OR"真 track_id 关联回同一 logic_id"维持 fall 后验 → fire。
+2. **关安全网验隐藏 FN**:**临时关掉「安全默认保 Real」兜底**(movedFromBirth 不强锁 / 哨兵不伪造 Displaced)重跑 cd2b——**若此时漏报,证明原 fire 是被安全网盖住的隐藏 FN,真实机制没接对**。**必须关网仍 fire**(靠身份连续/Blind 正路,非靠哨兵(0,0)偶然 Displaced)才算真接通。**关网即塌 = 否决**(隐藏 FN,等于没修)。
+
+**柱D reap TTL pin 死 > 哨兵 gap**。C 自核 production 驱逐窗:`MaxMissCount=10(~10s)` / `trackEvictMaxMs=12s` / `heartbeat88EvictMs=6s`;cd2b 哨兵段实测 gap 达 **32s**(+848→+880→+911)。**张力**:若移植 88-evict(6s 驱逐)则真 track logic_id 在哨兵段早被 reap → nearestAliveTrack 无候选可关联 → 退回"标 Offline 走 Blind"(这其实是对的安全路)。**核**:reap TTL 与 reattach 窗口的关系须显式裁定并 pin——要么 88→立即 Offline 走 Blind(不依赖 reattach),要么 reap TTL>哨兵 gap 让 reattach 有候选。**两者择一明确,不留"恰好"**(§46 运气教训)。**TTL 与哨兵 gap 关系未 pin、靠巧合 = 否决。**
+
+**柱E 铁律守恒不破(审查方原始担心)**。nearestAliveTrack 最近距离关联**不得引 ghost verdict 进 Fall 路径**(production hasOtherLiveTrackWithLogicID 守此,移植勿破);最近距离关联不得反向制造 ghost↔real switch 漏洞(把 ghost 关联成 real 或反之)。**核**:守恒闸 hasOtherLiveTrackWithLogicID 一并移植、且 Fall 路径只认身份连续不认 ghost verdict。**引 ghost 进 Fall / 制造 switch = 否决。**
+
+## 三、预声明否决条件汇总(命中即退回)
+
+- 移植成 copy-paste-modify 近似而非干净函数单源(柱A)。
+- 任一丢失形态(88/null/全零)漏识别仍当活 track(柱B)。
+- **关「安全默认保 Real」兜底后 cd2b 漏报**=隐藏 FN,真机制没接对(柱C,最重)。
+- reap TTL 与哨兵 gap 关系靠"恰好"未显式 pin(柱D)。
+- 最近距离关联引 ghost 进 Fall 路径 / 制造 ghost↔real switch(柱E)。
+- 接通引入对既绿(cd2b 0.9992 / EG1 / HR-2 / RV1-4 / multibed / NV)回归。
+
+## 四、C 拍板 + 待 A
+
+**W3.4 执行序:身份 plumbing 工单(本规格)→ 然后 W3.4a 多房编排 → W3.4b MM 拓扑填 realness 三字段。** 身份是地基,前置。**两层(track_id + 哨兵)同一工单**,单源移植 production(柱A),**柱C 关安全网验隐藏 FN 是真伪试金石**(防"靠哨兵(0,0)偶然 Displaced 假 fire")。C 待 A 交付身份 plumbing,按本规格(柱A-E + 六否决)出净判。
+
+> 备忘(诚实记,不删歧路):cd2b 这个 fixture 因哨兵(0,0)偶然 247cm>MoveCm,在「仅删 rebirth」下 fire——这是真实但脆的绿。身份 plumbing 接通前,W3.3 的 fire 含此运气成分;§46 通过结论在"当前 Xsensorv1 信息集"下仍成立(损害控制正确),但身份 plumbing 是把"脆绿"转"实绿"的必经。
+
+
+---
+
+# §49 增补 — 柱C 可执行测试骨架（C 自核校准期望值 + 修正"关网仍 fire"断言为"关网测 finalP 塌"）
+
+> A 请把柱C(关安全网验隐藏 FN)写成可执行骨架附规格。C 不凭设想写:先核安全网开关的代码语义 + 实测关网后 cd2b 数,发现"关网仍 fire"断言**不够利**(被 fire-latch 掩盖),据实测精确化。
+
+## 一、C 实测(临改探针,跑完还原;非凭空写期望值)
+
+**安全网开关点确认**(realness.go):安全网 = `:82 movedFromBirth=true` 单调闩 + `:90-91 psi[RCReal]=rcConfirmedReal & leak=0`(已确认 real 强锁不衰)。"关网"= 让闩永不置(模拟身份未接通时本应有的中性)。
+
+**实测两数**:
+| 配置 | cd2b finalP(Fallen) | fire |
+|---|---|---|
+| 现状(安全网开) | 0.5203 | true@+531s |
+| **关安全网(闩永不置)** | **0.0769** | **true@+531s** |
+
+**★ 关键发现(修正 §48 柱C 断言)**:关网后 finalP **从 0.5203 塌到 0.0769**(掉破 fire 阈),**但 fire 仍 true**。因 HR2 的 fire 是**逐帧 latch**(replay_test.go:64 `Fire && !fired` 首次即记),而 **fire@+531s 早于哨兵段@+836s**——cd2b 是"走动充分→摔→fire 早 latch",fire 在真 track 还活时已触发,哨兵段的 finalP 塌**拽不动已 latch 的 fire**。
+
+**故"关网仍 fire"是 cd2b 特有运气、非机制普适**:
+- cd2b 走动后才摔→fire 早 latch→finalP 塌不影响 fire 判定。
+- 但**早摔/走动不充分 case**(fire 未 latch 即进哨兵段)→关网后 P 塌→fire 永不触发→**真漏报**。cd2b 的 fire-latch 把这层脆弱性盖住了。
+- **隐藏 FN 的真信号是 finalP 塌(哨兵段持续监测失效),不是 fire 翻假**。§48 柱C"关网仍 fire 才算真接通"**不够利**——cd2b 关网照样 fire(latch),会误判"接对了"。修正为↓。
+
+## 二、柱C 断言修正(精确化)
+
+**身份 plumbing 接通后,柱C 须两断言并验**:
+1. **fire 不退化**:cd2b 仍 fire(接通不得引 fire 回归)。
+2. **★ 关网后 finalP 不塌**(真试金石):接通身份 plumbing(哨兵标 Offline 走 Blind / 真 track_id 关联)后,**即便关掉 movedFromBirth 安全网**,cd2b 哨兵段 finalP 仍维持高(靠 Blind 轴正路 ramp,非靠哨兵(0,0)偶然 Displaced 锁 Real)。**判据:关网 finalP 从「现状 0.0769(脆,靠运气 latch)」升到「接通后≥fire 阈」**。关网后 finalP 仍塌=哨兵段仍靠安全网兜、Blind 正路没真接通=**隐藏 FN 没消除=否决**。
+
+> 直觉:现状关网 finalP=0.0769 是"安全网一撤就塌"的脆态;身份 plumbing 的目的正是让哨兵段走 Blind 正路,使**关网也不塌**。关网 finalP 是否从 0.0769 抬起来,是"脆绿转实绿"的量化判据。
+
+## 三、可执行测试骨架(附规格,A 据此实现 + C 复审基准)
+
+```go
+// 文件: tools/Xsensorv1/internal/roomengine/replay/identity_plumbing_test.go
+// 柱C 隐藏 FN 试金石(§48 柱C + §49 修正)。身份 plumbing 工单交付后须全绿。
+// 前置: realness 安全网须可注入关闭(测试探针,非 production 开关)——建议 Room/RealnessTrack
+//       暴露 test-only 钩子 disableConfirmedRealLatch,或 belief 包内 export 探针变量。
+package replay
+
+import (
+	"testing"
+	"owlBack/tools/Xsensorv1/internal/roomengine/belief"
+)
+
+const fireThresh = 0.5 // 与 decide 的 SFallen fire 阈一致(核 decide.go 实际值,勿臆测)
+
+// PC1: 接通后哨兵帧标 Offline(不再当 (0,0) 活 track)。
+// 核 BuildTimeline 对 track_id==88 / pose==null / 全零帧 置 Online:false。
+func TestPC1SentinelMarkedOffline(t *testing.T) {
+	tl, err := BuildTimeline(cd2bCase, cd2bUID)
+	if err != nil { t.Fatalf("BuildTimeline: %v", err) }
+	// cd2b 尾段已知哨兵 ts(相对起点 +836s 起,track_id=88/null)。
+	var sentinelFrames, offlineSentinels int
+	for _, fi := range tl {
+		// 哨兵特征: x==0&&y==0 (replay None→0) 或 pose 标记为 loss。
+		if fi.Track.X == 0 && fi.Track.Y == 0 {
+			sentinelFrames++
+			if !fi.Track.Online { offlineSentinels++ }
+		}
+	}
+	if sentinelFrames == 0 {
+		t.Fatalf("未识别到哨兵帧——cd2b 尾段应有 (0,0) 哨兵")
+	}
+	if offlineSentinels != sentinelFrames {
+		t.Errorf("柱B: %d 哨兵帧中仅 %d 标 Offline,余仍当活 track(否决)", sentinelFrames, offlineSentinels)
+	}
+}
+
+// PC2★: 关安全网试金石。接通后即便闩关闭,cd2b finalP 仍≥fire 阈(靠 Blind 正路非哨兵运气)。
+// baseline(接通前): 关网 finalP=0.0769(脆,塌)。接通后必须抬过 fireThresh。
+func TestPC2HiddenFNGate(t *testing.T) {
+	tl, err := BuildTimeline(cd2bCase, cd2bUID)
+	if err != nil { t.Fatalf("BuildTimeline: %v", err) }
+
+	belief.SetConfirmedRealLatchEnabled(false) // 探针: 关安全网(test-only)
+	defer belief.SetConfirmedRealLatchEnabled(true)
+
+	_, finalS := Run(tl)
+	got := finalS[belief.SFallen]
+	t.Logf("PC2 关网 finalP(Fallen)=%.4f (接通前 baseline=0.0769)", got)
+
+	if got < fireThresh {
+		t.Errorf("柱C 隐藏 FN: 关安全网后 finalP=%.4f < %.2f——哨兵段仍靠安全网兜、Blind 正路未真接通(否决)。"+
+			"接通前脆态 0.0769 未改善=身份 plumbing 没把脆绿转实绿", got, fireThresh)
+	}
+}
+
+// PC3: fire 不退化(接通不得引 fire 回归)。安全网开,cd2b 照常 fire。
+func TestPC3FireNoRegression(t *testing.T) {
+	tl, err := BuildTimeline(cd2bCase, cd2bUID)
+	if err != nil { t.Fatalf("BuildTimeline: %v", err) }
+	frames, _ := Run(tl)
+	var fired bool
+	for _, fr := range frames {
+		if fr.Decision.Fire { fired = true; break }
+	}
+	if !fired {
+		t.Errorf("接通后 cd2b 应仍 fire(fire 回归=否决)")
+	}
+}
+
+// PC4(柱E): 身份关联不引 ghost 进 Fall 路径 + 不制造 ghost↔real switch。
+// 移植 hasOtherLiveTrackWithLogicID 守恒闸后,构造"真 track 失锁+其 logic_id 活在别 track_id"场景,
+// 核 Fall 路径只认身份连续(数量守恒)不认 ghost verdict。
+// [骨架待 track_id plumbing 接通后补具体构造——需 RadarTrack 带 ID 字段方可表达多 track_id 同 logic_id]
+func TestPC4GhostConservationIntact(t *testing.T) {
+	t.Skip("待 track_id plumbing 接通(RadarTrack 加 ID 字段)后实现——核守恒闸移植无 drift")
+}
+```
+
+## 四、骨架配套约束(C 复审基准)
+
+- **探针单源**:`SetConfirmedRealLatchEnabled` 是 **test-only 钩子**,不得污染 production 路径(默认 true,只测试可关)。核:production 代码无此分支或编译期排除。**若关网钩子渗进 production = 否决**(引回可被误触的 gate)。
+- **fireThresh 取真值**:骨架 `0.5` 是占位,A 须核 decide.go 实际 SFallen fire 阈填入,**勿臆测**(柱②教训:每值有源)。
+- **PC2 baseline 锚定**:接通前关网 finalP=0.0769 是 C 实测锚(本节一)。接通后 PC2 须显著抬过阈;若仍 ~0.0769 = Blind 正路没接通、纯改了别处。
+- **PC1 哨兵特征**:骨架用 `X==0&&Y==0` 近似;A 接通时若 RadarTrack 带 track_id,应改用 `track_id==88 ∪ pose==loss` 精确判(更鲁棒,不误伤真在原点的 track)。
+
+## 五、C 待 A
+
+骨架四例(PC1 哨兵 Offline / **PC2★ 关网隐藏 FN 试金石** / PC3 fire 不回归 / PC4 守恒闸)附 §48 规格。**PC2 是核心**:量化判据=关网 finalP 从脆态 0.0769 抬过 fire 阈,证哨兵段靠 Blind 正路而非哨兵(0,0)运气。C 待 A 交付身份 plumbing,按 §48 柱A-E + §49 骨架出净判。
+
+> 诚实备忘(补 §48 备忘):§46 反事实 + §49 探针两次实测共同坐实——cd2b 现状 fire 含**双重运气**:①哨兵(0,0)偶然 247cm>MoveCm 伪 Displaced ②走动后摔使 fire 早 latch、finalP 塌拽不动已 latch 的 fire。两者都不是机制普适。身份 plumbing(柱B Blind 正路)是把这双重运气换成真机制的必经;PC2 关网 finalP 是其量化验收。
+
+
+---
+
+# §50 增补（C 重大自我修正）— cd2b fire 来自床占用矛盾路、非 realness 走动 latch；§49"早摔会漏"归因推翻
+
+> 审查方质疑:"是不是搞错了——LeftBed(bed_state==1)一产生,radar 在床 track 自动归 still-box 进 silent pending"。即 fire 来自床占用矛盾(sleepad 离床 vs radar 在床静止),非 realness 走动 latch。C 三探针实测核——**审查方对,§49 fire 归因整段错,推翻重立。**
+
+## 一、三探针实测(C 自跑,推翻 §49)
+
+| 探针配置 | cd2b finalP | fire | 证 |
+|---|---|---|---|
+| 现状(realness 安全网开) | 0.5203 | true@+531s | baseline |
+| **旁路 realness 整条(pFallReal≡1.0)** | **0.5203** | **true@+531s** | **realness 对 fire 零贡献,finalP 一字不差** |
+| 关 realness 安全网(闩不置) | 0.0769 | true@+531s(latch) | realness **主动压低** SFallen |
+
+**时序实测**:sleepad LeftBed 首帧 @+412s → fire @+531s(LeftBed **之后**)。fire 在床占用抽真空后涌现。
+
+## 二、★ 真相:fire = 床占用矛盾路,realness 是潜在净抑制者(非 fire 来源)
+
+**cd2b fire 机制(审查方对)**:sleepad `bed_status==1`(LeftBed)@412s → B 床占用轴抽真空 → radar 在床仍报"躺/静止"track(still-box)与"床上没人"矛盾 → **Ψ 相容性把这矛盾压成 SFallen**(床边真摔:人离床了但雷达看到床边躺着不动)→ @531s 过 55% 阈 fire。**全程不经 realness 走动 latch**——旁路 realness(pFallReal≡1)finalP 0.5203 一字不变铁证。
+
+**realness 在 cd2b 的真实角色 = 潜在净抑制者**:
+- 安全网开:哨兵(0,0)伪 Displaced→movedFromBirth 闩锁→pFallReal≈1→**不压**→finalP=0.5203(=纯床占用路结果)。
+- 安全网关:闩不锁→哨兵段静止+CrossedStill→psi 走 else 分支→PReal 被 leak+静止往下拽→pFallReal<1→**主动把床占用路撑起的 SFallen 压低**到 0.0769。
+
+**故 §49"关网 finalP 塌=哨兵段持续监测脆弱=早摔会漏"整段错**:finalP 塌不是"监测失效漏 fire",是**realness 误抑制了本由床占用路撑起的真摔**。realness 在此的风险是 **false suppression(误抑制真摔)**,不是"latch 掩盖脆弱"。§49 把抑制者错当成 fire 来源,反了。
+
+## 三、§49 哪些保留、哪些废
+
+**废**:
+- §49"cd2b fire 靠走动充分 latch"——错,fire 靠床占用矛盾,与走动无关。
+- §49"早摔/走动不充分 case 关网后真漏(fire 不 latch)"——错前提,fire 不依赖 realness latch,床占用路独立撑 fire。
+- §49 PC2 断言"关网 finalP 须从 0.0769 抬过阈"——**方向错**:0.0769 不是"脆弱待补",是"realness 误抑制"。正确目标是**让 realness 别压床占用路的真摔**。
+
+**保留(仍对)**:
+- §48 柱B(哨兵标 Offline 走 Blind)——仍对,但理由换:哨兵(0,0)当活 track 喂 realness 制造**伪 Displaced**,是 realness 误抑制/误锁的根源;标 Offline 让 realness 哨兵段不分类(caller 持后验),消除伪 Displaced 污染。
+- §48 柱A/D/E(单源移植/reap TTL/守恒闸)——不依赖 fire 归因,仍对。
+- §46 W3.3 通过——**仍成立**:realness×fall 联合不 gate 的机制对(realness 折 logPhi 调制 SFallen 发射);cd2b 恰好 fire 主要靠床占用路,realness 没帮上但也没致命压垮(安全网开时闩锁=不压)。
+
+## 四、★ 修正后的真隐藏 FN 风险(比 §49 更准)
+
+**真风险不是"早摔漏 fire",是"realness 误抑制床占用路的真摔"**:
+- 设想 case:真人床边摔倒静止,**从未走动过**(直接从床上滚下/坐起即倒)→ movedFromBirth 永不置 → 哨兵段(或静止段)realness 判 pFallReal<1 → **主动压低床占用路本应撑起的 SFallen** → 可能压破 55% 阈 → 漏报。
+- cd2b 没暴露这个,是因为哨兵(0,0)伪 Displaced 偶然锁住闩(双重运气之一,§49 备忘)→ pFallReal≈1 不压。**真去掉这运气(标 Offline),才看得清 realness 会不会误抑制。**
+- **这才是身份 plumbing 的真价值**:不是"补脆弱让 fire 不漏",是"让 realness 在哨兵/静止段不误压床占用路的真摔"。
+
+## 五、柱C 测试骨架修正(替换 §49 PC2)
+
+```go
+// PC2★(修正): realness 不得净抑制床占用路的真摔。
+// cd2b fire 来自床占用矛盾路(LeftBed→B vac→Ψ→SFallen),realness 应中性或助力,不得压垮。
+// 判据: 接通身份 plumbing(哨兵标 Offline)后, realness 开/关 finalP 差应≈0
+//       (realness 不再因哨兵伪Displaced 锁闩、也不因哨兵静止误压)——即 realness 对床占用路真摔中性。
+func TestPC2RealnessNoFalseSuppression(t *testing.T) {
+	tl, _ := BuildTimeline(cd2bCase, cd2bUID)
+
+	_, withRealness := Run(tl)                          // realness 正常
+	belief.SetRealnessBypassed(true)                    // 探针: pFallReal≡1.0 旁路
+	defer belief.SetRealnessBypassed(false)
+	_, bypassed := Run(tl)                              // realness 旁路=纯床占用路
+
+	dW := withRealness[belief.SFallen]
+	dB := bypassed[belief.SFallen]
+	t.Logf("PC2 finalP: realness开=%.4f 旁路=%.4f 差=%.4f", dW, dB, dB-dW)
+
+	// 接通后 realness 不得把床占用路的真摔压低: realness开 finalP 不应显著 < 旁路。
+	if dB-dW > 0.05 {
+		t.Errorf("柱C: realness 净抑制床占用路真摔 %.4f→%.4f(差%.4f>0.05)——"+
+			"realness 在静止/哨兵段误压真摔(false suppression,否决)", dB, dW, dB-dW)
+	}
+}
+
+// PC2b: 无走动早摔 case(realness 命门)——构造"真人从未 Displaced + 床边静止摔",
+// 核 realness 不把床占用路 SFallen 压破阈。
+// [待 RadarTrack 带 track_id 后用合成 case;cd2b 因哨兵伪Displaced 不暴露此路]
+func TestPC2bNoWalkEarlyFall(t *testing.T) {
+	t.Skip("待合成无走动早摔 fixture——cd2b 哨兵伪Displaced 掩盖此命门")
+}
+```
+
+> PC1/PC3/PC4 保留(§49);PC2 替换为上(false suppression 方向);fireThresh 真值=**0.55**(C 核 decide.go §26 三分判据,非 §49 占位 0.5)。
+
+## 六、C 净判 + 诚实记
+
+**审查方质疑成立,C §49 fire 归因推翻。** cd2b fire = 床占用矛盾路(sleepad LeftBed→B vac→Ψ→SFallen),realness 零贡献且为潜在净抑制者。真隐藏 FN 风险 = **realness 在无走动/静止/哨兵段误抑制床占用路的真摔**,非 §49 误判的"早摔漏 latch"。身份 plumbing(哨兵标 Offline)真价值 = 去掉哨兵伪 Displaced 运气、暴露并防 realness 误抑制。
+
+**诚实记歧路(不删)**:C 连续两节归因偏移——§49 把 realness 当 fire 来源(错),§50 经三探针(旁路 realness finalP 不变)修正为床占用路。教训:**fire 归因必须探针隔离验(旁路单轴看 finalP 变不变),不可从"哪个轴动了"反推因果**。审查方"LeftBed→still-box→silent pending"一句点中床占用路,比 C 两节推断准。
+
+**进度不变**:W3.1✅/W3.2✅/W3.3✅。身份 plumbing 工单(§48 柱A-E + §50 修正骨架)排 W3.4a 前。**§48 五柱中柱C 方向已修正(false suppression 非 latch 脆弱)**,余柱不变。C 待 A 交付。
+
