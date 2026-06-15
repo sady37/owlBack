@@ -1308,3 +1308,48 @@ C 自 pull 跑（不照搬）：框架涌现 0.9992（C §32 自测 0.995 同量
 ghost/neighbor 两新隐轴：先在现 Xsensorv1 belief 建好验涌现、再新建完整 roomengine，还是新建过程中一起建？（A 答见 feedback-p6A。）
 
 
+
+---
+
+# §34 增补 — build order 定序（C 背书 A 排序）+ ghost 基数前置锁死（track=2）
+
+> 接 §33「build order 待 A 确认」。A 答 + C 定序 + ghost 隐轴动手前的基数设计前置（C 揪出真爆炸风险，用户领域规则化解）。
+
+## 一、build order：C 背书 A 排序（先 belief 验四轴，再新建 roomengine wire）
+
+A 主张 + C 背书：**先在现 Xsensorv1 belief 建 ghost/neighbor 两隐轴、各自验涌现，再新建完整 roomengine wire 已验证四轴。不在新建过程中一起建。**
+
+C 背书的核心理由（A 四条理由的第 2 条，本会话血换教训）：**守归因边界。** floor-strip + 两译层 bug 是「belief 黑盒边界（HR-5/AC-1）重生效」才揪出的。边建轴边新建 roomengine → 「axis 数学错」与「wiring 错」重新纠缠，丢掉刚救命的边界。**先 belief 单元独立验四轴（数学正确），再 wire（wiring 正确），两类正确性分离。**
+
+**定序**：
+- ① belief 建 ghost 隐轴（§10 换轴）+ 合成涌现测试
+- ② belief 建 neighbor 隐轴（§A ρ_xroom 有向门控）+ 合成涌现测试
+- ③ 新建 roomengine wire 四轴 + copy 非DBN包（方案乙）
+- ④ 全回归
+
+## 二、ghost 基数前置（C 揪真爆炸 + 用户领域规则锁死）
+
+**C 揪出真风险**：ghost 是 per-track 的「$S^{(i)}$ 多份」（设计 §10）。若 track 间做**状态全联合** → $(S×T)^n=18^n$，track=3 即 5832×8 态，**爆炸**。P-5（床数物理上限）挡不住——爆炸来自 track 间笛卡尔积，非 track 数本身。
+
+**两层锁死（缺一不可）**：
+1. **用户领域规则（锁 track 数）**：track 最多 8；**track>3 不处理（人多=有人在场=fall 无风险）**；ghost 仅处理 track∈{2,3}。**进一步简化：仅 track=2**（一真人+一镜像，ghost 最经典场景；track=3 多镜像/多人少数，先不碰）。
+2. **C 裁定（锁联合方式）**：track 间走 **pairwise ρ 耦合（与 κ 同源），不做状态全联合**。设计 §10 明说 ghost ρ「与 κ 同源」，κ 本就 pairwise 不进全联合；co-existence 判 ghost 本质是成对关系（A,B 是否镜像对），不需高阶联合态。
+
+**最终基数（track=2 单场景）**：2×18 = **36 态固定**，比床轴（8）量级相近、无爆炸风险。连 pairwise/全联合的纠结都省（就两 track 天然成对）。
+
+**这是用户第2点「DBN 求全空间组合避免 gate」的正确实现**：在 ghost 有意义的 track≤2 范围内求全空间联合后验；范围外（track>3）因**领域事实**（有人在场无 fall 风险）不处理——不是 gate（gate=先判 ghost 丢不确定性），是「有意义范围内完整联合 + 领域事实划定范围」。
+
+## 三、方案乙细节确认（C 核依赖面）
+
+C grep 证实「新建+copy」可行：
+- 非 roomengine 包对 roomengine 依赖浅（zonealarm/service 0、config 1、zoneengine/consumer 2-3、playback 4）→ copy 改 import 即可，机械操作。
+- roomengine 内分层清晰：**纯几何层可 copy**（cell/grid/layout/kalman/track/suite_census/persist/**mirror_detect/static_reflector**=几何事实非判真伪）；**DBN/fall 层重写**（belief/track_manager/ghost_adjudicator/belief_neighbor/fall_rules/belief_shadow/belief_adapter）。
+- **澄清**：`mirror_detect/static_reflector`（镜面/反射体几何检测）= 输入层可 copy；`ghost_adjudicator`（判 track 真伪硬结论）= 废，重写成 $T^{(i)}$ realness 隐轴。镜面几何是 ρ 耦合的输入，realness 是隐轴。
+
+## 四、C 放行 ghost 隐轴动手
+
+**基数前置已锁死（track=2，36 态），C 放行 A 起 ghost 隐轴。** A 在现 belief 单元建 track=2 realness 轴（§10 换轴：2 份 $S^{(i)}$ + pairwise ρ → P(ghost) 从 co-existence 涌现，废 Track 层 Conf×P(Real) 硬外挂）+ 合成涌现测试（一真人一镜像，验 P(ghost) 涌现把伪 track 判出）。
+
+**C 验收点（预告）**：合成 2-track（一真一镜，同步移动）→ P(ghost) 对镜像 track 涌现 ≥ 阈、对真人 track 低；零硬外挂（不吃 ghost_adjudicator 算好的标量）。
+
+C 待 A ghost 隐轴涌现结果复审。
