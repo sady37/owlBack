@@ -375,13 +375,14 @@ $$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\te
 **六、身份/连续性 + ghost 作用域**（订正：原写「软边缘化、非 logicID」是过度设计——track 关联用最近距离是标准做法，非 §47 那个病，改回最小作功距离 logicID）。
 - **身份关联（哪条人影是哪个人）= 最小作功距离 logicID**：新 track 出现发新 logicID；平时各 track 分得开、logicID 跟随不变；仅两 track 相遇（≤50cm 可能认错）时按**最小作功距离**保号（新坐标离上一 tick 哪条 track 近，就接哪条的 logicID——人不瞬移，最近即同一人）。这是标准 track 关联**预处理**，**非** §47 担心的「硬结论外挂」病：那病是把占用**结论**硬塞进 DBN 当观测；track 关联只决定观测归哪条 track，不进隐状态。
 - **消失续存 = $S^{(i)}$ 转移自持**：track 消失（摔倒静止降功率被滤）时，该 track 的 $S^{(i)}$ 经转移自持（Fallen 留 Fallen + Blind 携占用），不靠重关联续命。
-- **ghost（mirror）仅在 track 数 $=2$ 时作用**：1 track 不进 ghost（永发）；正好 2 track 跑 mirror 判别（co-existence $\rho$ + 反射几何，排除影子出 $N_r$）；**3+ track 不处理**（人多、风险低，不为它把 mirror 逻辑复杂化）。
+- **ghost（mirror）仅在 track 数 $=2$ 时作用**：1 track 不进 mirror 分支；正好 2 track 跑 mirror 判别（co-existence $\rho$ + 反射几何，排除影子出 $N_r$）；**3+ track 不处理**（人多、风险低，不为它把 mirror 逻辑复杂化）。**（注：「1track 永发」只对 mirror/静止——单 track 运动伪迹 ghost 是另一分支、可判，见 §G七）**
 
 **七、ghost 判别信号体系（§53 修正 + 数量×时间，非硬 gate）**。§G六 的「ghost 仅 track==2」是指 **mirror（成对 co-existence）**；ghost 判别另有**单 track** 分支与之正交。三分：
 
 - **桶一 · 单 track 运动伪迹 ghost（census/logicID 层从 raw XY 即可算，不等 MM）**。信号 = ① 速度超室内合理上限（老人走不了那么快）② 轨迹跳跃/瞬移（固件 track-swap 伪迹）。**判据用数量×时间累积、非硬阈**：不设「speed≥X→ghost」硬 gate（标定陷阱，[[fall_data_is_artificial_test]]）；每帧异常**量**（超速幅度/跳跃幅度）随**时间累积**成连续 ghost 后验（同 mirror $m$Score、§3 $\kappa$ EMA 范式——「越持续/越频繁，信心越强」）。持续越快/跳越多 → ghost 信心越高；偶发一帧异常（噪声/真人快走一步）≈ 不判。
   - **FN-safe**：① 持续快移 = ghost 或护工，都在 fall 保护圈外，敢判（护工不靠系统兜底，真摔在场即被发现）；② 累积避免真人偶发噪声误判 ghost。
   - **细化「1track 永发」**：1track **静止**永不判 ghost（病根：分不开金属/摔倒静止真人）；1track **持续快移/瞬移**可判 ghost（FN-safe）。
+  - **★ 独立分量 + 共生律不污染（§54 框架补）**：桶一伪迹 ghost 是 realness **独立分量**（独立 score，**非** mirror 的 $m$Score）、**对 `PRoomHasReal` 不贡献真人源**——伪迹是固件 track-swap/超速，**无真人源**（区别 mirror 必有真人源）。两类 ghost 下游贡献不同：**`pFallReal`（压自己的摔）两类都压、$N_r$ 两类都排**；但 **`PRoomHasReal`（房内有无真人）只 mirror 贡献、伪迹不贡献**。码层若把桶一塞进同一 $m$Score → 语义错（超速伪迹被 `PMirror` 报成某真人镜像）+ 共生律污染（伪迹被当蕴含真人 → 房内有真人后验虚高 → 扰动「丢真人 track 但镜像存活→fall 不抑制」）。
 - **桶二 · 出生地判据（入口/墙外/金属点）= 几何依赖**。判「墙外」要墙多边形、「入口」要入口几何、「金属点」要 cell-AreaDeny——**非 census-now**，随 MM/cell/layout 接通才算（[[mm_relationship_matrix]]）。
 - **桶三 · metal 的 still-box 久静判 = 病根，保持删**。静止分不开金属 vs 摔倒静止的真人（§G 一），请回来 = 复活 FN。metal 归 **firmware 30s（§G 五）+ cell-AreaDeny 拓扑**，不归 census 静止。
 
