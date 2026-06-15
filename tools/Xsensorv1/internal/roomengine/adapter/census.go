@@ -43,7 +43,9 @@ type TrackCensus struct {
 }
 
 // NewTrackCensus 建空 census。
-func NewTrackCensus(p TrackCensusParams) *TrackCensus { return &TrackCensus{p: p, tracks: map[int]*censusTrack{}} }
+func NewTrackCensus(p TrackCensusParams) *TrackCensus {
+	return &TrackCensus{p: p, tracks: map[int]*censusTrack{}}
+}
 
 // Update 一帧推进：① 最小作功距离关联 raw→logicID；② track 数==2 算 ρ；③ 各 RealnessTrack.Update。
 func (c *TrackCensus) Update(obs []TrackObs) {
