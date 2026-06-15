@@ -17,38 +17,52 @@ import (
 // absorbedThresh 消失 track 的 S 边缘 P(Left)+P(Empty) ≥ 此 = 确认离场 → drop（form-anchor，留 oracle）。
 const absorbedThresh = 0.9
 
-// Frame 单帧引擎输出（房间代表 probe + 房间 OR 聚合裁决）。
+// arrivalConfirmFrames hand-off 信号「确认真人」所需连续在场真人帧数（§64 噪声防线，form-anchor）。
+//
+//	gained/lost 不用瞬时 PReal≥0.5——cd2b 式噪声尖峰 >AssocCm 瞬拆**新 logicID**（PReal=1 未及去 ghost），
+//	瞬时判会把它当合法 GainedReal → 假 hand-off 整流真摔成 Left → 漏报。要求连续 K 帧真人=确认重现/离场，
+//	噪声 churn（每帧新 id、1 帧即逝）/瞬时尖峰永不达 K → 不造假 lost/gain。
+const arrivalConfirmFrames = 3
+
+// Frame 单帧引擎输出（房间代表 probe + 房间 OR 聚合裁决 + 跨房 hand-off 信号）。
 type Frame struct {
 	Probe    belief.FrameProbe
 	Decision belief.Decision
+	// 步4 跨设备 hand-off 信号（Unit 编排器消费，§A 守恒+时间窗）：
+	LostReal   bool    // 本帧一条真人 track 消失（上帧在场真人、本帧不在）= hand-off 源候选
+	GainedReal float64 // 本帧新现真人 track 的去 ghost 后验（0=无）= hand-off 宿候选（守恒重现）
 }
 
 // Room 单房多 track 引擎：每 logicID 一份 belief 滤波 + 裁决器；census 管身份/realness/人数。
 type Room struct {
-	model    *belief.Model
-	js       *belief.JointSpace // 共享读出/发射空间（各 track 滤波同维，idx 一致）
-	cp       *belief.Coupling
-	em       *belief.Emission
-	census   *adapter.TrackCensus
-	filters  map[int]*belief.Filter  // 每 logicID 一份 S/B 联合滤波（§A.3② 隐维复制）
-	deciders map[int]*belief.Decider // 每 logicID 一份持续计时裁决
-	nb       int
-	p        adapter.Params
-	lastMarg belief.Vector // 末帧房间代表 track 的 S 边缘（MarginalS 读出）
+	model         *belief.Model
+	js            *belief.JointSpace // 共享读出/发射空间（各 track 滤波同维，idx 一致）
+	cp            *belief.Coupling
+	em            *belief.Emission
+	census        *adapter.TrackCensus
+	filters       map[int]*belief.Filter  // 每 logicID 一份 S/B 联合滤波（§A.3② 隐维复制）
+	deciders      map[int]*belief.Decider // 每 logicID 一份持续计时裁决
+	nb            int
+	p             adapter.Params
+	lastMarg      belief.Vector // 末帧房间代表 track 的 S 边缘（MarginalS 读出）
+	realStreak    map[int]int   // 每 logicID 连续在场真人帧数（步4 hand-off：confirmed=streak≥K，抗噪声 churn）
+	prevConfirmed map[int]bool  // 上 tick 已确认真人(streak≥K)的 logicID 集（算 lost）
 }
 
 // NewRoom 建单房引擎。geom = 床几何（adapter.BedGeoms 从 layout 派生）；nb = 床数。
 func NewRoom(geom []belief.BedGeom, nb int) *Room {
 	return &Room{
-		model:    belief.DefaultModel(),
-		js:       belief.NewJointSpace(nb),
-		cp:       belief.NewCoupling(geom),
-		em:       belief.NewEmission(geom),
-		census:   adapter.NewTrackCensus(adapter.DefaultTrackCensusParams()),
-		filters:  map[int]*belief.Filter{},
-		deciders: map[int]*belief.Decider{},
-		nb:       nb,
-		p:        adapter.DefaultParams(),
+		model:         belief.DefaultModel(),
+		js:            belief.NewJointSpace(nb),
+		cp:            belief.NewCoupling(geom),
+		em:            belief.NewEmission(geom),
+		census:        adapter.NewTrackCensus(adapter.DefaultTrackCensusParams()),
+		filters:       map[int]*belief.Filter{},
+		deciders:      map[int]*belief.Decider{},
+		nb:            nb,
+		p:             adapter.DefaultParams(),
+		realStreak:    map[int]int{},
+		prevConfirmed: map[int]bool{},
 	}
 }
 
@@ -76,8 +90,12 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		}
 	}
 
+	curReal := map[int]float64{} // 本 tick 在场真人(PReal≥0.5) logicID→PReal（算 lost/gained）
 	var dropIDs []int
 	for _, ts := range tracks {
+		if ts.Present && ts.PReal >= 0.5 {
+			curReal[ts.LogicID] = ts.PReal
+		}
 		f := r.filters[ts.LogicID]
 		dec := r.deciders[ts.LogicID]
 		if f == nil {
@@ -123,7 +141,34 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		r.census.Drop(id)
 	}
 
-	return r.aggregate(results, nr, fi.NowMs)
+	// 步4 hand-off 信号（§64 噪声防线：连续 K 帧真人才算确认，抗噪声 churn 造假 lost/gain）。
+	newStreak := make(map[int]int, len(curReal))
+	for id := range curReal {
+		newStreak[id] = r.realStreak[id] + 1 // 连续在场真人 → 累计；断了 → 不在 newStreak（归零）
+	}
+	var gained float64 // 本 tick 刚跨过确认阈（streak==K）的真人 = 确认新现（守恒重现落点）
+	for id, pr := range curReal {
+		if newStreak[id] == arrivalConfirmFrames && pr > gained {
+			gained = pr
+		}
+	}
+	lost := false // 上 tick 已确认真人、本 tick 不在场真人 = 确认离场（hand-off 源）
+	for id := range r.prevConfirmed {
+		if _, ok := curReal[id]; !ok {
+			lost = true
+		}
+	}
+	r.realStreak = newStreak
+	r.prevConfirmed = map[int]bool{}
+	for id, s := range newStreak {
+		if s >= arrivalConfirmFrames {
+			r.prevConfirmed[id] = true
+		}
+	}
+
+	fr := r.aggregate(results, nr, fi.NowMs)
+	fr.LostReal, fr.GainedReal = lost, gained
+	return fr
 }
 
 // aggregate 房间 OR 聚合（§60）：任一真人 track Fire → 房间 fire；代表 = 真人里(优先 firing)pF 最高者。

@@ -2455,3 +2455,48 @@ A 在 §61 之外加推论：OR 聚合的 fire 资格也须同消费门控口径
 
 **进度**：§57 步1 ✅ / 步2 ✅（per-track 主体 + 消费门控 + cd2b 回归）。下一步 = **步4 跨设备消失关联（纯时间窗 D=10min）**（步3 镜像架构师已处理）。C 复审重点预告：① 纯时间窗（unit 内设备消失↔别处重现，D=10min），不碰房间相邻/空间路由（§57 作废分支）② §A ρ_xroom 方程接线（非攻坚）③ ≤6 设备事件流时间比对 ④ cd2b 单房零回归。
 
+---
+
+# §64 增补（C 复审 A 步4 切法 — 切法对，但 ★补一条噪声防线：§61 同源噪声在 neighbor 层造假 hand-off→漏报）
+
+> A 起步4 前出切法（Unit 编排器 + Room 两信号 LostReal/GainedReal + 守恒时间窗 + cd2b 零回归）请核。C 确认切法对，但发现 A 切法漏了一条 §61 同源的噪声风险，要求补口径 + 第④条守门测试。
+
+## 一、切法对（C 确认）
+Unit 编排器纯时间窗（任一兄弟设备时间比对、不碰空间路由，§57）+ Room 暴露 LostReal/GainedReal + 守恒（丢↔现）band-pass wDir + 单房 ρ≡0 零回归——**与 §A + neighbor.go 一致，照写。**
+
+## 二、★ C 补的噪声防线（A 切法没列，必加）
+**风险**：cd2b 式噪声尖峰会瞬时拆出假 track（§61/§63 已证：>AssocCm 瞬拆新 logicID）。多房编排里——**一条噪声尖峰假 track 被当 GainedReal（新现真人）→ 跟另一房 LostReal 凑成假 hand-off → 把那房真摔整流成 Left → 漏报**。这是 §61 artifact 同源噪声，作用在 neighbor 层。
+
+**防线**：GainedReal/LostReal **必须用去 ghost 后的真人后验（PReal≥0.5），不能用 raw 在场 track 数**——噪声假 track 被压成 ghost（或永不确认）→ 不算合法落点。否则噪声 churn 造假 lost/gain。
+
+**前提钉死**：A 落码守此口径。
+
+## 三、★ 测试四条（A 切法只列三条，C 要求补第④）
+① cd2b 单房 ρ≡0 零回归 ② hand-off 双向（A 丢↔B 现→ρ>0→整流 Left） ③ no-handoff 保 lost-fall（A 丢无兄弟现→ρ=0→照报） ④ **★ 噪声防线（A 丢↔B 噪声假 track→不算合法 GainedReal→A 真摔照报）**。
+
+## 四、C 待
+切法对 + 噪声口径（GainedReal/LostReal 用去 ghost PReal≥0.5）+ 四测（含噪声守门）。A 照此写步4，做完 §57 路线图实质工作闭环（步5 文档收尾）。
+
+---
+
+# §65 增补（A 落码步4 + §64 噪声防线）— Unit 编排器 + 持久化确认抗噪声 churn，UV1-4 全绿 + cd2b 0.5203，待 C 复审
+
+> A 据 §64 落步4。§64 噪声口径落码发现：瞬时 PReal≥0.5 **不够**——churn 假 track 瞬拆新 logicID、PReal=1（未及去 ghost），瞬时判会当合法 GainedReal。故升级为**持久化确认**（连续 K 帧真人才算 confirmed lost/gained），把噪声 churn 彻底挡在 hand-off 外。
+
+## 一、落码（§57 步4，纯时间窗，§A 数学复用 belief/neighbor.go）
+- **Unit 编排器**（新 `engine/unit.go`）：持 N 个 Room + 跨房 gain 账本 + 每房 lostAt。每设备帧 → `rhoFor(roomID)`（兄弟房守恒+时间窗 SiblingHandoff → `belief.RhoXroom`）→ `room.Tick(fi, ρ)`。**不碰空间路由**（任一兄弟设备时间比对）；窗外/反向由 wDir 归零；gain 超窗 prune。
+- **Room 暴露 LostReal/GainedReal**（扩 Frame）：喂 Unit 账本。
+- **cd2b 零回归**：单房无兄弟 → 无 sibling gain → ρ≡0 → 与单房 Room.Tick(fi,0) 逐帧等价。
+
+## 二、★ §64 噪声防线落码（瞬时 PReal≥0.5 不够 → 持久化确认）
+- §64 钉「GainedReal/LostReal 用去 ghost PReal≥0.5 非 raw 在场数」。A 守此（curReal 仅收 `Present && PReal≥0.5`）。
+- **但落码发现缺口**：churn 假 track（>AssocCm）瞬拆**新 logicID**，新生帧 speed=0、aScore=0 → **PReal=1**（去 ghost 还没发生）→ 瞬时 PReal≥0.5 会当合法 GainedReal。**§64 风险在 churn 路径上瞬时判挡不住。**
+- **补强 = 持久化确认**（`arrivalConfirmFrames=3`，form-anchor）：gained/lost 要求**连续 K 帧在场真人**才算确认。churn（每帧新 id、1 帧即逝，streak 永=1）/瞬时尖峰**永不达 K** → 不造假 lost/gain；真人重现/离场持续在场 → 达 K → 确认。**这是 §64「去 ghost 真人后验」在 churn 路径的完整落地**（PReal≥0.5 挡持续超速、持久化挡瞬拆 churn，两者合起来才闭环）。请 C 核此口径是否认（§64 之外的补强）。
+
+## 三、测试四条（§64 要求，全绿）
+① **UV3 单房 ρ≡0** 零回归（无兄弟）✅ ② **UV1 hand-off**：A 丢@16s ↔ B 现@确认 → ρ(A)=0.747 → A P(Fallen) 0.092→0.067、P(Left) 升（整流入 Left）✅ ③ **UV2 no-handoff**：B 全程空 → ρ=0 → A lost-fall 保留 ✅ ④ **★ UV4 噪声防线**：B 仅噪声 churn 假 track → 永不达确认 K → ρ(A)=0 → A lost-fall 保留（=no-handoff，不漏真摔）✅
+- **cd2b=0.5203 精确零回归**（lost/gained 是观测信号，不动 filter/decision）；全套 adapter/belief/engine/replay 绿；vet·build 净。
+
+## 四、C 复审重点
+① 持久化确认（§64 噪声口径在 churn 路径的补强）是否认 ② Unit 纯时间窗不碰空间路由 ③ 单房 ρ≡0 + cd2b 0.5203 ④ UV4 噪声守门真挡住假 hand-off。**commit 见推送。Xsensorv1 框架验证 §57 路线图实质工作（步1-4）闭环，剩步5 文档收尾。**
+
