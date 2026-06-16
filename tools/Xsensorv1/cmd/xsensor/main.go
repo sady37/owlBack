@@ -9,7 +9,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net/netip"
 	"os"
 	"os/signal"
 	"sync"
@@ -255,17 +254,6 @@ func wallsFromPolygon(poly []radarutils.Point) []adapter.Rect {
 		out = append(out, adapter.Rect{X1: last.X, Y1: last.Y, X2: poly[0].X, Y2: poly[0].Y})
 	}
 	return out
-}
-
-// unit80 room_id → /80 unit 基址（zero 主机位）；同 /80 的房同一 engine.Unit（跨房 hand-off 兄弟）。
-func unit80(roomID string) string {
-	if p, err := netip.ParsePrefix(roomID); err == nil {
-		return netip.PrefixFrom(p.Addr(), 80).Masked().String()
-	}
-	if a, err := netip.ParseAddr(roomID); err == nil {
-		return netip.PrefixFrom(a, 80).Masked().String()
-	}
-	return roomID
 }
 
 // ones 长度 n 的全 1 切片（NewRoom 种子 BedGeom 的 Covers/Onbed/Overlap；真 covers 走 RadarBedReachCount 后续）。

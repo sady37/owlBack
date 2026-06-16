@@ -122,10 +122,10 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 		       CASE
 		         WHEN r.room_type = 1 AND COALESCE(r.is_public_bathroom, FALSE)
 		           THEN r.room_id::text
-		         ELSE host(set_masklen(r.room_id, 80))::text || '/80'
+		         ELSE host(network(set_masklen(r.room_id, 80)))::text || '/80'
 		       END                                                   AS suite_id,
 		       COALESCE(u.timezone, '')                              AS timezone,
-		       host(set_masklen(r.room_id, 48))::text || '/48'       AS tenant_pref,
+		       host(network(set_masklen(r.room_id, 48)))::text || '/48' AS tenant_pref,
 		       (SELECT ru.resident_id::text
 		        FROM resident_unit ru
 		        WHERE ru.valid_to IS NULL
@@ -190,9 +190,9 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 			}
 			seed := adapter.FrameInput{Beds: rectsFrom(cfg.Beds), Covers: ones(nb), Onbed: ones(nb), Overlap: ones(nb)}
 			router.rooms[roomID] = engine.NewRoom(adapter.BedGeoms(seed), nb)
-			// unitKey = room_id 的 /80 unit 基址（同 unit 的房互为兄弟跨房 hand-off）。
-			// 不用 cfg.SuiteID：SQL host(set_masklen(,80)) 不 zero 主机位 → 每房唯一不 group。
-			router.roomUnit[roomID] = unit80(roomID)
+			// unitKey = suiteID（SQL 已 network() zero 主机位 → 同 /80 房共享；public bathroom=自身/128 独立）。
+			// 仅 hasLayout 房进 roomUnit/units；GuestRoom 等无 layout placeholder 不进（无 engine.Room 不影响 hand-off）。
+			router.roomUnit[roomID] = cfg.SuiteID
 		}
 		count++
 	}
