@@ -468,3 +468,31 @@ likelihood 硬 `BedReleased` 分支、`7ffec9c` 止血两道闸、zoneengine→b
 - 多房 hand-off 真触发（:3:100 lost ↔ :3:300 gained，需人跨房 case）—— C 验收点③
 - d5f7 久坐假阳性（新码重跑确认 DBN 不误报）
 - 七柱
+
+---
+
+## 2026-06-15 — A 实证：z/ObsZBand 接回（久坐误火 FP blocker，Stage C 前置）
+
+> 承 §74 后续。C 把 z 从"优化项"升级为"Stage C 前置 blocker"（久坐误火是 FP 灾难、删 Tsensor 不可逆），
+> 架构师认同。本节给实证 + commit `980bebd`。
+
+**根因**：新 DBN 占用重写丢了 z（生产 wisefido-sensor `belief_adapter.go:124/172` 有 `ObsZBand`=posture 正向证据）。
+无 z → DBN 只剩 dwell → 人静坐马桶 >60s（老人如厕常态）→ 久静超限判 Fallen 误报（alarm fatigue）。
+d5f7-0524 揭示：z 分布 92.7% 贴地（z=0=真摔），但**久坐 z~40 同样被 dwell 误判**（marking AreaToilet 也不解，cell.go:324 toilet 久留=风险）。
+
+**设计**（doc/device-room-zone.md）：
+- z **单向正向证据，绝不负向**；z≥30 → 抬直立态（30-60 ZSit 抬 Sit / >60 ZStand 抬 OpenFloor）；
+- z<30（贴地）→ ZNone 中性（z=0 不否决任何东西，fall 仍走 dwell）；时间积分 = 前向滤波逐帧累积。
+- 阈据美国马桶座高 38-48cm；`position_z` = firmware 已解算的目标离地高度（已扣雷达安装高）。
+
+**实现**：`belief.ZBand` 枚举 + `Observation.ZBand`；`adapter.zBandOf(z)`；`emission.radarLogS` z-band 项（lZ=8，须 ≳ dwellHi/dwellLo 抵消久坐 dwell）。
+
+**实证**（`belief/emission_test.go`）：
+- `TestEmissionZBand`：ZSit 抬 SSit log(lZ)、ZStand 抬 SOpenFloor、**z 不压 Fallen（正向 only）** ✓
+- `TestZBandSuppressToiletSit`：久坐马桶(ZSit) **P(Fallen)=0.036** vs 真摔(ZNone) **P(Fallen)=0.997** ✓
+  → **久坐误火 FP 治本，真摔不漏**；全 belief 测试套无回归。
+
+**待 C 知会/复审**：
+1. **lZ=8** 是 form-anchor（须 ≳ dwellHi(3)/dwellLo(0.5) 抵消久坐 dwell），精标见 feedback-p6C。
+2. **cell-learning 线**（C 提的"双线"另一条：cell 用 z 学习 sit/toilet 区）**后置**——本次只接 emission 线（直接 FP 修复），cell 线慢学习/二级增强后做。
+3. 端到端：d5f7（z=0 真摔）仍 fire（z-band 对 z=0 中性）；FP 抑制对正常久坐(z~40) 起作用，手头无正常久坐 case，**emission 单元即验收**。
