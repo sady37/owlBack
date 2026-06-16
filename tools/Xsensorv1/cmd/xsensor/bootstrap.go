@@ -214,6 +214,7 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 			router.geom[roomID] = &roomGeom{
 				beds:           beds,
 				walls:          wallsFromPolygon(cfg.WallPolygon),
+				entrances:      rectsFrom(cfg.Enters),
 				radarPos:       adapter.Point{X: cfg.Radar.Center.X, Y: cfg.Radar.Center.Y},
 				sleepadPresent: hasSleepad, // 用 DB 设备(非 cfg.Sleepads 画layout)→ 修 radar 房 sleepad 漏判
 				radarLess:      !hasLayout,

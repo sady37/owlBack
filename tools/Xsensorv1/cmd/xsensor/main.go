@@ -109,6 +109,7 @@ const poseLying = 6
 type roomGeom struct {
 	beds           []adapter.Rect
 	walls          []adapter.Rect
+	entrances      []adapter.Rect // §9.3① enter 区（门，areaType=4）→ 出生地距门 D 软发射
 	radarPos       adapter.Point
 	sleepadPresent bool
 	radarLess      bool // 无雷达 layout（sleepad-only 房）→ 无 S 轴，B 轴靠合成 bed-track
@@ -181,16 +182,17 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	aloneMin := float64(nowMs-d.firstMs[roomID]) / 60000.0
 
 	fi := adapter.FrameInput{
-		NowMs:    nowMs,
-		Tracks:   tracks,
-		Sleepads: sleepads,
-		Beds:     g.beds,
-		Covers:   covers,
-		Onbed:    onbed,
-		Overlap:  overlap,
-		Walls:    g.walls,
-		RadarPos: g.radarPos,
-		Census:   adapter.Census{AloneContinuousMin: aloneMin},
+		NowMs:     nowMs,
+		Tracks:    tracks,
+		Sleepads:  sleepads,
+		Beds:      g.beds,
+		Covers:    covers,
+		Onbed:     onbed,
+		Overlap:   overlap,
+		Walls:     g.walls,
+		RadarPos:  g.radarPos,
+		Entrances: g.entrances,
+		Census:    adapter.Census{AloneContinuousMin: aloneMin},
 	}
 
 	u := d.units[d.roomUnit[roomID]]

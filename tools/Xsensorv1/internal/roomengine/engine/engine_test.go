@@ -9,7 +9,7 @@ import (
 
 // engine_test.go — 单房 roomengine 端到端验收（DBN-wire-roadmap §6 + §57 步2 多 track）：
 //   EG1 cd2b 单房零回归（单 track → 1 filter，Ψ 相容涌现 SFallen）
-//   EG2 pillar C：真人+伪迹 ghost → decide.PeopleCount=1（census 排 ghost，§56）
+//   EG2 pillar C：真人+墙外反射 ghost → decide.PeopleCount=1（census 排 ghost，§56）
 //   EG3 pillar D：N_r=2 + ≥55% 真摔 → report fire（拍法 A 守门）
 //   EG4 步2 blind 续存：faller track 消失 → Filter 自持 → 告警连续；N_r 掉 0（§60）
 //   EG5 步2 OR 聚合：一房两真人、仅一人摔 → 房间 fire（§60 架构师拍）
@@ -60,27 +60,30 @@ func TestEngineCd2bSingleRoomReproduces(t *testing.T) {
 	t.Logf("EG1 ✓ cd2b 单房零回归：Room.Tick 端到端 P(SFallen)=%.4f fire=%v", pF, fired)
 }
 
-// EG2（pillar C）：真人 + 运动伪迹 ghost 经 Room.Tick → census 排伪迹 → decide.PeopleCount=1（独处）。
+// EG2（pillar C）：真人 + 墙外反射 mirror ghost 经 Room.Tick → census 排 mirror → decide.PeopleCount=1（独处）。
 func TestEnginePillarCGhostExcludedToDecide(t *testing.T) {
 	r, beds, cov := newRoom1Bed()
+	radar := adapter.Point{X: 50, Y: 250}
+	walls := []adapter.Rect{{X1: -200, Y1: 340, X2: 300, Y2: 360}} // 横墙：影子在墙外、radar→影子穿墙
 	var dec belief.Decision
-	for step := 1; step <= 12; step++ {
+	for step := 1; step <= 15; step++ {
 		fi := adapter.FrameInput{
 			NowMs: int64(step) * 1000,
 			Tracks: []adapter.TrackObs{
-				tk(6, 60+step*5, 100, 120), // 真人正常走（speed≈5cm/帧）
-				tk(0, 60+step*200, 400, 0), // 运动伪迹：持续超速 200cm/帧 > SpeedCeil=100 → aScore 累积成 ghost
+				tk(6, 50+step*5, 100, 120), // 真人（radar 同侧墙内，不穿墙 → Real）
+				tk(6, 50+step*5, 400, 120), // 影子（墙外、radar→影子穿墙，同步同速）→ Mirror 几何自判别
 			},
 			Sleepads: []adapter.SleepadFrame{{Present: true, Reading: belief.BedLeftBed}},
 			Beds:     beds, Covers: cov, Onbed: cov, Overlap: cov,
+			Walls: walls, RadarPos: radar,
 			Census: adapter.Census{AloneContinuousMin: 30},
 		}
 		dec = r.Tick(fi, 0).Decision
 	}
 	if dec.PeopleCount != 1 {
-		t.Errorf("真人+伪迹 ghost 应 N_r=1 到 decide（排 ghost 防虚增），得 PeopleCount=%d", dec.PeopleCount)
+		t.Errorf("真人+墙外反射 mirror 应 N_r=1 到 decide（census 排 ghost 防虚增），得 PeopleCount=%d", dec.PeopleCount)
 	}
-	t.Logf("EG2 ✓ pillar C：census 排伪迹 ghost → decide.PeopleCount=%d", dec.PeopleCount)
+	t.Logf("EG2 ✓ pillar C：census 排墙外反射 ghost → decide.PeopleCount=%d", dec.PeopleCount)
 }
 
 // EG3（pillar D）：拍法 A 守门——N_r=2 + 一人 ≥55% 真摔 → 必报，C_FN 不参与（≥55% 证据自足）。
@@ -194,8 +197,8 @@ func TestEngineORAggregation(t *testing.T) {
 	t.Logf("EG5 ✓ OR 聚合：N_r=%d 一人摔 → 房间 fire=%v（报到房间）", dec.PeopleCount, fired)
 }
 
-// EG6（§61 消费门控）：孤轨曾触发 artifact（噪声超速 → PReal 被压低）但**无共存源** → engine 强制
-// pFallReal=1（永发）→ 真摔照报。证「噪声 XY 不得把孤身真人压成 ghost、漏真摔」（cd2b 回归的本质）。
+// EG6（§61 消费门控）：孤轨（无共存源）即便 XY 噪声跳变，engine 强制 pFallReal=1（永发）→ 真摔照报。
+// realness 重写后孤轨 Coexist=0 → PReal 恒 1（mEv=0，不再被压），§61 门控是叠加防线：证「噪声 XY 不得漏孤身真摔」。
 func TestEngineConsumptionGateLoneArtifactStillFires(t *testing.T) {
 	r, beds, cov := newRoom1Bed()
 	mk := func(now int64, reading belief.BedReading, x int, still float64) adapter.FrameInput {
@@ -207,7 +210,7 @@ func TestEngineConsumptionGateLoneArtifactStillFires(t *testing.T) {
 			Census: adapter.Census{AloneContinuousMin: 30},
 		}
 	}
-	// 阶段0：超速来回跳（150cm/s > SpeedCeil=100，<AssocCm=250 不churn）→ aScore 累积 → PReal 压到 ghost 档。
+	// 阶段0：XY 来回跳（<AssocCm=250 不churn）。realness 重写后孤轨 PReal 不再被压，门控仍须保证永发。
 	for step := 1; step <= 20; step++ {
 		x := 50
 		if step%2 == 0 {
@@ -229,7 +232,7 @@ func TestEngineConsumptionGateLoneArtifactStillFires(t *testing.T) {
 		}
 	}
 	if !fired {
-		t.Errorf("孤轨曾触发 artifact（PReal 低）但无共存源 → 消费门控 pFallReal=1 永发 → 应 fire（噪声不得漏孤身真摔）")
+		t.Errorf("孤轨无共存源 → 消费门控 pFallReal=1 永发 → 应 fire（噪声 XY 不得漏孤身真摔）")
 	}
-	t.Logf("EG6 ✓ 消费门控：孤轨 artifact 不压摔（无共存源→永发）fire=%v / N_r=%d（artifact 仍排人数）", fired, dec.PeopleCount)
+	t.Logf("EG6 ✓ 消费门控：孤轨无共存源→永发 fire=%v / N_r=%d", fired, dec.PeopleCount)
 }

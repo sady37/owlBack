@@ -92,7 +92,7 @@ type trackResult struct {
 
 // Tick 一帧推进。rhoXroom（neighbor，单房=0）。每条 track 各跑一份滤波，房间 OR 聚合真人 fall。
 func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
-	r.census.Update(fi.NowMs, fi.Tracks, fi.RadarPos, fi.Walls)
+	r.census.Update(fi.NowMs, fi.Tracks, fi.RadarPos, fi.Walls, fi.Entrances)
 	online := adapter.Online(fi)
 	nr := r.census.Nr()
 	rc := adapter.BuildRiskContext(fi, nr)
