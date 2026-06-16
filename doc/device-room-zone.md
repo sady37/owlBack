@@ -80,53 +80,58 @@
 
 ---
 
-## 9. realness 正确模型（出生地 + 三时标 + 单 tick 瞬态忽略）— 2026-06-16 架构师定，Xsensorv1 待重设计
+## 9. realness 完整模型（正向证据 / FN-safe）— 2026-06-16 架构师定，Xsensorv1 待重设计
 
-> d5f7/0616 排查发现 Xsensorv1 realness 用错模型（aScore 超速单调 + mScore mirror），把静卧真人 B 误判 ghost
-> （一次 42cm 体动 + 22ms 极小 dt 假超速 → aScore +3.63 → 永久 ghost）。架构师给出正确模型。
-> 应同步 DBN-Zone-Room §G。
+> d5f7/0616 排查发现 Xsensorv1 realness 用错模型（aScore 超速单 track + AND mirror），把静卧真人 B 误判 ghost
+> （一次 42cm 体动 + 22ms 极小 dt 假超速 → aScore +3.63 → 永久 ghost）。架构师定下完整模型。应同步 DBN-Zone-Room §G。
 
-### 9.1 三时标 + 谁做
-| 机制 | 时标 | 谁做 |
-|---|---|---|
-| metal 反射 filter（无 micro-moving） | 3~5 **秒** | **firmware 主动滤**（到 DBN 已无 metal，realness 不管）|
-| 墙外稳定 ghost（出生地判定；雷达自身过滤不掉） | 3~5 **分钟** | **realness 负向积分** |
-| 墙内 track（含墙外 30cm）持续活动 → real | >5min（5 或 8min）| **realness 正向积分** |
+### 9.0 总则：信息不完整 → 只能用正向证据 → 默认 real
+雷达信息天然不完整（截断重放无 enter 事件、enter 区画不准、盲区）。**很多时候只能用正向证据**（证明 real），
+**默认 real，只在正向证据指向 ghost 才判 ghost**。这是 FN-safe 的接受成本：宁可放过疑似 ghost，绝不压真人的摔。
 
-### 9.2 出生窗判定 = 唯一可靠期（primary，架构师 2026-06-16 拍）
-**ghost 判定是出生时的事，不是终生积分**。"ghost 只能出生时判断，过了这个时间就很难判断"。
-出生窗（首 3-5min）= realness 唯一可靠确定期：
-- **出生地几何 → ghost（墙外稳定积分）**：track 出生在墙外（radar→track 连线穿 wall、最近交点 ≥30cm =
-  反射）且**稳定持续**（3-5min 时标，非一次偶发跑墙外/非单 tick 跳变）→ ghost。出生地定；一形成雷达自身滤不掉。
-- **墙内活动 → real（正向积分）**：track 在墙内（含墙外 30cm 余量）**持续活动** >5min → 确认 real
-  （B 在床睡眠体动属持续活动 → real，不被误判 ghost）。
-- **窗一关即 latch**（§9.5），之后不再用位置重判。
+### 9.1 身份 + A/B 时序（全程 logic_ID，track==2 gate）
+- **身份用 logic_ID**（最小作功距离关联，[[track_identity_logicid_ghost_track2_scope]]）**不用 track_id**——
+  firmware track_id swap 会造**假出生**（真人被换号看着像凭空新生）；logic_ID 能关联到既有身份 = 延续 = real。
+- **A = 先到 logic_ID = real 锚（无条件）**：不要求 enter 区出生（enter 区常画不准，进门无 InRoom event 也正常），
+  截断重放首 track（cd2b 一开始就在床上、无 InRoom）照样 real。**B = 后到 logic_ID = ghost 候选**。
+- **ghost 仅 track==2**（1=永发，3+=不处理）。反射必成对（反射源是真人）→ 孤 track 永远 real（接受成本）。
 
-### 9.3 出生后判定 = 只剩同步移动（secondary，复杂、退路）
-**"过了出生地，就只能用轴对移、同步平移这种复杂方法看两个 track 是否同步移动"**：
-- 出生窗后位置判据失效 → ghost 的唯一残余信号 = **两 track 锁步运动**（轴对移 = 镜面反射 / 同步平移）=
-  mirror co-existence（`speedSync` ρ + `IsReflection`，仅 track==2）。
-- 这是**退路不是主力**：弱、复杂、只在 track==2 成对时有效。主判据永远是 §9.2 出生地。
+### 9.2 墙外 ghost = 易、绝对（即时几何，非积分）
+- track 超 **radar border** → firmware/radar **直接滤掉**，根本到不了我们。
+- 到得了的墙外（border 内、wall 外）→ `reflectsAcrossWall` 几何**绝对**判 ghost（连线穿 wall、最近交点 ≥30cm）。
+- **即时判定，无需积分**（我之前 §9 写的"墙外稳定 3-5min 负向积分"作废）。
 
-### 9.4 单 tick 瞬态忽略（关键，区别于 §9.2「稳定」）
-- 墙内 track 的**瞬间移动（jump/超速）= mirror 或帧间隔过近(小 dt)假超速造成，只在那一 tick 出现，
-  下一 tick 即回正常**。实证（0616 B）：5 个超速帧每个下帧位移即回 9-52cm；+72s 的 1916cm/s 实为
-  42cm 体动 / 22ms 小 dt 假超速。
-- **单 tick 瞬态绝不判 ghost**（ghost 须 §9.2 的「稳定」墙外，≥3-5min）。现 aScore 单调累积一次跳变即永久 ghost = 病根，违此。
+### 9.3 墙内 ghost = 正向证据级联（难；按序 D → sync → 5min）
+墙内镜像可能落屋里（几何抓不到），按**证据级联**，任一级判定即止：
+1. **出生地距入口距离 D**：评分 **D/120**。**D<120cm（近门）→ real**（正向：从门进来的）。enter 区不准不要紧，
+   用**距离软评分**不用硬门；老人走得慢、出生检测就在门边 D 小，120 足够罩住慢速真人入场。
+2. **D≥120（远离门、可疑）→ A/B 镜像同步移动**（轴对移/平移）：**出生后 3-5 秒**内即可判，**同步 → ghost**。
+   健康人走得快首检在屋里漏过第 1 级，但他在**活动**（不与人同步）→ 此级判非 ghost，误判风险小。
+3. **仍不定 → 5min 后仍活动 → 认 real**（正向积分兜底）。
+
+### 9.4 单 tick 瞬态忽略
+- 墙内 track 的**瞬间移动（jump/超速）= mirror 或帧间隔过近(小 dt)假超速造成，只在那一 tick 出现，下一 tick 即回正常**。
+  实证（0616 B）：5 个超速帧每个下帧位移即回 9-52cm；+72s 的 1916cm/s 实为 42cm 体动 / 22ms 小 dt 假超速。
+- **单 tick 瞬态绝不判 ghost**（同步移动须**稳定持续**才算，不是一帧）。
 
 ### 9.5 latch 铁律（cd2b 病的反面）
-- 出生窗内确认 **real → 永久锁 real，绝不回判 ghost**（已确认真人摔倒静止/消失 = 仍 real，blind 续存照报）。
-  现 `movedFromBirth` 闩是此意，保留。
-- 出生窗内确认 **ghost → 锁 ghost**。窗关后位置不再翻判（只有 §9.3 同步移动能新标 mirror 关系）。
+- 确认 **real → 永久锁 real，绝不回判 ghost**（已确认真人摔倒静止/消失 = 仍 real，blind 续存照报）。现 `movedFromBirth` 闩保留。
+- 确认 **ghost → 锁 ghost**。
 
-### 9.6 Xsensorv1 现状 gap + code mapping（待重设计）
-- **已对的两机制（保留）**：`reflectsAcrossWall`（census.go:205，出生地几何）+ `speedSync`/`CoexistRho`
-  （census.go:188，同步移动）—— 正是 §9.2/§9.3 的主/次判据。
-- **病根（删）**：`aScore += ArtifactQuantum` 超速单调（realness.go:56）—— 既非出生地、也非同步移动，
-  一次正常体动 + 小 dt 假超速即永久 ghost。**删 aScore 整条**。
-- **gap1**：`reflLocked` settle 窗 = `ReflSettleMs=3000`（3 **秒** = firmware 时标），须对齐 §9.2 的
-  **3-5min 稳定 ghost 时标**（出生窗内稳定墙外积分，非 3s 速锁）。
-- **gap2**：出生地几何（`IsReflection`）现**仅 track==2 才喂** realness（census.go:103-106）→ 孤身墙外 ghost
-  （无共动伴）漏判。须放开成**出生窗主判据**（孤 track 出生墙外稳定 → ghost），不依赖 co-existence。
-  FN-safe 由 ReflSepCm=30 + 连线穿墙几何守（真人墙内/层 drift ≤30cm 天然 false）。
-- 我之前的 aScore 超速诊断 + EMA 衰减是**错方向**（EMA 只给单调累积加衰减，没换成出生地+同步移动模型）。
+### 9.6 aScore 超速单 track = 病根，整条删
+现 `aScore += ArtifactQuantum`（realness.go:56）：每 track 每帧 `speed=位移/dt`，超 `SpeedCeilCm=100` 的部分
+×0.002 单调累进，`PReal=exp(-(mScore+aScore))`。**单 track 即判 ghost**。删它**三重正当**：
+1. **单 track 判 ghost = 违 track==2 铁律**（§9.1）。
+2. **单调不退** = 一次 dt 噪声（22ms 帧太近 → 42cm 体动算成 1916cm/s）永久污染 → 真人 B 被永久 ghost。
+3. 它想抓的 **firmware 换号已由 logic_ID 接管**：真换号瞬移 >`AssocCm=250cm` 自动成新 logic_ID（新生非超速），
+   <250cm 吸收为延续。aScore 抓的全是 dt 噪声假阳 → 删了零损失。
+- 我之前的 aScore 诊断 + EMA 衰减是**错方向**（EMA 只给单调累积加衰减，没换成出生地+同步移动模型）。
+
+### 9.7 code mapping（重设计）
+| 现状 | 改 |
+|---|---|
+| `aScore += ArtifactQuantum` 超速（realness.go:56） | **整条删** |
+| `reflectsAcrossWall`（census.go:205） | **保留**作 §9.2 墙外绝对路径 |
+| `CoexistRho>0 && IsReflection` AND（realness.go:53） | 改 §9.3 级联：**D/120 主 → sync(3-5s) → 5min-active** |
+| census 无 birth→entrance 距离 | **新增** D（需把 enter 区 polygon 喂进 census）|
+| `ReflSettleMs=3000`(3s) | sync 窗 3-5s（≈对），新增 **5min-active → real** latch |
