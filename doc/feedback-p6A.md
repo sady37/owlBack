@@ -496,3 +496,50 @@ d5f7-0524 揭示：z 分布 92.7% 贴地（z=0=真摔），但**久坐 z~40 同�
 1. **lZ=8** 是 form-anchor（须 ≳ dwellHi(3)/dwellLo(0.5) 抵消久坐 dwell），精标见 feedback-p6C。
 2. **cell-learning 线**（C 提的"双线"另一条：cell 用 z 学习 sit/toilet 区）**后置**——本次只接 emission 线（直接 FP 修复），cell 线慢学习/二级增强后做。
 3. 端到端：d5f7（z=0 真摔）仍 fire（z-band 对 z=0 中性）；FP 抑制对正常久坐(z~40) 起作用，手头无正常久坐 case，**emission 单元即验收**。
+
+---
+
+## 2026-06-16 — A: realness 重写为 2 态转移矩阵(零 gate) + 验证哲学转向真 case 解剖
+
+### 1. realness 重写（device-room-zone.md §9 落地，commit `98ff1de`）
+
+**背景**：旧 realness = aScore 超速单调 + AND mirror，把静卧真人 B 误判 ghost（一次 42cm 体动 + 22ms 极小 dt
+假超速 → aScore +3.63 → 永久 ghost）。架构师给完整模型，并**两次拦截抢跑**：①「又用 gate」（我初版状态机
+`rsProvisional/rsReal/rsGhost`+硬阈 = gate-list 老路）→ 改纯转移矩阵；②「先讨论别动手」逐步对齐判据。
+
+**模型**（2 态前向滤波 `S^r∈{Real,Mirror}`，逐帧两态跳变过程）：
+- 起 `[Real=1,Mirror=0]`；`mEv` 开 R→M 闸 / `rEv` 开 M→R 闸（率→概率 `1-e^{-rate·dt}`）。
+- **latch = mEv=0 时 R→M=0 → Real 吸收恒 1.0**（孤轨/无 mirror 证据/真人摔静止消失 → 永不离 Real；cd2b 真人摔
+  静止不当 ghost = 矩阵结构涌现，非 if）。
+- **track==2 = mEv ∝ Coexist**（孤轨 Coexist=0 → mEv=0 → 永 Real；同 dbn_cutover「孤立 ρ=0→P(Ghost)=0」结构涌现，非 `len==2` 硬 gate）。
+- 墙外 = `WallMargin` 几何自判别；同步 ρ 双 track 对称 → 只归**后到者 LaterBorn** 破对称（先到=real 锚，
+  enter 区不可靠故不用 InRoom）；近门 = 出生地距门 D 软斜坡（D/120）= rEv real 率。
+- 单 tick 瞬态由率 ×dt 积分自然忽略。
+- 删 aScore 超速病根（三重正当：单 track 判 ghost 违 track==2 / dt 噪声永久污染 / firmware 换号已由
+  track_manager logicID 接管）+ `PArtifact/PGhost/PRoomHasReal` 死码。
+- **输出 PReal=bR 连续后验** → FE track confidence ×100（<30 隐 /20-79 半透 /≥80 全显），**不出二元 ghost/real 判定**。
+- 身份订正（关键）：**logicID 的家在 track_manager**（`makeLogicID`+`nearestAliveTrack`，已处理 firmware
+  track_id 跳变/分裂/重用），census 只**消费**身份做 realness/N_r，不另立。
+
+### 2. cd2b "0.5203→0.1999" 查清 = 旁路 harness 假象，非 realness（无回归）
+
+realness 对 cd2b **实测零影响**（pFallReal/PReal 全程 1.0，maxPresentCount=1）。值漂移是**预存**（去掉全部本轮
+改动、HEAD 仍 0.1999）。根因 = 已删的 belief-only replay harness **绕过 track_manager**，把 **track_id=88
+no-target 心跳帧**（62 帧、pose=null、全零定位）当 (0,0) 真 track 喂 census → 跳 >AssocCm 拆第二 logicID →
+belief 分裂稀释。真路径（`tools/replay`→Redis→`cmd/xsensor`→track_manager）本就丢 88 心跳（`noTargetSinceMs`），
+**真 Xsensor 跑 cd2b 无此问题**。88 不是垃圾——是 no-people 信号，DBN 据此（无 pending silent/moving lost 时）清 logicID。
+
+### 3. 验证哲学转向（架构师拍铁律，commit `ce0b8cf`）
+
+**禁止 unit test / 替身 harness**——用**真实 case 解剖真生产系统本身**（"NASA 地面放 100% 真航天飞机排障"）。
+简化 rig 绕真路径、引入假象（如上 track_id=88 心跳）。
+- 已删 `internal/roomengine/replay/` + `cmd/replay-d5f7/` + **全部 `*_test.go`**（含前述 emission_test.go 等）。
+- **Xsensor 内不放 replay 代码**（replay=外部 `tools/replay` 发 test:* Redis；`cmd/xsensor` 只消费 + 配置知 speed）。
+- 验证 = 跑真 `cmd/xsensor` on `tools/replay` 重放真 case，看 `xsensor_xray` 全景日志逐 tick 切片。
+
+### 待 C 知会/复审
+1. **realness 权重** = form-anchor 留 oracle（`rcWWall/rcWSync/rcWDoor`、`rcDoorScaleCm=120` 老人室内慢、
+   `rcRealBase=0.02`）。跳变率稳态使「近门+强同步」ambiguous 态 PReal≈0.59（>0.5 判 real，FE 半透显示）——
+   **接受这种 ambiguous 连续表达，还是要 door 更强主导（近门→mEv 直接压制）？**
+2. **前几份 p6A/p6C 引用的 `*_test.go` 验收已随铁律删除**——z/ObsZBand、belief 各柱今后走真 case（重放看 xray），非单元。
+3. 下一步真 case 验证序列：cd2b（单轨 PReal 恒 1、接触轴 fire）/ 0616 跨房（hand-off + B 不误判 ghost）/ 新导 2 个 fall case。
