@@ -127,16 +127,14 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		}
 
 		var logPsi, logPhi belief.JointVector
+		// pFallReal 恒 1.0：realness **绝不否决 fall**（FN-safe 铁律 [[realness_axis_redefined_real_vs_mirror]]「fall 不压」）。
+		//   有 ghost(≥2 track)时是镜像二义：ghost fall 可能就是真人摔的镜像（真人摔→反射也摔）→ 要否决一个 fall 得有
+		//   ~95% 把握「这绝不是真摔」，二义下永远凑不齐；且漏报(人躺地没人救)≫误报(白跑一趟)。realness 只喂 N_r（排
+		//   ghost 防 1 真人+1 影子当 2 人误折扣 C_FN）——只帮 fire 从不压 fall。原 §61 present≥2→pFallReal=PR 是错方向。
 		pFallReal := 1.0
 		if ts.Present {
 			logPsi = r.cp.LogPsi(r.js, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p))
 			logPhi = r.em.LogPhi(r.js, adapter.BuildObservation(ts.Obs.RadarTrack, fi.Sleepads, fi.Beds, r.p))
-			// §61 消费门控：仅当**有共存源**（房内≥2 在场 track，可能互为镜像/phantom）时，ghost 才压本轨的摔；
-			//   无共存源 = 孤轨 = 不可能是镜像 → pFallReal=1 永发（噪声 XY 把孤身真人压成 ghost=漏真摔，risk-law
-			//   "独处=最高风险=永发"）。artifact 仍在 census 算、仍喂 N_r 排假人头——只是不在此压孤轨的摔。
-			if presentCount >= 2 {
-				pFallReal = ts.PReal
-			}
 		}
 		// 消失态：logPsi/logPhi=nil → Correct 中性，仅 Predict 自持（blind 续存告警连续，无 TTL）。
 		f.Step(fi.NowMs, online, logPsi, logPhi, rhoXroom, pFallReal)
@@ -144,9 +142,9 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		pF := f.Space().PFallen(f.Alpha())
 		lam := belief.ComputeLambda(f.Space(), neutralIfNil(logPsi, r.js), neutralIfNil(logPhi, r.js))
 		d := dec.Step(fi.NowMs, pF, lam, rc)
-		// 资格 = 消费门控同条件：有共存源(≥2 在场)→须真人(排 ghost 的摔)；无共存源→孤轨永发(§61，
-		//   与 pFallReal=1 一致——否则噪声压低 PReal 又在聚合层把孤轨真摔筛掉，门控白做)。
-		eligible := presentCount < 2 || ts.PReal >= 0.5
+		// 资格恒真：realness 绝不按 PR 把 fall 排出 room OR（同 pFallReal=1，fall 不压）。任一 track（含 blind 续存）
+		//   的摔都进房间 OR——ghost fall 可能是真人摔的镜像，宁报不漏。realness 的影响只在 N_r（→ C_FN 折扣，帮 fire）。
+		eligible := true
 		results = append(results, trackResult{d: d, pF: pF, lam: lam, eligible: eligible, f: f})
 		forensic = append(forensic, TrackForensic{LogicID: ts.LogicID, Present: ts.Present, PReal: ts.PReal,
 			PMirror: ts.PMirror, IsReflection: ts.IsReflection, PFallReal: pFallReal, PFallen: pF, Fire: d.Fire, Band: d.Band,
