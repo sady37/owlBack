@@ -55,10 +55,12 @@ func main() {
 	}
 
 	router := &dbnRouter{
-		geom:    map[string]*roomGeom{},
-		rooms:   map[string]*engine.Room{},
-		firstMs: map[string]int64{},
-		logger:  logger,
+		geom:     map[string]*roomGeom{},
+		rooms:    map[string]*engine.Room{},
+		units:    map[string]*engine.Unit{},
+		roomUnit: map[string]string{},
+		firstMs:  map[string]int64{},
+		logger:   logger,
 	}
 
 	eng, err := startRoomEngine(ctx, cfg, db, rdb, router, logger)
@@ -111,11 +113,13 @@ type roomGeom struct {
 // dbnRouter 把 Engine.OnRoomFrame 的 per-room bases 构造成 adapter.FrameInput → engine.Room.Tick（DBN 顶层）。
 // 每房一份 engine.Room（懒建）；单房 rhoXroom=0（Stage A，多房 neighbor 走 engine.Unit 留 Stage B）。
 type dbnRouter struct {
-	mu      sync.Mutex
-	geom    map[string]*roomGeom
-	rooms   map[string]*engine.Room
-	firstMs map[string]int64
-	logger  *zap.Logger
+	mu       sync.Mutex
+	geom     map[string]*roomGeom
+	rooms    map[string]*engine.Room // roomID → Room（bootstrap 建，供 NewUnit 分组）
+	units    map[string]*engine.Unit // unitKey(suiteID) → 多房编排器（跨房 hand-off）
+	roomUnit map[string]string       // roomID → unitKey
+	firstMs  map[string]int64
+	logger   *zap.Logger
 }
 
 func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, nowMs int64) {
@@ -174,12 +178,12 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		Census:   adapter.Census{AloneContinuousMin: aloneMin},
 	}
 
-	room := d.rooms[roomID]
-	if room == nil {
-		room = engine.NewRoom(adapter.BedGeoms(fi), g.nb)
-		d.rooms[roomID] = room
+	u := d.units[d.roomUnit[roomID]]
+	if u == nil {
+		return // room 不属任何 unit（无 layout placeholder）
 	}
-	fr := room.Tick(fi, 0)
+	fr := u.Tick(roomID, fi) // 多房编排：算 ρ_xroom（兄弟房守恒+时间窗）→ Room.Tick（单房无兄弟 ρ=0）
+	rho := u.LastRho(roomID)
 
 	top, tp := fr.Probe.MarginalS.Max()
 
@@ -210,6 +214,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Float64("p_fallen", fr.Probe.PFallen), zap.String("band", fr.Decision.Band),
 		zap.Bool("fire", fr.Decision.Fire), zap.Float64("lambda", fr.Probe.Lambda),
 		zap.String("top_s", sName(int(top))), zap.Float64("top_p", tp),
+		zap.Float64("rho_xroom", rho),
 		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("bed_present", g.sleepadPresent),
 		zap.Float64s("covers", covers), zap.Float64s("onbed", onbed),
 		zap.Any("s_dist", sDist), zap.Any("target", raw), zap.Any("dbn", dbn))
@@ -249,6 +254,15 @@ func wallsFromPolygon(poly []radarutils.Point) []adapter.Rect {
 		out = append(out, adapter.Rect{X1: last.X, Y1: last.Y, X2: poly[0].X, Y2: poly[0].Y})
 	}
 	return out
+}
+
+// ones 长度 n 的全 1 切片（NewRoom 种子 BedGeom 的 Covers/Onbed/Overlap；真 covers 走 RadarBedReachCount 后续）。
+func ones(n int) []float64 {
+	s := make([]float64, n)
+	for i := range s {
+		s[i] = 1
+	}
+	return s
 }
 
 func rectsFrom(rs []radarutils.Rect) []adapter.Rect {

@@ -8,6 +8,7 @@ import (
 	"owlBack/tools/Xsensorv1/internal/config"
 	"owlBack/tools/Xsensorv1/internal/roomengine"
 	"owlBack/tools/Xsensorv1/internal/roomengine/adapter"
+	"owlBack/tools/Xsensorv1/internal/roomengine/engine"
 
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -36,6 +37,20 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB, rdb *r
 		return nil, fmt.Errorf("map devices: %w", err)
 	}
 	logger.Info("xsensor: devices mapped", zap.Int("count", mapped))
+
+	// 按 unitKey(suiteID) 分组 rooms → 建 engine.Unit（跨房 hand-off neighbor 轴）。
+	// 单房 unit 无兄弟 → ρ_xroom≡0 → 与单房 Room 逐帧等价（cd2b 零回归保持）。
+	unitRooms := map[string]map[string]*engine.Room{}
+	for roomID, unitKey := range router.roomUnit {
+		if unitRooms[unitKey] == nil {
+			unitRooms[unitKey] = map[string]*engine.Room{}
+		}
+		unitRooms[unitKey][roomID] = router.rooms[roomID]
+	}
+	for unitKey, rooms := range unitRooms {
+		router.units[unitKey] = engine.NewUnit(rooms, 1) // residentCount=1（单住户测试；多住户后续）
+	}
+	logger.Info("xsensor: units built", zap.Int("units", len(router.units)), zap.Int("rooms", len(router.rooms)))
 
 	eng.OnRoomFrame = router.onRoomFrame
 
@@ -165,13 +180,21 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 		eng.RegisterRoom(cfg)
 		eng.SetRoomTenant(roomID, tenantID)
 		if hasLayout {
+			nb := len(cfg.Beds)
 			router.geom[roomID] = &roomGeom{
 				beds:           rectsFrom(cfg.Beds),
 				walls:          wallsFromPolygon(cfg.WallPolygon),
 				radarPos:       adapter.Point{X: cfg.Radar.Center.X, Y: cfg.Radar.Center.Y},
 				sleepadPresent: len(cfg.Sleepads) > 0,
-				nb:             len(cfg.Beds),
+				nb:             nb,
 			}
+			seed := adapter.FrameInput{Beds: rectsFrom(cfg.Beds), Covers: ones(nb), Onbed: ones(nb), Overlap: ones(nb)}
+			router.rooms[roomID] = engine.NewRoom(adapter.BedGeoms(seed), nb)
+			unitKey := cfg.SuiteID // 同 unit(/80) 的房互为兄弟（跨房 hand-off）；public bathroom suiteID=自身/128 独立
+			if unitKey == "" {
+				unitKey = roomID
+			}
+			router.roomUnit[roomID] = unitKey
 		}
 		count++
 	}
