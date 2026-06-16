@@ -194,7 +194,7 @@ type Engine struct {
 
 	// OnRoomFrame seam：每帧 ProcessFrame + SnapshotTrackStatuses 之后触发，交上层 DBN（engine.Room）裁决。
 	// nil = 不裁决（纯馈送，无下游）。Engine 不 import belief/adapter/engine 包，靠回调解耦。
-	OnRoomFrame func(roomID string, bases []TrackStatusBase, nowMs int64)
+	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64)
 }
 
 // RuntimeConfig 与 owlBack/tools/Xsensorv1/internal/config::RoomEngineConfig 一一对应；
@@ -674,7 +674,11 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 	}
 
 	if e.OnRoomFrame != nil {
-		e.OnRoomFrame(roomID, bases, nowMs)
+		var bed card.BedState
+		if tm := e.rooms[roomID]; tm != nil {
+			bed = tm.BedOccupancyState(nowMs) // room 级权威 bed 读数（sleepad+radar 床事件融合）→ B 轴
+		}
+		e.OnRoomFrame(roomID, bases, bed, nowMs)
 	}
 }
 
@@ -983,6 +987,8 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 		for _, evt := range ParseSleepadBedEvents(m.DataValue, addrStr, m.Category, ts) {
 			tm.ProcessSleepadBedEvent(evt)
 		}
+		// sleepad 事件驱动 DBN tick：sleepad-only 房无 radar 帧、这是唯一驱动；radar 房也吃 bed 翻转更新。
+		e.routeRoomFrame(roomID, tm.SnapshotTrackStatuses(ts), ts)
 	case "radar":
 		// 2026-05-15 起 radar firmware Fall/SittingOnGround 也走 event stream（gateway 分流）。
 		// 见 doc/cardagg_sensor_split.md：cardagg 不再处理 radar producer Fall；sensor 接管 verifier。

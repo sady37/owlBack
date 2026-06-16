@@ -20,6 +20,7 @@ import (
 	"owlBack/tools/Xsensorv1/internal/roomengine/belief"
 	"owlBack/tools/Xsensorv1/internal/roomengine/engine"
 
+	"owl-common/card"
 	"owl-common/radarutils"
 
 	"github.com/go-redis/redis/v8"
@@ -101,12 +102,16 @@ func openDeps(cfg *config.Config) (*sql.DB, *redis.Client, error) {
 	return db, rdb, nil
 }
 
+// poseLying observation.PoseLying = 6（sleepad-only 房合成 bed-track 的姿态）。
+const poseLying = 6
+
 // roomGeom 一房的 config-static 几何（RegisterRoom 时从 RoomConfig 派生，OnRoomFrame 构造 FrameInput 用）。
 type roomGeom struct {
 	beds           []adapter.Rect
 	walls          []adapter.Rect
 	radarPos       adapter.Point
 	sleepadPresent bool
+	radarLess      bool // 无雷达 layout（sleepad-only 房）→ 无 S 轴，B 轴靠合成 bed-track
 	nb             int
 }
 
@@ -122,35 +127,45 @@ type dbnRouter struct {
 	logger   *zap.Logger
 }
 
-func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, nowMs int64) {
+func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, bed card.BedState, nowMs int64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	g := d.geom[roomID]
 	if g == nil {
-		return // 无 layout placeholder 房：无几何不进 DBN
+		return // 无信号源(无 layout 无 sleepad)→ 不进 DBN
 	}
 
-	tracks := make([]adapter.TrackObs, 0, len(bases))
-	sleepadInBed := false
+	// B 轴读数 = room 级权威 bed 状态(sleepad+radar 床事件融合，带时戳)。治本 bed-reading：
+	//   BedConfidence=0 无数据=NoReport（区别于 LeftBed）/ BedStatus=1=LeftBed / 否则=InBed。
+	reading := belief.BedNoReport
+	if g.sleepadPresent {
+		switch {
+		case bed.BedConfidence == 0:
+			reading = belief.BedNoReport
+		case bed.BedStatus == 1:
+			reading = belief.BedLeftBed
+		default:
+			reading = belief.BedInBed
+		}
+	}
+
+	tracks := make([]adapter.TrackObs, 0, len(bases)+1)
 	for _, b := range bases {
 		tracks = append(tracks, adapter.TrackObs{RadarTrack: adapter.RadarTrack{
 			Online: b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
 			StillSec: float64(b.StillBoxSec),
 		}})
-		if b.SleepadInBed {
-			sleepadInBed = true
-		}
+	}
+	// sleepad-only 房(无雷达 track)：InBed 合成一条 bed-track 作 B 轴载体(engine.Room track-centric，
+	//   无 track 无载体)。pose=Lying + 床占用 → S=Bed（无摔判定，sleepad 看不到姿态）；
+	//   LeftBed → 不合成 → 上一帧 bed-track 缺席 → blind→S→Left → LostReal hand-off 源（人离本房床去隔壁）。
+	if g.radarLess && reading == belief.BedInBed {
+		tracks = append(tracks, adapter.TrackObs{RadarTrack: adapter.RadarTrack{
+			Online: true, Pose: poseLying, X: 0, Y: 0, Z: 0,
+		}})
 	}
 
-	reading := belief.BedNoReport
-	if g.sleepadPresent {
-		if sleepadInBed {
-			reading = belief.BedInBed
-		} else {
-			reading = belief.BedLeftBed
-		}
-	}
 	sleepads := make([]adapter.SleepadFrame, g.nb)
 	covers := make([]float64, g.nb)
 	onbed := make([]float64, g.nb)

@@ -147,6 +147,26 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 		return 0, err
 	}
 
+	// 有 sleepad 设备的房（bed_state 不依赖 layout；sleepad-only 房=有sleepad无雷达layout 也要进 DBN）。
+	sleepadRooms := map[string]bool{}
+	srows, err := db.QueryContext(ctx, `
+		SELECT r.room_id::text
+		FROM rooms r
+		JOIN devices d ON r.room_id >>= d.device_addr
+		JOIN device_factory_meta dfm ON dfm.device_uid = d.device_uid
+		WHERE dfm.device_type::text = 'Sleepad'
+		GROUP BY r.room_id`)
+	if err != nil {
+		return 0, err
+	}
+	for srows.Next() {
+		var rid string
+		if srows.Scan(&rid) == nil {
+			sleepadRooms[rid] = true
+		}
+	}
+	srows.Close()
+
 	count := 0
 	for rows.Next() {
 		var roomID, roomName, suiteID, tenantID string
@@ -179,19 +199,29 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 
 		eng.RegisterRoom(cfg)
 		eng.SetRoomTenant(roomID, tenantID)
-		if hasLayout {
+		// 进 DBN 判据 = 有任一信号源(雷达 layout OR sleepad)。bed_state 不依赖 layout：
+		//   sleepad-only 房(GuestRoom 等)无雷达几何但有 B 轴，照样进 DBN(radarLess)。
+		hasSleepad := sleepadRooms[roomID]
+		if hasLayout || hasSleepad {
 			nb := len(cfg.Beds)
+			if nb == 0 && hasSleepad {
+				nb = 1 // sleepad-only 房：一张床(sleepad 对应)；几何无关(无雷达 covers)
+			}
+			beds := rectsFrom(cfg.Beds)
+			for len(beds) < nb {
+				beds = append(beds, adapter.Rect{}) // 补 nominal 床(radar-less 无几何意义)
+			}
 			router.geom[roomID] = &roomGeom{
-				beds:           rectsFrom(cfg.Beds),
+				beds:           beds,
 				walls:          wallsFromPolygon(cfg.WallPolygon),
 				radarPos:       adapter.Point{X: cfg.Radar.Center.X, Y: cfg.Radar.Center.Y},
-				sleepadPresent: len(cfg.Sleepads) > 0,
+				sleepadPresent: hasSleepad, // 用 DB 设备(非 cfg.Sleepads 画layout)→ 修 radar 房 sleepad 漏判
+				radarLess:      !hasLayout,
 				nb:             nb,
 			}
-			seed := adapter.FrameInput{Beds: rectsFrom(cfg.Beds), Covers: ones(nb), Onbed: ones(nb), Overlap: ones(nb)}
+			seed := adapter.FrameInput{Beds: beds, Covers: ones(nb), Onbed: ones(nb), Overlap: ones(nb)}
 			router.rooms[roomID] = engine.NewRoom(adapter.BedGeoms(seed), nb)
 			// unitKey = suiteID（SQL 已 network() zero 主机位 → 同 /80 房共享；public bathroom=自身/128 独立）。
-			// 仅 hasLayout 房进 roomUnit/units；GuestRoom 等无 layout placeholder 不进（无 engine.Room 不影响 hand-off）。
 			router.roomUnit[roomID] = cfg.SuiteID
 		}
 		count++
