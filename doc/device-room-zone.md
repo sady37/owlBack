@@ -93,19 +93,40 @@
 | 墙外稳定 ghost（出生地判定；雷达自身过滤不掉） | 3~5 **分钟** | **realness 负向积分** |
 | 墙内 track（含墙外 30cm）持续活动 → real | >5min（5 或 8min）| **realness 正向积分** |
 
-### 9.2 两个积分（realness 重设计核心）
-- **墙外稳定 → ghost（负向积分）**：track 位置**稳定**在墙外（>30cm 余量外）按时间累积 → 判 ghost。
-  出生地定；一形成雷达自身过滤不掉。**不是一次偶发跑墙外**，是稳定持续（3-5min 时标）。
-- **墙内活动 → real（正向积分）**：track 在墙内（含墙外 30cm）**持续活动**累积 >5min → 确认 real。
-  （B 在床睡眠体动属持续活动 → 5min 后 real，不被误判 ghost。）
+### 9.2 出生窗判定 = 唯一可靠期（primary，架构师 2026-06-16 拍）
+**ghost 判定是出生时的事，不是终生积分**。"ghost 只能出生时判断，过了这个时间就很难判断"。
+出生窗（首 3-5min）= realness 唯一可靠确定期：
+- **出生地几何 → ghost（墙外稳定积分）**：track 出生在墙外（radar→track 连线穿 wall、最近交点 ≥30cm =
+  反射）且**稳定持续**（3-5min 时标，非一次偶发跑墙外/非单 tick 跳变）→ ghost。出生地定；一形成雷达自身滤不掉。
+- **墙内活动 → real（正向积分）**：track 在墙内（含墙外 30cm 余量）**持续活动** >5min → 确认 real
+  （B 在床睡眠体动属持续活动 → real，不被误判 ghost）。
+- **窗一关即 latch**（§9.5），之后不再用位置重判。
 
-### 9.3 单 tick 瞬态忽略（关键，区别于"稳定"）
+### 9.3 出生后判定 = 只剩同步移动（secondary，复杂、退路）
+**"过了出生地，就只能用轴对移、同步平移这种复杂方法看两个 track 是否同步移动"**：
+- 出生窗后位置判据失效 → ghost 的唯一残余信号 = **两 track 锁步运动**（轴对移 = 镜面反射 / 同步平移）=
+  mirror co-existence（`speedSync` ρ + `IsReflection`，仅 track==2）。
+- 这是**退路不是主力**：弱、复杂、只在 track==2 成对时有效。主判据永远是 §9.2 出生地。
+
+### 9.4 单 tick 瞬态忽略（关键，区别于 §9.2「稳定」）
 - 墙内 track 的**瞬间移动（jump/超速）= mirror 或帧间隔过近(小 dt)假超速造成，只在那一 tick 出现，
   下一 tick 即回正常**。实证（0616 B）：5 个超速帧每个下帧位移即回 9-52cm；+72s 的 1916cm/s 实为
   42cm 体动 / 22ms 小 dt 假超速。
-- **单 tick 瞬态绝不判 ghost**（ghost 须 §9.2 的「稳定」墙外）。现 aScore 单调累积一次跳变即永久 ghost = 病根，违此。
+- **单 tick 瞬态绝不判 ghost**（ghost 须 §9.2 的「稳定」墙外，≥3-5min）。现 aScore 单调累积一次跳变即永久 ghost = 病根，违此。
 
-### 9.4 Xsensorv1 现状 gap（待重设计）
-- 现 realness：`mScore`（mirror reflectsAcrossWall）+ `aScore`（超速单调累积）—— **都不是 §9.1-9.3 模型**。
-- 重设计：**删 aScore 超速单调**；实现 ① 墙外位置**负向积分**（稳定墙外→ghost）② 墙内活动**正向积分**（含 30cm 余量，>5min→real）③ 单 tick 瞬态忽略。metal 不做（firmware）。
-- 我之前的 aScore 超速诊断 + EMA 衰减是**错方向**（EMA 只是给单调累积加衰减，没换成正确的墙位置+活动模型）。
+### 9.5 latch 铁律（cd2b 病的反面）
+- 出生窗内确认 **real → 永久锁 real，绝不回判 ghost**（已确认真人摔倒静止/消失 = 仍 real，blind 续存照报）。
+  现 `movedFromBirth` 闩是此意，保留。
+- 出生窗内确认 **ghost → 锁 ghost**。窗关后位置不再翻判（只有 §9.3 同步移动能新标 mirror 关系）。
+
+### 9.6 Xsensorv1 现状 gap + code mapping（待重设计）
+- **已对的两机制（保留）**：`reflectsAcrossWall`（census.go:205，出生地几何）+ `speedSync`/`CoexistRho`
+  （census.go:188，同步移动）—— 正是 §9.2/§9.3 的主/次判据。
+- **病根（删）**：`aScore += ArtifactQuantum` 超速单调（realness.go:56）—— 既非出生地、也非同步移动，
+  一次正常体动 + 小 dt 假超速即永久 ghost。**删 aScore 整条**。
+- **gap1**：`reflLocked` settle 窗 = `ReflSettleMs=3000`（3 **秒** = firmware 时标），须对齐 §9.2 的
+  **3-5min 稳定 ghost 时标**（出生窗内稳定墙外积分，非 3s 速锁）。
+- **gap2**：出生地几何（`IsReflection`）现**仅 track==2 才喂** realness（census.go:103-106）→ 孤身墙外 ghost
+  （无共动伴）漏判。须放开成**出生窗主判据**（孤 track 出生墙外稳定 → ghost），不依赖 co-existence。
+  FN-safe 由 ReflSepCm=30 + 连线穿墙几何守（真人墙内/层 drift ≤30cm 天然 false）。
+- 我之前的 aScore 超速诊断 + EMA 衰减是**错方向**（EMA 只给单调累积加衰减，没换成出生地+同步移动模型）。
