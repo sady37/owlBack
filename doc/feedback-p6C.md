@@ -2760,3 +2760,65 @@ C 不靠 A 的 BK 测，自造真人/ghost case 验 `reflectsAcrossWall`（房�
 
 架构师指「据 Xsensorv1 改 wisefido-sensor 生产，尽快结束」。Xsensorv1 框架验证已闭环——**下一步进生产集成（Xsensorv1 验证的 DBN 四轴 + ghost 三分 + neighbor 移植/参考改 wisefido-sensor）**。C 复审重点预告（生产移植）：① Xsensorv1 已验机制单源移植（非 copy-paste-modify，§44/§52 lean-extract 教训）② 生产侧真实几何/参数接入（MM 真值、oracle 标定）不破已验框架 ③ cd2b 等真 fixture 在生产侧仍零回归。**C 待架构师定生产移植切法。**
 
+
+---
+
+# §74 增补（C 深查 Stage A 两重点：DBN 层级 + gate-list 残余）— DBN 顶层唯一裁决✅；gate-list 发射删净但**参数骸骨残留**，标 bathroom 归属待裁
+
+> 架构师令重点查 ① DBN 层级 ② roomengine/zoneengine 去 gate-list。C 深 grep 全仓 fall/fire 出口 + gate-list 各形态残余。（§72/§73 sync 丢失，本节自包含，结论独立可读。）
+
+## 一、★ 重点1：DBN 层级 — 顶层唯一裁决，通过
+
+C 全仓 grep 所有产 fall/fire 结论处：
+- **唯一系统 fall 裁决 = `Decision.Fire`（cmd/xsensor/main.go:185，DBN engine.Room.Tick 出口）**。
+- **`radar_fall_received`（engine.go:1000/1097）= 雷达 firmware fall 报警（输入观测）**，代码仅 `RecordRadarAlarm + logger.Info` 记录，**不发系统 fall 结论**。注释明写「engine 当前不验证（段7待做）；未来 verifier 分流 fake/real/lost_fall」。**雷达 firmware fall 仅作观测、不旁路 DBN 裁决。**
+- cell.go:66 PoseFallen = pose 枚举（输入侧）。
+- **Engine 不 import belief（grep=0）**，seam=OnRoomFrame→adapter.FrameInput→room.Tick（DBN 顶层）。
+**净判：DBN engine.Room 唯一裁决点，无旁路 fall 发射。重点1 通过。** ✅
+
+## 二、★ 重点2：gate-list — 发射删净，但参数骸骨残留（该删 vs 留对须分清）
+
+**发射删净（重点1 已证）**：engine_z_drop/silent_leftbed/lost_fall 发射 grep 空，DBN 唯一裁决。
+
+**但 gate-list 参数/字段骸骨残留**（C 深 grep 揪出）：
+| 残留 | 性质 | C 判 |
+|---|---|---|
+| `FallRulesParam.Still` / `CellHistory`（cell.go:347-401 在用）| **馈送层 still-box 阈值/风险时段因子**，DBN realness 消费 cell still 输出 | **留对**（馈送层在用，非 gate-list 裁决）|
+| `FallRulesParam.Lost`（lostFallParam，fall_rules_param.go:28）| 旧 gate-list Lost Fall 参数，DBN 用 §A 的 D 窗/wDir、**不用它** | ★ **死骸骨该删** |
+| `BedsideFallConfig` / `bedsideFallCfg` / `SetBedsideFallConfig`（engine.go:152/211，track_manager:114-188/636）| 旧 gate-list R4 床边晕倒参数 | ★ **死骸骨该删** |
+| track.go:142/204 字段「保留供 PR-10/11 重写」 | 为未死的 gate-list 重写保留的字段 | ★ 同上，待裁 |
+
+**关键事实**（track_manager:114）：R4 床边晕倒**触发已删**（符重点1），但 **`bedsideFallCfg` 字段 + `BedsideFallConfig` 类型 + `SetBedsideFallConfig` + `FallRulesParam.Lost` 参数骸骨留着**，A 理由="供 PR-10/11 BathroomBedsideFall 复用"。
+
+## 三、★ bathroom 归属待架构师裁（决定骸骨删 vs 留）
+
+A 留骸骨理由="供 PR-10/11 bathroom fall 复用"。**C 判断这与「DBN 顶层唯一裁决」收口方向冲突**，但归属须架构师拍：
+- **若 bathroom fall 也归 DBN engine.Room 裁决**（C 理解的收口方向）→ PR-10/11 该用 DBN、非旧 gate 参数 → **这些骸骨（FallRulesParam.Lost / BedsideFallConfig）该删**（"供复用"不成立，留=死码违 #1.2 + 与顶层唯一裁决矛盾）。
+- **若 bathroom 仍保留独立 gate**（§9.5 标 bathroom_gate 暂留 Stage B 裁）→ 骸骨留到 Stage B 随 bathroom_gate 一起裁。
+
+**C 倾向前者（删）**：留骸骨 + "供未来复用"理由 = 历史上「半成品/死码留着以为要用」模式（neighbor 五规则缺口、ghost 抢跑半成品同类）；且 bathroom 走 DBN 才符顶层唯一裁决。**但 bathroom 归属是架构决策，架构师拍。**
+
+## 四、C 净判
+- **重点1 DBN 层级：通过**（顶层唯一裁决，雷达 fall 仅观测不旁路）。
+- **重点2 gate-list：发射删净 ✅，参数骸骨残留**。`FallRulesParam.Still/CellHistory` 留对（馈送层）；`FallRulesParam.Lost` + `BedsideFallConfig` + track.go 保留字段 = **死骸骨，C 倾向删**（与顶层唯一裁决冲突 + #1.2 死码）。
+- **★ 待架构师拍 bathroom 归属**：归 DBN → 删骸骨；留独立 gate → Stage B 随 bathroom_gate 裁。拍后 C 复审 A 清理。
+
+
+---
+
+# §75 增补（架构师裁 bathroom 骸骨：留 Stage B）— §74 重点2 收口
+
+> 架构师 2026-06-15 拍：**bathroom 骸骨留到 Stage B 再裁**，Stage A 不动。
+
+## 裁定
+§74 重点2 待裁项收口：
+- **`FallRulesParam.Lost`（lostFallParam）/ `BedsideFallConfig` / `SetBedsideFallConfig` / track.go:142·204 保留字段 = 留到 Stage B**，与 bathroom_gate（§9.5）、suite_census（§9.5）一起在 Stage B 裁。**Stage A 不删。**
+- **`FallRulesParam.Still / CellHistory` 留对**（馈送层 still-box，DBN realness 消费，非待裁项）。
+
+## C 接受 + Stage A gate-list 收口口径
+- **Stage A gate-list 状态 = 发射删净（DBN 顶层唯一裁决，§74 重点1 证）+ 参数骸骨暂留（架构师裁 Stage B 处置）**。骸骨不参与 Stage A 裁决（触发已删，track_manager:114「R4 触发已删，字段保留」），故 **Stage A 零回归不受骸骨影响**——骸骨是死参数/字段，无活路径消费进 fall 裁决。
+- C 记：Stage B 复审必查这批骸骨（FallRulesParam.Lost / BedsideFallConfig / track.go 保留字段 + bathroom_gate + suite_census）按 bathroom 归属（归 DBN 删 / 留独立 gate）一次清，防长期死码（#1.2）。
+
+## Stage A 待项不变（§73）
+① 端到端 cd2b 零回归 fire（C 复跑不了：owl-common 需 go≥1.25、容器 go1.22 + 无生产 DB；A 环境结果/架构师核）② bed reading 细化（§73 五，§50 教训不放过，治本补，非靠 cd2b 恰好不显现）。
+

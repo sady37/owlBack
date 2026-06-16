@@ -124,6 +124,7 @@
 ### 9.5 偏离待裁
 - **bathroom_gate**：§4 列"不copy"，feed 剥离实**留**且 `routeRoomFrame` 活跃调用（census 流量控制）。**暂留到 Stage B**（bathroom case）再裁：census 流量(留) vs 已被 DBN realness 取代的裁决(删)。
 - **suite_census**：§4 "改造非copy"，实**整 copy**。单房不影响；多房 Stage B 回"改造"口径。
+- **gate-list fall 参数骸骨（C §74 揪出，架构师 2026-06-15 拍"留独立 gate 到 Stage B"）**：`FallRulesParam.Lost`(lostFallParam) + `BedsideFallConfig`/`bedsideFallCfg`/`SetBedsideFallConfig` + track.go:142/204 保留字段 = 旧 gate-list Lost Fall / R4 床边晕倒参数，**触发已删**（重点1 证 DBN 顶层唯一裁决），DBN 子包不引用（grep=0）、track_manager 只存不消费。**架构师裁定：bathroom 保留独立 fall gate 可能（PR-10/11），骸骨留到 Stage B 随 bathroom_gate 决策一起裁**——非孤儿死码，scope 已锁 Stage B（触发=Stage B bathroom 设计）。**保留对照**：`FallRulesParam.Still/CellHistory` = cell.go:360/372/374 still-box 阈值馈送层，DBN realness 消费，**永久留对**（非骸骨）。
 
 ### 9.6 新阶段施工 — Stage A/B/C（分步 + 零回归闸）
 1. **Stage A 单房**：consumer(test:*) + feed 派生 → `Engine.OnRoomFrame` 构造 `adapter.FrameInput` → `engine.Room.Tick`（DBN 顶层）→ fire 落 log。**零回归闸** = replay 灌 cd2b → fire 复现 belief 单元 0.9992（= §7/W3.2 闸的端到端版）。
