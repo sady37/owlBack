@@ -2708,3 +2708,55 @@ C 核码实证（非凭记忆）：
 
 **sync**：§68+§69 已推（aac7e81）；§70（本节）未推 → 本次推。推完 A 照五柱 + 柱F 起桶二。
 
+
+---
+
+# §71 增补（C 复审桶二码层 db28eff）— 柱B FN-safe 探针 6/6 真人不误判 + 柱F provisional/settle 时序 + ghost 三分全闭环，Xsensorv1 使命真达成
+
+> A 推桶二（db28eff，census 几何 IsReflection + 出生窗 provisional/settle 冻结）。这是 Xsensorv1 收口最后一关，且后续要据 Xsensorv1 改 wisefido-sensor 生产——C 必独立验扎实（栽生产比栽验证载体重）。C 开审前对齐 §69/§70，pull db28eff 自跑 + 亲手造 FN-safe case 探针 + 核柱F 时序。
+
+## 一、★ 柱B FN-safe（核心，C 亲手造 case 探针 6/6 全对）
+
+C 不靠 A 的 BK 测，自造真人/ghost case 验 `reflectsAcrossWall`（房间 wall (0,0)-(400,400)、雷达墙内 (200,200)）：
+
+| case | IsReflection | 期望 | |
+|---|---|---|---|
+| 真人墙内中央 (250,250) | false | false | ✅ |
+| 真人墙内近墙 (380,200) | false | false | ✅ |
+| 真人墙内角落 (30,30) | false | false | ✅ |
+| ghost 墙外远 (600,200) | true | true | ✅ |
+| **ghost 墙外但交点<30cm (415,200)** | **false** | false | ✅ |
+| 墙外正下方连线穿底边 (200,600) | true | true | ✅ |
+
+**最危 FN 点守住**：三种墙内真人（中央/近墙/角落）→ 恒 false，**真人绝不被误判镜像→排出 N_r→漏报**。<30cm 边缘 → false（§69 柱B/§70 FN-safe 闸：边缘宁漏判镜像多报、不误判真人漏报）。几何 + 30cm 阈 + FN-safe 偏置全对。
+
+## 二、柱F 时序（provisional/settle，C 核 + A 想到我 §70 没想到的一层）
+
+- **出生窗内每帧算 provisional 喂 realness**（census.go:87-92）/ 过 ReflSettleMs=3000 冻结、settle 帧锁定（非首帧）/ 之后不重算。BK-F 验：出生墙外反射位 provisional=true→settle 冻结→漂回墙内不翻（锁定抗抖动）。
+- **C 验「provisional 从首帧喂 realness 误排真人」风险 = 不可能**：provisional=`reflectsAcrossWall`，真人墙内恒 false（柱B 证）→ 窗内不会误排；且 IsReflection 仅 `len(obs)==2` 喂（mirror 仅 track==2），单 track 不喂——双重保护。
+- **★ A 补一层我 §70 没想到的**：provisional 从首帧算（非默认 false）是为**保护 movedFromBirth**——若 IsReflection 窗内缺省 false，动镜像（Displaced+高ρ）会被误锁成自主真人（mScore=0）→ 桶二对动镜像失效。A 想到「动镜像窗内裸奔」风险，C §70 只钉了「首帧噪声锁错」。**A 的 provisional+settle 同时解两个：窗内不裸奔（provisional 保护）+ 不拿首帧定死（settle 帧冻结）。** 设计比 §70 周到。
+
+## 三、柱A/C/D/E + 零回归（C 自跑）
+
+- 柱A 几何：点在矩形外 + 连线与各 wall 边求交取最近 ghost 交点 + ≥30cm（reflectsAcrossWall:203-221，多墙全局最近 §69 步4）✅
+- 柱C mirror 闭环：**IsReflection 真值首次真激活**——CN2 真人+影子，影子现靠几何 IsReflection 真判（不再 stub），mirror 判别 ρ×IsReflection 闭环 ✅
+- 柱D 多墙：segRectIntersections 对 4 边求交、全局取最近 ✅
+- 柱E 零回归：cd2b（无 wall 配置/单 track）IsReflection 全 false → **finalP=0.5203 精确不变** ✅
+- **全套 66 PASS / 0 FAIL**（桶二补 BK-A~F，61→66）/ build·vet 净。
+
+## 四、★ Xsensorv1 使命真达成（C 收口净判）
+
+**ghost 三分全闭环**：桶一（运动伪迹 aScore）/ 桶二（墙上镜像 IsReflection 几何，本节）/ mirror（co-existence ρ）——三分齐，IsReflection 从 stub 变真算、mirror 判别首次真激活。**§68 标的「桶二是最后一分」补完。**
+
+**Xsensorv1 验证载体使命达成（口径这次坐实，非 §67 喊早）**：
+- DBN 四隐轴（S/B/realness/neighbor）全空间占用 + cd2b 零补丁涌现（0.5203/0.9992）
+- realness §G 两类 + **ghost 三分全闭环** + §61 消费门控（孤轨永发）
+- §A neighbor 纯时间窗 + 噪声防线 + 三情形 + §26 55% 三分 + OR 聚合
+- 全套 66 PASS/0 FAIL、build·vet 净、作废分支无残留
+
+剩余归 Xsensorv1 之外：oracle 安全阈标定（真实数据）/ MM 真实几何接入 / 上生产集成。
+
+## 五、下一步（架构师定方向）
+
+架构师指「据 Xsensorv1 改 wisefido-sensor 生产，尽快结束」。Xsensorv1 框架验证已闭环——**下一步进生产集成（Xsensorv1 验证的 DBN 四轴 + ghost 三分 + neighbor 移植/参考改 wisefido-sensor）**。C 复审重点预告（生产移植）：① Xsensorv1 已验机制单源移植（非 copy-paste-modify，§44/§52 lean-extract 教训）② 生产侧真实几何/参数接入（MM 真值、oracle 标定）不破已验框架 ③ cd2b 等真 fixture 在生产侧仍零回归。**C 待架构师定生产移植切法。**
+
