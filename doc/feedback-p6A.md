@@ -543,3 +543,40 @@ belief 分裂稀释。真路径（`tools/replay`→Redis→`cmd/xsensor`→track
    **接受这种 ambiguous 连续表达，还是要 door 更强主导（近门→mEv 直接压制）？**
 2. **前几份 p6A/p6C 引用的 `*_test.go` 验收已随铁律删除**——z/ObsZBand、belief 各柱今后走真 case（重放看 xray），非单元。
 3. 下一步真 case 验证序列：cd2b（单轨 PReal 恒 1、接触轴 fire）/ 0616 跨房（hand-off + B 不误判 ghost）/ 新导 2 个 fall case。
+
+---
+
+## 2026-06-16 — A: ghost 判定修改的**原因**（rationale，请 C 复核逻辑链）
+
+为什么把 ghost 判定从「aScore 超速 + 规则」改成「出生地 + co-existence 转移矩阵」——架构师本轮逐步定的逻辑：
+
+**R1. 信息不完整 → 只能用正向证据 → 默认 real（FN-safe 接受成本）**
+雷达信息天然不完整（截断重放无 enter 事件、enter 区画不准、盲区）。突现 track（无 enter 区如 lobby）没有
+反向证据 → 只能认 real。**这是系统必须接受的成本**：宁可放过疑似 ghost，绝不压真人的摔（漏报代价 ≫ 误报）。
+故 realness = 正向证据累积、默认 real，只在正向证据指向 ghost 才判。
+
+**R2. ghost 只能出生时判定（过期难判）**
+ghost（反射/镜像）主要由**出生地**决定，一旦形成雷达自身无法过滤（metal 例外，firmware 3-5s 主动滤）。
+过了出生窗位置判据失效，只剩「轴对移/同步平移」看两 track 是否锁步（co-existence）这种复杂退路。
+→ 判据必须抓出生地为主，出生后退化为同步移动为辅。
+
+**R3. 墙外易、墙内难（分两条路）**
+- 墙外：超 radar border 的 firmware 直接滤掉（到不了）；border 内 wall 外的，radar→ghost 连线穿墙取最近
+  交点 ≥30cm 的几何判定**简单绝对**。
+- 墙内镜像（落屋里、几何抓不到）：**出生地距门 D**（D/120 软评分，老人室内走得慢、出生在门边 D 小→120
+  够罩）→ 不足则**同步移动**（轴对移/平移，出生后 3-5s 即可判）→ 仍不定则 **5min 仍活动认 real** 兜底。
+
+**R4. enter/InRoom 不可靠 → 先到无条件 real + logicID 防 swap**
+enter 区常画不准/有偏差，真人进门也可能无 InRoom event → **不能**用「出生在 enter 区」判 real。
+故 **A（先到）无条件 real 锚**（截断重放首 track 也 real）；身份必须用 **logicID**（track_manager 最小作功 +
+`nearestAliveTrack` 已处理 firmware track_id swap/跳变/分裂），否则 swap 造**假出生**→假 ghost。
+
+**R5. 删 aScore 超速单 track（病根）**
+旧 aScore：单 track 超速累积判 ghost。三重错：①单 track 判 ghost **违「ghost 仅 track==2」铁律**（孤轨永发=
+最高风险护到底）；②单调不退，一次 dt 噪声（22ms 帧太近 → 42cm 体动算成 1916cm/s 假超速）永久污染 → 真人 B
+被误判 ghost；③它想抓的 firmware 换号**已由 track_manager logicID 接管**（>AssocCm 成新号/<内吸收）。删之零损失。
+
+**R6. 转移矩阵不用 gate（涌现而非硬 if）**
+FE 用连续 **track confidence** 显示（<30 隐 /20-79 半透 /≥80 全显），**不需要二元 ghost/real 判定**。且 gate-list
+是病根（dbn_cutover 已把 ghost 检测重做成纯数学涌现）。故 **latch**（确认 real 永不回 ghost，cd2b 真人摔静止不
+当 ghost）、**track==2**（孤轨永 Real）都应由**矩阵结构涌现**（Real 吸收转移 R→M=0 / mEv∝Coexist），而非硬 if。
