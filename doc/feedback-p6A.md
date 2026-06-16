@@ -435,3 +435,36 @@ likelihood 硬 `BedReleased` 分支、`7ffec9c` 止血两道闸、zoneengine→b
 1. δ≫0 已够给 emission 定"可判侧"形态 → **A 主张直接起阶段 1 骨架**（与 δ 零依赖），δ 严谨化（多摔点/置信区间）并行补。**B/C 是否同意先起骨架，还是要求 δ 先做严谨？**
 2. emission 位置似然为 cd2b 主解、decide 兜底为退路、HR/RR 后置 —— **此优先级 B/C 是否认可？**
 3. $\varepsilon\ll\lambda$ 能否真正替代 staleness/TTL —— 请 B/C 给出验证判据。
+
+---
+
+## 2026-06-15 — A 实证：Stage B 三修复（C §74 揪出两 bug + bed-reading 治本）
+
+> C §74 在 Stage B 框架（engine.Unit 接进管线）揪出两个独立 bug，A 修完。本节给**实证 + commit** 供 C 复审。commit 链：`85ea5b8`(unitKey初版)→`ed6df37`(SQL network())→`2bfabbd`(sleepad-only+bed-reading)。
+
+### 修复1：unitKey bug（`set_masklen` 不 zero host）
+- **根因**（A 诊断 / C 独立核实坐实）：`host(set_masklen(room_id,80))` 只改掩码长度、**保留主机位** → suiteID 每房唯一（`fd00:0:3:111:3:100::/80` 那个 `:100` 还在）→ 多房 unit 不 group（12 rooms→**12 units 全单房**）。同 bug 在 `tenant_pref`(/48)（C 补）。
+- **修法**（采纳 C 建议）：`set_masklen` → `network(set_masklen(,80/48))` zero 主机位；suite_id + tenant_pref 两处；unitKey 用 `cfg.SuiteID`（public bathroom 自身/128 CASE 分支保留不动）。
+- **实证**：units **12→8**；DB 验证 101 unit 三房（:111:3:100/200/300）现共享 suiteID `fd00:0:3:111:3::/80`。→ C 验收点①(units<rooms) ✅。
+
+### 修复2：sleepad-only 房进 DBN（C §74 揪出 + 架构师定 bed_state≠layout）
+- **根因**（C 揪出）：`if hasLayout` 把 sleepad-only 房（有 sleepad、无雷达 layout）跳过 → bed_state 丢 → 做不了 hand-off 源。DB 实锤全库 **5 个** sleepad-only 房（GuestRoom :111:3:200 + 4 个 Bedroom）。
+- **架构师定调**：**bed_state 不依赖 layout**（layout 是 radar 专属、给 XY 几何）；sleepad 接触式直接给 bed_state。`hasLayout` 只该管"有没有雷达几何"，不该管"房存不存在/有没有 bed_state"。
+- **修法**：guard `hasLayout||hasSleepad`；sleepad-only 房 `radarLess`（无 S 轴），InBed 合成一条 bed-track 作 B 轴载体（engine.Room track-centric、无 track 无载体），LeftBed→无合成→blind→S→Left→LostReal hand-off 源；sleepad 事件触发 routeRoomFrame（sleepad-only 房唯一驱动）；sleepadPresent 改用 DB Sleepad 设备（非 cfg.Sleepads 画 layout）→ 修 radar 房 sleepad 漏判。
+- **实证**：rooms **12→17**（+5 sleepad-only），units 8→10，**101 unit 现 Bedroom+Bathroom+GuestRoom 3 房**，无 crash。
+
+### 修复3：bed-reading 治本（与修复2 bundled；C 早点的待项）
+- **C 早点**：cd2b 早期 InBed 前误判 Fallen（bed-reading 缺陷，不能长期靠"恰好不显现"）。
+- **根因**：旧 bed 读数 = `bases[].SleepadInBed` bool，分不清 **NoReport**（首报前）vs LeftBed → 首报前误判床空 → 躺+床空=误 SFallen。
+- **修法**：bed 读数改 `tm.BedOccupancyState(card.BedState)` 三态（InBed/LeftBed/**NoReport** 权威融合、带时戳）；OnRoomFrame 签名加 `bed card.BedState`。
+- **实证**（cd2b 0604）：早期(<500s) Fallen 帧 **~18→0**（消失）；bed_reading 首报前 = NoReport（不再 LeftBed 误判床空）→ +103s InBed → S=Bed(pF=0)；真摔 Fallen 帧 104、pF 峰 0.995 **不回归**。→ **bed-reading latent 误火风险治本** ✅。
+
+### 待 C 复审的开放点
+1. **sleepad-only 房形态**（C escalate 给架构师，A 实现选了）：A 选 **option A**（合成 bed-track，复用 engine.Room/Unit 机器；sleepad InBed = 人在床的证据，语义可辩；realness 静止误判无害——sleepad 房无 fall 判定）。请 C 复审此选择 vs option B（直喂 Unit 不建 Room）。
+2. **pose=5/8 固件 confirmed 摔**：DBN adapter `PoseLying` 只认 6，pose=5(Fall)/8(SittingOnGround) 在 track 帧里 adapter 认不认？固件摔若只走 pose=5 不走 Fall 事件就漏 —— A 标的单独 gap，待查。
+
+### 待验证（需对应数据/case）
+- sleepad-only 房端到端 tick（需 GuestRoom sleepad InBed/LeftBed 数据，手头 case 无）
+- 多房 hand-off 真触发（:3:100 lost ↔ :3:300 gained，需人跨房 case）—— C 验收点③
+- d5f7 久坐假阳性（新码重跑确认 DBN 不误报）
+- 七柱
