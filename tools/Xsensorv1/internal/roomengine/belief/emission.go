@@ -23,12 +23,13 @@ type emissionParams struct {
 	dwellHi  float64 // D>1：still≥τ|F = still≥τ|AtBed
 	dwellLo  float64 // <1：still≥τ|O/Sit（活动态久静受罚）
 	stillTau float64 // dwell 阈 τ（秒）；cell 容忍/夜间对 τ 的调制属 decide/adapter 层（feedback-p6C §6/§7）
+	lZ       float64 // ObsZBand 正向抬直立态(Sit/OpenFloor)的倍数；须 ≳ dwellHi/dwellLo 抵消久坐 dwell 误判
 }
 
 func defaultEmissionParams() emissionParams {
 	return emissionParams{
 		lIn: 20, lLeft: 20, lPose: 3, lHR: 5,
-		dwellHi: 3, dwellLo: 0.5, stillTau: 60,
+		dwellHi: 3, dwellLo: 0.5, stillTau: 60, lZ: 8,
 	}
 }
 
@@ -98,6 +99,16 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 			SBed: e.p.dwellHi, SFallen: e.p.dwellHi,
 			SOpenFloor: e.p.dwellLo, SSit: e.p.dwellLo,
 		}, w, SBed, SFallen, SOpenFloor, SSit)
+	}
+
+	// z 高度档(ObsZBand)：**单向正向证据，绝不负向**（device-room-zone.md）。坐高(30-60)→抬 Sit、
+	//   站高(>60)→抬 OpenFloor，抵消 dwell 对久坐马桶的误判(dwell 罚 Sit·抬 Fallen)；
+	//   贴地/低→ZNone 中性（z=0 不是 fall 证据、不否决任何东西，fall 仍走 dwell）。时间积分=前向滤波逐帧累积。
+	switch o.ZBand {
+	case ZSit:
+		addLogLk(&logS, Vector{SSit: e.p.lZ}, w, SSit)
+	case ZStand:
+		addLogLk(&logS, Vector{SOpenFloor: e.p.lZ}, w, SOpenFloor)
 	}
 
 	// HR/RR（非对称 + §D 门控）：w_hrrr=covers·1[nearBed]。

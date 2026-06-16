@@ -57,6 +57,20 @@
 - **时间积分**：前向滤波逐帧累积 z≥30 的 not-fall 似然 = 时间积分（持续直立越积越确定没摔）。
 - **z=0 的 Fallen/AtBed 二义**：靠 B 轴分（B vac→Fallen / B occ→AtBed），同 PoseLying 二义处理（z 不分）。
 
-## 7. 待定（架构师拍）
+## 7. 实现（2026-06-15 已接，架构师拍细分两档）
 
-- not-fall 用**单阈 z≥30**（一档"有高度=没摔"），还是细分 **35-55 抬 Sit / >60 抬 OpenFloor-直立**（两档分坐/站）。前者简洁、后者多分一层姿态。
+- **§7 决定**：细分两档（z 30-60 → ZSit 抬 Sit / >60 → ZStand 抬 OpenFloor；<30 → ZNone 中性）。
+  阈用 **z≥30** 作 not-fall 边界（架构师 stated 值，比标注 35-55 略宽，覆盖标准马桶 36cm）。
+- **实现**：`belief.ZBand` 枚举（observation.go）；`adapter.zBandOf(z)`（>60 站 / ≥30 坐 / 否则中性）；
+  `emission.radarLogS` z-band 项：ZSit→`SSit×lZ`、ZStand→`SOpenFloor×lZ`，`lZ=8`（须 ≳ dwellHi/dwellLo
+  抵消久坐 dwell，form-anchor 标定见 feedback-p6C）；**正向 only，Fallen 永不 ℓ<1**。
+- **验证**（`belief/emission_test.go`）：
+  - `TestEmissionZBand`：ZSit 抬 SSit log(lZ)、ZStand 抬 SOpenFloor、z 不压 Fallen（正向 only）✓
+  - `TestZBandSuppressToiletSit`：久坐马桶(ZSit) **P(Fallen)=0.036** vs 真摔(ZNone) **P(Fallen)=0.997** ✓
+    → **久坐误火 FP 治本，真摔不漏**；全 belief 测试套无回归。
+
+## 8. 待办
+
+- **cell learning 线**（C 说的"双线"另一条）：cell 用 z 学习 sit/toilet 区——本次只接 emission 线
+  （直接 FP 修复）；cell-learning 线后置（慢学习、二级增强）。
+- 端到端：d5f7 重放确认久坐段 P(Fallen) 实际被压（emission 单元已证，端到端待跑）。

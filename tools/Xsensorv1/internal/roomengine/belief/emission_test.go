@@ -97,3 +97,55 @@ func TestFrameworkEmergenceCd2b(t *testing.T) {
 	t.Logf("AC-拆1 ✓ 框架零补丁涌现：P(SFallen)=%.4f P(SBed)=%.4f P(B occ)=%.4f（无 floor-strip/无离线）",
 		pF, js.MarginalS(f.Alpha())[SBed], js.MarginalB(f.Alpha(), 0))
 }
+
+// EZ：ObsZBand 高度档 —— 正向抬直立态(Sit/OpenFloor)，**绝不负向压 Fallen**（device-room-zone.md）。
+//   抵消 dwell 对久坐马桶(z~40)的误火(dwell 罚 Sit·抬 Fallen)；z=0 贴地→ZNone 中性不参与。
+func TestEmissionZBand(t *testing.T) {
+	em := NewEmission(bed1Geom())
+	js := NewJointSpace(1)
+	base := Observation{RadarOnline: true, Sleepad: []BedReading{BedNoReport}}
+	none := em.LogPhi(js, base) // ZNone
+	bsit := base
+	bsit.ZBand = ZSit
+	sit := em.LogPhi(js, bsit)
+	bstand := base
+	bstand.ZBand = ZStand
+	stand := em.LogPhi(js, bstand)
+
+	// ZSit 抬 SSit（w=covers=1）：sit−none = log(lZ)。
+	if d := sit[js.idx(SSit, 0)] - none[js.idx(SSit, 0)]; math.Abs(d-math.Log(em.p.lZ)) > eeps {
+		t.Errorf("ZSit 应抬 SSit log(lZ)=%.4f，实 %.4f", math.Log(em.p.lZ), d)
+	}
+	// ZStand 抬 SOpenFloor。
+	if d := stand[js.idx(SOpenFloor, 0)] - none[js.idx(SOpenFloor, 0)]; math.Abs(d-math.Log(em.p.lZ)) > eeps {
+		t.Errorf("ZStand 应抬 SOpenFloor log(lZ)=%.4f，实 %.4f", math.Log(em.p.lZ), d)
+	}
+	// 正向 only：z 绝不压 Fallen（任何档 logPhi[SFallen] 不得低于 ZNone）。
+	idxF := js.idx(SFallen, 0)
+	if sit[idxF] < none[idxF]-eeps || stand[idxF] < none[idxF]-eeps {
+		t.Errorf("z 不得做负向证据：Fallen sit=%.4f stand=%.4f none=%.4f", sit[idxF], stand[idxF], none[idxF])
+	}
+}
+
+// EZ2：久坐马桶 FP 抑制（filter 端到端）。pose=sit(非lying)+久静+ZSit(z~40)+无床 → ZSit 抬 Sit
+//   抵消 dwell → P(Fallen) 显著低于对照真摔 ZNone(z=0)。
+func TestZBandSuppressToiletSit(t *testing.T) {
+	geom := bed1Geom()
+	em := NewEmission(geom)
+	cp := NewCoupling(geom)
+	run := func(zb ZBand) float64 {
+		f := NewFilter(DefaultModel(), 1)
+		js := f.Space()
+		o := Observation{Sleepad: []BedReading{BedNoReport}, RadarOnline: true, PoseLying: false, StillSec: 120, ZBand: zb}
+		for s := 1; s <= 120; s++ {
+			f.Step(int64(s)*1000, BedOnline{true}, cp.LogPsi(js, []float64{0}), em.LogPhi(js, o), 0, 1)
+		}
+		return js.PFallen(f.Alpha())
+	}
+	pSit := run(ZSit)   // 马桶坐 z~40
+	pFall := run(ZNone) // 真摔 z=0
+	t.Logf("久坐马桶(ZSit) P(Fallen)=%.4f  vs  真摔(ZNone) P(Fallen)=%.4f", pSit, pFall)
+	if pSit >= pFall {
+		t.Errorf("ZSit 应显著低于 ZNone（z 抬 Sit 抑久坐误火）：sit=%.4f fall=%.4f", pSit, pFall)
+	}
+}

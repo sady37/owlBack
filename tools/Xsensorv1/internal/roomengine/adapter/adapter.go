@@ -162,11 +162,25 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, p Para
 		PoseLying:   t.Online && t.Pose == p.PoseLying,
 		StillSec:    t.StillSec,
 		NearBed:     nb,
+		ZBand:       zBandOf(t.Z),
 		// HRRRObserved 仅当雷达**真返** HR/RR（铁律 [[radar_hr_rr_bed_enter_gated]]：radar enter-gate，
 		// 近床但无 vital = 结构性未测 = 零信息，**非「观测到 absent」**；否则 §D 会在合法在床期误否决 AtBed）。
 		HRRRObserved:      t.HR > 0 || t.RR > 0,
 		HRRRPresent:       t.HR > 0 || t.RR > 0,
 		VitalSourceOnline: vitalSrc,
+	}
+}
+
+// zBandOf 高度 z(cm) → ObsZBand 高度档。阈见 device-room-zone.md（美国马桶座 38-48cm）：
+//   >60 站 / 30-60 坐 / <30 贴地（中性，z 不是 fall 证据、不否决）。z=0 贴地 → ZNone。
+func zBandOf(z int) belief.ZBand {
+	switch {
+	case z > 60:
+		return belief.ZStand
+	case z >= 30:
+		return belief.ZSit
+	default:
+		return belief.ZNone
 	}
 }
 
