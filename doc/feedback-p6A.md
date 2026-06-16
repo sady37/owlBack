@@ -580,3 +580,37 @@ enter 区常画不准/有偏差，真人进门也可能无 InRoom event → **�
 FE 用连续 **track confidence** 显示（<30 隐 /20-79 半透 /≥80 全显），**不需要二元 ghost/real 判定**。且 gate-list
 是病根（dbn_cutover 已把 ghost 检测重做成纯数学涌现）。故 **latch**（确认 real 永不回 ghost，cd2b 真人摔静止不
 当 ghost）、**track==2**（孤轨永 Real）都应由**矩阵结构涌现**（Real 吸收转移 R→M=0 / mEv∝Coexist），而非硬 if。
+
+---
+
+## 2026-06-16 — A: realness **绝不否决 fall**（FN-safe 治本 C §79）+ 真 case 实证 + 镜像判定窗优化
+
+> 承 C 的 §79 保留意见（消费层 FN 隐患）。用 d5f7-0616 真 case（metal+swap）跑真 cmd/xsensor 揪出并治本。
+
+### 1. 核心修复：realness 对 fall 的否决权彻底拿掉（commit `e0dec8f`）
+
+**原 §61 消费门控是错方向**：`present≥2 → pFallReal=PR` + `eligible=PR≥0.5`——在 ghost 谷底(PR<0.5)**两重否决**那条 track 的摔（排出 room OR + 压 SFallen 发射）。
+
+**两条原理推翻它**（架构师定）：
+- **① 风险不对称**：漏报(人躺地没人救)≫误报(白跑一趟)。
+- **② 有 ghost 时永远凑不齐 95% 把握去否决**：present≥2 是镜像二义——那"第二条 track"可能就是真人自己的 metal/mirror，**真人摔→反射也摔→ghost fall 恰是真摔的证据**。要否决一个 fall 需~95% 确信"这不是真摔"，二义下拿不到。
+
+**改**：`pFallReal≡1.0` + `eligible≡true`。realness **只经 N_r→C_FN 折扣**影响（排 ghost 防 1 真人+1 影子当 2 人 → 折扣误用；只帮 fire 从不压 fall）。回归架构 [[realness_axis_redefined_real_vs_mirror]] 的「fall 不压」。
+
+### 2. d5f7-0616 真 case 实证（揪出 §79 + 验证修复）
+
+- **场景**：metal 先到独存近 60s（真人 lost），真人后到被判 ghost——**无解**（人也分不出谁真）；真人 ghost confidence 谷底 PR=0.09。
+- **原 bug 显形**：ghost 谷底 + present≥2 → 真人的摔会被否决（log 实证门控逻辑）。本 case 侥幸没撞上（谷底在前、摔在后已恢复 real），**但纯属时间错开不是机制保证**。
+- **修复后实测**：`pFallReal 全程={1}`；真人误判 91%ghost(PR=0.09)谷底 `pFR 仍=1.0`；fall 照常 fire。**谷底否决窗根除。**
+
+### 3. latch 尝试→否决（已撤）
+
+试过 §9.3③「5min-active→real latch」想稳住 N_r。**实测 latch 了 metal（错的那条）**——根因：rho 噪声大（真镜像对 rho 也常=0），"自主活动"判据形同虚设；且 metal 在场更久先攒够。**结论：latch 时本就分不出真伪（能分就不用 latch），z 也不准（真伪都能变高）→ 撤掉。**
+
+### 4. 镜像/sync 判定窗优化（commit 见下）
+
+`reflectSep`（穿墙求交，最贵）+ sync **只在出生后 ≤5s 算**，过窗冻结判定省算力（ghost 只能出生时判）。**孤轨永 Real override（Coexist==0→ForceReal）实时常开**——防冻结成 Mirror 的轨变孤轨后 N_r 算 0。实测：窗后 sep=0（几何停算）、真人变孤轨时 override 纠回 PR=1.0、fall 照常 fire。
+
+### 给 C
+- **§79 已治本**：不是减轻折扣，是 realness 对 fall 的否决权被彻底移除。请复核两条原理（风险不对称 + 95%-不可达）是否成立。
+- 已删 test → 验证走真 case 解剖（本节即 d5f7-0616 真 cmd/xsensor 实证）。

@@ -75,3 +75,9 @@ func (r *RealnessTrack) PReal() float64 { return r.bR }
 
 // PMirror 镜像后验(有真人源 ghost；forensic + FE 观测)。
 func (r *RealnessTrack) PMirror() float64 { return r.bM }
+
+// ForceReal 孤轨永 Real override（§G六「1 track 永发」）：Coexist==0 即强制 Real，永不让孤轨卡 Mirror。
+//
+//	出生窗后判定冻结(省算力)，但此 override 实时常开——配对源离开、track 变孤轨时立即纠回 Real，
+//	防冻结成 Mirror 的轨变孤轨后 N_r 算成 0(有真人却数 0 人)。
+func (r *RealnessTrack) ForceReal() { r.bR, r.bM = 1, 0 }

@@ -16,15 +16,16 @@ import (
 
 // TrackCensusParams 形态参数（form-anchor，标定留 oracle [[fall_data_is_artificial_test]]）。
 type TrackCensusParams struct {
-	MoveCm      int // 偏离出生位 > 此 = Displaced（走动/位移）
-	AssocCm     int // 帧间关联最大合理位移（新坐标离最近现有 track > 此 = 新 logicID 发号）
-	ReflSepCm   int // 桶二（§69）：交点(最近 ghost)→ghost ≥此才算反射（确定性几何阈：雷达精度/墙太靠内不算）
-	WallScaleCm int // §9.2 墙外反射裕度归一尺度（sep/此 → WallMargin[0,1] 软发射）
+	MoveCm         int   // 偏离出生位 > 此 = Displaced（走动/位移）
+	AssocCm        int   // 帧间关联最大合理位移（新坐标离最近现有 track > 此 = 新 logicID 发号）
+	ReflSepCm      int   // 桶二（§69）：交点(最近 ghost)→ghost ≥此才算反射（确定性几何阈：雷达精度/墙太靠内不算）
+	WallScaleCm    int   // §9.2 墙外反射裕度归一尺度（sep/此 → WallMargin[0,1] 软发射）
+	MirrorWindowMs int64 // 镜像/sync 判定窗：出生后 ≤此算几何+sync 喂 realness，过则冻结判定（省 reflectSep 算力）
 }
 
 // DefaultTrackCensusParams 形态默认（非权威值，留 oracle；ReflSepCm 是确定性几何阈非 oracle 软参）。
 func DefaultTrackCensusParams() TrackCensusParams {
-	return TrackCensusParams{MoveCm: 50, AssocCm: 250, ReflSepCm: 30, WallScaleCm: 100}
+	return TrackCensusParams{MoveCm: 50, AssocCm: 250, ReflSepCm: 30, WallScaleCm: 100, MirrorWindowMs: 5000}
 }
 
 // TrackObs 一帧一条 raw track（§57 步2 全量：纯雷达量）——既数 N_r 又驱动 per-track 滤波。
@@ -91,25 +92,35 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 
 	for i, o := range obs {
 		t := c.tracks[ids[i]]
-		sep := reflectSep(o.X, o.Y, radar, walls, c.p.ReflSepCm) // 桶二：墙外反射裕度 cm（0=墙内/非反射）
-		t.isRefl = sep > 0
-		wallMargin := 0.0
-		if sep > 0 {
-			if wallMargin = sep / float64(c.p.WallScaleCm); wallMargin > 1 {
-				wallMargin = 1
+		if nowMs-t.birthMs <= c.p.MirrorWindowMs {
+			// 出生窗（≤5s）：算墙外反射几何 + sync，喂 realness 判定（ghost 只能出生时判，过期难判）。
+			sep := reflectSep(o.X, o.Y, radar, walls, c.p.ReflSepCm) // 桶二：墙外反射裕度 cm（0=墙内/非反射）
+			t.isRefl = sep > 0
+			wallMargin := 0.0
+			if sep > 0 {
+				if wallMargin = sep / float64(c.p.WallScaleCm); wallMargin > 1 {
+					wallMargin = 1
+				}
 			}
+			later := ids[i] == laterID
+			t.rt.Update(belief.RealnessObs{
+				BirthDoorD: t.doorD,
+				Displaced:  math.Hypot(float64(o.X-t.birthX), float64(o.Y-t.birthY)) > float64(c.p.MoveCm),
+				CoexistRho: rho,
+				LaterBorn:  later,
+				WallMargin: wallMargin,
+				Coexist:    coexist,
+				DtMs:       nowMs - t.lastMs,
+			})
+			t.fSep, t.fWallMargin, t.fRho, t.fLater = sep, wallMargin, rho, later // forensic
+		} else {
+			// 窗后：判定冻结，**不算 reflectSep**（省算力，最贵的穿墙求交）。仅守孤轨永 Real override：
+			//   配对源离开 → Coexist==0 → 立即纠回 Real，防冻结成 Mirror 的轨变孤轨后 N_r 算 0。
+			if coexist == 0 {
+				t.rt.ForceReal()
+			}
+			t.isRefl, t.fSep, t.fWallMargin, t.fRho = false, 0, 0, 0 // forensic 标冻结（不再喂几何）
 		}
-		later := ids[i] == laterID
-		t.rt.Update(belief.RealnessObs{
-			BirthDoorD: t.doorD,
-			Displaced:  math.Hypot(float64(o.X-t.birthX), float64(o.Y-t.birthY)) > float64(c.p.MoveCm),
-			CoexistRho: rho,
-			LaterBorn:  later,
-			WallMargin: wallMargin,
-			Coexist:    coexist,
-			DtMs:       nowMs - t.lastMs,
-		})
-		t.fSep, t.fWallMargin, t.fRho, t.fLater = sep, wallMargin, rho, later // forensic
 		t.x, t.y, t.lastTick, t.lastMs, t.lastObs = o.X, o.Y, c.tick, nowMs, o
 	}
 }
