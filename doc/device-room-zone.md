@@ -77,3 +77,35 @@
 - **cell learning 线**（C 说的"双线"另一条）：cell 用 z 学习 sit/toilet 区——本次只接 emission 线
   （直接 FP 修复）；cell-learning 线后置（慢学习、二级增强）。
 - 端到端：d5f7 重放确认久坐段 P(Fallen) 实际被压（emission 单元已证，端到端待跑）。
+
+---
+
+## 9. realness 正确模型（出生地 + 三时标 + 单 tick 瞬态忽略）— 2026-06-16 架构师定，Xsensorv1 待重设计
+
+> d5f7/0616 排查发现 Xsensorv1 realness 用错模型（aScore 超速单调 + mScore mirror），把静卧真人 B 误判 ghost
+> （一次 42cm 体动 + 22ms 极小 dt 假超速 → aScore +3.63 → 永久 ghost）。架构师给出正确模型。
+> 应同步 DBN-Zone-Room §G。
+
+### 9.1 三时标 + 谁做
+| 机制 | 时标 | 谁做 |
+|---|---|---|
+| metal 反射 filter（无 micro-moving） | 3~5 **秒** | **firmware 主动滤**（到 DBN 已无 metal，realness 不管）|
+| 墙外稳定 ghost（出生地判定；雷达自身过滤不掉） | 3~5 **分钟** | **realness 负向积分** |
+| 墙内 track（含墙外 30cm）持续活动 → real | >5min（5 或 8min）| **realness 正向积分** |
+
+### 9.2 两个积分（realness 重设计核心）
+- **墙外稳定 → ghost（负向积分）**：track 位置**稳定**在墙外（>30cm 余量外）按时间累积 → 判 ghost。
+  出生地定；一形成雷达自身过滤不掉。**不是一次偶发跑墙外**，是稳定持续（3-5min 时标）。
+- **墙内活动 → real（正向积分）**：track 在墙内（含墙外 30cm）**持续活动**累积 >5min → 确认 real。
+  （B 在床睡眠体动属持续活动 → 5min 后 real，不被误判 ghost。）
+
+### 9.3 单 tick 瞬态忽略（关键，区别于"稳定"）
+- 墙内 track 的**瞬间移动（jump/超速）= mirror 或帧间隔过近(小 dt)假超速造成，只在那一 tick 出现，
+  下一 tick 即回正常**。实证（0616 B）：5 个超速帧每个下帧位移即回 9-52cm；+72s 的 1916cm/s 实为
+  42cm 体动 / 22ms 小 dt 假超速。
+- **单 tick 瞬态绝不判 ghost**（ghost 须 §9.2 的「稳定」墙外）。现 aScore 单调累积一次跳变即永久 ghost = 病根，违此。
+
+### 9.4 Xsensorv1 现状 gap（待重设计）
+- 现 realness：`mScore`（mirror reflectsAcrossWall）+ `aScore`（超速单调累积）—— **都不是 §9.1-9.3 模型**。
+- 重设计：**删 aScore 超速单调**；实现 ① 墙外位置**负向积分**（稳定墙外→ghost）② 墙内活动**正向积分**（含 30cm 余量，>5min→real）③ 单 tick 瞬态忽略。metal 不做（firmware）。
+- 我之前的 aScore 超速诊断 + EMA 衰减是**错方向**（EMA 只是给单调累积加衰减，没换成正确的墙位置+活动模型）。
