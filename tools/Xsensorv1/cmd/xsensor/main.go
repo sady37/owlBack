@@ -34,6 +34,9 @@ func main() {
 	}
 
 	logCfg := zap.NewProductionConfig()
+	if os.Getenv("LOG_LEVEL") == "debug" {
+		logCfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	}
 	logCfg.OutputPaths = []string{"/home/wisefido/owl/log/Xsensor.log"}
 	logCfg.ErrorOutputPaths = []string{"/home/wisefido/owl/log/Xsensor.log"}
 	logger, err := logCfg.Build()
