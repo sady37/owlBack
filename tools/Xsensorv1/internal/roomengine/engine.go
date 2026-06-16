@@ -973,6 +973,11 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 		return
 	}
 
+	// 触发事件 X 光打点（每个 event 一行，与 per-tick xsensor_xray 按 ts 对齐）。
+	e.logger.Info("xsensor_event",
+		zap.String("room", roomID), zap.String("dev_type", dt),
+		zap.String("category", m.Category), zap.Int64("ts", ts), zap.String("addr", addrStr))
+
 	switch dt {
 	case "sleepad", "sleeppad":
 		for _, evt := range ParseSleepadBedEvents(m.DataValue, addrStr, m.Category, ts) {
@@ -1155,6 +1160,11 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 			// 否则之前活着的 track 永不进入消失判定 → silent/lost fall pending 不会创建。
 			// NoTargetTick 标记"固件明示无目标"，触发 88-加速驱逐（治 Case2 142s 陈旧 track）。
 			tm.NoTargetTick(ts)
+			// 空帧（无目标）仍喂 DBN：bases 反映 track 缺席 → engine.Room 对消失 track 仅 Predict
+			// 自持（blind 续存，S 留 Fallen，告警连续），fall 确认窗继续累积。若此处 return，丢轨期间
+			// DBN 永不 tick → 确认窗冻结 → fall fire 延迟到 track 重现（lost-fall 缺口）。
+			bases := tm.SnapshotTrackStatuses(ts)
+			e.routeRoomFrame(roomID, bases, ts)
 			return
 		}
 		outputs := tm.ProcessFrame(frames)

@@ -789,6 +789,7 @@ type TrackStatusBase struct {
 	CellAreaType     AreaType
 	EnterTarget      string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
 	MoveActive       bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
+	Present          bool   // 本帧是否被真实观测（LastObservedMs == nowMs）；false=漏帧/丢轨 → DBN 走 blind 续存
 	TraverseDelta    int    // 自上次 SnapshotTrackStatuses 累计的 traverse cells（用于 SuiteCensus 升格判定）
 	SleepadInBed     bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
 }
@@ -831,6 +832,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			RawZ:         ts.LastRawZ,
 			Pose:         ts.LastPose,
 			MoveActive:   ts.StillBoxRunStart == 0 || ts.LastObservedMs == nowMs,
+			Present:      ts.LastObservedMs == nowMs,
 			SleepadInBed: sleepadInBed,
 		}
 		// StillSec/StillBoxSec：still-box 单源（StillBoxRunStart==0 非静止；否则 box run 秒，30s 滚动 50×50 抗抖动）。

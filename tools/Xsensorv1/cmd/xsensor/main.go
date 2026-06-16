@@ -131,7 +131,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	sleepadInBed := false
 	for _, b := range bases {
 		tracks = append(tracks, adapter.TrackObs{RadarTrack: adapter.RadarTrack{
-			Online: true, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
+			Online: b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
 			StillSec: float64(b.StillBoxSec),
 		}})
 		if b.SleepadInBed {
@@ -182,18 +182,58 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	fr := room.Tick(fi, 0)
 
 	top, tp := fr.Probe.MarginalS.Max()
-	if fr.Decision.Fire {
-		d.logger.Info("xsensor_dbn_fire",
-			zap.String("room_id", roomID), zap.Int64("ts", nowMs),
-			zap.Float64("p_fallen", fr.Probe.PFallen), zap.Int("n_r", fr.Decision.PeopleCount),
-			zap.Int("top_s", int(top)), zap.Float64("top_p", tp),
-			zap.String("band", fr.Decision.Band), zap.Float64("lambda", fr.Probe.Lambda))
+
+	// 每 tick 全景 X 光：S 9 态全分布 + B 轴 bed + room(N_r/presentCount) + per-track(raw + DBN realness/门控)。
+	sDist := map[string]float64{}
+	for i, v := range fr.Probe.MarginalS {
+		sDist[sName(i)] = v
 	}
-	d.logger.Debug("xsensor_belief",
-		zap.String("room_id", roomID), zap.Int64("ts", nowMs),
-		zap.Int("tracks", len(tracks)), zap.Float64("p_fallen", fr.Probe.PFallen),
-		zap.Bool("fire", fr.Decision.Fire), zap.String("band", fr.Decision.Band),
-		zap.Int("top_s", int(top)), zap.Float64("lambda", fr.Probe.Lambda))
+	raw := make([]map[string]interface{}, 0, len(bases))
+	for _, b := range bases {
+		raw = append(raw, map[string]interface{}{
+			"tid": b.TrackID, "present": b.Present, "pose": b.Pose,
+			"x": b.X, "y": b.Y, "z": b.Z, "stillbox": b.StillBoxSec, "verdict": int(b.Verdict),
+		})
+	}
+	dbn := make([]map[string]interface{}, 0, len(fr.Tracks))
+	for _, t := range fr.Tracks {
+		dbn = append(dbn, map[string]interface{}{
+			"lid": t.LogicID, "present": t.Present, "p_real": t.PReal, "p_mirror": t.PMirror,
+			"is_refl": t.IsReflection, "p_fall_real": t.PFallReal, "p_fallen": t.PFallen,
+			"fire": t.Fire, "band": t.Band,
+		})
+	}
+	d.logger.Info("xsensor_xray",
+		zap.String("room", roomID), zap.Int64("ts", nowMs),
+		zap.Int("n_r", fr.Decision.PeopleCount), zap.Int("present_cnt", fr.PresentCount),
+		zap.Int("raw_tracks", len(bases)),
+		zap.Float64("p_fallen", fr.Probe.PFallen), zap.String("band", fr.Decision.Band),
+		zap.Bool("fire", fr.Decision.Fire), zap.Float64("lambda", fr.Probe.Lambda),
+		zap.String("top_s", sName(int(top))), zap.Float64("top_p", tp),
+		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("bed_present", g.sleepadPresent),
+		zap.Float64s("covers", covers), zap.Float64s("onbed", onbed),
+		zap.Any("s_dist", sDist), zap.Any("target", raw), zap.Any("dbn", dbn))
+}
+
+// bedReadingName B 轴 sleepad 读数名（X 光可读）。
+func bedReadingName(r belief.BedReading) string {
+	switch r {
+	case belief.BedInBed:
+		return "InBed"
+	case belief.BedLeftBed:
+		return "LeftBed"
+	default:
+		return "NoReport"
+	}
+}
+
+// sName S 轴态名（9 态）。
+func sName(i int) string {
+	n := []string{"Empty", "Bed", "Sit", "OpenFloor", "Bath", "Fallen", "BlindRest", "BlindOpen", "Left"}
+	if i >= 0 && i < len(n) {
+		return n[i]
+	}
+	return fmt.Sprintf("S%d", i)
 }
 
 // wallsFromPolygon 闭合多边形顶点 → 墙段矩形（adapter.IsReflection 用：radar→ghost 连线求交）。

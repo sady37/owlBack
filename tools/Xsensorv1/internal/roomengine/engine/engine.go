@@ -31,6 +31,22 @@ type Frame struct {
 	// 步4 跨设备 hand-off 信号（Unit 编排器消费，§A 守恒+时间窗）：
 	LostReal   bool    // 本帧一条真人 track 消失（上帧在场真人、本帧不在）= hand-off 源候选
 	GainedReal float64 // 本帧新现真人 track 的去 ghost 后验（0=无）= hand-off 宿候选（守恒重现）
+	// forensic（全切片观测，不参与裁决）：
+	PresentCount int             // 本帧在场 track 数（§61 共存源/消费门控判据）
+	Tracks       []TrackForensic // 每 track 内部量（realness/ghost/消费门控/per-track 裁决）
+}
+
+// TrackForensic 单 track 的 DBN 内部量（forensic 暴露，X 光全切片用，不参与裁决）。
+type TrackForensic struct {
+	LogicID      int
+	Present      bool
+	PReal        float64 // 真人后验（realness 轴；ghost→低）
+	PMirror      float64 // 镜像后验
+	IsReflection bool    // 桶二镜面几何判定
+	PFallReal    float64 // 消费门控后喂 SFallen 发射的真人折扣（孤轨=1 永发；共存≥2 才压）
+	PFallen      float64 // per-track P^F
+	Fire         bool    // per-track 裁决（持续≥T_hold）
+	Band         string  // per-track 档（report/no/tie/indeterminate）
 }
 
 // Room 单房多 track 引擎：每 logicID 一份 belief 滤波 + 裁决器；census 管身份/realness/人数。
@@ -82,6 +98,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	rc := adapter.BuildRiskContext(fi, nr)
 
 	var results []trackResult
+	var forensic []TrackForensic
 	tracks := r.census.Tracks()
 	presentCount := 0 // 本帧在场 track 数 = 共存源判据（§61 消费门控，用 raw 在场数非 N_r 防循环）
 	for _, ts := range tracks {
@@ -126,6 +143,8 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		//   与 pFallReal=1 一致——否则噪声压低 PReal 又在聚合层把孤轨真摔筛掉，门控白做)。
 		eligible := presentCount < 2 || ts.PReal >= 0.5
 		results = append(results, trackResult{d: d, pF: pF, lam: lam, eligible: eligible, f: f})
+		forensic = append(forensic, TrackForensic{LogicID: ts.LogicID, Present: ts.Present, PReal: ts.PReal,
+			PMirror: ts.PMirror, IsReflection: ts.IsReflection, PFallReal: pFallReal, PFallen: pF, Fire: d.Fire, Band: d.Band})
 
 		// drop（状态驱动）：消失 track 的 S^(i) 吸收到 {Left,Empty} → 离场确认 → drop（非 TTL）。
 		if !ts.Present {
@@ -168,6 +187,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 
 	fr := r.aggregate(results, nr, fi.NowMs)
 	fr.LostReal, fr.GainedReal = lost, gained
+	fr.PresentCount, fr.Tracks = presentCount, forensic
 	return fr
 }
 

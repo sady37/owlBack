@@ -153,10 +153,12 @@ func (c *TrackCensus) Nr() int {
 
 // TrackState 一条 track 对 engine 的读出（§57 步2：身份 + 末帧 obs + realness + 是否在场）。
 type TrackState struct {
-	LogicID int
-	Obs     TrackObs // 在场=本帧 / 消失=末帧（喂 per-track 滤波发射；消失态走 blind 续存仅 Predict）
-	PReal   float64  // 真人后验（ghost→低）；engine OR 聚合只算 PReal≥0.5 的真人 track
-	Present bool     // 本 tick 匹配到 raw（false=消失，engine 据此走 blind 续存 Predict-only）
+	LogicID      int
+	Obs          TrackObs // 在场=本帧 / 消失=末帧（喂 per-track 滤波发射；消失态走 blind 续存仅 Predict）
+	PReal        float64  // 真人后验（ghost→低）；engine OR 聚合只算 PReal≥0.5 的真人 track
+	Present      bool     // 本 tick 匹配到 raw（false=消失，engine 据此走 blind 续存 Predict-only）
+	PMirror      float64  // 镜像后验（有真人源的 ghost）；forensic 观测
+	IsReflection bool     // 桶二镜面几何判定（radar→ghost 连线穿墙取最近交点≥阈）；forensic 观测
 }
 
 // Tracks engine 读 census 已知的全部 track（在场 + 消失未 drop），按 LogicID 升序（确定性）。
@@ -164,7 +166,7 @@ type TrackState struct {
 func (c *TrackCensus) Tracks() []TrackState {
 	out := make([]TrackState, 0, len(c.tracks))
 	for id, t := range c.tracks {
-		out = append(out, TrackState{LogicID: id, Obs: t.lastObs, PReal: t.rt.PReal(), Present: t.lastTick == c.tick})
+		out = append(out, TrackState{LogicID: id, Obs: t.lastObs, PReal: t.rt.PReal(), Present: t.lastTick == c.tick, PMirror: t.rt.PMirror(), IsReflection: t.isRefl})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LogicID < out[j].LogicID })
 	return out
