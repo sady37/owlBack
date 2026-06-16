@@ -18,9 +18,9 @@ const (
 type ZBand int
 
 const (
-	ZNone  ZBand = iota // 贴地/低/过渡：中性（z<30，z=0 不否决任何东西）
-	ZSit                // 坐高(30-60cm，美国马桶座 38-48)：抬 Sit
-	ZStand              // 站高(>60)：抬 OpenFloor 直立活动
+	ZNone  ZBand = iota // 贴地/假低：中性（z<30，z=0 不否决任何东西）
+	ZSit                // 坐高(30-80cm，生产原阈；美国马桶座 38-48 在内)：抬 Sit
+	ZStand              // 站高(>80，生产原阈)：抬 OpenFloor 直立活动
 )
 
 // Observation 一帧的原始观测。Sleepad 长 = numBeds（逐床接触读数）。

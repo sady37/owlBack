@@ -171,11 +171,12 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, p Para
 	}
 }
 
-// zBandOf 高度 z(cm) → ObsZBand 高度档。阈见 device-room-zone.md（美国马桶座 38-48cm）：
-//   >60 站 / 30-60 坐 / <30 贴地（中性，z 不是 fall 证据、不否决）。z=0 贴地 → ZNone。
+// zBandOf 高度 z(cm) → ObsZBand 高度档。**用生产原阈**（wisefido-sensor calibration.go：
+//   zUprightCm=80 / zSitMinCm=30）：>80 站 / 30-80 坐 / <30 假低无信息（z=0 贴地→ZNone 中性，
+//   z 不是 fall 证据、不否决）。美国马桶座 38-48cm 落在坐档。
 func zBandOf(z int) belief.ZBand {
 	switch {
-	case z > 60:
+	case z > 80:
 		return belief.ZStand
 	case z >= 30:
 		return belief.ZSit

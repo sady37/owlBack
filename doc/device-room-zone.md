@@ -42,13 +42,16 @@
 
 ## 5. z 档阈
 
-| 档 | z (cm) | 语义 | 缓冲 |
-|---|---|---|---|
-| 贴地/摔 | ≤20 | 远低于任何坐高 | 20-35 过渡不强判 |
-| 坐 | 35-55 | 覆盖标准 36 ~ comfort 48 + 余量 | 55-60 过渡 |
-| 站 | >60 | 直立活动 | — |
+**采用生产原阈**（wisefido-sensor `calibration.go`：`zUprightCm=80 / zSitMinCm=30`，稳；我的校准阈 35-55/>60 作精调留 oracle，架构师定）：
+
+| 档 | z (cm) | 语义 |
+|---|---|---|
+| ZNone | <30 | 假低/贴地：无信息中性（z=0 不否决，fall 走 dwell）|
+| ZSit | 30-80 | 坐（美国马桶座 38-48 在内）→ 抬 Sit |
+| ZStand | >80 | 直立活动 → 抬 OpenFloor |
 
 > ⚠️ **档阈仅作"增加 belief 置信度"用 + 时间积分，不是单帧硬判**（架构师强调）。
+> boost 因子 `lZ=8`（我）vs 生产 `lr=2.0`：我的模型 dwell 更强（dwellHi=3/dwellLo=0.5），需 lZ≳6 才抵消久坐 dwell；form-anchor，精标见 feedback-p6C。
 
 ## 6. 实现口径
 
@@ -59,8 +62,8 @@
 
 ## 7. 实现（2026-06-15 已接，架构师拍细分两档）
 
-- **§7 决定**：细分两档（z 30-60 → ZSit 抬 Sit / >60 → ZStand 抬 OpenFloor；<30 → ZNone 中性）。
-  阈用 **z≥30** 作 not-fall 边界（架构师 stated 值，比标注 35-55 略宽，覆盖标准马桶 36cm）。
+- **§7 决定**：细分两档，**用生产原阈**（z **30-80 → ZSit** 抬 Sit / **>80 → ZStand** 抬 OpenFloor；<30 → ZNone 中性）。
+  我的校准阈 35-55/>60 作精调留 oracle（架构师定：生产原阈稳）。
 - **实现**：`belief.ZBand` 枚举（observation.go）；`adapter.zBandOf(z)`（>60 站 / ≥30 坐 / 否则中性）；
   `emission.radarLogS` z-band 项：ZSit→`SSit×lZ`、ZStand→`SOpenFloor×lZ`，`lZ=8`（须 ≳ dwellHi/dwellLo
   抵消久坐 dwell，form-anchor 标定见 feedback-p6C）；**正向 only，Fallen 永不 ℓ<1**。
