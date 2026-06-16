@@ -190,11 +190,9 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 			}
 			seed := adapter.FrameInput{Beds: rectsFrom(cfg.Beds), Covers: ones(nb), Onbed: ones(nb), Overlap: ones(nb)}
 			router.rooms[roomID] = engine.NewRoom(adapter.BedGeoms(seed), nb)
-			unitKey := cfg.SuiteID // 同 unit(/80) 的房互为兄弟（跨房 hand-off）；public bathroom suiteID=自身/128 独立
-			if unitKey == "" {
-				unitKey = roomID
-			}
-			router.roomUnit[roomID] = unitKey
+			// unitKey = room_id 的 /80 unit 基址（同 unit 的房互为兄弟跨房 hand-off）。
+			// 不用 cfg.SuiteID：SQL host(set_masklen(,80)) 不 zero 主机位 → 每房唯一不 group。
+			router.roomUnit[roomID] = unit80(roomID)
 		}
 		count++
 	}
