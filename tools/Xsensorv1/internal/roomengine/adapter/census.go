@@ -39,6 +39,10 @@ type censusTrack struct {
 	birthMs        int64    // 出生时戳（§9.1 LaterBorn：成对取后到者破同步对称）
 	doorD          float64  // §9.3① 出生地→最近门距离 cm（出生时算一次；<0=无 enter 区）
 	isRefl         bool     // 桶二：本 track 末帧反射几何判定（forensic 观测）
+	fSep           float64  // forensic：末帧 reflectSep（墙外反射裕度 cm，0=墙内/非反射）
+	fWallMargin    float64  // forensic：末帧 WallMargin（sep/WallScale，喂 mEv 墙外项）
+	fRho           float64  // forensic：末帧 CoexistRho（同步移动强度）
+	fLater         bool     // forensic：末帧 LaterBorn（成对后到=ghost 候选）
 	x, y           int      // 上一 tick 坐标
 	lastTick       int64    // 最近匹配 tick
 	lastMs         int64    // 最近匹配时戳（算 cm/s 速度，帧间隔非恒 1s）
@@ -95,15 +99,17 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 				wallMargin = 1
 			}
 		}
+		later := ids[i] == laterID
 		t.rt.Update(belief.RealnessObs{
 			BirthDoorD: t.doorD,
 			Displaced:  math.Hypot(float64(o.X-t.birthX), float64(o.Y-t.birthY)) > float64(c.p.MoveCm),
 			CoexistRho: rho,
-			LaterBorn:  ids[i] == laterID,
+			LaterBorn:  later,
 			WallMargin: wallMargin,
 			Coexist:    coexist,
 			DtMs:       nowMs - t.lastMs,
 		})
+		t.fSep, t.fWallMargin, t.fRho, t.fLater = sep, wallMargin, rho, later // forensic
 		t.x, t.y, t.lastTick, t.lastMs, t.lastObs = o.X, o.Y, c.tick, nowMs, o
 	}
 }
@@ -158,6 +164,10 @@ type TrackState struct {
 	Present      bool     // 本 tick 匹配到 raw（false=消失，engine 据此走 blind 续存 Predict-only）
 	PMirror      float64  // 镜像后验（有真人源的 ghost）；forensic 观测
 	IsReflection bool     // 桶二镜面几何判定（radar→ghost 连线穿墙取最近交点≥阈）；forensic 观测
+	Sep          float64  // forensic：reflectSep cm（墙外反射裕度，0=墙内/非反射）
+	WallMargin   float64  // forensic：WallMargin（mEv 墙外项）
+	Rho          float64  // forensic：CoexistRho（同步移动强度）
+	LaterBorn    bool     // forensic：成对后到（ghost 候选，破同步对称）
 }
 
 // Tracks engine 读 census 已知的全部 track（在场 + 消失未 drop），按 LogicID 升序（确定性）。
@@ -165,7 +175,8 @@ type TrackState struct {
 func (c *TrackCensus) Tracks() []TrackState {
 	out := make([]TrackState, 0, len(c.tracks))
 	for id, t := range c.tracks {
-		out = append(out, TrackState{LogicID: id, Obs: t.lastObs, PReal: t.rt.PReal(), Present: t.lastTick == c.tick, PMirror: t.rt.PMirror(), IsReflection: t.isRefl})
+		out = append(out, TrackState{LogicID: id, Obs: t.lastObs, PReal: t.rt.PReal(), Present: t.lastTick == c.tick, PMirror: t.rt.PMirror(), IsReflection: t.isRefl,
+			Sep: t.fSep, WallMargin: t.fWallMargin, Rho: t.fRho, LaterBorn: t.fLater})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LogicID < out[j].LogicID })
 	return out

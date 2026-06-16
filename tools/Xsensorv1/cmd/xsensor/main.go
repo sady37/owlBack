@@ -222,7 +222,12 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			"lid": t.LogicID, "present": t.Present, "p_real": t.PReal, "p_mirror": t.PMirror,
 			"is_refl": t.IsReflection, "p_fall_real": t.PFallReal, "p_fallen": t.PFallen,
 			"fire": t.Fire, "band": t.Band,
+			"x": t.X, "y": t.Y, "sep": t.Sep, "wall_margin": t.WallMargin, "rho": t.Rho, "later": t.LaterBorn,
 		})
+	}
+	walls := make([][4]int, 0, len(g.walls))
+	for _, w := range g.walls {
+		walls = append(walls, [4]int{w.X1, w.Y1, w.X2, w.Y2})
 	}
 	d.logger.Info("xsensor_xray",
 		zap.String("room", roomID), zap.Int64("ts", nowMs),
@@ -234,7 +239,8 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Float64("rho_xroom", rho),
 		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("bed_present", g.sleepadPresent),
 		zap.Float64s("covers", covers), zap.Float64s("onbed", onbed),
-		zap.Any("s_dist", sDist), zap.Any("target", raw), zap.Any("dbn", dbn))
+		zap.Any("s_dist", sDist), zap.Any("target", raw), zap.Any("dbn", dbn),
+		zap.Any("walls", walls), zap.Int("radar_x", g.radarPos.X), zap.Int("radar_y", g.radarPos.Y))
 }
 
 // bedReadingName B 轴 sleepad 读数名（X 光可读）。

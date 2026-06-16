@@ -47,6 +47,11 @@ type TrackForensic struct {
 	PFallen      float64 // per-track P^F
 	Fire         bool    // per-track 裁决（持续≥T_hold）
 	Band         string  // per-track 档（report/no/tie/indeterminate）
+	X, Y         int     // forensic：末帧 canvas 坐标
+	Sep          float64 // forensic：reflectSep cm（墙外反射裕度）
+	WallMargin   float64 // forensic：mEv 墙外项
+	Rho          float64 // forensic：CoexistRho 同步移动强度
+	LaterBorn    bool    // forensic：成对后到
 }
 
 // Room 单房多 track 引擎：每 logicID 一份 belief 滤波 + 裁决器；census 管身份/realness/人数。
@@ -144,7 +149,8 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		eligible := presentCount < 2 || ts.PReal >= 0.5
 		results = append(results, trackResult{d: d, pF: pF, lam: lam, eligible: eligible, f: f})
 		forensic = append(forensic, TrackForensic{LogicID: ts.LogicID, Present: ts.Present, PReal: ts.PReal,
-			PMirror: ts.PMirror, IsReflection: ts.IsReflection, PFallReal: pFallReal, PFallen: pF, Fire: d.Fire, Band: d.Band})
+			PMirror: ts.PMirror, IsReflection: ts.IsReflection, PFallReal: pFallReal, PFallen: pF, Fire: d.Fire, Band: d.Band,
+			X: ts.Obs.X, Y: ts.Obs.Y, Sep: ts.Sep, WallMargin: ts.WallMargin, Rho: ts.Rho, LaterBorn: ts.LaterBorn})
 
 		// drop（状态驱动）：消失 track 的 S^(i) 吸收到 {Left,Empty} → 离场确认 → drop（非 TTL）。
 		if !ts.Present {
