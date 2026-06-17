@@ -10,6 +10,35 @@
 
 ---
 
+## 2026-06-16（其十三）— silent-fall per-zone 久静阈移植（survival.go ramp 替 stillTau=60；治 d523-0611 误火）
+
+**根因（C 全程参与核实，揪出 roadmap §127 一行误标 + 修正 A 一个事实错误）**：
+
+生产误报 `case-d523-0611-22262238` 在 Xsensorv1 复现误火。逐层核出根因 = **belief emission 的久静判摔退回 `stillTau=60` 全局硬阈**：
+- 伪迹帧实据：`pose=4(Standing) z=0 无 sleepad`，静止 ~2.7min。pose≠6 无 lying boost、z=0 无 lZ 直立信用 → **dwell 单独把 SFallen 抬过阈**。
+- 老架构（Tsensor/wisefido-sensor）**早治过同类**：`belief/survival.go`（commit `272a48e` 06-09 生、`ea459c9` 06-11 per-zone 尾表、06-13 三连补丁调优）用 **Weibull 平滑生存 ramp** `fallLR=1+(d/scale)²` 替「still≥硬阈即报」悬崖，按 cell areaType 分尾尺度（**toilet/shower 20min（constipation-safe）· learned sit 90min · 默认 12min · bed/deny 不报**）。注释实锤：硬编码 60s 让 DBN 在正常久坐误火（101/Kitchen/Hunzi/Ton 海量 FP）。
+- **Xsensorv1 belief 06-14 从零重写时没移植 survival.go**，emission 临时塞 `stillTau=60` 占位 = 在老架构杀掉该 bug 的次日又重造一遍。
+
+**roadmap §127 误标（A 卷，A 自订正）**：§127 把 `FallRulesParam.Still`（per-area 久静阈）标成「DBN realness 消费，永久留对」——**实际断的**。grep 实证：belief/realness/census/adapter 无一消费 `EffectiveStillTimeoutSec`，馈送层 track_manager 算了但 fire 已删。per-area 阈从没接进 DBN。
+
+**C 修正 A 一个事实错误（已核实认账）**：A 一度说"seam 不传 areaType、要打通 seam"——**错**。`TrackStatusBase.CellAreaType`（track_manager.go:789）字段在、馈送层填值（:848 `base.CellAreaType = c.Belief[0].Type`）、经 `OnRoomFrame` seam 透传。真正断点 = `dbnRouter.onRoomFrame` 构造 TrackObs 时**丢了 CellAreaType** + belief 无 ramp。**所以 seam 零改动**，修复边界缩到 adapter+emission。
+
+**实施（6 文件，seam 不动，commit 见下）**：
+1. `belief/survival.go`（**新建，移植 Tsensor 蓝本**）：`dwellTailFor(roomType,areaType)` + `fallLRFromDwell(...)` + dwell 常量。areaType 数值与 Xsensorv1 `AreaType` 枚举一致（Bed=2/Sit=3/Deny=5/Shower=6/Toilet=7），roomType=card.RoomType（Bathroom=1）。
+2. `belief/emission.go`：dwell 块拆两半——**SFallen 走 per-zone ramp**（替 `StillSec≥stillTau` 那条对 SFallen 的 boost）；**保留 SBed/SOpenFloor/SSit 的占用塑形**（still≥τ 抬 SBed·罚活动态），减小回归面（fall 单走 ramp，占用形态不变）。
+3. `belief/observation.go` + `adapter`：`Observation`/`RadarTrack` 加 `AreaType/RoomType`，`BuildObservation` 透传（零签名改动）。
+4. `cmd/xsensor/main.go` + `bootstrap.go`：TrackObs 填 `int(b.CellAreaType)` + `g.roomType`；合成 bed-track 设 AreaType=2（bed 不报）；roomGeom 加 roomType。
+
+**本轮范围 = ① per-zone scale 载重最小集**。tolerance 反向（`toleranceMult`，破近吸收棘轮）+ 夜间短尾 + 雷达边缘暂传中性（1.0/false/0），②③ 下轮叠（逐 case 单变量归因）。
+
+**FN-safe（守的红线）**：per-zone scale 只放松「纯久静」敏感度（toilet 60s→20min），ramp 渐进 + 摔证据（pose lying / z 直立缺失走 dwell）不受 scale 拖延——真长躺 >scale 照样 ramp 过阈。真摔不靠久静也能浮出（pose=Fallen/lying 经 PoseLying boost 直抬 SFallen）。
+
+**验收闸**：真 case 重放（铁律 [[validate_real_case_no_unit_tests]]）——d523-0611 应熄火 / d5f7-0524 bathroom 真摔仍报 / 久坐马桶不火。结果见下「验证」追加。
+
+**给 C**：① 移植蓝本取 survival.go 那套（toilet20/sit90/默认12），**非** Xsensorv1 现有 `fall_rules_param.go` 的 stale 15/5/8min（退役 gate 路径）。② SBed dwell boost 保留（fall 单走 ramp）这个取舍要在 cd2b 在床 case 复核睡床人不衰减成 SEmpty。③ roadmap §127「FallRulesParam.Still DBN 永久消费」那行 A 会订正为「per-area 阈本轮才经 CellAreaType 接进 emission ramp」。
+
+---
+
 ## 2026-06-16（其十二）— W3.2 单房 roomengine 主循环 + cd2b 零回归（gate②，待 C 复审）
 
 C §43 过 gate①。起 **W3.2**（commit edbc56b）：新建 `engine` 包 `Room{filter+coupling+emission+decider}` + `Tick(fi, rhoXroom, pFallReal)` = 四轴主循环单源；replay.Run 重构复用 engine.Room（删内联循环 + dup Frame 类型，主循环单源 #1.3）。

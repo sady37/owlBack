@@ -31,9 +31,13 @@ type Observation struct {
 	// 雷达轴 → S。RadarOnline=false → 雷达全轴 ℓ≡1（离线=中性）。
 	RadarOnline bool
 	PoseLying   bool    // pose=Lying（二义：AtBed ∨ Fallen，刻意不分）
-	StillSec    float64 // dwell：连续静止秒（≥τ → 静止占用 D>1）
+	StillSec    float64 // dwell：连续静止秒（喂 survival per-zone ramp + ≥τ 占用塑形）
 	NearBed     bool    // HR/RR 空间邻域门控（§5 用 nearBed 非 enterBed）
 	ZBand       ZBand   // 高度档（ObsZBand）：正向抬直立态（Sit/OpenFloor），抵消 dwell 对久坐的误判；贴地=中性
+	// dwell 久静 fall 的 per-zone 尾尺度选择（survival.go dwellTailFor）。AreaType=cell.Belief[0].Type
+	// （CellAreaType 经 seam 透传，Bed=2/Sit=3/Deny=5/Shower=6/Toilet=7）；RoomType=card.RoomType（Bathroom=1）。
+	AreaType int
+	RoomType int
 
 	// HR/RR（§5 非对称 + §D 门控）：
 	HRRRObserved      bool // 本 tick 有 vital 通道读数；false=无通道 → 中性

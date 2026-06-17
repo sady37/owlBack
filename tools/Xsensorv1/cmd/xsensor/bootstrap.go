@@ -219,6 +219,7 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 				sleepadPresent: hasSleepad, // 用 DB 设备(非 cfg.Sleepads 画layout)→ 修 radar 房 sleepad 漏判
 				radarLess:      !hasLayout,
 				nb:             nb,
+				roomType:       roomType, // dwell per-zone ramp 选尾（Bathroom=1 → toilet/shower 20min）
 			}
 			seed := adapter.FrameInput{Beds: beds, Covers: ones(nb), Onbed: ones(nb), Overlap: ones(nb)}
 			router.rooms[roomID] = engine.NewRoom(adapter.BedGeoms(seed), nb)
