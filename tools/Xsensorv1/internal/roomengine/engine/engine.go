@@ -207,11 +207,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		}
 	}
 	for _, id := range dropIDs {
-		delete(r.filters, id)
-		delete(r.deciders, id)
-		delete(r.floorGuards, id)
-		delete(r.blindSinceMs, id)
-		r.census.Drop(id)
+		r.dropTrack(id)
 	}
 
 	// F1 alone-streak 末更（同 realStreak 时序）：真人占用==1 续起点。
@@ -252,6 +248,20 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	for id, s := range newStreak {
 		if s >= arrivalConfirmFrames {
 			r.prevConfirmed[id] = true
+		}
+	}
+
+	// abort-2（§82,乙）：本帧新现 confirmed-real 活人(gained>0)→放弃同房 **D 窗内** blind faller 待报。
+	//   依据：新活人 = 本人起身(无需报) 或 他人到场(自然能发现 fall，无需报) = 风险分层降级(署名接受 FN 残余)。
+	//   只撤 D 窗内未释放的(past-D 已 fire 的不撤)；gained 必来自 present track，不会误伤 faller 自身。
+	if gained > 0 {
+		for i := range results {
+			f := forensic[i]
+			if !f.Present && r.blindSinceMs[f.LogicID] != 0 &&
+				r.dWindowMs > 0 && fi.NowMs-r.blindSinceMs[f.LogicID] < r.dWindowMs {
+				results[i].d.Fire = false
+				r.dropTrack(f.LogicID)
+			}
 		}
 	}
 
@@ -321,4 +331,13 @@ func (r *Room) aloneMinAsOf(nowMs int64) float64 {
 		return 0
 	}
 	return float64(nowMs-r.aloneStreakStartMs) / 60000.0
+}
+
+// dropTrack 移除一条 track 的全部 per-logicID 状态（filter/decider/floor/D 计时 + census）。状态驱动，非 TTL。
+func (r *Room) dropTrack(id int) {
+	delete(r.filters, id)
+	delete(r.deciders, id)
+	delete(r.floorGuards, id)
+	delete(r.blindSinceMs, id)
+	r.census.Drop(id)
 }
