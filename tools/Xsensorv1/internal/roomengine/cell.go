@@ -163,7 +163,7 @@ type Cell struct {
 	InsideEnterEvidenceN int
 	InsideEnterLearned   bool
 
-	// ---- Cell history integral（自适应阈值反馈，详见 fall_rules_param.go）----
+	// ---- Cell history integral（自适应阈值反馈，参数见本文件 cellFakeAlarmThreshold 等）----
 	// FakeAlarmCount: 在该 cell 触发的 fall 报警被人工标 false_alarm 累计次数（"Other" 兜底）
 	// ToleratedStillCount: track 在该 cell 长时间 stand-static 但最终自己离开（无 fall 报警）累计次数
 	// BlindSpotRecoveryCount: 人在 lost-fall pending 期间从该 cell 重新出现（盲区返回端点）次数
