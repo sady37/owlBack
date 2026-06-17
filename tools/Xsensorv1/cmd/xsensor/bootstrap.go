@@ -225,7 +225,9 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 				nb:             nb,
 			}
 			seed := adapter.FrameInput{Beds: beds, Covers: ones(nb), Onbed: ones(nb), Overlap: ones(nb)}
-			router.rooms[roomID] = engine.NewRoom(adapter.BedGeoms(seed), nb)
+			// §82 D 窗 = thresholdNonRest(12min) + 2min 余量（单源锚 roomengine.ThresholdNonRestMs，belief/engine 不持字面量）。
+			dWindowMs := int64(roomengine.ThresholdNonRestMs) + 2*60*1000
+			router.rooms[roomID] = engine.NewRoom(adapter.BedGeoms(seed), nb, dWindowMs)
 			// unitKey = suiteID（SQL 已 network() zero 主机位 → 同 /80 房共享；public bathroom=自身/128 独立）。
 			router.roomUnit[roomID] = cfg.SuiteID
 		}

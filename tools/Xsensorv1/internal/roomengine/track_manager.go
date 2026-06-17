@@ -1547,6 +1547,10 @@ func positionAtMsAgo(ts *TrackState, nowMs int64, windowMs int64) (TimedPoint, b
 	return ts.History[0], true
 }
 
+// ThresholdNonRestMs 非休息区 region-static 门限（12min，老人慢走容差）；neighbor D 窗锚此 + 余量
+// （§82 单源：belief/engine 侧不持 12min 字面量，由 bootstrap 注入 Room）。
+const ThresholdNonRestMs = 12 * 60 * 1000
+
 // updateRegionStatic PR-13：region static 累积器 + A/B 路径触发判定。
 //
 // 区域定义：连续帧间 |dx|≤15 AND |dy|≤15（D523 实测 ~96% 帧满足；single-axis 跳变 ≤5%）。
@@ -1568,8 +1572,8 @@ func (tm *TrackManager) updateRegionStatic(ts *TrackState, prev TimedPoint, x, y
 		ratioResetMin    = 0.85 // ratio 跌破此值 → region 失效 reset
 		zJumpMinCm       = 10
 		zJumpMinElapse   = 2 * 60 * 1000  // 2 min
-		thresholdRest    = 8 * 60 * 1000  // RestZone cell: 8min
-		thresholdNonRest = 12 * 60 * 1000 // 其它: 12min
+		thresholdRest    = 8 * 60 * 1000      // RestZone cell: 8min
+		thresholdNonRest = ThresholdNonRestMs // 其它 12min（= 导出 ThresholdNonRestMs，§82 neighbor D 锚单源）
 	)
 
 	dx := x - prev.X

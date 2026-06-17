@@ -74,10 +74,15 @@ type Room struct {
 	//   **非** census.Nr() present-only——否则独居者摔进 blind 时占用掉 0 误清零计时（lost-fall FN）。
 	aloneStreakStartMs int64
 	notSoloFrames      int // 连续占用≠1 帧数（重置抗抖动柱②：≥arrivalConfirmFrames 才清 alone-streak）
+	// §82 D 窗（neighbor lost-fall 兜底耐心窗）：blind track 起算时戳（per logicID）+ 窗长（bootstrap 注入
+	//   = thresholdNonRest+2min；0=未注入→D 关闭=旧行为）。只压"这条 blind 自己的 lost-fall fire"。
+	blindSinceMs map[int]int64
+	dWindowMs    int64
 }
 
-// NewRoom 建单房引擎。geom = 床几何（adapter.BedGeoms 从 layout 派生）；nb = 床数。
-func NewRoom(geom []belief.BedGeom, nb int) *Room {
+// NewRoom 建单房引擎。geom = 床几何（adapter.BedGeoms 从 layout 派生）；nb = 床数；
+// dWindowMs = §82 neighbor D 窗长（bootstrap 注入 thresholdNonRest+2min；0=D 关闭）。
+func NewRoom(geom []belief.BedGeom, nb int, dWindowMs int64) *Room {
 	return &Room{
 		model:         belief.DefaultModel(),
 		js:            belief.NewJointSpace(nb),
@@ -91,6 +96,8 @@ func NewRoom(geom []belief.BedGeom, nb int) *Room {
 		p:             adapter.DefaultParams(),
 		realStreak:    map[int]int{},
 		prevConfirmed: map[int]bool{},
+		blindSinceMs:  map[int]int64{},
+		dWindowMs:     dWindowMs,
 	}
 }
 
@@ -172,6 +179,20 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 				d.Band = "floor"
 			}
 		}
+		// §82 D 窗：只压"这条 blind track 自己的 lost-fall fire"。present 摔不进此分支(柱A 结构免疫)；
+		//   别的 track/floor fire 经房间 OR 照穿(其它 fire 直接 fire)。recovery(Present 回)→清计时退闸→回
+		//   正常 present 裁决；D 到点→停压释放(柱B：放过 decider fired，非硬开火)；sibling handoff 经下方
+		//   rho→absorb-drop 解析(瞬态巧合压不死→D 仍兜)。dWindowMs=0→D 关闭(旧行为/零回归)。
+		if ts.Present {
+			delete(r.blindSinceMs, ts.LogicID)
+		} else {
+			if r.blindSinceMs[ts.LogicID] == 0 {
+				r.blindSinceMs[ts.LogicID] = fi.NowMs
+			}
+			if r.dWindowMs > 0 && fi.NowMs-r.blindSinceMs[ts.LogicID] < r.dWindowMs {
+				d.Fire = false
+			}
+		}
 		// 资格恒真：realness 绝不按 PR 把 fall 排出 room OR（同 pFallReal=1，fall 不压）。任一 track（含 blind 续存）
 		//   的摔都进房间 OR——ghost fall 可能是真人摔的镜像，宁报不漏。realness 的影响只在 N_r（→ C_FN 折扣，帮 fire）。
 		eligible := true
@@ -189,6 +210,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		delete(r.filters, id)
 		delete(r.deciders, id)
 		delete(r.floorGuards, id)
+		delete(r.blindSinceMs, id)
 		r.census.Drop(id)
 	}
 
