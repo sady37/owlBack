@@ -76,10 +76,15 @@ func (p decideParams) cFN(rc RiskContext) float64 {
 // Decision 一帧裁决结果 + forensic（probe/sdl）。
 type Decision struct {
 	Fire         bool    // 持续 ≥ T_hold 后的最终触发
+	InstFire     bool    // 本帧瞬时判据满足（未含持续）
 	Band         string  // 落在哪档：report(≥55) / no(≤45) / tie(45-55可判) / indeterminate(高度不可判)
+	PFallen      float64 // P^F_t
 	PeopleCount  int     // N_r（人数单源 = TrackCensus.Nr()，已排 ghost；forensic + 拍法 A 守门校验）
+	CFN          float64 // C_FN(risk)（仅 tie 档参与）
 	Margin       float64 // P^F − 报阈（诊断：>0 越确定该报）
+	Lambda       float64 // Λ_t 似然比
 	Identifiable bool    // Λ_t > 阈 = 可判（§26 起 **参与裁决**：高度不可判默认不报）
+	FireSinceMs  int64   // 瞬时条件起始（持续计时；0=未武装）
 }
 
 // 55% 三分阈 + 可判阈（form-anchor，留 oracle）。
@@ -125,10 +130,15 @@ func (d *Decider) Step(nowMs int64, pFallen, lambda float64, rc RiskContext) Dec
 
 	return Decision{
 		Fire:         fired,
+		InstFire:     inst,
 		Band:         band,
+		PFallen:      pFallen,
 		PeopleCount:  rc.PeopleCount,
+		CFN:          cfn,
 		Margin:       pFallen - pFireHi, // 诊断：距报阈的距离
+		Lambda:       lambda,
 		Identifiable: identifiable,
+		FireSinceMs:  d.fireSinceMs,
 	}
 }
 
