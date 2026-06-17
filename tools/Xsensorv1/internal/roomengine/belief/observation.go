@@ -31,9 +31,13 @@ type Observation struct {
 	// 雷达轴 → S。RadarOnline=false → 雷达全轴 ℓ≡1（离线=中性）。
 	RadarOnline bool
 	PoseLying   bool    // pose=Lying（二义：AtBed ∨ Fallen，刻意不分）
-	StillSec    float64 // dwell：连续静止秒（≥τ → 静止占用 D>1）
+	StillSec    float64 // still-box 总时长（连续静止秒）：每帧二值喂 dwell；总量喂 floor 兜底（main 读 b.StillBoxSec）
 	NearBed     bool    // HR/RR 空间邻域门控（§5 用 nearBed 非 enterBed）
 	ZBand       ZBand   // 高度档（ObsZBand）：正向抬直立态（Sit/OpenFloor），抵消 dwell 对久坐的误判；贴地=中性
+	// AreaType track 当前 cell.Belief[0].Type（CellAreaType 每帧读活的，经 seam）。FN-safe **正向压制**：
+	// bed/sit/toilet 区 → 抬对应静止态压 Fallen（redirect）。权重有上限（守门1：低到 still 久静能翻，不锁死）。
+	// Bed=2/Sit=3/Active=4/Deny=5/Shower=6/Toilet=7（同 roomengine.AreaType）。
+	AreaType int
 
 	// HR/RR（§5 非对称 + §D 门控）：
 	HRRRObserved      bool // 本 tick 有 vital 通道读数；false=无通道 → 中性

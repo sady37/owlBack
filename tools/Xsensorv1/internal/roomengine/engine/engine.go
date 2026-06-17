@@ -61,8 +61,9 @@ type Room struct {
 	cp            *belief.Coupling
 	em            *belief.Emission
 	census        *adapter.TrackCensus
-	filters       map[int]*belief.Filter  // 每 logicID 一份 S/B 联合滤波（§A.3② 隐维复制）
-	deciders      map[int]*belief.Decider // 每 logicID 一份持续计时裁决
+	filters       map[int]*belief.Filter     // 每 logicID 一份 S/B 联合滤波（§A.3② 隐维复制）
+	deciders      map[int]*belief.Decider    // 每 logicID 一份持续计时裁决
+	floorGuards   map[int]*belief.FloorGuard // 每 logicID 一份 FN-safe 兜底（总时长 floor，契约其十五）
 	nb            int
 	p             adapter.Params
 	lastMarg      belief.Vector // 末帧房间代表 track 的 S 边缘（MarginalS 读出）
@@ -80,6 +81,7 @@ func NewRoom(geom []belief.BedGeom, nb int) *Room {
 		census:        adapter.NewTrackCensus(adapter.DefaultTrackCensusParams()),
 		filters:       map[int]*belief.Filter{},
 		deciders:      map[int]*belief.Decider{},
+		floorGuards:   map[int]*belief.FloorGuard{},
 		nb:            nb,
 		p:             adapter.DefaultParams(),
 		realStreak:    map[int]int{},
@@ -120,21 +122,25 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		}
 		f := r.filters[ts.LogicID]
 		dec := r.deciders[ts.LogicID]
+		fg := r.floorGuards[ts.LogicID]
 		if f == nil {
 			f = belief.NewFilter(r.model, r.nb) // 出生：新 logicID 起一份滤波（隐维复制）
 			dec = belief.NewDecider()
-			r.filters[ts.LogicID], r.deciders[ts.LogicID] = f, dec
+			fg = belief.NewFloorGuard()
+			r.filters[ts.LogicID], r.deciders[ts.LogicID], r.floorGuards[ts.LogicID] = f, dec, fg
 		}
 
 		var logPsi, logPhi belief.JointVector
+		var obs belief.Observation
 		// pFallReal 恒 1.0：realness **绝不否决 fall**（FN-safe 铁律 [[realness_axis_redefined_real_vs_mirror]]「fall 不压」）。
 		//   有 ghost(≥2 track)时是镜像二义：ghost fall 可能就是真人摔的镜像（真人摔→反射也摔）→ 要否决一个 fall 得有
 		//   ~95% 把握「这绝不是真摔」，二义下永远凑不齐；且漏报(人躺地没人救)≫误报(白跑一趟)。realness 只喂 N_r（排
 		//   ghost 防 1 真人+1 影子当 2 人误折扣 C_FN）——只帮 fire 从不压 fall。原 §61 present≥2→pFallReal=PR 是错方向。
 		pFallReal := 1.0
 		if ts.Present {
+			obs = adapter.BuildObservation(ts.Obs.RadarTrack, fi.Sleepads, fi.Beds, r.p)
 			logPsi = r.cp.LogPsi(r.js, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p))
-			logPhi = r.em.LogPhi(r.js, adapter.BuildObservation(ts.Obs.RadarTrack, fi.Sleepads, fi.Beds, r.p))
+			logPhi = r.em.LogPhi(r.js, obs)
 		}
 		// 消失态：logPsi/logPhi=nil → Correct 中性，仅 Predict 自持（blind 续存告警连续，无 TTL）。
 		f.Step(fi.NowMs, online, logPsi, logPhi, rhoXroom, pFallReal)
@@ -142,6 +148,23 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		pF := f.Space().PFallen(f.Alpha())
 		lam := belief.ComputeLambda(f.Space(), neutralIfNil(logPsi, r.js), neutralIfNil(logPhi, r.js))
 		d := dec.Step(fi.NowMs, pF, lam, rc)
+		// FN-safe 兜底 floor（契约其十五）：present 时总时长 ≥ T_floor(按 area) 且无正向休息证据 → 强制 fire。
+		//   接住 emission 被 area误学/z假阳/接触假阳误压的真摔。消失态不走 floor（走 blind 续存）。
+		if ts.Present {
+			zUp := obs.ZBand == belief.ZSit || obs.ZBand == belief.ZStand
+			contactInBed := false
+			for _, br := range obs.Sleepad {
+				if br == belief.BedInBed {
+					contactInBed = true
+				}
+			}
+			if fg.Step(obs.StillSec, obs.AreaType, zUp, contactInBed) {
+				d.Fire = true
+				if d.Band == "" || d.Band == "no" || d.Band == "indeterminate" {
+					d.Band = "floor"
+				}
+			}
+		}
 		// 资格恒真：realness 绝不按 PR 把 fall 排出 room OR（同 pFallReal=1，fall 不压）。任一 track（含 blind 续存）
 		//   的摔都进房间 OR——ghost fall 可能是真人摔的镜像，宁报不漏。realness 的影响只在 N_r（→ C_FN 折扣，帮 fire）。
 		eligible := true
@@ -161,6 +184,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	for _, id := range dropIDs {
 		delete(r.filters, id)
 		delete(r.deciders, id)
+		delete(r.floorGuards, id)
 		r.census.Drop(id)
 	}
 

@@ -24,12 +24,25 @@ type emissionParams struct {
 	dwellLo  float64 // <1：still≥τ|O/Sit（活动态久静受罚）
 	stillTau float64 // dwell 阈 τ（秒）；cell 容忍/夜间对 τ 的调制属 decide/adapter 层（feedback-p6C §6/§7）
 	lZ       float64 // ObsZBand 正向抬直立态(Sit/OpenFloor)的倍数；须 ≳ dwellHi/dwellLo 抵消久坐 dwell 误判
+	lArea    float64 // area_type 正向压制倍数（bed/sit/toilet→抬对应静止态）。**须 < dwellHi**（守门1：
+	//                  低到 still 久静主路径能翻过 area 误学，不锁死——area=Sit 的真摔仍逐帧被 still 翻成 Fallen）
 }
+
+// roomengine.AreaType 枚举值（belief 不 import roomengine，本地常量对齐）。
+const (
+	areaBed    = 2
+	areaSit    = 3
+	areaActive = 4
+	areaEnter  = 1
+	areaDeny   = 5
+	areaShower = 6
+	areaToilet = 7
+)
 
 func defaultEmissionParams() emissionParams {
 	return emissionParams{
 		lIn: 20, lLeft: 20, lPose: 3, lHR: 5,
-		dwellHi: 3, dwellLo: 0.5, stillTau: 60, lZ: 8,
+		dwellHi: 3, dwellLo: 0.5, stillTau: 60, lZ: 8, lArea: 2,
 	}
 }
 
@@ -99,6 +112,20 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 			SBed: e.p.dwellHi, SFallen: e.p.dwellHi,
 			SOpenFloor: e.p.dwellLo, SSit: e.p.dwellLo,
 		}, w, SBed, SFallen, SOpenFloor, SSit)
+	}
+
+	// area_type 正向压制（每帧读活的 cell）：FN-safe 默认偏 Fallen，由位置正向证据 redirect 到对应静止态。
+	//   bed→SBed / sit→SSit / toilet·shower→SBath+SSit / active·enter→SOpenFloor；deny·unknown 中性。
+	//   权重 lArea < dwellHi（守门1）：area 误学(如假 Sit)的真摔，still 久静逐帧累积仍能翻成 Fallen，不锁死。
+	switch o.AreaType {
+	case areaBed:
+		addLogLk(&logS, Vector{SBed: e.p.lArea}, w, SBed)
+	case areaSit:
+		addLogLk(&logS, Vector{SSit: e.p.lArea}, w, SSit)
+	case areaToilet, areaShower:
+		addLogLk(&logS, Vector{SBath: e.p.lArea, SSit: e.p.lArea}, w, SBath, SSit)
+	case areaActive, areaEnter:
+		addLogLk(&logS, Vector{SOpenFloor: e.p.lArea}, w, SOpenFloor)
 	}
 
 	// z 高度档(ObsZBand)：**单向正向证据，绝不负向**（device-room-zone.md）。坐高(30-60)→抬 Sit、

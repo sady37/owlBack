@@ -156,6 +156,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		tracks = append(tracks, adapter.TrackObs{RadarTrack: adapter.RadarTrack{
 			Online: b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
 			StillSec: float64(b.StillBoxSec),
+			AreaType: int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
 		}})
 	}
 	// sleepad-only 房(无雷达 track)：InBed 合成一条 bed-track 作 B 轴载体(engine.Room track-centric，
@@ -164,6 +165,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	if g.radarLess && reading == belief.BedInBed {
 		tracks = append(tracks, adapter.TrackObs{RadarTrack: adapter.RadarTrack{
 			Online: true, Pose: poseLying, X: 0, Y: 0, Z: 0,
+			AreaType: 2, // 合成 bed-track：AreaBed → 压向 SBed（sleepad-only 床占用，无摔判定）
 		}})
 	}
 

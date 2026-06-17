@@ -28,7 +28,8 @@ type RadarTrack struct {
 	Pose     int     // observation pose 枚举（6=Lying）
 	X, Y, Z  int     // canvas cm
 	HR, RR   int     // 0=无信号
-	StillSec float64 // 连续静止秒（still-box）
+	StillSec float64 // 连续静止秒（still-box 总时长）
+	AreaType int     // track 当前 cell.Belief[0].Type（CellAreaType 透传）→ emission 正向压制 + floor per-area 阈
 }
 
 // SleepadFrame 单床 sleepad raw 量（§32 二态：设备在线 OR 没有，不建模中途掉线）。
@@ -170,6 +171,7 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, p Para
 		HRRRObserved:      t.HR > 0 || t.RR > 0,
 		HRRRPresent:       t.HR > 0 || t.RR > 0,
 		VitalSourceOnline: vitalSrc,
+		AreaType:          t.AreaType,
 	}
 }
 
