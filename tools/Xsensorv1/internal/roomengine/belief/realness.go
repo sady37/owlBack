@@ -13,7 +13,7 @@ import "math"
 //	                破对称(§9.1 先到=real 锚)。近门(§9.3①)/自主移动 = rEv real 率(D 软斜坡，连续无阈)。
 //	单 tick(§9.4) = 率 ×dt 积分 → 小 dt 瞬态跳变概率≈0，自然忽略。
 //
-// 输出 PReal=bR 连续后验(→ FE track confidence ×100；内部 N_r/pFallReal 软阈 0.5)，非二元 ghost/real 判定。
+// 输出 PReal=bR 连续后验(→ FE track confidence ×100；内部 N_r 软阈 0.5)，非二元 ghost/real 判定。
 //
 // 权重 = 形态锚(铁律 [[fall_data_is_artificial_test]]：非权威值，留 oracle)。
 const (
@@ -70,7 +70,7 @@ func (r *RealnessTrack) Update(o RealnessObs) {
 	r.bR, r.bM = r.bR*(1-pRM)+r.bM*pMR, r.bM*(1-pMR)+r.bR*pRM
 }
 
-// PReal 真人后验(= pFallReal 调制 SFallen 发射 + N_r 计数 + FE confidence ×100)。
+// PReal 真人后验(→ N_r 计数 + FE confidence ×100)。
 func (r *RealnessTrack) PReal() float64 { return r.bR }
 
 // PMirror 镜像后验(有真人源 ghost；forensic + FE 观测)。

@@ -216,7 +216,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	for _, t := range fr.Tracks {
 		dbn = append(dbn, map[string]interface{}{
 			"lid": t.LogicID, "present": t.Present, "p_real": t.PReal, "p_mirror": t.PMirror,
-			"is_refl": t.IsReflection, "p_fall_real": t.PFallReal, "p_fallen": t.PFallen,
+			"is_refl": t.IsReflection, "p_fallen": t.PFallen,
 			"fire": t.Fire, "band": t.Band,
 			"x": t.X, "y": t.Y, "sep": t.Sep, "wall_margin": t.WallMargin, "rho": t.Rho, "later": t.LaterBorn,
 		})

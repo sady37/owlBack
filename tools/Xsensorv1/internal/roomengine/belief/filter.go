@@ -152,32 +152,14 @@ func (f *Filter) Correct(logPsi, logPhi JointVector) {
 	f.alpha.LogNormalize()
 }
 
-// foldRealness realness 折进 logPhi（C §42：SFallen 发射 ×P(real)，走同一 Correct 路径 = 真内化，
-//   非软 gate）。pFallReal = 本房 fall 证据来自真人的后验 ∈[0,1]；≥1 中性（假设真人 → 零回归 oracle）；
-//   →0 = ghost 的「摔」喂不动 SFallen（真人摔倒 P(real) 高则不被抑制 = 共生律 [[bed_fusion_authority_model]]）。
-func (f *Filter) foldRealness(logPhi JointVector, pFallReal float64) JointVector {
-	if pFallReal >= 1.0 {
-		return logPhi // 中性：原样返回（零回归 oracle 的一半）
-	}
-	js := f.space
-	out := js.NewJointVector()
-	if logPhi != nil {
-		copy(out, logPhi)
-	}
-	lr := logP(pFallReal)
-	for b := 0; b < js.bmaskN; b++ {
-		out[js.idx(SFallen, b)] += lr
-	}
-	return out
-}
-
 // Step 一帧推进。dtMs≤0（同帧重入）跳过 Predict。
-// rhoXroom（neighbor，进 Predict）/ pFallReal（realness，折 logPhi）；中性值 (0, 1) → 逐 tick 等价 S/B-only。
-func (f *Filter) Step(nowMs int64, online BedOnline, logPsi, logPhi JointVector, rhoXroom, pFallReal float64) {
+// rhoXroom（neighbor，进 Predict）；中性值 0 → 逐 tick 等价 S/B-only。
+// realness 绝不在此压 fall（FN-safe 铁律 [[realness_never_vetoes_fall]]：realness 只喂 N_r，不调制 SFallen 发射）。
+func (f *Filter) Step(nowMs int64, online BedOnline, logPsi, logPhi JointVector, rhoXroom float64) {
 	if f.lastTs > 0 && nowMs > f.lastTs {
 		f.Predict(online, rhoXroom)
 	}
-	f.Correct(logPsi, f.foldRealness(logPhi, pFallReal))
+	f.Correct(logPsi, logPhi)
 	if nowMs > f.lastTs {
 		f.lastTs = nowMs
 	}

@@ -43,7 +43,6 @@ type TrackForensic struct {
 	PReal        float64 // 真人后验（realness 轴；ghost→低）
 	PMirror      float64 // 镜像后验
 	IsReflection bool    // 桶二镜面几何判定
-	PFallReal    float64 // 消费门控后喂 SFallen 发射的真人折扣（孤轨=1 永发；共存≥2 才压）
 	PFallen      float64 // per-track P^F
 	Fire         bool    // per-track 裁决（持续≥T_hold）
 	Band         string  // per-track 档（report/no/tie/indeterminate）
@@ -147,18 +146,13 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 
 		var logPsi, logPhi belief.JointVector
 		var obs belief.Observation
-		// pFallReal 恒 1.0：realness **绝不否决 fall**（FN-safe 铁律 [[realness_axis_redefined_real_vs_mirror]]「fall 不压」）。
-		//   有 ghost(≥2 track)时是镜像二义：ghost fall 可能就是真人摔的镜像（真人摔→反射也摔）→ 要否决一个 fall 得有
-		//   ~95% 把握「这绝不是真摔」，二义下永远凑不齐；且漏报(人躺地没人救)≫误报(白跑一趟)。realness 只喂 N_r（排
-		//   ghost 防 1 真人+1 影子当 2 人误折扣 C_FN）——只帮 fire 从不压 fall。原 §61 present≥2→pFallReal=PR 是错方向。
-		pFallReal := 1.0
 		if ts.Present {
 			obs = adapter.BuildObservation(ts.Obs.RadarTrack, fi.Sleepads, fi.Beds, r.p)
 			logPsi = r.cp.LogPsi(r.js, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p))
 			logPhi = r.em.LogPhi(r.js, obs)
 		}
 		// 消失态：logPsi/logPhi=nil → Correct 中性，仅 Predict 自持（blind 续存告警连续，无 TTL）。
-		f.Step(fi.NowMs, online, logPsi, logPhi, rhoXroom, pFallReal)
+		f.Step(fi.NowMs, online, logPsi, logPhi, rhoXroom)
 
 		mS := f.Space().MarginalS(f.Alpha())
 		// F1 真人占用：PReal≥0.5（排 ghost）∧ S∉{Empty,Left}（含 blind 续存的 faller，未 absorbed 离场）。
@@ -193,12 +187,12 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 				d.Fire = false
 			}
 		}
-		// 资格恒真：realness 绝不按 PR 把 fall 排出 room OR（同 pFallReal=1，fall 不压）。任一 track（含 blind 续存）
-		//   的摔都进房间 OR——ghost fall 可能是真人摔的镜像，宁报不漏。realness 的影响只在 N_r（→ C_FN 折扣，帮 fire）。
+		// 资格恒真：realness 绝不按 PR 把 fall 排出 room OR。任一 track（含 blind 续存）的摔都进房间 OR——
+		//   ghost fall 可能是真人摔的镜像，宁报不漏。realness 的影响只在 N_r（→ C_FN 折扣，帮 fire）。
 		eligible := true
 		results = append(results, trackResult{d: d, pF: pF, lam: lam, eligible: eligible, f: f})
 		forensic = append(forensic, TrackForensic{LogicID: ts.LogicID, Present: ts.Present, PReal: ts.PReal,
-			PMirror: ts.PMirror, IsReflection: ts.IsReflection, PFallReal: pFallReal, PFallen: pF, Fire: d.Fire, Band: d.Band,
+			PMirror: ts.PMirror, IsReflection: ts.IsReflection, PFallen: pF, Fire: d.Fire, Band: d.Band,
 			X: ts.Obs.X, Y: ts.Obs.Y, Sep: ts.Sep, WallMargin: ts.WallMargin, Rho: ts.Rho, LaterBorn: ts.LaterBorn})
 
 		// drop（状态驱动）：消失 track 的 S^(i) 吸收到 {Left,Empty} → 离场确认 → drop（非 TTL）。
