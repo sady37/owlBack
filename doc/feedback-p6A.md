@@ -756,5 +756,6 @@ C 指出：A 的"造 ObsNoDetect ramp 把无离房证据的 blind 顶过 55% 开
 3. **C 把关 1（防 flicker）**：ramp 须有**丢轨时长门槛**——短暂 flicker（固件几帧正常抖）不启动，仅确认持续 lost 才解析。结构约束 > 速率数值。
 4. **C 把关 2（拆锁②不绕仲裁）**：lost 路径不走 `ComputeLambda` identifiable gate（blind 无 emission，拿"没 emission"判"不可判"是循环），但 ramp 出的 P^F **仍走正常 ≥55 report / 45-55 tie 仲裁 + D 窗 + tHold**，不绕直报。
 5. **原则 1（leftRoom lost 反算）**：作"离房证据"喂双向解析的 cancel 侧（有趋势→偏 cancel/Left，无趋势→不阻 fire 侧解析）。
+6. **决断窗 = 赛跑预算（架构师拍）**：D 窗 = **reset 阈值(thresholdNonRest) + 2min margin**，语义=给两条原则留足时间、**谁的证据先到用谁**——窗内 handoff/重现先到→cancel；无 handoff、ramp 熬到窗尾→fire。**ramp 须配速到窗长**：让邻房 handoff（注册需时）有完整窗抢先，无 handoff 时 ramp 才在窗尾跨 55%（防 ramp 太快误火真 handoff，呼应把关 3）。coverage 决定 fire 侧有无 runner（零覆盖→无 ramp→克制）。D 到点放行与此自洽。
 
 速率/时长阈/coverage 阈全留 oracle（铁律 [[fall_data_is_artificial_test]]），规格只钉**结构约束**不拍数。
