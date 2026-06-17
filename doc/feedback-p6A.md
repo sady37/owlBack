@@ -871,6 +871,11 @@ discount = min(所有命中的直立因子)            ← 取最强折扣(min=�
 - **min 不相乘**：避免坐着（pose=sit ∧ z∈[30,60)）叠成 0.72 把容忍拉到 ~125min 的过折扣；改"最强的单个直立信号说了算"。
 - **z>=60 用 0.5 不清空**（架构师采纳 A 的 FN 论据，否决"清空"直觉）：① 真站起来必有 disp>50 移动 → StillBoxSec **自己清零**，不靠 z；② 站着不动（罕见，真站也会晃→移动→清）有效时长按半速涨、容忍翻倍才报 = 可接受 FP；③ 站着然后摔 → z 落回 → 折扣撤 → 满速算 → **摔被抓住**。
 
+**🔴 C 点 + 架构师订正（z 不可双压；非撤 ZBand，是改处理方式 + z/pose 统一在 still-box 计算时算折扣）**：
+- **C 点对**：现 emission `ZBand`（`ZStand→SOpenFloor +lZ=8` / `ZSit→SSit +lZ=8`，log 域强 boost 且逐帧累积）已把概率从 SFallen 拉走；新折扣 z≥60→×0.5 又削一刀 = **同一个 z>60 压 SFallen 两次** → 站着慢慢瘫倒（z 仍高、pose 仍报站/坐）被两边夹死 → **过压漏报**，正打脸②"留 0.5 保瘫倒检出"。不可并存。
+- **架构师订正（非撤 ZBand）**：不是删除 z 的作用，是**修改 z 的处理方式**——z（和 pose）从"emission 独立 log 因子"**移入 still-box 计算时统一算折扣**。**理由：计算 StillBoxSec 时本就同时读 position 和 pose**（逐帧 position 算盒范围、pose/z 同帧即得），所以折扣在 still-box 计算处一并算出，**输出的就是有效（已折扣）StillBoxSec**。z 只作用一次（still-box 折扣），不再有 emission 那第二次 → 双压消除。
+- **结果**：emission 不再有独立 ZBand redirect（其角色并入 still-box 折扣）；`dwell→SFallen` boost（①病根）同删。z/pose 的全部作用 = still-box 计算时的一次性 min 折扣。**实现**：还原点不是"删 emission 块"而是"把 z/pose 处理从 emission 搬进 track_manager 算 still-box 的地方（updateContinuousIndicators，已读 position 帧），输出 effective StillBoxSec"。副作用：z 不再正向塑形 SSit/SOpenFloor，两态由 area_type+pose 认（fall 检测不依赖精确姿态分类，可接受）。
+
 ### ③ per-area deadline（still-box 最长时长）+ 必须有 deadline 的理由
 
 | 区域 | still-box 最长（deadline） | 理由 |
