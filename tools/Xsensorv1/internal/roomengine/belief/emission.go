@@ -20,9 +20,9 @@ type emissionParams struct {
 	lLeft    float64 // ℓ_sj(LeftBed|vac)=L_left≫1
 	lPose    float64 // ℓ_pose(lying|AtBed)=ℓ_pose(lying|F)>1（二义，刻意）
 	lHR      float64 // L_hr：present|AtBed 倍数（absent|AtBed=1/L_hr）
-	dwellHi  float64 // D>1：still≥τ → 抬 SBed（睡床久静占用塑形，**不再喂 SFallen**——fall 走 survival ramp）
-	dwellLo  float64 // <1：still≥τ → 罚 SOpenFloor/SSit（活动态久静）
-	stillTau float64 // SBed/活动态占用塑形的 still 阈 τ（秒）；**fall 久静阈已移 survival.go per-zone ramp**
+	dwellHi  float64 // D>1：still≥τ|F = still≥τ|AtBed
+	dwellLo  float64 // <1：still≥τ|O/Sit（活动态久静受罚）
+	stillTau float64 // dwell 阈 τ（秒）；cell 容忍/夜间对 τ 的调制属 decide/adapter 层（feedback-p6C §6/§7）
 	lZ       float64 // ObsZBand 正向抬直立态(Sit/OpenFloor)的倍数；须 ≳ dwellHi/dwellLo 抵消久坐 dwell 误判
 }
 
@@ -93,18 +93,12 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 		addLogLk(&logS, Vector{SBed: e.p.lPose, SFallen: e.p.lPose}, w, SBed, SFallen)
 	}
 
-	// dwell → SFallen：per-zone Weibull 生存 ramp（survival.go，替全局 stillTau 硬阈）。按 cell areaType/
-	// roomType 分尾尺度（toilet 20min·sit 90min·默认 12min·bed/deny 不报）让 area 配置掌控久静阈，
-	// 治本 60s 平阈在正常久坐/久站误火。tolerance/night/edge 暂中性——②③ 下轮叠。
-	if fallLR := fallLRFromDwell(o.StillSec, 1.0, o.RoomType, o.AreaType, false, 0); fallLR != 1.0 {
-		addLogLk(&logS, Vector{SFallen: fallLR}, w, SFallen)
-	}
-	// 静止占用形态（非 fall）：still≥τ → 抬 SBed（睡床久静）、罚 SOpenFloor/SSit（活动态久静）。
-	// 只塑造占用 vs 活动，**不碰 SFallen**（fall 单走上面 per-zone ramp）。
+	// dwell still≥τ：静止占用(F/AtBed) D>1；活动态(O/Sit) <1。dwell 不分 F/AtBed。
 	if o.StillSec >= e.p.stillTau {
 		addLogLk(&logS, Vector{
-			SBed: e.p.dwellHi, SOpenFloor: e.p.dwellLo, SSit: e.p.dwellLo,
-		}, w, SBed, SOpenFloor, SSit)
+			SBed: e.p.dwellHi, SFallen: e.p.dwellHi,
+			SOpenFloor: e.p.dwellLo, SSit: e.p.dwellLo,
+		}, w, SBed, SFallen, SOpenFloor, SSit)
 	}
 
 	// z 高度档(ObsZBand)：**单向正向证据，绝不负向**（device-room-zone.md）。坐高(30-60)→抬 Sit、

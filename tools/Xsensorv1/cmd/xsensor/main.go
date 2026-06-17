@@ -114,7 +114,6 @@ type roomGeom struct {
 	sleepadPresent bool
 	radarLess      bool // 无雷达 layout（sleepad-only 房）→ 无 S 轴，B 轴靠合成 bed-track
 	nb             int
-	roomType       int // card.RoomType（Bathroom=1）→ dwell per-zone ramp 选尾（room-static）
 }
 
 // dbnRouter 把 Engine.OnRoomFrame 的 per-room bases 构造成 adapter.FrameInput → engine.Room.Tick（DBN 顶层）。
@@ -157,8 +156,6 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		tracks = append(tracks, adapter.TrackObs{RadarTrack: adapter.RadarTrack{
 			Online: b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
 			StillSec: float64(b.StillBoxSec),
-			// CellAreaType（馈送层 cell.Belief[0].Type，经 seam）+ 房 roomType → dwell per-zone ramp 选尾。
-			AreaType: int(b.CellAreaType), RoomType: g.roomType,
 		}})
 	}
 	// sleepad-only 房(无雷达 track)：InBed 合成一条 bed-track 作 B 轴载体(engine.Room track-centric，
@@ -167,8 +164,6 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	if g.radarLess && reading == belief.BedInBed {
 		tracks = append(tracks, adapter.TrackObs{RadarTrack: adapter.RadarTrack{
 			Online: true, Pose: poseLying, X: 0, Y: 0, Z: 0,
-			// 合成 bed-track：AreaType=Bed(2) → dwellTailFor 不报（sleepad-only 床占用无摔判定）。
-			AreaType: 2, RoomType: g.roomType,
 		}})
 	}
 

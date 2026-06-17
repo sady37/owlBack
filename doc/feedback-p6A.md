@@ -10,7 +10,27 @@
 
 ---
 
-## 2026-06-16（其十三）— silent-fall per-zone 久静阈移植（survival.go ramp 替 stillTau=60；治 d523-0611 误火）
+## 2026-06-16（其十四）— 【撤回其十三】still-box 是观测、被摆错位置；框架订正
+
+**结论：其十三的移植（survival.go per-zone ramp）框架错，已撤回（删 survival.go + 还原 emission/observation/adapter/main/bootstrap 到 b4b04ce 前）。** 架构师停 replay 拍定。
+
+**错在哪**：把 still-box 这条**观测**直接接成了**状态裁决**（`still-box → fallLRFromDwell → 抬 SFallen`）。
+- "dwell" 是伪概念：`base.StillSec = base.StillBoxSec`（track_manager.go:841），它就是 still-box（30s 滚动 50×50cm 方框抗质心抖动算出的"目标连续没移出秒数"），源自 firmware 位置读数。production survival.go 把它包装成「P4 dwell HSMM」，我移植时连这套伪命名 + gate 规则一起搬了——违反 #1.1（一个 canonical 名）。
+- **still-box 只观测一件事：静止 vs 移动**。静止是二义的（睡床/坐马桶/摔地都静止），它**分不出**是哪种。让"没动"直接给"摔"投票 = observation 摆到了 decision 层。
+
+**replay 实证错框架（已停）**：d523 静物伪迹（站立 z=0 静止）P^F=0.945 vs d5f7 真摔（坐姿 z=0 静止）P^F=0.979——**几乎一样**。因为 still-box 对这俩物理上无法区分，tuning scale 改不了二义。中途为治 d5f7 FN 删了 dwell→SBed 又让伪迹 SFallen 爬到 0.945（差 90s T_hold 没 fire）——按下葫芦起了瓢，证明此路不通。
+
+**订正框架（架构师拍定，A 认）**：
+1. **still-box = 观测层**，只作"静止 vs 移动"证据：对等抬所有静止态（Bed/Sit/Fallen/BlindRest）、压移动态（OpenFloor-活动），**断开 → SFallen 直连**。
+2. **"久静多久算异常" = 时长先验**，进 **transition/duration 层**（按 area），不进 emission。survival.go 的 per-area scale（toilet20/sit90）若保留，归这层，不归发射。
+3. **摔 = belief 排除法涌现**：无接触（排 Bed）+ 低 z + 非坐区（排 Sit）→ 残下 Fallen。不是 still-box 喊出来的。
+4. **静态伪迹**（站立-z=0 固定位置）交 **realness/AreaDeny**（d523 取证 is_refl=False·p_real=1.0 = realness 现没抓到它 = d523 真 gap），不归 still-box。
+
+**下一步**：按订正框架重画 still-box 进 belief 的接法（emission 改"静止占用对等证据"+ duration 层放时长阈），design 先行再码，不再 replay 直到框架对。**roadmap §127「FallRulesParam.Still DBN 永久消费」仍是误标**（per-area 阈从没接进 DBN），订正照旧。
+
+> 以下其十三原文（错框架，留档备查，已撤回不再有效）：
+
+### 〔已撤回〕原其十三 — silent-fall per-zone 久静阈移植（survival.go ramp 替 stillTau=60）
 
 **根因（C 全程参与核实，揪出 roadmap §127 一行误标 + 修正 A 一个事实错误）**：
 
