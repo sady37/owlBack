@@ -60,6 +60,7 @@ func main() {
 		rooms:    map[string]*engine.Room{},
 		units:    map[string]*engine.Unit{},
 		roomUnit: map[string]string{},
+		unitPub:  map[string]belief.UnitPublicness{},
 		logger:   logger,
 	}
 
@@ -123,6 +124,7 @@ type dbnRouter struct {
 	rooms    map[string]*engine.Room // roomID → Room（bootstrap 建，供 NewUnit 分组）
 	units    map[string]*engine.Unit // unitKey(suiteID) → 多房编排器（跨房 hand-off）
 	roomUnit map[string]string       // roomID → unitKey
+	unitPub  map[string]belief.UnitPublicness // unitKey(suiteID) → 公共度（units.unit_type，定找人窗 W）
 	logger   *zap.Logger
 }
 

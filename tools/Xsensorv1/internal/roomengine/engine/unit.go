@@ -32,14 +32,16 @@ type Unit struct {
 	lastRho       map[string]float64 // 末次喂各房的 ρ（forensic / 测试可观测）
 }
 
-// NewUnit 建多房编排器。residentCount = unit 住户数（η 用）。
-func NewUnit(rooms map[string]*Room, residentCount int) *Unit {
+// NewUnit 建多房编排器。residentCount = unit 住户数（η 用）；pub = unit 公共度（规则④ 定找人窗 W）。
+func NewUnit(rooms map[string]*Room, residentCount int, pub belief.UnitPublicness) *Unit {
 	if residentCount < 1 {
 		residentCount = 1
 	}
+	np := belief.DefaultNeighborParams()
+	np.HandoffWindowMs = belief.HandoffWindowFor(pub) // 规则④：public 45s / share 60s / private 90s
 	return &Unit{
 		rooms:         rooms,
-		np:            belief.DefaultNeighborParams(),
+		np:            np,
 		residentCount: residentCount,
 		cAttr:         0.8, // room-enter（雷达新现 track = 有人进房）
 		lostAt:        map[string]int64{},

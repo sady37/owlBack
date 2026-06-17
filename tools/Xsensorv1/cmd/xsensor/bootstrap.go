@@ -8,6 +8,7 @@ import (
 	"owlBack/tools/Xsensorv1/internal/config"
 	"owlBack/tools/Xsensorv1/internal/roomengine"
 	"owlBack/tools/Xsensorv1/internal/roomengine/adapter"
+	"owlBack/tools/Xsensorv1/internal/roomengine/belief"
 	"owlBack/tools/Xsensorv1/internal/roomengine/engine"
 
 	"github.com/go-redis/redis/v8"
@@ -48,7 +49,8 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB, rdb *r
 		unitRooms[unitKey][roomID] = router.rooms[roomID]
 	}
 	for unitKey, rooms := range unitRooms {
-		router.units[unitKey] = engine.NewUnit(rooms, 1) // residentCount=1（单住户测试；多住户后续）
+		// residentCount=1（单住户测试；多住户后续）；pub = 该 unit 公共度 → 找人窗 W（规则④）。
+		router.units[unitKey] = engine.NewUnit(rooms, 1, router.unitPub[unitKey])
 	}
 	logger.Info("xsensor: units built", zap.Int("units", len(router.units)), zap.Int("rooms", len(router.rooms)))
 
@@ -133,7 +135,8 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 		               OR ru.spatial_prefix <<= r.room_id
 		               OR ru.spatial_prefix = r.room_id)
 		        ORDER BY masklen(ru.spatial_prefix) DESC
-		        LIMIT 1)                                              AS resident_id
+		        LIMIT 1)                                              AS resident_id,
+		       COALESCE(u.unit_type, 1)                              AS unit_type
 		FROM rooms r
 		LEFT JOIN units u ON u.unit_id >>= r.room_id
 	`)
@@ -170,15 +173,16 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 	count := 0
 	for rows.Next() {
 		var roomID, roomName, suiteID, tenantID string
-		var roomType int
+		var roomType, unitType int
 		var isPublicBathroom bool
 		var residentIDOpt sql.NullString
 		var timezone string
 		if err := rows.Scan(&roomID, &roomName, &roomType, &isPublicBathroom,
-			&suiteID, &timezone, &tenantID, &residentIDOpt); err != nil {
+			&suiteID, &timezone, &tenantID, &residentIDOpt, &unitType); err != nil {
 			logger.Warn("scan rooms row", zap.Error(err))
 			continue
 		}
+		router.unitPub[suiteID] = belief.UnitPublicness(unitType) // 规则④ 找人窗 W（同 suite 各房同值）
 		residentID := ""
 		if residentIDOpt.Valid {
 			residentID = residentIDOpt.String

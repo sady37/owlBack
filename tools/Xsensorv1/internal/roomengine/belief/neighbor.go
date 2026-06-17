@@ -88,15 +88,27 @@ func GateBlindRow(row [numStates]float64, rho float64) [numStates]float64 {
 	return row
 }
 
-// HandoffWindowFor 规则④：W 随公共度收小（公共/陌生人流大 → 窗小，防陌生人偶合误判 hand-off）。
-// publicness ∈[0,1]（0=私有 suite，1=楼层公共）。base = 私有基准窗。
-func HandoffWindowFor(baseMs int64, publicness float64) int64 {
-	if publicness < 0 {
-		publicness = 0
-	} else if publicness > 1 {
-		publicness = 1
+// UnitPublicness §38 规则④ unit 公共度（值同 v2 units.unit_type，DB 整数直转）。
+type UnitPublicness int
+
+const (
+	UnitPrivate UnitPublicness = 1 // single：私有 suite（单住户）→ 找人窗最长（同住户巧合少，老人走得慢需久等）
+	UnitShared  UnitPublicness = 2 // share：共享单元 → 中
+	UnitPublic  UnitPublicness = 3 // public：Facility 公共区 → 窗最短（陌生人流大，收紧防偶合误判 hand-off）
+)
+
+// HandoffWindowFor 规则④：找人窗 W 按 unit 公共度 3 档（form-anchor 45/60/90s，留 oracle）。
+//   越公共 → 窗越短（陌生人偶合越多 → 收紧才不把巧合误判成 hand-off 而误抑制真摔）。
+//   未知/缺省 → 私有 90s（residential 单住户为主场景；该档巧合少，久窗低风险）。
+func HandoffWindowFor(pub UnitPublicness) int64 {
+	switch pub {
+	case UnitPublic:
+		return 45_000
+	case UnitShared:
+		return 60_000
+	default: // UnitPrivate / 未知
+		return 90_000
 	}
-	return int64(float64(baseMs) * (1 - 0.7*publicness)) // 公共度高 → 最多收到 0.3×
 }
 
 // DelayWindowFor 规则⑤：D（延迟裁决窗）随覆盖差放长，**锚静止消失门限 + 余量**（同一物理时钟，用户裁定）。
