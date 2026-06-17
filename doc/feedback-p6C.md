@@ -2822,3 +2822,37 @@ A 留骸骨理由="供 PR-10/11 bathroom fall 复用"。**C 判断这与「DBN �
 ## Stage A 待项不变（§73）
 ① 端到端 cd2b 零回归 fire（C 复跑不了：owl-common 需 go≥1.25、容器 go1.22 + 无生产 DB；A 环境结果/架构师核）② bed reading 细化（§73 五，§50 教训不放过，治本补，非靠 cd2b 恰好不显现）。
 
+
+---
+
+# §76 增补（C 审 realness 重写 + FN-safe 治本 §79 + 镜像判定窗 + z/survival 双缺口 + per-area 久静阈移植）— 2026-06-16 段，验证哲学转向真 case
+
+> 本段覆盖 commit `98ff1de`(realness 2态重写)/`e0dec8f`(FN-safe)/`7879e1f`(5s 镜像窗+孤轨 override)/`b4b04ce`(per-area 久静阈移植)。验证转向：删全部 unit test + replay harness，验证=真 cmd/xsensor 跑真 case 读 xray（88 心跳帧假象证替身 rig 误导）。C 审过且认账两处自己的错。
+
+## 一、realness 重写（98ff1de）— 复核通过
+2 态转移矩阵前向滤波，零 gate：起 [Real=1,Mirror=0]，mEv=Coexist×(墙外几何+同步ρ)，孤轨 Coexist=0→mEv=0→Real 吸收恒 1（latch 涌现非 if）。删 aScore 病根（C 核 R5：22ms 极小 dt→42cm 体动算 1916cm/s 假超速→真人永久判 ghost，单调不退。删之拔根，firmware 换号已由 logicID 接管）。R1-R6 逻辑链 C 复核扎实（R1 默认 real FN-safe/R2 出生判/R3 墙外易墙内难/R4 logicID 防 swap/R5 删 aScore/R6 涌现非 gate）。
+
+## 二、★ FN-safe 治本 §79（e0dec8f）— C 的 §79 保留意见被根治
+**原 §61 消费门控错方向**：present≥2→pFallReal=PR + eligible=PR≥0.5，在 ghost 谷底(PR<0.5)两重否决真人的摔。**两条原理推翻（架构师定）**：① 漏报≫误报（风险不对称）② 有 ghost=镜像二义，否决一个 fall 需~95% 把握"非真摔"，二义下永不可达（ghost fall 可能就是真人摔的镜像）。**改 `pFallReal≡1.0`+`eligible≡true`**——realness 退回纯 N_r（排 ghost 防误折扣 C_FN），fall 一个不压。d5f7-0616 实测：真人误判 91%ghost(PR=0.09)谷底 pFR 仍=1.0、fall 照常 fire。**C §79 头号盯防（present≥2 静止真人漏报）由此根治**——不是减轻折扣，是否决权彻底移除。C 接受两条原理成立。
+
+## 三、镜像判定窗 + 孤轨 override（7879e1f）— C 核实现正确
+`reflectSep`(穿墙求交，最贵)+sync 只在出生 ≤5s（MirrorWindowMs=5000）算，过窗冻结省算力（ghost 只能出生时判）。**孤轨永 Real override `ForceReal()`(Coexist==0→bR=1,bM=0) 实时常开**（窗后也生效）——防冻结成 Mirror 的轨变孤轨后 N_r 算 0。C 核：冻结只冻几何判定、不冻 override、不碰 FN-safe（pFallReal≡1 仍在）。架构师"latch 5min-active"已撤（实测 latch 了 metal，rho 噪声大、z 不准，分不出真伪时本就不能 latch）。
+
+## 四、★★ C 两处自我认账（核查失误）
+1. **5s 冻结/override "没实现"误判**：C 一度报"两件没实现、孤轨是积分 latch 非 override"——**错**。根因 C `git reset` 后没确认在最新 HEAD，漏看 7879e1f，拿过时代码下结论。重审：两件都实现且正确（ForceReal 实时 override）。**教训：审码前先确认当前 commit 是最新。**
+2. **per-area 移植排序排反**：C 把 tolerance 反向抬"真缺口"、per-zone scale 降"待确认"——**排反**。核 toleranceFactor() 激活条件：要 FakeAlarmCount 累积（反复假报多日），对新静物伪迹=0 不起作用。**A 排序对**：① per-zone scale（z-无关、即时、载重，单独灭 d523-0611）② lZ/z ③ tolerance 反向（二阶、救老 cell 非新伪迹）。**教训：判轻重前先核激活条件。**
+
+## 五、★ z/ObsZBand 缺口（已接回 980bebd）+ survival per-area 缺口（已接 b4b04ce）— 同源"重写丢老架构 FP 抑制"
+C 一路 z 归因全错（"z≈0→catch 真摔"），被真数据三次纠正：① grep 实证 z 不进 DBN belief ② d5f7 z 分布 pose=Sit z=0/Lying 410/447=0/Stand 反有非零→z 与姿态脱节 ③ d5f7 fire 真机制=stillbox 久静 timeout 非 z。**真因（A+C 共揪）**：生产有 ObsZBand（z posture 正向证据）+ survival.go（per-zone 久静 ramp），新 DBN 06-14 重写时**两个都丢**，emission 塞 stillTau=60 全局硬阈占位。**z 单向正向**（z≥30 增 NO-fall 置信、时间积分，z<30 中性绝不负向）已接回。
+
+## 六、★ per-area 久静阈移植（b4b04ce）— C 审通过
+**根因**：belief 久静判摔退回 stillTau=60 全局硬阈（老架构 survival.go 早治过：toilet 20min/sit 90min/默认 12min，硬编码 60s 致 101/Kitchen 海量 FP，重写次日重造）。**C 修正 A 一事实错误（A 认账）**：A 一度说"seam 不传 areaType、要打通 seam"——错，`TrackStatusBase.CellAreaType`(track_manager.go:789)字段在、馈送层填值(:848)、经 OnRoomFrame 透传。真断点=dbnRouter 构造 TrackObs 丢了 CellAreaType + belief 无 ramp。**seam 零改动，边界缩到 adapter+emission**。
+**C 核实现**：① survival.go 移植（dwellTailFor toilet 20min/sit 90min + Weibull ramp 1+(d/scale)² 封顶 2.5）② emission dwell 拆两半——**SFallen 走 per-zone ramp**、**SBed 保留占用塑形**（dwellHi 不再兼喂 SFallen，解 C 标的 SBed/SFallen 语义对齐）③ Observation 加 AreaType/RoomType、adapter 透传。
+**★ FN-safe 守住（C 重点核）**：per-zone scale 只放松"纯久静"敏感度；**真摔走 PoseLying 直抬 SFallen（emission:92），不经 ramp 不被 scale 拖延**——toilet 20min scale 区里 pose=lying 仍立即抬 SFallen。放松的是无 pose 摔证据的纯久静，有摔证据的真摔不受影响。**roadmap §127 误标（per-area 阈"DBN 永久消费"实际断）A 自订正。**
+
+## 七、C 净判 + 待验
+- realness 重写/FN-safe/5s 窗+override/per-area 移植：**C 审过，实现正确，FN-safe 守住**。
+- **验证哲学转向**：C 修正前期"删 test=能力损失"的保留——88 心跳假象证替身 rig 引入真路径不存在的失效模式（误导）。但 §79 类隐患转由真 case 验（0616 跨房序列），非单元 test 假安心。**C 接受真 case 哲学，前提=要有覆盖该失效模式的真 case**。
+- **待真 case 验**：① per-area 移植效果——d523-0611 静物伪迹(2.7min<toilet 20min)不报 + d5f7-0524 久坐缓解 + 真摔不漏（C 复跑不了端到端，靠 A 环境 xray，读 stillbox→SFallen 轨迹核机制）② tolerance 反向 + 夜间短尾（②③ 下轮叠，逐 case 单变量归因）。
+- **C 复跑边界仍在**：owl-common go≥1.25/容器 go1.22/无生产 DB，端到端靠 A 日志；C 能核架构/代码机制/读 xray 轨迹（最强独立验证），不能亲跑生产链路。
+
