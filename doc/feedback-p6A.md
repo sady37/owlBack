@@ -759,3 +759,34 @@ C 指出：A 的"造 ObsNoDetect ramp 把无离房证据的 blind 顶过 55% 开
 6. **决断窗 = 赛跑预算（架构师拍）**：D 窗 = **reset 阈值(thresholdNonRest) + 2min margin**，语义=给两条原则留足时间、**谁的证据先到用谁**——窗内 handoff/重现先到→cancel；无 handoff、ramp 熬到窗尾→fire。**ramp 须配速到窗长**：让邻房 handoff（注册需时）有完整窗抢先，无 handoff 时 ramp 才在窗尾跨 55%（防 ramp 太快误火真 handoff，呼应把关 3）。coverage 决定 fire 侧有无 runner（零覆盖→无 ramp→克制）。D 到点放行与此自洽。
 
 速率/时长阈/coverage 阈全留 oracle（铁律 [[fall_data_is_artificial_test]]），规格只钉**结构约束**不拍数。
+
+### ✅ 机制终定（2026-06-17，架构师拍）：两段式 W→D + 零覆盖照样 fire（乙）+ deadline/事件驱动
+
+**Q2 形态拍定 = 到点/事件驱动，非连续 ramp**：cancel 事件随到随撤 + fire 到点判定。ObsNoDetect ×1.6 连续 ramp **作废**（不用标定速率、不与 handoff 抢时间=自动满足 C 把关 1）。compute 低=每 blind track 一个 timer + watch cancel 事件，无 per-tick belief 放大（架构师"不占过多算力"）。
+
+**两段式 lost 解析流水线**：
+```
+lost track → MM 查 neighbor device（覆盖来源 = MM 空间关系方阵）
+[阶段1] W 窗 45-90s（HandoffWindowFor，已建）：看 neighbor event / 拿"人仍正常的正向数据"
+   ├ 拿到正向（neighbor handoff / 自轨恢复 / 离房趋势=walked out）→ cancel
+   └ 没拿到 → 落阶段2
+[阶段2] D 窗（reset阈+2 = ThresholdNonRestMs+2min，bootstrap 已注入）：耐心计时
+   ├ lost track 恢复 → cancel
+   └ D 计时器满 → fire
+```
+现状：W（HandoffWindowFor）与 D（dWindowMs）零件都在，但**各自独立、未串成"W 空→落 D"流水线**；阶段1"拿正向→cancel/拿不到→落D"分叉未接。零件在、流水线没串（同 C 判）。
+
+**零覆盖分支拍定 = 乙（零 neighbor device 照样 D 满 fire）**，**修正**上一轮 AskUserQuestion 选的甲（零覆盖署名不报）。理由（架构师）=**同时降 FN/FP + 省算力**：
+- **降 FN**：真摔（倒地不恢复）零覆盖也 fire，不漏。
+- **降 FP**：长 W+D 耐心窗过滤非摔——瞬态 lost（flicker/遮挡）自愈 cancel + 朝门走的人经原则 1 离房趋势 cancel。残余 FP 只剩"无 exit-trend + 不恢复 + 无 handoff 的真消失"=高危真摔，该 fire。
+- **省算力**：deadline/事件驱动无 per-tick ramp。
+
+**原则 2「资源克制」重解释（诚实记录决策演变）**：从甲"零覆盖**不报**"→乙"靠耐心窗+离房趋势**过滤 FP**、deadline **省算力**，真未解析的**仍报**"。即 **restraint = 精度（不报垃圾）非 abstinence（不报）**；"不抢占稀缺护理"由"报的更可能是真摔"实现，非 blanket 不报。MM 的 neighbor-device 此时**不再是"报/不报"开关**，而是**阶段1 是否有 neighbor-event 这一路 cancel 证据**的门控（有→多一路 cancel；无→仍靠恢复/离房趋势 cancel + D 满 fire）。
+
+**给 C 的规格输入（三锁修法据此收敛）**：
+1. 拆锁②（blind 焊 indeterminate）：lost 路径不走 ComputeLambda identifiable gate（结构性不可判 ≠ 真无信息）。
+2. 锁①不造连续 ramp，改**两段式 W→D 流水线 + deadline fire**：W 空落 D，D 满 fire（不绕 ≥55/tie 仲裁 + tHold，合 C 把关 2 — fire 仍走正常裁决档）。
+3. 阶段1 cancel 三源：neighbor handoff（已建 rho）/ 自轨恢复（已建 abort-1）/ **离房趋势**（原则 1，lost 触发回看 3s+lost 前坐标，待建）。
+4. 锁③（Left 阀/floor）次要：deadline 机制下 blind 不靠转移漂移，SBlindOpen Left=12 漏不再致命（drop 由 D 流水线统管，非转移自漂）。
+5. MM neighbor-device 作阶段1 neighbor-event 门控，非 fire/no-fire 开关。
+6. 全程 deadline/事件驱动，零 per-tick ramp（省算力 + 自动满足把关 1）。
