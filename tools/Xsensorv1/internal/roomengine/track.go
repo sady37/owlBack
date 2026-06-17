@@ -227,9 +227,16 @@ func NewTrackState(trackID int, deviceAddr, roomID string, x, y, z int, tMs int6
 		LastObservedMs:       tMs,
 		LastCellCol:          -1,
 		LastCellRow:          -1,
-		BirthFinalDeadlineMs: tMs + int64(FallRulesParam.Lost.BirthFinalGraceMs),
+		BirthFinalDeadlineMs: tMs + birthFinalGraceMs,
 	}
 }
+
+// still-box 判据：失锁前 30s 滚动窗 per-axis box(max-min) ≤此 cm 视为 still（updateContinuousIndicators 消费）。
+// 实测倒地质心抖 50×40cm → 50 才正确判 still 不误判"动"。
+const stillBoxCm = 50
+
+// track birth 终判延迟（ms）：track 帧与 EnterRoom 分两条流，birth 时仅初步分留 Pending，此后 deadline 重算。
+const birthFinalGraceMs = 2000
 
 // PushPoint 追加一帧观测到历史窗口
 func (ts *TrackState) PushPoint(x, y, z int, tMs int64) {

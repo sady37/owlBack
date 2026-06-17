@@ -161,7 +161,7 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 	// trade-off：把整个 wall perimeter 当作 entry，比真画门口宽很多 → over-skip
 	// 部分 lost-fall。但客户没画 enter 本来就放弃这层精度，兜底比裸跑好。
 	if len(cfg.Enters) == 0 && len(cfg.WallPolygon) >= 3 {
-		cfg.Enters = deriveImplicitEntersFromPolygon(cfg.WallPolygon, FallRulesParam.Lost.ExitDistMinCm)
+		cfg.Enters = deriveImplicitEntersFromPolygon(cfg.WallPolygon, exitDistMinCm)
 		cfg.EnterHeights = make([]int, len(cfg.Enters))
 		cfg.EnterTargets = make([]string, len(cfg.Enters)) // "" = inside_enter 默认
 		for i := range cfg.Enters {
@@ -451,10 +451,12 @@ func buildWallPolygon(wallPoints []radarutils.Point, enters []radarutils.Rect) [
 }
 
 // deriveImplicitEntersFromPolygon 沿多边形周长生成隐式 Enter 薄带。
+// exitDistMinCm 隐式入口推导厚度（cm）：墙多边形上距最近出口 ≤此值算"贴近门口"。
+const exitDistMinCm = 30
+
 // 每条边 → 一个 AABB rect 含端点 + thickness 余量。
 // 用于客户未画 Enter 的兜底：墙边 ≤ thickness 的 cell 被算作 entry 区，
-// NearestEntryDist 在此范围内回 0，配合 lost-fall ExitDistMinCm 判定保持原语义。
-// thickness 取 ExitDistMinCm 让"贴边 30cm"的检测覆盖整圈周长。
+// NearestEntryDist 在此范围内回 0，"贴边 30cm" 的检测覆盖整圈周长。
 func deriveImplicitEntersFromPolygon(poly []radarutils.Point, thickness int) []radarutils.Rect {
 	n := len(poly)
 	if n < 3 {

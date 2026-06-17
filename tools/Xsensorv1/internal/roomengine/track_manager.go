@@ -1705,7 +1705,7 @@ func (tm *TrackManager) nearestEnterRoomMs(tMs int64, windowMs int64) (int64, bo
 // 调用方持锁（segment 1 已持锁）。
 //
 // 注：仅 look-back（不 look-forward）—— 出生瞬时如 event-stream 还没到 → 判错 false ghost。
-// 修正路径：BirthFinalDeadlineMs 给 grace 缓冲（FallRulesParam.Lost.BirthFinalGraceMs，默认 2s），
+// 修正路径：BirthFinalDeadlineMs 给 grace 缓冲（track.go::birthFinalGraceMs，默认 2s），
 // 到点用 hasRecentEnterRoomBetween([T-3s, deadline]) 重检（见 tryGraceUpgrade）。
 func (tm *TrackManager) hasRecentEnterRoom(tMs int64) bool {
 	return tm.hasRecentEnterRoomBetween(tMs-enterPairWindowMs, tMs)
@@ -2107,11 +2107,12 @@ func (tm *TrackManager) occupancyFactor() float64 {
 	return 1.0
 }
 
-// stillFallTimeoutSec "bathroom-like 位置过滤器"（不再驱动 alarm 发射，PR-Bootstrap 拆走 fire path）。
-// 仅作 AreaSit 自学习 gate 用（line 1971 + 2294 处）：bathroom 内长时间 stand 不应被误学为坐位。
+// stillFallTimeoutSec "bathroom-like 位置过滤器"。**不是 fall 决策阈**（DBN silent-fall 阈权威=
+// belief/floor.go，契约其十五）；仅作 cell-learning AreaSit 自学习 gate：bathroom 内长时间 stand
+// 不应被误学为坐位。
 //
 //	cell.AreaToilet/AreaShower → cell.EffectiveStillTimeoutSec
-//	cell 未学到但 room.name 是 bathroom → FallRulesParam.Still.ToiletShowerSec × NonRiskTimeFactor
+//	cell 未学到但 room.name 是 bathroom → cell.go::stillAreaToiletShowerSec × stillAreaNonRiskFactor
 //	都不匹配 → 0
 //
 // PR-Bootstrap：删除 stayAlarmEnabled 分支（loadStayAlarmEnablement 已删，stayAlarmEnabled 永 false）。
@@ -2125,9 +2126,9 @@ func (tm *TrackManager) stillFallTimeoutSec(cell *Cell, isRiskTime bool) int {
 		return cell.EffectiveStillTimeoutSec(isRiskTime)
 	}
 	if roomutil.IsBathroom(tm.roomName) {
-		base := FallRulesParam.Still.ToiletShowerSec
+		base := stillAreaToiletShowerSec
 		if !isRiskTime {
-			base = int(float64(base) * FallRulesParam.Still.NonRiskTimeFactor)
+			base = int(float64(base) * stillAreaNonRiskFactor)
 		}
 		return base
 	}
@@ -2198,7 +2199,7 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 	// 对角线 64 会被误判成"动"，per-axis 算 50（≤StillBoxCm=50）才正确判 still。
 	ts.StillBoxBreakDurMs = 0 // 每帧清；仅本帧 break 时设（移动块 MarkDwell 消费）
 	disp := ts.BoxRangeWithinMs(30_000, nowMs)
-	if disp <= FallRulesParam.Lost.StillBoxCm && len(ts.History) >= 2 {
+	if disp <= stillBoxCm && len(ts.History) >= 2 {
 		if ts.StillBoxRunStart == 0 {
 			// 起点回填到 History 最早帧（box 内最早可见点）；同步存起点位置（cell engine 久静量单源读）。
 			ts.StillBoxRunStart = ts.History[0].TMs
