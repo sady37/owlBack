@@ -73,6 +73,7 @@ type Room struct {
 	//   占用判据 = PReal≥0.5 ∧ S∉{Empty,Left}（含 blind 续存的 faller，filter 后的 MarginalS），
 	//   **非** census.Nr() present-only——否则独居者摔进 blind 时占用掉 0 误清零计时（lost-fall FN）。
 	aloneStreakStartMs int64
+	notSoloFrames      int // 连续占用≠1 帧数（重置抗抖动柱②：≥arrivalConfirmFrames 才清 alone-streak）
 }
 
 // NewRoom 建单房引擎。geom = 床几何（adapter.BedGeoms 从 layout 派生）；nb = 床数。
@@ -191,14 +192,20 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		r.census.Drop(id)
 	}
 
-	// F1 alone-streak 末更（同 realStreak 时序）：真人占用==1 续起点，离开 1（来人/走光/全 ghost）即清零。
-	//   blind 续存(S∉{E,L})仍计占用 → 摔倒不清零（占用判据已含 blind，见循环内 realOccupancy）。
+	// F1 alone-streak 末更（同 realStreak 时序）：真人占用==1 续起点。
+	//   blind 续存(S∉{E,L})仍计占用 → 摔倒不掉出 1 → 不清零（占用判据已含 blind，见循环内 realOccupancy）。
+	//   重置抗抖动（柱②）：占用离开 1 须**持续 ≥arrivalConfirmFrames** 才清零——瞬态 churn（噪声 >AssocCm
+	//   瞬拆新 logicID 起始 PReal=1，同 :20 hand-off churn）不重置；只令 alone 偏高 ≤K 帧（更易 fire）=严格 FN-safe。
 	if realOccupancy == 1 {
+		r.notSoloFrames = 0
 		if r.aloneStreakStartMs == 0 {
 			r.aloneStreakStartMs = fi.NowMs
 		}
 	} else {
-		r.aloneStreakStartMs = 0
+		r.notSoloFrames++
+		if r.notSoloFrames >= arrivalConfirmFrames {
+			r.aloneStreakStartMs = 0
+		}
 	}
 
 	// 步4 hand-off 信号（§64 噪声防线：连续 K 帧真人才算确认，抗噪声 churn 造假 lost/gain）。
