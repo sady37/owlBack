@@ -69,6 +69,10 @@ type Room struct {
 	lastMarg      belief.Vector // 末帧房间代表 track 的 S 边缘（MarginalS 读出）
 	realStreak    map[int]int   // 每 logicID 连续在场真人帧数（步4 hand-off：confirmed=streak≥K，抗噪声 churn）
 	prevConfirmed map[int]bool  // 上 tick 已确认真人(streak≥K)的 logicID 集（算 lost）
+	// F1 独居连续计时（跨 tick，与 realStreak 同层）：真人占用==1 连续起点 ms（0=当前非独居）。
+	//   占用判据 = PReal≥0.5 ∧ S∉{Empty,Left}（含 blind 续存的 faller，filter 后的 MarginalS），
+	//   **非** census.Nr() present-only——否则独居者摔进 blind 时占用掉 0 误清零计时（lost-fall FN）。
+	aloneStreakStartMs int64
 }
 
 // NewRoom 建单房引擎。geom = 床几何（adapter.BedGeoms 从 layout 派生）；nb = 床数。
@@ -102,7 +106,9 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	r.census.Update(fi.NowMs, fi.Tracks, fi.RadarPos, fi.Walls, fi.Entrances)
 	online := adapter.Online(fi)
 	nr := r.census.Nr()
-	rc := adapter.BuildRiskContext(fi, nr)
+	// 独居连续分钟用**上 tick 末**的 streak 状态（占用 streak 在本 tick 末更新，同 realStreak:208）→ 1 帧滞后，
+	//   30min 饱和量可忽略，且与 hand-off streak 时序一致。
+	rc := adapter.BuildRiskContext(fi, nr, r.aloneMinAsOf(fi.NowMs))
 
 	var results []trackResult
 	var forensic []TrackForensic
@@ -116,6 +122,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 
 	curReal := map[int]float64{} // 本 tick 在场真人(PReal≥0.5) logicID→PReal（算 lost/gained）
 	var dropIDs []int
+	realOccupancy := 0 // F1 本 tick 真人占用数（PReal≥0.5 ∧ S∉{E,L}）→ 末更 alone-streak
 	for _, ts := range tracks {
 		if ts.Present && ts.PReal >= 0.5 {
 			curReal[ts.LogicID] = ts.PReal
@@ -145,24 +152,23 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		// 消失态：logPsi/logPhi=nil → Correct 中性，仅 Predict 自持（blind 续存告警连续，无 TTL）。
 		f.Step(fi.NowMs, online, logPsi, logPhi, rhoXroom, pFallReal)
 
+		mS := f.Space().MarginalS(f.Alpha())
+		// F1 真人占用：PReal≥0.5（排 ghost）∧ S∉{Empty,Left}（含 blind 续存的 faller，未 absorbed 离场）。
+		//   摔进 blind 时 S=Fallen∉{E,L} → 仍计占用 → 独居计时不被摔倒清零（present-only 的 Nr() 会误清）。
+		if ts.PReal >= 0.5 && mS[belief.SEmpty]+mS[belief.SLeft] < absorbedThresh {
+			realOccupancy++
+		}
+
 		pF := f.Space().PFallen(f.Alpha())
 		lam := belief.ComputeLambda(f.Space(), neutralIfNil(logPsi, r.js), neutralIfNil(logPhi, r.js))
 		d := dec.Step(fi.NowMs, pF, lam, rc)
 		// FN-safe 兜底 floor（契约其十五）：present 时总时长 ≥ T_floor(按 area) 且无正向休息证据 → 强制 fire。
 		//   接住 emission 被 area误学/z假阳/接触假阳误压的真摔。消失态不走 floor（走 blind 续存）。
-		if ts.Present {
-			zUp := obs.ZBand == belief.ZSit || obs.ZBand == belief.ZStand
-			contactInBed := false
-			for _, br := range obs.Sleepad {
-				if br == belief.BedInBed {
-					contactInBed = true
-				}
-			}
-			if fg.Step(obs.StillSec, obs.AreaType, zUp, contactInBed) {
-				d.Fire = true
-				if d.Band == "" || d.Band == "no" || d.Band == "indeterminate" {
-					d.Band = "floor"
-				}
+		//   zUp/contactInBed 抽取已收进 FloorGuard.Step(obs)——engine 只 OR verdict 不碰 obs。
+		if ts.Present && fg.Step(obs) {
+			d.Fire = true
+			if d.Band == "" || d.Band == "no" || d.Band == "indeterminate" {
+				d.Band = "floor"
 			}
 		}
 		// 资格恒真：realness 绝不按 PR 把 fall 排出 room OR（同 pFallReal=1，fall 不压）。任一 track（含 blind 续存）
@@ -174,11 +180,8 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 			X: ts.Obs.X, Y: ts.Obs.Y, Sep: ts.Sep, WallMargin: ts.WallMargin, Rho: ts.Rho, LaterBorn: ts.LaterBorn})
 
 		// drop（状态驱动）：消失 track 的 S^(i) 吸收到 {Left,Empty} → 离场确认 → drop（非 TTL）。
-		if !ts.Present {
-			m := f.Space().MarginalS(f.Alpha())
-			if m[belief.SLeft]+m[belief.SEmpty] >= absorbedThresh {
-				dropIDs = append(dropIDs, ts.LogicID)
-			}
+		if !ts.Present && mS[belief.SLeft]+mS[belief.SEmpty] >= absorbedThresh {
+			dropIDs = append(dropIDs, ts.LogicID)
 		}
 	}
 	for _, id := range dropIDs {
@@ -186,6 +189,16 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		delete(r.deciders, id)
 		delete(r.floorGuards, id)
 		r.census.Drop(id)
+	}
+
+	// F1 alone-streak 末更（同 realStreak 时序）：真人占用==1 续起点，离开 1（来人/走光/全 ghost）即清零。
+	//   blind 续存(S∉{E,L})仍计占用 → 摔倒不清零（占用判据已含 blind，见循环内 realOccupancy）。
+	if realOccupancy == 1 {
+		if r.aloneStreakStartMs == 0 {
+			r.aloneStreakStartMs = fi.NowMs
+		}
+	} else {
+		r.aloneStreakStartMs = 0
 	}
 
 	// 步4 hand-off 信号（§64 噪声防线：连续 K 帧真人才算确认，抗噪声 churn 造假 lost/gain）。
@@ -271,3 +284,12 @@ func neutralIfNil(v belief.JointVector, js *belief.JointSpace) belief.JointVecto
 
 // MarginalS 末帧房间代表 track 的 S 轴边缘后验。
 func (r *Room) MarginalS() belief.Vector { return r.lastMarg }
+
+// aloneMinAsOf 当前独居连续分钟（真人占用==1 连续时长，跨 tick streak；非独居=0）。
+// 用上 tick 末的 streak 状态（占用 streak 在 Tick 末更）→ 喂本 tick rc，1 帧滞后。
+func (r *Room) aloneMinAsOf(nowMs int64) float64 {
+	if r.aloneStreakStartMs == 0 {
+		return 0
+	}
+	return float64(nowMs-r.aloneStreakStartMs) / 60000.0
+}

@@ -39,12 +39,11 @@ type SleepadFrame struct {
 }
 
 // Census 风险因子（risk_evaluator 同源）。
-// PeopleCount 不在此——人数 N_r 单源 = TrackCensus.Nr()（§G 排 ghost），由 engine 算后经
-// BuildRiskContext 注入（规则 #1.3 单源真相：不留可外部设值的第二计数）。
+// PeopleCount 与 AloneContinuousMin 均不在此——二者皆 = 真人占用单源派生（§G 排 ghost + S∉{E,L} 含
+// blind），由 engine filter 后算出经 BuildRiskContext 注入（规则 #1.3：不留可外部设值的入口层挂钟代理）。
 type Census struct {
-	AloneContinuousMin float64
-	Night              bool
-	Disabled           bool
+	Night    bool
+	Disabled bool
 }
 
 // FrameInput 一帧全部 raw 输入（decoupled；scaffold wire 时由 engine/track_manager 填）。
@@ -189,17 +188,17 @@ func zBandOf(z int) belief.ZBand {
 	}
 }
 
-// BuildRiskContext Census + N_r（人数单源 = TrackCensus.Nr()，§56 候选①）→ belief.RiskContext。
+// BuildRiskContext Census + N_r + 独居连续分钟 → belief.RiskContext。
 // nr 由 engine 经 TrackCensus.Nr() 算出（已排 mirror/伪迹 ghost，§G 主职）；decide 仅在 45–55%
 // 两可窗用它折扣 C_FN（拍法 A，§26/§56），≥55% 证据自足不折扣 → N_r=2 真摔照报（pillar D）。
-// AC-3：alone<0（adapter 时钟回拨）守卫落**边界**（规则 #1.4），cFN 内部保持纯形态（B round3 + B/C 共识）。
-func BuildRiskContext(fi FrameInput, nr int) belief.RiskContext {
-	alone := fi.Census.AloneContinuousMin
-	if alone < 0 {
-		alone = 0
+// aloneMin 由 engine filter 后的真人占用 streak 算出（占用==1 连续时长，含 blind 续存的 faller，
+// 不在入口层用挂钟凑——F1）。AC-3：alone<0（时钟回拨）守卫落**边界**（规则 #1.4），cFN 内部保持纯形态。
+func BuildRiskContext(fi FrameInput, nr int, aloneMin float64) belief.RiskContext {
+	if aloneMin < 0 {
+		aloneMin = 0
 	}
 	return belief.RiskContext{
-		AloneContinuousMin: alone,
+		AloneContinuousMin: aloneMin,
 		Night:              fi.Census.Night,
 		PeopleCount:        nr,
 		Disabled:           fi.Census.Disabled,

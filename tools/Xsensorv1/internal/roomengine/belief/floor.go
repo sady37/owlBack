@@ -30,9 +30,18 @@ type FloorGuard struct {
 
 func NewFloorGuard() *FloorGuard { return &FloorGuard{p: DefaultFloorParams()} }
 
-// Step 一帧兜底判定。zUpright=z 在坐/站档(ZSit/ZStand);contactInBed=任一床 InBed。
-// 返回 floorFire。track 消失帧不调(无观测);present 帧每帧调。
-func (g *FloorGuard) Step(stillSec float64, areaType int, zUpright, contactInBed bool) bool {
+// Step 一帧兜底判定（吃整条 obs，自抽派生量——engine 只 OR verdict 不碰 obs）。
+// zUpright=z 在坐/站档(ZSit/ZStand);contactInBed=任一床 obs.Sleepad InBed(权威接触床态,守门3:
+//   不取 radar lying)。返回 floorFire。track 消失帧不调(无观测);present 帧每帧调。
+func (g *FloorGuard) Step(obs Observation) bool {
+	zUpright := obs.ZBand == ZSit || obs.ZBand == ZStand
+	contactInBed := false
+	for _, br := range obs.Sleepad {
+		if br == BedInBed {
+			contactInBed = true
+			break
+		}
+	}
 	if zUpright {
 		g.zUpFrames++
 	} else {
@@ -40,7 +49,7 @@ func (g *FloorGuard) Step(stillSec float64, areaType int, zUpright, contactInBed
 	}
 	// 豁免(可观测证据):
 	switch {
-	case areaType == areaDeny:
+	case obs.AreaType == areaDeny:
 		return false // 静态反射 → realness 管
 	case contactInBed:
 		return false // 真在床
@@ -48,8 +57,8 @@ func (g *FloorGuard) Step(stillSec float64, areaType int, zUpright, contactInBed
 		return false // z 持续直立/坐 = 真直立(守门★)
 	}
 	tFloor := g.p.TFloorDefaultSec
-	if areaType == areaToilet || areaType == areaShower {
+	if obs.AreaType == areaToilet || obs.AreaType == areaShower {
 		tFloor = g.p.TFloorBathSec
 	}
-	return stillSec >= tFloor
+	return obs.StillSec >= tFloor
 }

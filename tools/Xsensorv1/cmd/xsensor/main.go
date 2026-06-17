@@ -60,7 +60,6 @@ func main() {
 		rooms:    map[string]*engine.Room{},
 		units:    map[string]*engine.Unit{},
 		roomUnit: map[string]string{},
-		firstMs:  map[string]int64{},
 		logger:   logger,
 	}
 
@@ -124,7 +123,6 @@ type dbnRouter struct {
 	rooms    map[string]*engine.Room // roomID → Room（bootstrap 建，供 NewUnit 分组）
 	units    map[string]*engine.Unit // unitKey(suiteID) → 多房编排器（跨房 hand-off）
 	roomUnit map[string]string       // roomID → unitKey
-	firstMs  map[string]int64
 	logger   *zap.Logger
 }
 
@@ -178,11 +176,6 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		covers[j], onbed[j], overlap[j] = 1, 1, 1
 	}
 
-	if _, ok := d.firstMs[roomID]; !ok {
-		d.firstMs[roomID] = nowMs
-	}
-	aloneMin := float64(nowMs-d.firstMs[roomID]) / 60000.0
-
 	fi := adapter.FrameInput{
 		NowMs:     nowMs,
 		Tracks:    tracks,
@@ -194,7 +187,6 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		Walls:     g.walls,
 		RadarPos:  g.radarPos,
 		Entrances: g.entrances,
-		Census:    adapter.Census{AloneContinuousMin: aloneMin},
 	}
 
 	u := d.units[d.roomUnit[roomID]]
