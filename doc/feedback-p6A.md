@@ -791,3 +791,5 @@ lost track → MM 查 neighbor device（覆盖来源 = MM 空间关系方阵）
 4. 锁③（Left 阀/floor）次要：deadline 机制下 blind 不靠转移漂移，SBlindOpen Left=12 漏不再致命（drop 由 D 流水线统管，非转移自漂）。
 5. MM neighbor-device 作阶段1 neighbor-event 门控，非 fire/no-fire 开关。
 6. 全程 deadline/事件驱动，零 per-tick ramp（省算力 + 自动满足把关 1）。
+
+**时序拍定（2026-06-17，读法1）**：**W ⊂ D，同起点**——D 计时起点 = lost 那刻（`blindSinceMs`），reset+2 **含** W（W 是前 45-90s 子窗）。总开火延迟 = reset+2（从 lost）。理由：合"赛跑同起点"心智 + 合现有 `blindSinceMs/dWindowMs` 单起点代码（零结构改动）+ 延迟差 45-90s 可忽略。W 角色 = lost 后 [0,W] handoff-cancel 有效期；[0,D] 全程 recovery/exit-trend cancel；D 满无 cancel → deadline fire（柱A (b)：仅 W 空+D 满+三 cancel 未触发时置 d.Fire=true,不走回 decider）。
