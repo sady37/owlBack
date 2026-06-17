@@ -742,4 +742,19 @@ C 指出：A 的"造 ObsNoDetect ramp 把无离房证据的 blind 顶过 55% 开
 - **真冲突 = 架构师两条原则在"无 handoff 二义 lost"点相反**：partial-monitoring-law（报）vs 资源克制（可能不报）。非"A 的 ramp vs 现有 feature"。
 - **可能的调和（A 提，待拍）**：按**实际 neighbor 覆盖**条件化（coverage 已是 DelayWindowFor 的入参）——有覆盖+无 handoff=证据存在→报；零覆盖（孤立卫浴等根本不可观测）=真不可判→克制。
 
-**待拍**：见正文给架构师的三选项。拍定前不出规格、不改 decide。
+### ✅ 架构师拍定（2026-06-17）：方案 3 覆盖条件化 + 双向解析
+
+冲突解法 = 按 **unit 内观测设备充足度（coverage）** 条件化，**二义本身少见**：
+- **覆盖好** → 后续证据迅速把**任一真实方向**的概率抬过 55% → **快速 fire 或 cancel**（双向解析，二义=暂态）。**非默认朝 Fallen 单向 ramp**——证据朝真相走，该报报、该撤撤。partial-monitoring-law「无 handoff→保留告警」在此成立（有覆盖、本该等到 handoff）。
+- **覆盖差/零** → 无证据可整合 → 解析不了 → **降误报、资源克制 → 默认不报（署名 FN）**。零覆盖本不期待 handoff = 无信息 ≠ 漏报。
+
+**对原诊断的修正**：我之前的「单向 ObsNoDetect ramp 默认朝 Fallen」**方向不全**——拍定后是**覆盖门控的双向解析引擎**（覆盖好才有，覆盖差走克制）。锁②仍要拆（blind 的不可判是结构性的，不该用 emission 判），但拆法按 C 把关 2：**不绕开 ≥55/tie 仲裁 + D 窗 + tHold**。
+
+**规格骨架（待写，含 C 两把关 + coverage 门控）**：
+1. **coverage 门控**：解析引擎只在 unit 覆盖足时启动；覆盖差 → 不 ramp、署名克制不报。coverage 已是 DelayWindowFor 入参。
+2. **双向解析**：lost 后整合可得证据（neighbor handoff/重现→cancel；无 handoff+fall-plausible+持续→抬向 fire），非盲目朝上。
+3. **C 把关 1（防 flicker）**：ramp 须有**丢轨时长门槛**——短暂 flicker（固件几帧正常抖）不启动，仅确认持续 lost 才解析。结构约束 > 速率数值。
+4. **C 把关 2（拆锁②不绕仲裁）**：lost 路径不走 `ComputeLambda` identifiable gate（blind 无 emission，拿"没 emission"判"不可判"是循环），但 ramp 出的 P^F **仍走正常 ≥55 report / 45-55 tie 仲裁 + D 窗 + tHold**，不绕直报。
+5. **原则 1（leftRoom lost 反算）**：作"离房证据"喂双向解析的 cancel 侧（有趋势→偏 cancel/Left，无趋势→不阻 fire 侧解析）。
+
+速率/时长阈/coverage 阈全留 oracle（铁律 [[fall_data_is_artificial_test]]），规格只钉**结构约束**不拍数。
