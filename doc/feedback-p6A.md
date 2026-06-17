@@ -711,3 +711,35 @@ FE 用连续 **track confidence** 显示（<30 隐 /20-79 半透 /≥80 全显�
 ### 给 C
 - **§79 已治本**：不是减轻折扣，是 realness 对 fall 的否决权被彻底移除。请复核两条原理（风险不对称 + 95%-不可达）是否成立。
 - 已删 test → 验证走真 case 解剖（本节即 d5f7-0616 真 cmd/xsensor 实证）。
+
+---
+
+## 2026-06-17 — A: 两条架构原则（架构师拍）+ 二义 lost-fall 三锁实证 + 原则冲突待拍
+
+> 起于正向审查链查到 decide.go：先删 filter.go pFallReal 死路径（`9940efb`）；Decision 5 forensic 字段一删一 revert（`9af58d5`→`0421533`，结论=**不删**，它们是 §8 fire 不等式 `P^F·C_FN>(1−P^F)·C_FP, 持续≥T_hold` 的因子分解，可删性暴露的是审计 sink 没接，非死代码）。审到 55% 阈语义，架构师拍两条原则。**C 独立逐行复核三锁全部确认、接受 A 两处纠正，但抛回一个原则冲突待架构师拍——本节记录到"待拍"为止，不预设修法。**
+
+### 原则 1（leftRoom 仅 lost 触发反算）— 架构师拍
+leftRoom 非每帧维护，而是 **lost 触发反向检查**：lost 那刻回看**过去 3s** 位置变化（是否朝 Enter）+ **lost 前坐标**（距 Enter）。判据=朝 Enter 的**移动趋势**（静止门口≠离房，门口摔也消失门口）。代码现状：lost 侧无此反算（dEntry 全在 birth 侧）=待新建。
+
+### 原则 2（55% = 二义 lost 经 neighbor 解析后的出口阈，非通用 fire 门槛）— 架构师拍
+55% 原义：**neighbor event 给出之后**对"lost = fall vs 单纯信号丢失"的**终判阈**（≥55 报）。伦理：连 neighbor 帮过忙还凑不到 55% → 机构设备覆盖不足 → 护理资源同样紧张 → 不该用证据不足的报警抢占稀缺护理。**绑定"资源不足该克制"，前提=neighbor 已介入 + 仅二义 lost。** DBN 到处拿 55% 当通用 per-tick 阈 = 失原意。
+
+### 三锁实证（A 提，C 独立 grep 逐行复核，双人确认）
+二义 lost（丢轨时 P^F≈50%）要开火须闯三关，当前一关都过不了：
+- **锁① Fallen ramp 引擎不存在**：`ObsNoDetect`（model.go 注释说 ramp 靠它 ×1.6）全库零实现；blind `logPhi=nil`→Correct 中性；纯 Predict 下 SBlindOpen→Fallen 仅 0.55%/tick（→Left 13.1%/tick，快 24×）。
+- **锁② blind 必然 indeterminate**：blind→emission 全暗→`ComputeLambda=1`≤3→`!identifiable`→band=indeterminate→默认不报。
+- **锁③ floor present-only**：engine:176 `ts.Present && fg.Step`，blind 不走总时长兜底。
+- **C 认栽两处**：(a)"SBlindRest Left=0 已守"错——仍撞①②不开火，只是"drop FN"换"挂 D 到点 FN"；(b)"Left=12 趋势门控"是三锁里最浅一道，非主缺口。
+
+### 反向实证：失原意是语义层还是行为层
+- **Q1 present 自足摔 → 语义层**：emission pose/dwell 对 SFallen/SBed **等量** boost（不分 F/Bed），F-vs-Bed 靠 B 轴+Ψ（床空→压 SBed）→ 自足摔 P^F≈0.99≫55%，**55% 不 binding**，仅二义时才 binding。present 未被误压。
+- **Q2 blind lost → 行为层**：blind 不 ramp→P^F 卡 0.5→永不到 55%。confirmed-then-lost（丢轨前已≥55）经 D 窗隐式 neighbor 前置≈对；**ambiguous-at-loss 无向上 ramp→55% 出口阈永够不到。**
+
+### 🔴 原则冲突待架构师拍（C 提出，A 纠其框架）
+C 指出：A 的"造 ObsNoDetect ramp 把无离房证据的 blind 顶过 55% 开火"与原则 2"资源不足该克制不报"**方向相反**，问"三锁全闭永不开火"是 bug 还是 feature。
+- **A 纠 C 的框架**：三锁全闭 **≠** 原则 2 的忠实落地。原则 2 是"**整合证据(含 neighbor)后** P^F 仍 <55 才克制"——是对**已整合 P^F** 的决策规则；当前是 P^F **从未整合**（blind 冻结，neighbor 只经 handoff 往**下**压、无向上整合）。这不是"证据不足后克制"，是"证据压根没算"。
+- **且原则 2 与 [[partial_monitoring_fall_suppression_law]] 在此点正面冲突**：后者（架构师本人定）说"stale/盲区/无事件 lost → **保留告警**，唯一能排除=near+有向 neighbor handoff"。按此，**无 handoff → fall 未被排除 → 报**。
+- **真冲突 = 架构师两条原则在"无 handoff 二义 lost"点相反**：partial-monitoring-law（报）vs 资源克制（可能不报）。非"A 的 ramp vs 现有 feature"。
+- **可能的调和（A 提，待拍）**：按**实际 neighbor 覆盖**条件化（coverage 已是 DelayWindowFor 的入参）——有覆盖+无 handoff=证据存在→报；零覆盖（孤立卫浴等根本不可观测）=真不可判→克制。
+
+**待拍**：见正文给架构师的三选项。拍定前不出规格、不改 decide。
