@@ -10,6 +10,54 @@
 
 ---
 
+## 2026-06-16（其十五）— silent-fall FN-safe 契约：default-fall + 正向压制 + 总时长兜底（给 C 审 FN 守门）
+
+**纠其十四的二次错误**：其十四把 still-box 摆回观测层（对），但顺手提的"排除法涌现"（Fallen=残差，排干净才出）**把 FN-safe 默认方向反了**——二义时变成默认不报=低召回，违背"保不漏"长期路线图（漏报≫误报）。架构师拍回：**除非有正向数据，否则偏 Fallen。默认有罪（偏摔），正向数据无罪释放**——不是默认无罪、要凑齐证据才定罪。
+
+### 原则（FN-safe 默认）
+still-box 久静 → **默认偏 Fallen**（疑似摔）；由**正向证据**压开：z=坐/站高、接触 InBed、area 印证坐/床/卫浴。**无正向证据 → fall 倾向保留。** 老的 still→SFallen 直投**方向本就对**（久静默认疑似摔），错的是短阈 + 没有效正向压制，**不是"偏 Fallen"本身**。
+
+### 四层归属（reason from model.go，正交分量各回各层）
+| 分量 | 层 | 文件 | 作用 |
+|---|---|---|---|
+| still-box（每帧二值） | ③ emission | emission.go | **偏 Fallen**（精度主路径） |
+| area_type（每帧读活的 cell） | ③ emission | emission.go | **正向压制/redirect**（bed/sit/toilet→抬 Bed/Sit/Bath 压 Fallen） |
+| Z（每帧） | ③ emission | emission.go | 单向正抬、低端中性（z<30 含0=中性） |
+| 接触（sleepad） | ③ coupling Ψ | coupling.go | LeftBed→B vac 抽空 SBed（cd2b 样板，不动） |
+| 时长**总量** | **floor 兜底** | （新增） | 总时长≥T_floor→强制 suspect（召回，绕过滤波误压） |
+| risk-time / N_r | ④ decide | decide.go | C_FN（漏掉多糟，不碰 P(Fallen)） |
+
+注：时长**总量**喂 floor（召回）；每帧二值喂 emission（精度），总时长在前向滤波里以"累积帧数"涌现、不被直接读。**per-area 是 floor 的阈（按 area 取），不是 emission 的项。**
+
+### 三个 FN 守门（涌现/压制被误压的三条路）
+1. **area 误学压 Fallen**：真摔落在误学成 Sit/Bed/Toilet 的 cell → area 抬错态压 Fallen。守：③ area 权重**有上限**（不能单凭 label 锁死，要能被 still + floor 翻过来）。
+2. **z 假阳压 Fallen**：z 误报坐/站高给倒地的人。守：② **单向正抬、z<30（含0）中性** → 倒地 z≈0 占多数 → z 大多不参与，天然挡。
+3. **接触假阳（陈旧 InBed）压 Fallen**：sleepad 没翻 LeftBed → Ψ 锁 SBed。守：床融合 LeftBed 否决 + 指数衰减（[[bed_stale_leftbed_vetoes_radar_inbed]]）。
+
+### 一个兜底（last-resort floor）
+```
+still-box 总时长 ≥ T_floor(按 area) 且 无正向休息证据 → fall-suspect
+豁免: z=坐/站高(真直立) ∨ 接触 InBed(真在床) ∨ AreaDeny(15天高bar 静态反射) → 不 floor-fire
+```
+- 接住 emission 被 area/z/接触误压的真摔。**豁免挂可观测证据，不挂 label**（否则 area 误学的 FN 从兜底又漏）。
+- 与被否的 60s 区别：60s 是**主路径+短阈**（海量 FP）；floor 是**兜底+保守长阈**（正常活动不触，只接被误压真摔）。
+- 诚实 tradeoff：兜底豁免读 z/接触（防 constipation FP），而 z/接触正是守门2/3 会失效的——故兜底不能 100% 堵"z假阳+接触假阳同时发生"的真摔，但需两 guard 同时失效，概率低，署名接受残余有界 FN。
+
+### 三个回归闸（改动不能破已验证路）
+1. **cd2b**（EG1 0.9992）：接触 LeftBed→Ψ 抽空 SBed→Fallen。机制保（Ψ 不动），但 **area 项 + still 项改动会动 S 轴竞争 → P(Fallen) 数值必重验**，最可能被这次动。
+2. **d5f7-0524**（silent，present-track）：偏 Fallen 无正向证据 → 报。
+3. **lost-fall**（blind 路）：消失→logPhi=nil→仅 Predict→Blind→Fallen 0.5 种子+0.99 自持。**全程无 emission/still-box → 本次改动碰不到 → 应天然完好**，跑一个 lost case 证。
+
+### 范围 / 分轴
+- 本轮：emission（still 保偏 Fallen + area 每帧压制）+ floor（总时长兜底）**同批不分家**（分家=有精度无召回）。
+- **d523 静态伪迹 → realness/AreaDeny 单独立项**，不让 emission/floor 背伪迹的锅。
+- transition / decide / coupling / blind 路 **不动**。
+
+### 给 C
+请审 FN 守门是否够（尤其守门1 area 误学 + 兜底的可观测证据豁免是否堵住 area-mislearn 的 FN）。其十三/其十四的"per-zone ramp"和"排除涌现"**均已撤回作废**，以本契约为准。
+
+---
+
 ## 2026-06-16（其十四）— 【撤回其十三】still-box 是观测、被摆错位置；框架订正
 
 **结论：其十三的移植（survival.go per-zone ramp）框架错，已撤回（删 survival.go + 还原 emission/observation/adapter/main/bootstrap 到 b4b04ce 前）。** 架构师停 replay 拍定。
