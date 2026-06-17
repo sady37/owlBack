@@ -793,3 +793,38 @@ lost track → MM 查 neighbor device（覆盖来源 = MM 空间关系方阵）
 6. 全程 deadline/事件驱动，零 per-tick ramp（省算力 + 自动满足把关 1）。
 
 **时序拍定（2026-06-17，读法1）**：**W ⊂ D，同起点**——D 计时起点 = lost 那刻（`blindSinceMs`），reset+2 **含** W（W 是前 45-90s 子窗）。总开火延迟 = reset+2（从 lost）。理由：合"赛跑同起点"心智 + 合现有 `blindSinceMs/dWindowMs` 单起点代码（零结构改动）+ 延迟差 45-90s 可忽略。W 角色 = lost 后 [0,W] handoff-cancel 有效期；[0,D] 全程 recovery/exit-trend cancel；D 满无 cancel → deadline fire（柱A (b)：仅 W 空+D 满+三 cancel 未触发时置 d.Fire=true,不走回 decider）。
+
+---
+
+## 2026-06-17（其二）— A: deadline-fire 重做（方案 A：ramp 到 0.85 真阈，**作废 (b) latch**）+ 真 FP case 实证
+
+> 用真 FP case（cabb-bathroom-frozen-static-FP-0603 重导出 + hunzi-cabb-lost-*-FP）replay 验，揪出 (b) latch 误火。架构师拍方案 A 取代之。**只查未改/规格阶段。**
+
+### 实证：(b) latch 在真 FP case 误火（replay，非单测）
+
+- **cd2b-0616-06400701**（我先误读成"lost-fall 验证成功"）：实为 **InBed→LeftBed(20:53:22)→radar 残留轨迹~21s→丢轨(20:53:43 哨兵88)**。有 LeftBed → 按架构师铁律"有 LeftBed 不应走 D"，我 band=lost 135 ticks **是误火**（人离床走了，非摔）。我曾误判 window_sleepad 为空（实有 661 条 sleepad track，bed_status 0/1）。
+- **cabb-frozen-static-FP-0603**（重导出 `case-cabb-0603-15551604`，--tz Asia/Shanghai）：人站洗手台、firmware 冻结轨迹（45 帧坐标重复）→np=0→丢轨。我 deadline **band=lost 24 ticks 误火**（top_s=Empty/0.337，p_fallen=0.028）。
+
+### (b) latch 的病根（架构师点）
+
+(b) 用 `accountedSafe(SBed+SLeft+SEmpty)<0.5` 当 fire 判据 = **bar 太低**，把站着的人（SOpenFloor，不在 safe 集）也算进去 → 误火。**fire 必须靠 P^F(SFallen) 真到达高阈（0.85），不能绕。** 用对 SFallen + 高阈，二义里"站着 vs 摔倒"自动分（站立证据进 SOpenFloor/SSit 不进 SFallen → P^F 到不了 0.85 → 不报）。当前 decide pFireHi=0.55、无 0.85，且我 deadline 完全绕过 P^F。
+
+### ✅ 方案 A 拍定（取代 (b)）：时间驱动 ramp P^F(SFallen)→0.85，走真阈 fire
+
+- **fire 判据唯一** = P^F(SFallen) ≥ 0.85（真到达，绝不 latch 绕过）。
+- **reset 时长（如 8min）= 二义 lost 的 ramp 速率**：让 ambiguous（at-loss P^F~0.5、无明确证据）在 reset 到点恰好爬到 0.85 → fire（FN-safe，deadline 编码成速率非强制闹钟）。
+- **证据上下调制这条曲线**：有摔加强证据 → 更陡 → 6min 就破 0.85 早报；有 **no-fall 正向证据（z 高站立 / LeftBed / 离房趋势）→ 下压 → reset 到点到不了 0.85 → 不报**（FP 被证据自然挡掉，不需额外判别器）。
+- **RiskTime 证据权重放大（架构师补）**：高风险时段（夜间/独居/失能，RiskContext）**证据权重↑ → ramp 更陡 → 更快到 0.85**（独居夜间的摔宁早报；白天有人多等确认）。= 让 ramp 速率随 RiskContext 变，**不动 0.85 阈本身**。一脉于风险分层（漏报≫误报）。
+- **否决方案 B**（"8min 到了仍 <0.85 → SFall 保底 fire"）：= (b) latch 复发（deadline 强制开火），frozen-static 的人 P^F 永到不了 0.85，B 的保底仍误火；且双 fire 判据违 #1.3。A 用 belief 0.85 把"该报的摔"和"站着/走了"分开，B 做不到。
+
+### 实现影响（待改，替换当前 WIP）
+
+当前 engine.go 的 deadline（`accountedSafe<0.5 + at-loss latch`）**作废**，改为：
+1. **belief 层造时间驱动 SFallen ramp**（lost 期对 fall-plausible 轨迹，无观测下按时间推 SFallen 升；no-fall 正向证据下压；RiskContext 调速率）——这是早先 ObsNoDetect 思路的正确复活（拆锁②已做 + 高阈 0.85 选择性）。
+2. **decide 层 fire 阈** present/lost 统一走 P^F(SFallen)≥0.85（0.55→0.85，或 lost 专走 0.85）。
+3. cancel 三源（handoff/recovery/离房趋势）保留为"下压/退闸"。
+4. dWindowMs env 旋钮（XSENSOR_DWINDOW_MS）保留作验证。
+
+### 给 C
+- (b) latch 经真 FP case 实证误火（cabb-frozen-static + cd2b-LeftBed-departure），已作废。方案 A（ramp→0.85 真阈 + RiskTime 调速）取代。
+- **关键**：fire 永远 = P^F(SFallen) 真到达 0.85，no-fall 证据下压使站立/离床到不了阈 = FP 自然挡。请复审 A 是否真消除 (b) 的 bypass-FP，及 ramp 速率/RiskTime 调制的结构（数值留 oracle）。
