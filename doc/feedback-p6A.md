@@ -828,3 +828,91 @@ lost track → MM 查 neighbor device（覆盖来源 = MM 空间关系方阵）
 ### 给 C
 - (b) latch 经真 FP case 实证误火（cabb-frozen-static + cd2b-LeftBed-departure），已作废。方案 A（ramp→0.85 真阈 + RiskTime 调速）取代。
 - **关键**：fire 永远 = P^F(SFallen) 真到达 0.85，no-fall 证据下压使站立/离床到不了阈 = FP 自然挡。请复审 A 是否真消除 (b) 的 bypass-FP，及 ramp 速率/RiskTime 调制的结构（数值留 oracle）。
+
+---
+
+## 2026-06-17（其三）— 架构师拍：still-box 统一量 + 一次性折扣 + per-area deadline + UD/D lost 兜底
+
+> 本节由架构师逐点引导收敛（A 多次抢跑被纠正）。**still-box 机制全面厘清**，作废"present 路 vs lost 路"割裂、作废 emission 内 `StillBoxSec≥60→SFallen` 累积 boost。**规格阶段，未改码。** 速率/阈留 oracle（铁律 [[fall_data_is_artificial_test]]）。
+
+### ① still-box 是唯一停留计量，present/frozen/lost 同算
+
+`StillBoxSec = 位置离上次移动 >50cm 起的墙钟时长`。只要有坐标上报（真 track **或** firmware frozen 残留）就在涨，**一动（disp>50）即清零归 0**。**不区分有无 track**：
+- present 但 frozen（人久坐不动）→ 坐标不动 → StillBoxSec 涨；
+- lost frozen 残留（雷达冻结在最后坐标，如 cd2b/cabb）→ 坐标也不动 → StillBoxSec 一样涨。
+
+**两者同一个计算、同一个阈**。"present 路用 pose/z 快、lost 路用 D 墙钟计时器"的割裂**作废**——pose/z 是**旁边独立的快通道**（雷达直接看见摔），D/UD 不是另设墙钟而**就是 frozen 残留的 StillBoxSec 涨到 per-area 阈**。
+
+### ② still-box → fall 的一次性折扣（直立信号下压，不改时钟不复利）
+
+**病根**：旧 emission `if StillBoxSec≥60 { SFallen += dwellHi }` 每 tick 加固定 boost，贝叶斯滤波**把每 tick boost 积分**（boost 摞 boost），StillBoxSec 清零后**累积的 SFallen 不退**（Fallen 自持）→ 偶尔移动的人（静3min→走→静 loop）单向爬到 0.85 = FP。
+
+**拍定**：
+```
+有效StillBoxSec = StillBoxSec × discount      ← 每帧重算，不改原始时钟，不复利
+discount = min(所有命中的直立因子)            ← 取最强折扣(min=削得最狠)，不相乘
+  pose=sit      → 0.8     （sit 检测门槛高、极少把 lying 误判 sit；留 0.8 保"坐着慢慢瘫倒"检出）
+  z∈[30,60)     → 0.9     （z 弱/噪，小折扣；不累积——时长已在 StillBoxSec，避免三重时间积分）
+  z>=60         → 0.5     （站立；**不清空**——见下 FN 红线）
+  都不命中(pose=lying / z 贴地低) → discount=1.0（满速算 fall，不打折）
+```
+
+| 命中 | discount |
+|---|---|
+| 仅 pose=sit | 0.8 |
+| 仅 z∈[30,60) | 0.9 |
+| 仅 z>=60 | 0.5 |
+| pose=sit + z∈[30,60) | min(0.8,0.9)=**0.8** |
+| pose=sit + z>=60 | min(0.8,0.5)=**0.5** |
+| 躺/贴地（无直立证据） | **1.0 满算** |
+
+**为什么一次性 + min**：
+- **一次性（不改时钟不复利）= 按当前态读 + 抗噪 FN-safe**：真摔的人 z 噪声跳单帧 >60，若直接清/复利会**把累积摔证据抹掉→漏报**；一次性折扣只削当帧证据、时钟不动、下帧恢复。**铁律：任何直立折扣绝不能因单帧噪声清零已累积的真摔证据（FN≫FP）。**
+- **min 不相乘**：避免坐着（pose=sit ∧ z∈[30,60)）叠成 0.72 把容忍拉到 ~125min 的过折扣；改"最强的单个直立信号说了算"。
+- **z>=60 用 0.5 不清空**（架构师采纳 A 的 FN 论据，否决"清空"直觉）：① 真站起来必有 disp>50 移动 → StillBoxSec **自己清零**，不靠 z；② 站着不动（罕见，真站也会晃→移动→清）有效时长按半速涨、容忍翻倍才报 = 可接受 FP；③ 站着然后摔 → z 落回 → 折扣撤 → 满速算 → **摔被抓住**。
+
+### ③ per-area deadline（still-box 最长时长）+ 必须有 deadline 的理由
+
+| 区域 | still-box 最长（deadline） | 理由 |
+|---|---|---|
+| **AreaSit** | **90min** | 久坐（看电视/发呆）正常可达，>90min 才反常 |
+| **active/unknown** | **10min** | 开阔地正常人不会一动不动，10min 静止已反常 |
+| **bathroom** | **20min** | constipation 余量 |
+| Bed | 更长（整夜睡） | |
+
+**为什么必须有 deadline（架构师点的核心）**：人在该区静止到**最长时间还没报 → 再等下去，即便最终确认是摔，人可能已过抢救时间（golden time）→ 报了也救不回 → 报警失去意义**。deadline = "报警还有救人价值"的最晚时刻，按区定（久坐区容忍长、开阔区容忍短）。这逼出"必须在 D 前出结论"，不是"等二义无限解析"。
+
+### ④ lost 兜底：bathroom 走 D=20min，其它走 unit UD=90min
+
+```
+lost 发生（StillBoxSec 在 frozen 残留上涨 / 或 track 全消失）：
+  有 Neighbor device：
+    丢的是 bathroom radar → D = 20min      （卫浴抢救紧迫 + 高危 + 信号易丢，不能等 90min）
+    丢的是其它 radar      → UD = 90min      （unit 级，取最长 AreaSit 90min；lost 时不知人在哪区，用最宽容兜底）
+    共用取消逻辑：unit 内出现任何 track 就取消
+       ├ 原 lost radar 的 track 恢复 → 风险消失
+       ├ lost radar 有 track（ghost/real）→ 有人在场 → 风险小 → 资源克制
+       └ 其它 device 有 track（ghost/real）→ unit 有人 → 风险小 → 资源克制
+    timer 到点、unit 全程无任何 track → fire
+  无 Neighbor（孤立单设备）：资源克制，不设 timer（不 fire）
+```
+
+**"任何 track 就取消"一招统一 recovery / handoff / 有人在场资源克制**——不分别写三种 cancel，只判"unit 有没有 track"。
+
+**为什么 unit 级 90min（用慢换 FP/FN 双改善，架构师拍）**：
+- **FP↓**：只在整 unit 90min 全程无任何 track（任一设备、ghost 或 real）才报；90min 长 + 任何 track 取消 → 判据极严苛，只有"真·彻底空 90min"触发。
+- **FN↓**：人凭空消失（摔+信号全丢+独处）这种 present 接不住、本必漏的 lost-fall，被 UD 在 90min 兜住。
+- **代价**：90min 慢（全丢信号那种摔报得晚），unit 层面认这个取舍；常见情形（有残留 track）present 路径已快速接住，只罕见"全丢信号"落 90min 慢兜底。
+
+**bathroom 强制 D 的特殊性**：水气/金属/镜面/空间小 → **既易丢信号又易发生 Fall + 无法感知行动方向（推不出离房趋势）**；私密无人看 + 常无 neighbor → lost/二义是常态、无外部解析手段 → **D=20min 是唯一安全网，到点无条件报**。sit/bedroom radar 追得住 + bedroom 有 sleepad 兜，不设常备 D。
+
+### 全局主线（收敛）
+
+1. **纯 DBN 主干**：状态随转移+发射演化，谁先到 0.85 翻转；**不要外挂计时器**（gate 残留）。时间编码在动力学（ramp 速率）里。
+2. **D/UD 只兜二义特例**：belief 卡在 ~0.5（lost、本设备解不了）才进 D；能自然解析（pose 明确→SFallen / 离开→SLeft / 漂向 Empty）不进 D。**二义是暂态——时间够长就消失**（离开的人会在某处重现→cancel；摔的人哪都不出现→deadline fire），D = "无重现即确认摔"所需时间，被抢救窗逼成硬上界。
+3. **still-box（统一量）涨到 per-area/unit 阈 → 判摔**；pose/z 是旁边快通道；直立证据一次性 min 折扣下压；别的活动 track 取消。
+
+### 给 C
+- 本节厘清的是 §A 方案 A 的**载体**：A 说的"时间驱动 SFallen ramp"=③④ 的 still-box 涨到 per-area/unit deadline；"no-fall 证据下压"=② 的一次性 min 折扣（pose=sit/z 高）。两节自洽：折扣使站立/坐着到不了阈、deadline 使真摔（满算 still-box）到点 fire。
+- 请复审：①折扣施加在"有效时长"而非 belief log 因子，是否与现 emission（lZ redirect SOpenFloor/SSit）冲突或可并存；② z>=60 用 0.5 不清空的 FN 论据；③ unit UD=90min vs bathroom D=20min 的"按 lost 那台所在区取阈"是否引入"需知 lost 设备区域"的依赖。
+- 数值（0.8/0.9/0.5、90/10/20min）全留 oracle，规格只钉结构（一次性/min/不清空/任何 track 取消/无 neighbor 克制）。
