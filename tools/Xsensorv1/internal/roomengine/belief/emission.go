@@ -179,15 +179,3 @@ func uniformVec(v float64) Vector {
 	}
 	return out
 }
-
-// LostRampPhi §84-A：lost 期"无检出=可能摔"伪证据 → SFallen 行加 log-odds 增量 delta（余态中性 0）。
-// 每 blind tick 喂一份，经 Correct 累加把 P^F(SFallen) 往 0.85 推；从 at-loss 值起 ramp，故摔(高起点)早到、
-// 二义(0.5)reset 到点到、站着(低起点)reset 内到不了——证据自然分。delta 由 engine 按 reset 速率×RiskTime 算。
-func LostRampPhi(js *JointSpace, delta float64) JointVector {
-	v := js.NewJointVector()
-	base := int(SFallen) * js.bmaskN
-	for b := 0; b < js.bmaskN; b++ {
-		v[base+b] = delta
-	}
-	return v
-}

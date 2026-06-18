@@ -50,9 +50,21 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB, rdb *r
 		}
 		unitRooms[unitKey][roomID] = router.rooms[roomID]
 	}
+	// UD timer 时长乘子（验证旋钮 XSENSOR_UD_MUL，默认 1）：调小可在短 case 验 deadline fire 机制（合法 config，非 test 脚手架）。
+	udMul := 1.0
+	if v := os.Getenv("XSENSOR_UD_MUL"); v != "" {
+		if m, err := strconv.ParseFloat(v, 64); err == nil && m > 0 {
+			udMul = m
+		}
+	}
 	for unitKey, rooms := range unitRooms {
 		// residentCount=1（单住户测试；多住户后续）；pub = 该 unit 公共度 → 找人窗 W（规则④）。
-		router.units[unitKey] = engine.NewUnit(rooms, 1, router.unitPub[unitKey])
+		// roomTypes 子集（本 unit 各房 RoomType）→ UD timer per-room deadline（Bathroom→D=20min）。
+		rt := map[string]int{}
+		for roomID := range rooms {
+			rt[roomID] = router.roomType[roomID]
+		}
+		router.units[unitKey] = engine.NewUnit(rooms, 1, router.unitPub[unitKey], rt, udMul)
 	}
 	logger.Info("xsensor: units built", zap.Int("units", len(router.units)), zap.Int("rooms", len(router.rooms)))
 
@@ -227,15 +239,8 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 				nb:             nb,
 			}
 			seed := adapter.FrameInput{Beds: beds, Covers: ones(nb), Onbed: ones(nb), Overlap: ones(nb)}
-			// §82/§84 D 窗 = thresholdNonRest(12min) + 2min 余量（单源锚 roomengine.ThresholdNonRestMs，belief/engine 不持字面量）。
-			// XSENSOR_DWINDOW_MS env 覆盖：验证/调参旋钮（合法 config，非 test 脚手架）——调小可在短 case 验 deadline fire 机制。
-			dWindowMs := int64(roomengine.ThresholdNonRestMs) + 2*60*1000
-			if v := os.Getenv("XSENSOR_DWINDOW_MS"); v != "" {
-				if ms, err := strconv.ParseInt(v, 10, 64); err == nil && ms >= 0 {
-					dWindowMs = ms
-				}
-			}
-			router.rooms[roomID] = engine.NewRoom(adapter.BedGeoms(seed), nb, dWindowMs)
+			router.rooms[roomID] = engine.NewRoom(adapter.BedGeoms(seed), nb)
+			router.roomType[roomID] = cfg.RoomType // UD timer per-room deadline（Bathroom=1→D=20min，余 UD=90min）
 			// unitKey = suiteID（SQL 已 network() zero 主机位 → 同 /80 房共享；public bathroom=自身/128 独立）。
 			router.roomUnit[roomID] = cfg.SuiteID
 		}

@@ -17,16 +17,9 @@ import (
 // absorbedThresh 消失 track 的 S 边缘 P(Left)+P(Empty) ≥ 此 = 确认离场 → drop（form-anchor，留 oracle）。
 const absorbedThresh = 0.9
 
-// §84-A lost ramp：blind 的 fire = 时间驱动把 P^F(SFallen) ramp 到真阈 0.85（不绕阈、不 latch）。
-//
-//	lostFireThresh = lost 专用高阈（present 摔走 firmware/dbn_mode，与此分开）。
-//	lostRampTargetLogOdds = logit(0.85)−logit(0.5) = ln(0.85/0.15) ≈ 1.7346（二义 0.5 起爬到 0.85 的 log-odds 跨度）。
-//	delta/tick = target / (reset 窗 tick 数) × RiskTime 系数（dWindowMs 定 reset 窗，~1Hz）；从 at-loss 值起 ramp：
-//	摔(高起点)早破 / 二义(0.5)reset 到点破 / 站着·离床(低起点·sleepad 压)reset 内到不了 → FP 被证据自然挡。form-anchor 留 oracle。
-const (
-	lostFireThresh        = 0.85
-	lostRampTargetLogOdds = 1.7346
-)
+// lostFireThresh = lost 专用高阈：blind 时 belief 自然演化到此 → fire（present 摔走 firmware/dbn_mode，与此分开）。
+//   二义 lost（pF 自然到不了 0.85）不在此发，交 Unit UD timer 兜底。form-anchor 留 oracle。
+const lostFireThresh = 0.85
 
 // arrivalConfirmFrames hand-off 信号「确认真人」所需连续在场真人帧数（§64 噪声防线，form-anchor）。
 //
@@ -84,15 +77,11 @@ type Room struct {
 	//   **非** census.Nr() present-only——否则独居者摔进 blind 时占用掉 0 误清零计时（lost-fall FN）。
 	aloneStreakStartMs int64
 	notSoloFrames      int // 连续占用≠1 帧数（重置抗抖动柱②：≥arrivalConfirmFrames 才清 alone-streak）
-	// §82 D 窗（neighbor lost-fall 兜底耐心窗）：blind track 起算时戳（per logicID）+ 窗长（bootstrap 注入
-	//   = thresholdNonRest+2min；0=未注入→D 关闭=旧行为）。只压"这条 blind 自己的 lost-fall fire"。
-	blindSinceMs map[int]int64
-	dWindowMs    int64 // §84-A：lost ramp 的 reset 窗（定 ramp 速率）+ abort-2 用；bootstrap 注入 thresholdNonRest+2min
 }
 
-// NewRoom 建单房引擎。geom = 床几何（adapter.BedGeoms 从 layout 派生）；nb = 床数；
-// dWindowMs = §82 neighbor D 窗长（bootstrap 注入 thresholdNonRest+2min；0=D 关闭）。
-func NewRoom(geom []belief.BedGeom, nb int, dWindowMs int64) *Room {
+// NewRoom 建单房引擎。geom = 床几何（adapter.BedGeoms 从 layout 派生）；nb = 床数。
+// lost-fall 兜底（D/UD timer）已上移 Unit 层（unit 级"任何 track 取消"+ per-room_type deadline）。
+func NewRoom(geom []belief.BedGeom, nb int) *Room {
 	return &Room{
 		model:         belief.DefaultModel(),
 		js:            belief.NewJointSpace(nb),
@@ -106,8 +95,6 @@ func NewRoom(geom []belief.BedGeom, nb int, dWindowMs int64) *Room {
 		p:             adapter.DefaultParams(),
 		realStreak:    map[int]int{},
 		prevConfirmed: map[int]bool{},
-		blindSinceMs:  map[int]int64{},
-		dWindowMs:     dWindowMs,
 	}
 }
 
@@ -162,24 +149,11 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 			logPsi = r.cp.LogPsi(r.js, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p))
 			logPhi = r.em.LogPhi(r.js, obs)
 		} else {
-			// §84-A 消失态：雷达轴中性（RadarOnline=false），**接触轴(sleepad)仍应用**——在床 InBed→SBed
-			//   保护睡眠者不被 ramp 误推；LeftBed→B vac→Ψ 放行 SFallen。再叠 lost ramp（无离房趋势时）把
-			//   SFallen 往 0.85 推（从 at-loss 值起：站着低起点 / 在床 SBed 压 → reset 内到不了 0.85 → 不报）。
+			// 消失态：雷达轴中性（RadarOnline=false），**接触轴(sleepad)仍应用**——在床 InBed→SBed
+			//   保护睡眠者；LeftBed→B vac→Ψ 放行 SFallen。belief **自然演化**（无人工 ramp，已作废）：
+			//   loss 时已高 pF（已确认摔）→ 自然到 0.85 即发；二义 lost（pF~0.5）不自爬 → 交 Unit UD timer 兜底。
 			obs = adapter.BuildObservation(adapter.RadarTrack{Online: false}, fi.Sleepads, fi.Beds, r.p)
 			logPhi = r.em.LogPhi(r.js, obs)
-			// lost ramp **封顶**：只在 blind-elapsed < reset 窗(dWindowMs)内累加 δ → 总量≈target(0.5→0.85 跨度)，
-			//   reset 到点即停（不无界 overshoot）。fire ⟺ at-loss P^F≥0.5：二义(0.5)reset 到点到 0.85；
-			//   低起点(站立/sleepad 压)reset 内到不了；过 reset 停 ramp（Predict 缓降，不再推高）。
-			started := r.blindSinceMs[ts.LogicID]
-			if started == 0 {
-				started = fi.NowMs
-			}
-			if !ts.Obs.ExitTrend && fi.NowMs-started < r.dWindowMs {
-				ramp := belief.LostRampPhi(r.js, r.lostRampDelta(rc))
-				for i := range logPhi {
-					logPhi[i] += ramp[i]
-				}
-			}
 		}
 		// 消失态：雷达中性 + 接触轴 + lost ramp（非离房趋势）；present 全发射。Predict 自持，无 TTL。
 		f.Step(fi.NowMs, online, logPsi, logPhi, rhoXroom)
@@ -203,16 +177,10 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 				d.Band = "floor"
 			}
 		}
-		// §84-A lost fire：blind 的 fire = ramp 把 P^F(SFallen) 真推到 0.85（不绕阈、不 latch；柱A）。
-		//   present 摔走 firmware/dbn_mode（与此分开，不进此分支=结构免疫）。三 cancel 经"压低 P^F 使到不了 0.85"实现：
-		//   离房趋势→不 ramp+下方 drop；handoff→GateBlindRow→SLeft→P^F 掉；在床→sleepad InBed→SBed 压→到不了；
-		//   恢复→转 Present 出本分支。dWindowMs≤0→无 ramp→P^F 不升→不报（旧行为/零回归）。blindSinceMs 留 abort-2。
-		if ts.Present {
-			delete(r.blindSinceMs, ts.LogicID)
-		} else {
-			if r.blindSinceMs[ts.LogicID] == 0 {
-				r.blindSinceMs[ts.LogicID] = fi.NowMs
-			}
+		// lost fire（自然 belief）：blind 时 belief 自然演化到 0.85 → fire "lost"（loss 时已确认摔的 carry-over）。
+		//   二义 lost（pF<0.85）不在此发，交 Unit UD timer 兜底。三 cancel（离房趋势/handoff→SLeft/在床→SBed）
+		//   经压低 P^F 使到不了 0.85 实现；present 摔走 firmware/dbn_mode（不进此分支=结构免疫）。
+		if !ts.Present {
 			if pF >= lostFireThresh && !ts.Obs.ExitTrend {
 				d.Fire, d.Band = true, "lost"
 			} else {
@@ -278,19 +246,8 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		}
 	}
 
-	// abort-2（§82,乙）：本帧新现 confirmed-real 活人(gained>0)→放弃同房 **D 窗内** blind faller 待报。
-	//   依据：新活人 = 本人起身(无需报) 或 他人到场(自然能发现 fall，无需报) = 风险分层降级(署名接受 FN 残余)。
-	//   只撤 D 窗内未释放的(past-D 已 fire 的不撤)；gained 必来自 present track，不会误伤 faller 自身。
-	if gained > 0 {
-		for i := range results {
-			f := forensic[i]
-			if !f.Present && r.blindSinceMs[f.LogicID] != 0 &&
-				r.dWindowMs > 0 && fi.NowMs-r.blindSinceMs[f.LogicID] < r.dWindowMs {
-				results[i].d.Fire = false
-				r.dropTrack(f.LogicID)
-			}
-		}
-	}
+	// abort（本帧新现 confirmed-real 活人 gained>0）由 Unit UD timer 的"任何 track 取消"统管（unit 级，
+	//   含同房本人起身/他人到场/兄弟房现人）——Room 不再单独撤同房 blind faller（旧 abort-2 随 ramp 退役）。
 
 	fr := r.aggregate(results, nr, fi.NowMs)
 	fr.LostReal, fr.GainedReal = lost, gained
@@ -351,35 +308,6 @@ func neutralIfNil(v belief.JointVector, js *belief.JointSpace) belief.JointVecto
 // MarginalS 末帧房间代表 track 的 S 轴边缘后验。
 func (r *Room) MarginalS() belief.Vector { return r.lastMarg }
 
-// lostRampDelta §84-A：每 blind tick 给 SFallen 加的 log-odds 增量 = 目标跨度 / reset 窗 tick 数 × RiskTime 系数。
-//
-//	dWindowMs≤0 → 0（D 关闭=不 ramp，零回归）；~1Hz 假设 tick 数 ≈ dWindowMs/1000。数值留 oracle。
-func (r *Room) lostRampDelta(rc belief.RiskContext) float64 {
-	if r.dWindowMs <= 0 {
-		return 0
-	}
-	nTicks := float64(r.dWindowMs) / 1000.0
-	if nTicks < 1 {
-		nTicks = 1
-	}
-	return lostRampTargetLogOdds / nTicks * riskRampMul(rc)
-}
-
-// riskRampMul §84-A RiskTime：高风险时段证据权重放大 → ramp 更陡更快到 0.85（夜间/独居/失能；form-anchor 留 oracle）。
-func riskRampMul(rc belief.RiskContext) float64 {
-	m := 1.0
-	if rc.Night {
-		m *= 1.2
-	}
-	if rc.AloneContinuousMin > 0 {
-		m *= 1.2
-	}
-	if rc.Disabled {
-		m *= 1.2
-	}
-	return m
-}
-
 // aloneMinAsOf 当前独居连续分钟（真人占用==1 连续时长，跨 tick streak；非独居=0）。
 // 用上 tick 末的 streak 状态（占用 streak 在 Tick 末更）→ 喂本 tick rc，1 帧滞后。
 func (r *Room) aloneMinAsOf(nowMs int64) float64 {
@@ -389,11 +317,10 @@ func (r *Room) aloneMinAsOf(nowMs int64) float64 {
 	return float64(nowMs-r.aloneStreakStartMs) / 60000.0
 }
 
-// dropTrack 移除一条 track 的全部 per-logicID 状态（filter/decider/floor/D 计时 + census）。状态驱动，非 TTL。
+// dropTrack 移除一条 track 的全部 per-logicID 状态（filter/decider/floor + census）。状态驱动，非 TTL。
 func (r *Room) dropTrack(id int) {
 	delete(r.filters, id)
 	delete(r.deciders, id)
 	delete(r.floorGuards, id)
-	delete(r.blindSinceMs, id)
 	r.census.Drop(id)
 }

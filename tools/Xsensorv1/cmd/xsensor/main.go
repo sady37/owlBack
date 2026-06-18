@@ -60,6 +60,7 @@ func main() {
 		rooms:    map[string]*engine.Room{},
 		units:    map[string]*engine.Unit{},
 		roomUnit: map[string]string{},
+		roomType: map[string]int{},
 		unitPub:  map[string]belief.UnitPublicness{},
 		logger:   logger,
 	}
@@ -124,6 +125,7 @@ type dbnRouter struct {
 	rooms    map[string]*engine.Room          // roomID → Room（bootstrap 建，供 NewUnit 分组）
 	units    map[string]*engine.Unit          // unitKey(suiteID) → 多房编排器（跨房 hand-off）
 	roomUnit map[string]string                // roomID → unitKey
+	roomType map[string]int                   // roomID → card.RoomType（1=Bathroom）→ UD timer deadline
 	unitPub  map[string]belief.UnitPublicness // unitKey(suiteID) → 公共度（units.unit_type，定找人窗 W）
 	logger   *zap.Logger
 }
@@ -199,6 +201,11 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	}
 	fr := u.Tick(roomID, fi) // 多房编排：算 ρ_xroom（兄弟房守恒+时间窗）→ Room.Tick（单房无兄弟 ρ=0）
 	rho := u.LastRho(roomID)
+	udDeadline, unitHasTrack, hasNeighbor := u.UDState(roomID, nowMs)
+	udRemainMs := int64(0)
+	if udDeadline > 0 {
+		udRemainMs = udDeadline - nowMs
+	}
 
 	top, tp := fr.Probe.MarginalS.Max()
 
@@ -235,6 +242,8 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Bool("fire", fr.Decision.Fire), zap.Float64("lambda", fr.Probe.Lambda),
 		zap.String("top_s", sName(int(top))), zap.Float64("top_p", tp),
 		zap.Float64("rho_xroom", rho),
+		zap.Bool("ud_active", udDeadline > 0), zap.Int64("ud_remain_ms", udRemainMs),
+		zap.Bool("unit_has_track", unitHasTrack), zap.Bool("has_neighbor", hasNeighbor),
 		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("bed_present", g.sleepadPresent),
 		zap.Float64s("covers", covers), zap.Float64s("onbed", onbed),
 		zap.Any("s_dist", sDist), zap.Any("target", raw), zap.Any("dbn", dbn),
