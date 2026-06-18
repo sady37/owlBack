@@ -24,12 +24,13 @@ type Point struct{ X, Y int }
 
 // RadarTrack 单 track raw 量（observation.Track 投影）。
 type RadarTrack struct {
-	Online   bool    // 本 tick 在 radar TTL 内有上报
-	Pose     int     // observation pose 枚举（6=Lying）
-	X, Y, Z  int     // canvas cm
-	HR, RR   int     // 0=无信号
-	StillSec float64 // 连续静止秒（still-box 总时长）
-	AreaType int     // track 当前 cell.Belief[0].Type（CellAreaType 透传）→ emission 正向压制 + floor per-area 阈
+	Online    bool    // 本 tick 在 radar TTL 内有上报
+	Pose      int     // observation pose 枚举（6=Lying）
+	X, Y, Z   int     // canvas cm
+	HR, RR    int     // 0=无信号
+	StillSec  float64 // 连续静止秒（still-box 总时长）
+	AreaType  int     // track 当前 cell.Belief[0].Type（CellAreaType 透传）→ emission 正向压制 + floor per-area 阈
+	ExitTrend bool    // §84 步3（原则1 离房趋势）：lost 末帧朝门逼近+贴门+仍移动 → engine 判 lost=离房 cancel（非真摔）
 }
 
 // SleepadFrame 单床 sleepad raw 量（§32 二态：设备在线 OR 没有，不建模中途掉线）。
@@ -49,7 +50,8 @@ type Census struct {
 // FrameInput 一帧全部 raw 输入（decoupled；scaffold wire 时由 engine/track_manager 填）。
 // Sleepads/Beds/Covers/Onbed/Overlap 长度均 = numBeds。
 // Tracks = 本 tick 全部 raw track（§57 步2 归一：每条全量 per-track，既喂 census 数 N_r/排 ghost，
-//   又各自驱动一份 belief S/B/realness 滤波——§A.3② 隐维复制并排，不进 J 基数）。
+//
+//	又各自驱动一份 belief S/B/realness 滤波——§A.3② 隐维复制并排，不进 J 基数）。
 type FrameInput struct {
 	NowMs    int64
 	Tracks   []TrackObs
@@ -164,27 +166,12 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, p Para
 		PoseLying:   t.Online && t.Pose == p.PoseLying,
 		StillSec:    t.StillSec,
 		NearBed:     nb,
-		ZBand:       zBandOf(t.Z),
 		// HRRRObserved 仅当雷达**真返** HR/RR（铁律 [[radar_hr_rr_bed_enter_gated]]：radar enter-gate，
 		// 近床但无 vital = 结构性未测 = 零信息，**非「观测到 absent」**；否则 §D 会在合法在床期误否决 AtBed）。
 		HRRRObserved:      t.HR > 0 || t.RR > 0,
 		HRRRPresent:       t.HR > 0 || t.RR > 0,
 		VitalSourceOnline: vitalSrc,
 		AreaType:          t.AreaType,
-	}
-}
-
-// zBandOf 高度 z(cm) → ObsZBand 高度档。**用生产原阈**（wisefido-sensor calibration.go：
-//   zUprightCm=80 / zSitMinCm=30）：>80 站 / 30-80 坐 / <30 假低无信息（z=0 贴地→ZNone 中性，
-//   z 不是 fall 证据、不否决）。美国马桶座 38-48cm 落在坐档。
-func zBandOf(z int) belief.ZBand {
-	switch {
-	case z > 80:
-		return belief.ZStand
-	case z >= 30:
-		return belief.ZSit
-	default:
-		return belief.ZNone
 	}
 }
 

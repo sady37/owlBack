@@ -121,9 +121,9 @@ type roomGeom struct {
 type dbnRouter struct {
 	mu       sync.Mutex
 	geom     map[string]*roomGeom
-	rooms    map[string]*engine.Room // roomID → Room（bootstrap 建，供 NewUnit 分组）
-	units    map[string]*engine.Unit // unitKey(suiteID) → 多房编排器（跨房 hand-off）
-	roomUnit map[string]string       // roomID → unitKey
+	rooms    map[string]*engine.Room          // roomID → Room（bootstrap 建，供 NewUnit 分组）
+	units    map[string]*engine.Unit          // unitKey(suiteID) → 多房编排器（跨房 hand-off）
+	roomUnit map[string]string                // roomID → unitKey
 	unitPub  map[string]belief.UnitPublicness // unitKey(suiteID) → 公共度（units.unit_type，定找人窗 W）
 	logger   *zap.Logger
 }
@@ -155,8 +155,10 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	for _, b := range bases {
 		tracks = append(tracks, adapter.TrackObs{RadarTrack: adapter.RadarTrack{
 			Online: b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
-			StillSec: float64(b.StillBoxSec),
-			AreaType: int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
+			StillSec:  float64(b.StillSec), // 有效时长（已含直立折扣，SnapshotTrackStatuses 算）→ FloorGuard
+
+			AreaType:  int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
+			ExitTrend: b.ExitTrend,         // §84 步3 离房趋势（lost 末帧保留 → engine cancel）
 		}})
 	}
 	// sleepad-only 房(无雷达 track)：InBed 合成一条 bed-track 作 B 轴载体(engine.Room track-centric，

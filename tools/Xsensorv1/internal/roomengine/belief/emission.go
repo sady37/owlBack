@@ -6,11 +6,11 @@ import "math"
 //   Φ_t = Π_j ℓ_sj(o^sj|B^j)^{w_sj}  ·  Π_c ℓ_c(o^c|S)^{w_c}
 //          └── 接触→B^j（只依赖 bmask 第 j 位）──┘  └── 雷达 pose/dwell/hrrr→S（只依赖 S）──┘
 // 两轴在 log 域可分：logPhi[(S,bmask)] = contactLogB(bmask) + radarLogS(S)。
-// 权重作指数（log 域 = w·log ℓ）：w_sj=onbed, w_pose=w_dwell=covers, w_hrrr=covers·1[nearBed]。
+// 权重作指数（log 域 = w·log ℓ）：w_sj=onbed, w_pose=covers, w_hrrr=covers·1[nearBed]。
 //
 // 形态锚（铁律 [[fall_data_is_artificial_test]]：单 case 不刻精确参数，只定可判侧形态）：
-// L_in/L_left≫1（接触强）、pose lying 二义(AtBed=F 同 boost)、HR/RR 非对称 + §D absent 门控、
-// dwell still≥τ 只分静止占用 vs 活动。标定见 feedback-p6C。
+// L_in/L_left≫1（接触强）、pose lying 二义(AtBed=F 同 boost)、HR/RR 非对称 + §D absent 门控。
+// 标定见 feedback-p6C。
 //
 // 注（§32 拆补丁）：δ floor-strip 已删——cd2b 不靠雷达 XY 精确空间，靠 LeftBed→B vac 经 §4 Ψ 相容
 // 涌现 SFallen（C 独立测试 0.995 验证）。floor-strip 是补丁，框架 Ψ 让 cd2b 零补丁涌现。
@@ -20,12 +20,8 @@ type emissionParams struct {
 	lLeft    float64 // ℓ_sj(LeftBed|vac)=L_left≫1
 	lPose    float64 // ℓ_pose(lying|AtBed)=ℓ_pose(lying|F)>1（二义，刻意）
 	lHR      float64 // L_hr：present|AtBed 倍数（absent|AtBed=1/L_hr）
-	dwellHi  float64 // D>1：still≥τ|F = still≥τ|AtBed
-	dwellLo  float64 // <1：still≥τ|O/Sit（活动态久静受罚）
-	stillTau float64 // dwell 阈 τ（秒）；cell 容忍/夜间对 τ 的调制属 decide/adapter 层（feedback-p6C §6/§7）
-	lZ       float64 // ObsZBand 正向抬直立态(Sit/OpenFloor)的倍数；须 ≳ dwellHi/dwellLo 抵消久坐 dwell 误判
-	lArea    float64 // area_type 正向压制倍数（bed/sit/toilet→抬对应静止态）。**须 < dwellHi**（守门1：
-	//                  低到 still 久静主路径能翻过 area 误学，不锁死——area=Sit 的真摔仍逐帧被 still 翻成 Fallen）
+	lArea    float64 // area_type 正向压制倍数（bed/sit/toilet→抬对应静止态）。area 误学(如假 Sit)的真摔
+	//                  由 FloorGuard 非累加总时长兜底（emission 不再有 still 路径翻 area），故 lArea 仅作 redirect 偏置
 }
 
 // roomengine.AreaType 枚举值（belief 不 import roomengine，本地常量对齐）。
@@ -42,7 +38,7 @@ const (
 func defaultEmissionParams() emissionParams {
 	return emissionParams{
 		lIn: 20, lLeft: 20, lPose: 3, lHR: 5,
-		dwellHi: 3, dwellLo: 0.5, stillTau: 60, lZ: 8, lArea: 2,
+		lArea: 2,
 	}
 }
 
@@ -58,8 +54,8 @@ func NewEmission(geom []BedGeom) *Emission {
 
 // LogPhi 一帧发射 → log 域 JointVector。
 func (e *Emission) LogPhi(js *JointSpace, o Observation) JointVector {
-	radarS := e.radarLogS(o)        // [numStates]：雷达轴对 S 的 log 似然
-	contactB := e.contactLogB(o)    // [numBeds][numBedStates]：接触轴对各 B^j 的 log 似然
+	radarS := e.radarLogS(o)     // [numStates]：雷达轴对 S 的 log 似然
+	contactB := e.contactLogB(o) // [numBeds][numBedStates]：接触轴对各 B^j 的 log 似然
 	out := js.NewJointVector()
 	for i := 0; i < js.size; i++ {
 		s, bmask := js.decode(i)
@@ -99,24 +95,19 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 	if !o.RadarOnline {
 		return logS // 离线=中性
 	}
-	w := e.geom0Covers() // w_pose=w_dwell=w_δ=covers(r,·)
+	w := e.geom0Covers() // w_pose=w_δ=covers(r,·)
 
 	// pose lying（二义）：boost AtBed 与 F（不分）。
 	if o.PoseLying {
 		addLogLk(&logS, Vector{SBed: e.p.lPose, SFallen: e.p.lPose}, w, SBed, SFallen)
 	}
 
-	// dwell still≥τ：静止占用(F/AtBed) D>1；活动态(O/Sit) <1。dwell 不分 F/AtBed。
-	if o.StillSec >= e.p.stillTau {
-		addLogLk(&logS, Vector{
-			SBed: e.p.dwellHi, SFallen: e.p.dwellHi,
-			SOpenFloor: e.p.dwellLo, SSit: e.p.dwellLo,
-		}, w, SBed, SFallen, SOpenFloor, SSit)
-	}
+	// still-box 不进 emission：per-tick 注入会被前向滤波累积（偶尔移动者单向爬 0.85=FP）。
+	// 静止→fall 改由 FloorGuard 非累加消费总时长（present-only，engine.go OR verdict）。
 
 	// area_type 正向压制（每帧读活的 cell）：FN-safe 默认偏 Fallen，由位置正向证据 redirect 到对应静止态。
 	//   bed→SBed / sit→SSit / toilet·shower→SBath+SSit / active·enter→SOpenFloor；deny·unknown 中性。
-	//   权重 lArea < dwellHi（守门1）：area 误学(如假 Sit)的真摔，still 久静逐帧累积仍能翻成 Fallen，不锁死。
+	//   area 误学(如假 Sit)的真摔由 FloorGuard 总时长兜底（不靠 emission still 路径翻 area）。
 	switch o.AreaType {
 	case areaBed:
 		addLogLk(&logS, Vector{SBed: e.p.lArea}, w, SBed)
@@ -128,15 +119,8 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 		addLogLk(&logS, Vector{SOpenFloor: e.p.lArea}, w, SOpenFloor)
 	}
 
-	// z 高度档(ObsZBand)：**单向正向证据，绝不负向**（device-room-zone.md）。坐高(30-60)→抬 Sit、
-	//   站高(>60)→抬 OpenFloor，抵消 dwell 对久坐马桶的误判(dwell 罚 Sit·抬 Fallen)；
-	//   贴地/低→ZNone 中性（z=0 不是 fall 证据、不否决任何东西，fall 仍走 dwell）。时间积分=前向滤波逐帧累积。
-	switch o.ZBand {
-	case ZSit:
-		addLogLk(&logS, Vector{SSit: e.p.lZ}, w, SSit)
-	case ZStand:
-		addLogLk(&logS, Vector{SOpenFloor: e.p.lZ}, w, SOpenFloor)
-	}
+	// z 直立证据已并入 still-box 折扣（track_manager.stillDiscount：z 坐×0.9 / z 站×0.5 削有效 still 时长），
+	// 不再走 emission redirect——同一 z 既压 emission 又削 still = 双压站立瘫倒 → 过压漏报（C 裁定撤 ZBand）。
 
 	// HR/RR（非对称 + §D 门控）：w_hrrr=covers·1[nearBed]。
 	if o.NearBed && o.HRRRObserved {
@@ -194,4 +178,16 @@ func uniformVec(v float64) Vector {
 		out[i] = v
 	}
 	return out
+}
+
+// LostRampPhi §84-A：lost 期"无检出=可能摔"伪证据 → SFallen 行加 log-odds 增量 delta（余态中性 0）。
+// 每 blind tick 喂一份，经 Correct 累加把 P^F(SFallen) 往 0.85 推；从 at-loss 值起 ramp，故摔(高起点)早到、
+// 二义(0.5)reset 到点到、站着(低起点)reset 内到不了——证据自然分。delta 由 engine 按 reset 速率×RiskTime 算。
+func LostRampPhi(js *JointSpace, delta float64) JointVector {
+	v := js.NewJointVector()
+	base := int(SFallen) * js.bmaskN
+	for b := 0; b < js.bmaskN; b++ {
+		v[base+b] = delta
+	}
+	return v
 }

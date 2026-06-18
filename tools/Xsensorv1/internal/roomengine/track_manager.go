@@ -500,7 +500,6 @@ const (
 	heartbeat88EvictMs = int64(6_000)
 )
 
-
 // ghostJudgable ghost≥2 闸：ghost 是真 track 的镜像/反射，需 ≥2 条 track（至少 1 条作母体）才可判 ghost。
 // 仅 1 条 track 时不判 ghost——单 track 判 ghost 会压制从盲区返回的真人/真摔。调用方持锁。
 func (tm *TrackManager) ghostJudgable() bool {
@@ -599,6 +598,14 @@ func (tm *TrackManager) BedOccupancyState(nowMs int64) card.BedState {
 		}
 		if s.LeftBedAtMs > latestLeftBed {
 			latestLeftBed = s.LeftBedAtMs
+		}
+	}
+	// 连续 sleepad InBed monitor（bed_status=0）也建立 InBed，不只离散事件：InBed 事件常缺前置
+	//   （窗裁/sensor 重启/firmware 只发 monitor 不补事件），但连续 bed_status=0 在 sleepadStates 里持续报在床
+	//   → 用其最新 TMs 作 latestInBed（连续刷新，[[bed_stale_leftbed_vetoes_radar_inbed]]）。离床即 noreport→不再刷。
+	for _, s := range tm.sleepadStates {
+		if s.InBed && s.TMs > latestInBed {
+			latestInBed, inBedFromSleepad = s.TMs, true
 		}
 	}
 	if tm.lastRadarInBedMs > latestInBed {
@@ -784,14 +791,33 @@ type TrackStatusBase struct {
 	X, Y, Z          int // 画布坐标（grid/cell 算法用；Kalman 输出）
 	RawH, RawV, RawZ int // firmware raw 雷达本地坐标 — alarm publish 用，对外契约不变
 	Pose             int
-	StillSec         int // 逐帧 |Δpos|<15cm 累计；任一帧 ≥15cm 瞬清（脆，质心抖动易断）
-	StillBoxSec      int // still-box 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动，fall 判据用）
+	StillSec         int // 有效 still 时长 = StillBoxSec × 直立折扣（stillDiscount，喂 FloorGuard）
+	StillBoxSec      int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动，显示用）
 	CellAreaType     AreaType
 	EnterTarget      string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
 	MoveActive       bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
 	Present          bool   // 本帧是否被真实观测（LastObservedMs == nowMs）；false=漏帧/丢轨 → DBN 走 blind 续存
 	TraverseDelta    int    // 自上次 SnapshotTrackStatuses 累计的 traverse cells（用于 SuiteCensus 升格判定）
 	SleepadInBed     bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
+	ExitTrend        bool   // §84 步3（原则1 离房趋势）：末 3s 朝 Enter 逼近 + 终点贴门 + 仍在移动 = 走向出口。
+	//                         engine 据此（经 ts.Obs 末帧保留）把 lost 判为"离房"→cancel（非真摔），不进 deadline fire。
+}
+
+// stillDiscount 直立证据对 still-box→fall 的一次性折扣（不改 raw 时钟，取最强 min 直立因子）：
+// pose=sit 0.8 / z∈[30,80] 0.9 / z>80 0.5；躺/贴地(z<30) 无折扣 1.0。单帧噪声只削当帧、不清零
+// 累积时钟（FN-safe：绝不因瞬时直立抹掉真摔的久静证据）。z 复用 firmware 标定档 30/80。
+func stillDiscount(pose, z int) float64 {
+	d := 1.0
+	if RadarPoseToCore(pose) == CorePoseSit {
+		d = 0.8
+	}
+	switch {
+	case z > 80:
+		d = math.Min(d, 0.5)
+	case z >= 30:
+		d = math.Min(d, 0.9)
+	}
+	return d
 }
 
 // SnapshotTrackStatuses 返回当前所有 live track 的 Layer 1 原始投影。
@@ -835,10 +861,10 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			Present:      ts.LastObservedMs == nowMs,
 			SleepadInBed: sleepadInBed,
 		}
-		// StillSec/StillBoxSec：still-box 单源（StillBoxRunStart==0 非静止；否则 box run 秒，30s 滚动 50×50 抗抖动）。
+		// StillBoxSec=raw box run 秒（30s 滚动 50×50 抗抖动，显示用）；StillSec=直立折扣后的有效时长（喂 FloorGuard）。
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
-			base.StillSec = base.StillBoxSec
+			base.StillSec = int(math.Round(float64(base.StillBoxSec) * stillDiscount(base.Pose, base.Z)))
 		}
 		// LongSurvival / StartupGrace 锚定 → 升格 Anchored verdict（v2 §10.1.1）
 		if base.Verdict == VerdictReal && (ts.LongSurvivalAnchored || ts.StartupGrace) {
@@ -849,7 +875,14 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			if c.Belief[0].Type == AreaEnter {
 				base.EnterTarget = c.EnterTarget
 			}
+			// qinglan 补强：present track 连续在床区(AreaBed=position 在 layout 床区)= radar 连续 InBed 证据，
+			//   刷新 lastRadarInBedMs（不只离散 InBed 事件——事件常缺前置/窗裁）。sleepace 连续 bed_status 的对称项。
+			//   离床后人移出床区→不再刷→LeftBed 胜；跌床落床边(非 AreaBed)→不刷→LeftBed→Ψ→SFallen。
+			if base.Present && c.Belief[0].Type == AreaBed {
+				tm.lastRadarInBedMs = nowMs
+			}
 		}
+		base.ExitTrend = tm.exitTrend(ts, px, py, nowMs)
 		// TraverseDelta：差分本 track 的 LifetimeTraverse 累计（无字段时退化为 0）。
 		// PR-3 暂用 FrameCount 近似单调累计；PR-5 (BathroomGate) 接入后换实际 grid.MarkTraverse 计数。
 		base.TraverseDelta = 0 // 留待 PR-5 wire 精确 delta；当前阶段 SuiteCensus traverse 升格走 sleepad 强锚 + 时长门
@@ -857,6 +890,41 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 	}
 	return out
 }
+
+// exitTrend §84 步3（原则1 离房趋势，lost 触发的 cancel 信号）。三条全真才判"走向出口"：
+//
+//	① 终点贴门（NearestEntryDist ≤ exitNearCm）——房中央消失=可能真摔，不撤；
+//	② 末 exitLookbackMs 内朝门逼近（NearestEntryDist 减小=移动趋势）——纯贴门不算（静止门口≠离房）；
+//	③ lost 时仍在移动（StillBoxRunStart==0）——"走到门口又摔"已静止 → ③假 → 不撤（FN-safe：门口摔仍 fire）。
+//
+// 形态阈（exitNearCm/exitLookbackMs）留 oracle（铁律 [[fall_data_is_artificial_test]]），只钉结构。
+func (tm *TrackManager) exitTrend(ts *TrackState, nowX, nowY int, nowMs int64) bool {
+	if tm.grid == nil {
+		return false
+	}
+	if tm.grid.NearestEntryDist(nowX, nowY) > exitNearCm {
+		return false // ① 终点不贴门
+	}
+	if ts.StillBoxRunStart != 0 {
+		return false // ③ lost 时已静止（门口摔）→ 不撤
+	}
+	pastDist := -1
+	cutoff := nowMs - exitLookbackMs
+	for _, p := range ts.History {
+		if p.TMs <= cutoff {
+			pastDist = tm.grid.NearestEntryDist(p.X, p.Y)
+		}
+	}
+	if pastDist < 0 {
+		return false // 历史不足 3s → 保守不判离房（倾向保留 fire）
+	}
+	return tm.grid.NearestEntryDist(nowX, nowY) < pastDist // ② 末 3s 朝门逼近
+}
+
+const (
+	exitNearCm     = 30   // §84 原则1：终点距 Enter ≤30cm = 门附近（NearestEntryDist 在门带内回 0）
+	exitLookbackMs = 3000 // §84 原则1：lost 回看 3s
+)
 
 // ========================================================================
 // ProcessFrame：每帧双维度喂（即时流 + 历史流）
@@ -1204,7 +1272,6 @@ func (tm *TrackManager) GetOutputs() []TrackOutput {
 
 // PR-Bootstrap: StillFallStats + stillFallReportCount 已删除（v1 fire path 删除后无 source）。
 // PR-10 BathroomStillFall 的统计走 ai.log audit 路径，不再 per-TrackManager 计数。
-
 
 // ========================================================================
 // 出生打分（PR-5.1+5.2+5.3 重写：累积 GhostPenalty 模式）
@@ -1571,7 +1638,7 @@ func (tm *TrackManager) updateRegionStatic(ts *TrackState, prev TimedPoint, x, y
 		ratioMin         = 0.90
 		ratioResetMin    = 0.85 // ratio 跌破此值 → region 失效 reset
 		zJumpMinCm       = 10
-		zJumpMinElapse   = 2 * 60 * 1000  // 2 min
+		zJumpMinElapse   = 2 * 60 * 1000      // 2 min
 		thresholdRest    = 8 * 60 * 1000      // RestZone cell: 8min
 		thresholdNonRest = ThresholdNonRestMs // 其它 12min（= 导出 ThresholdNonRestMs，§82 neighbor D 锚单源）
 	)

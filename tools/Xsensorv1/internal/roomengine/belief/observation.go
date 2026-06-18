@@ -13,16 +13,6 @@ const (
 	BedLeftBed                    // sleepad LeftBed 翻转
 )
 
-// ZBand 雷达高度档（ObsZBand）。**单向正向证据，绝不负向**（device-room-zone.md）：
-// 有高度=直立=没摔 → 抬对应直立态；贴地/低=零信息（z 不是 fall 证据，fall 走 dwell）。
-type ZBand int
-
-const (
-	ZNone  ZBand = iota // 贴地/假低：中性（z<30，z=0 不否决任何东西）
-	ZSit                // 坐高(30-80cm，生产原阈；美国马桶座 38-48 在内)：抬 Sit
-	ZStand              // 站高(>80，生产原阈)：抬 OpenFloor 直立活动
-)
-
 // Observation 一帧的原始观测。Sleepad 长 = numBeds（逐床接触读数）。
 type Observation struct {
 	// 接触轴（每床 sleepad）→ B^j。长 numBeds。
@@ -31,9 +21,8 @@ type Observation struct {
 	// 雷达轴 → S。RadarOnline=false → 雷达全轴 ℓ≡1（离线=中性）。
 	RadarOnline bool
 	PoseLying   bool    // pose=Lying（二义：AtBed ∨ Fallen，刻意不分）
-	StillSec    float64 // still-box 总时长（连续静止秒）：每帧二值喂 dwell；总量喂 floor 兜底（main 读 b.StillBoxSec）
+	StillSec    float64 // still-box 总时长（连续静止秒）：喂 FloorGuard 非累加兜底（main 读 b.StillBoxSec）。emission 不消费
 	NearBed     bool    // HR/RR 空间邻域门控（§5 用 nearBed 非 enterBed）
-	ZBand       ZBand   // 高度档（ObsZBand）：正向抬直立态（Sit/OpenFloor），抵消 dwell 对久坐的误判；贴地=中性
 	// AreaType track 当前 cell.Belief[0].Type（CellAreaType 每帧读活的，经 seam）。FN-safe **正向压制**：
 	// bed/sit/toilet 区 → 抬对应静止态压 Fallen（redirect）。权重有上限（守门1：低到 still 久静能翻，不锁死）。
 	// Bed=2/Sit=3/Active=4/Deny=5/Shower=6/Toilet=7（同 roomengine.AreaType）。
