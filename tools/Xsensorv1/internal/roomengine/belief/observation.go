@@ -28,6 +28,10 @@ type Observation struct {
 	// Bed=2/Sit=3/Active=4/Deny=5/Shower=6/Toilet=7（同 roomengine.AreaType）。
 	AreaType int
 
+	// RoomType 房型(card.RoomType: 1=Bathroom)：still 高斯 CDF 的 (μ,σ) 与 cell area **保守合并**(取 max μ)——
+	// bathroom 房即使 cell 未画 toilet(落 unknown) 也至少用 bathsec(18min)，避免激进 default(12min) 过早误报。
+	RoomType int
+
 	// HR/RR（§5 非对称 + §D 门控）：
 	HRRRObserved      bool // 本 tick 有 vital 通道读数；false=无通道 → 中性
 	HRRRPresent       bool // HR>0 ∨ RR>0

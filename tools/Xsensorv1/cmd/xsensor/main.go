@@ -161,6 +161,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			StillSec:  float64(b.StillSec), // 有效时长（已含直立折扣，SnapshotTrackStatuses 算）→ FloorGuard
 
 			AreaType: int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
+			RoomType: d.roomType[roomID],  // 房型 → still CDF room×cell 保守合并(bathroom 未画 toilet 也用 bathsec)
 		}})
 	}
 	// sleepad-only 房(无雷达 track)：InBed 合成一条 bed-track 作 B 轴载体(engine.Room track-centric，

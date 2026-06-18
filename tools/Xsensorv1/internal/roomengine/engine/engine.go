@@ -161,7 +161,12 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 			// 消失态：雷达轴中性（RadarOnline=false），**接触轴(sleepad)仍应用**——在床 InBed→SBed
 			//   保护睡眠者；LeftBed→B vac→Ψ 放行 SFallen。belief **自然演化**（无人工 ramp，已作废）：
 			//   loss 时已高 pF（已确认摔）→ 自然到 0.85 即发；二义 lost（pF~0.5）不自爬 → 交 Unit UD timer 兜底。
-			obs = adapter.BuildObservation(adapter.RadarTrack{Online: false}, fi.Sleepads, fi.Beds, r.p)
+			// Online=false 雷达 pose/z/area redirect 中性，但带续算 StillSec+AreaType(① 冻结坐标)→
+			//   emission still 高斯 CDF 在消失态仍喂(人摔进盲区/爬出后持续静止的异常度)。
+			obs = adapter.BuildObservation(adapter.RadarTrack{
+				Online: false, StillSec: ts.Obs.RadarTrack.StillSec,
+				AreaType: ts.Obs.RadarTrack.AreaType, RoomType: ts.Obs.RadarTrack.RoomType,
+			}, fi.Sleepads, fi.Beds, r.p)
 			logPhi = r.em.LogPhi(r.js, obs)
 			// 离房证据按 track_id 注入 SLeft 对数似然（ExitRoom 硬 + trend+np 软，源在 track_manager）：
 			//   抬 SLeft → 压 pF（不 fire）+ 够强自然 absorbed-drop。≥flip 阈 → Unit timer cancel（lostExited）。

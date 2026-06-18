@@ -428,3 +428,41 @@ $$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\te
 - **床边跌倒**：emission $\Phi(\cdot)$ 须配 sleepad 接触轴（真 InBed 压 SFallen / LeftBed 放行 radar 假阳 InBed，[[bed_stale_leftbed_vetoes_radar_inbed]]）——$(\mu,\sigma)$ 单独搞不定接触假阳。
 
 **裁决统一**：emission 各状态后验赛跑 $\ge0.85$ 抢先发（belief，无二义性）；D/DU 决断窗到点无人达阈 → 保底发 SFallen；任一状态 $\ge0.85$ 胜出 → 清窗（防残留污染下一轮）。
+
+**落地进度（2026-06-18）**：emission 高斯 CDF **已落**（`belief/emission.go`，独立于 RadarOnline——lost 续算 StillSec 在消失态仍喂；权重 `lStill`=0.1 待标定）；`(μ,σ)` **room×cell 保守合并已落**（见 §I 之 stillMuSigma：取 max μ，bathroom 未画 toilet 也用 bathsec）；D/DU `udLenFor` 锚 `tFloor` **已落**（互斥用 0 表无意义）。实测 d5f7：SFallen 0.291→0.979，bathroom 保守阈下 ~18–20min 过 0.85，belief lost fire 主导。**待落 = §I 合体**。
+
+---
+
+### §I floor / D-DU 合体 — 统一 stillbox 计时器（2026-06-18，用户定）
+
+**洞察**：floor 与 D/DU **本是同一件事的两个化身**——都在答「静止/失踪 tFloor 久没人接管 → 兜底发 SFallen」。唯一区别是计时基准：floor 用 `StillSec`（静止起，含 present），D/DU 用 `lostMs`（失踪起）。
+
+**合体**：让计时基准统一为 **stillbox**——计时器 `StillSec>0` 启动、`≥tFloor` 保底发 SFallen、`StillSec==0`（移动/回来）清零。则 `D/DU 到点 ≡ StillSec≥tFloor ≡ floor 触发`，**floor 被 D/DU 吸收、退役**，剩一个 per-track **stillbox 计时器**。① 的 lost 续算让 StillSec 跨 present/lost 不断，计时器天然贯通、不分阶段。
+
+**合体后架构 — 一个 stillbox 喂两个消费者**：
+```
+        stillbox 时长 (per-track, 含 lost 续算)
+              │
+   ┌──────────┴──────────┐
+ emission CDF         stillbox 计时器(= floor+D/DU)
+ 连续推 SFallen→赛跑0.85   ≥tFloor 保底发 SFallen
+ (belief 抢先发)        (CDF 被假 InBed/area 压住、
+                        到不了 0.85 时兜底)
+   └──────────┬──────────┘
+        同锚 tFloor(room×cell 保守) + StillSec==0 清
+```
+- emission CDF = stillbox→SFallen 异常度（连续，belief 抢先发）；
+- stillbox 计时器 = 纯时长保底（**专治 CDF 被接触假阳/area redirect 压住、SFallen 到不了 0.85 的真摔**）；
+- 两者完全同源（同 stillbox、同 tFloor、同 StillSec==0 清）。
+
+**取消条件（per-track，平移现 D/DU `cancelled` + 新增 stillSec=0）**：
+$$\text{撤计时器} \iff \text{StillSec==0(移动/回来)} \lor \text{exitL}\ge\text{flip(本人过门)} \lor \rho_{xroom}>0(\text{hand-off 现身隔壁})$$
+房型差异保留：bathroom 私密「只认本人 recovery/handoff/exit」；UD 开放「unit 内 any track 撤」。
+
+**neighbor / hand-off 融入 — 一个量 `ρ_xroom` 两层，方向恒一致**：
+- **belief 塑形层**（`GateBlindRow` F→L，**不变**）：`ρ>0` 把 blind track 转移 SFallen→SLeft，跟 emission CDF 推 SFallen **拉锯**——hand-off 成立则 SFallen 上不去；
+- **计时器取消层**：`ρ>0` 撤计时器（人现身隔壁不兜本房）；
+- **W 窗**（`HandoffWindowFor` 45/60/90s 按 unit_type）= hand-off **时序门**：lost 后 W 窗内邻房 EnterRoom 才算 hand-off（[[partial_monitoring_fall_suppression_law]]：只有极近两事件能排除 lost-fall，过窗当人没走、计时器照兜）。
+- **两时标各管各**：W 窗(秒级)判「走没走邻房」、tFloor(分钟级)判「静止够久算摔」；ρ 同源→「belief 拉 SLeft」与「计时器撤」永不矛盾。
+
+**改造要点**：① D/DU 计时基准 `lostMs`→`StillSec>0`；② 扩到**单房**（现 D/DU 仅 `len(rooms)>1`；floor 退役后单房靠计时器）；③ **per-track**（跟 emission CDF 一致，现 D/DU per-room）；④ floor.go 独立 fire 路径退役；⑤ `tFloor(room×cell 保守)` 作单源锚不变。

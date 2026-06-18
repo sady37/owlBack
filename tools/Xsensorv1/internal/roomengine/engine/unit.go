@@ -19,9 +19,7 @@ import (
 // 单房无兄弟 → 无 sibling gain → ρ≡0 + 无 neighbor 不设 UD（cd2b 单房零回归，与单房 Room 逐帧等价）。
 
 const (
-	udBathroomMs    = 20 * 60 * 1000 // bathroom D：20min（抢救紧迫，卫浴信号易丢+高危+私密无人看=唯一安全网）
-	udDefaultMs     = 90 * 60 * 1000 // 其它 UD：90min（unit 级最长，lost 不知人在哪区用最宽容；= AreaSit 久坐容忍）
-	presenceFreshMs = 30 * 1000      // 房在场新鲜度：超此未 tick 的房视作 stale→不计在场（FN-safe，不被 stale 误取消）
+	presenceFreshMs = 30 * 1000 // 房在场新鲜度：超此未 tick 的房视作 stale→不计在场（FN-safe，不被 stale 误取消）
 )
 
 // gainEvent 一条跨房「新现真人」事件（窗内留账，守恒比对用）。
@@ -153,13 +151,30 @@ func (u *Unit) unitHasTrack(nowMs int64) bool {
 	return false
 }
 
-// udLenFor 本房 UD timer 时长：bathroom→D(20min)，其它→UD(90min)；×udMul（验证旋钮）。
-func (u *Unit) udLenFor(roomID string) int64 {
-	base := int64(udDefaultMs)
-	if u.roomType[roomID] == card.RoomTypeBathroom {
-		base = udBathroomMs
+// D/DU 保底窗 = floor per-area 异常阈取极限（单源 belief.TFloor*Sec，§H）。**互斥**：每房只一种 timer，
+// 另一种 ≤0 = 无意义（该房不适用）。×udMul（验证旋钮）。
+//   - bathroom 走 D = tFloor_Bath(18min)：私密关门、信号易丢、高危、邻房看不见 = 唯一安全网，取卫浴阈（短，及时救）。
+//   - 其它走 UD = tFloor_Sit·Lying(90min)：开放空间，lost 不知人在哪区 → 取久坐久卧极限（最宽容，避免误报）。
+func (u *Unit) dLenFor(roomID string) int64 {
+	if u.roomType[roomID] != card.RoomTypeBathroom {
+		return 0 // 非 bathroom：D 无意义
 	}
-	return int64(float64(base) * u.udMul)
+	return int64(float64(belief.TFloorBathSec*1000) * u.udMul)
+}
+
+func (u *Unit) duLenFor(roomID string) int64 {
+	if u.roomType[roomID] == card.RoomTypeBathroom {
+		return 0 // bathroom：UD 无意义
+	}
+	return int64(float64(belief.TFloorSitSec*1000) * u.udMul)
+}
+
+// udLenFor 取 D/DU 互斥中有效（>0）的那个保底窗长。
+func (u *Unit) udLenFor(roomID string) int64 {
+	if d := u.dLenFor(roomID); d > 0 {
+		return d
+	}
+	return u.duLenFor(roomID)
 }
 
 // LastRho 末次喂房 roomID 的 ρ_xroom（forensic / 测试）。
