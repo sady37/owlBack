@@ -24,8 +24,15 @@ E598A2ACD5F7 20260617 23:25
 11:38  进入， 
 11：40  缓慢爬出，很快firmware就过滤掉，应该在30s左右
 11:40:50 左右，  101GuestRoom Bed   inBed
+handoff  neighbor event取消报警才对
 
-
+11:38:55  Walking          人走动(进 bathroom)
+11:39:04  Initialization
+…人在 bathroom，StillSec 累积，pose 多为坐/站…
+11:40:34  track: pose=3(坐) area=6(shower) xyz=(-70,0,0) z=0  ← 蹲/坐地(可能在爬)
+11:40:35  ExitRoom ★       firmware 判人出门(爬出 bathroom)
+11:40:36  track → tid=88(空占位)  ← 人消失 = LOST
+11:40:57  case 结束
 
 # case2  bedroom 窗帘误报  这个基本无解
 
@@ -37,4 +44,5 @@ Denver-201	9D8A32A1CD2B	Fall	S
 
 
 
-case3
+case-333b-0618-13301333
+201bathroom  有跌倒，有ghost
