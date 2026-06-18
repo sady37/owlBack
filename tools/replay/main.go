@@ -118,7 +118,7 @@ func main() {
 
 	baseMs := rows[0].tsMs // 基准 t0 = 全局最早一帧（radar/sleepad 合并排序后第一条）；每条 fire 在 now + (ts−t0)/speed
 	startWall := time.Now()
-	startWallMs := startWall.UnixMilli() // 方案一(虚拟时钟):时间戳盖 startWall+(ts−t0) 保真 dt,允许超前墙钟
+	startWallMs := baseMs // 虚拟时钟起始 = 原始数据起始(baseMs)：Timestamp=baseMs+(ts−baseMs)=原始 ts，还原真实测试时间轴（sleep 节奏仍用 startWall 真实墙钟，按 speed 加速）
 	seq := map[string]uint64{}
 	var nMon, nEvt, nAlarm int
 

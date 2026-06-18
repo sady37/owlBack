@@ -48,10 +48,11 @@ else
   sed -n '2,30p' "$0"; exit 1
 fi
 
-# 主设备 addr → unit /64 prefix（取前 4 段）
+# 主设备 addr → unit prefix（权威源 = units 表；一个 /64 是楼层，/80 才是 unit）。
 MAIN_ADDR=$(PSQL -c "SELECT host(device_addr) FROM devices WHERE device_uid='$MAIN_UID' LIMIT 1;" | tr -d '[:space:]')
 [[ -z "$MAIN_ADDR" ]] && { echo "ERROR: device_uid=$MAIN_UID not found" >&2; exit 2; }
-PREFIX="$(echo "$MAIN_ADDR" | cut -d: -f1-4)::/64"
+PREFIX=$(PSQL -c "SELECT text(unit_id) FROM units WHERE unit_id >>= '$MAIN_ADDR'::inet ORDER BY masklen(unit_id) DESC LIMIT 1;" | tr -d '[:space:]')
+[[ -z "$PREFIX" ]] && { echo "ERROR: $MAIN_ADDR 不属于 units 表任何 unit" >&2; exit 2; }
 
 OUT_DIR="$ROOT_DIR/doc/cases/$CASE_NAME"
 mkdir -p "$OUT_DIR"

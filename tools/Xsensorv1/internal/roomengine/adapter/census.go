@@ -160,7 +160,8 @@ func (c *TrackCensus) associate(obs []TrackObs, nowMs int64, entrances []Rect) [
 func (c *TrackCensus) Nr() int {
 	n := 0
 	for _, t := range c.tracks {
-		if t.lastTick == c.tick && t.rt.PReal() >= 0.5 {
+		// lastObs.Online=false = 续算/lost track（① 时长外推，非真实观测）→ 不计人数（stillbox 续算与人数解耦）
+		if t.lastTick == c.tick && t.lastObs.Online && t.rt.PReal() >= 0.5 {
 			n++
 		}
 	}
@@ -186,7 +187,7 @@ type TrackState struct {
 func (c *TrackCensus) Tracks() []TrackState {
 	out := make([]TrackState, 0, len(c.tracks))
 	for id, t := range c.tracks {
-		out = append(out, TrackState{LogicID: id, Obs: t.lastObs, PReal: t.rt.PReal(), Present: t.lastTick == c.tick, PMirror: t.rt.PMirror(), IsReflection: t.isRefl,
+		out = append(out, TrackState{LogicID: id, Obs: t.lastObs, PReal: t.rt.PReal(), Present: t.lastTick == c.tick && t.lastObs.Online, PMirror: t.rt.PMirror(), IsReflection: t.isRefl,
 			Sep: t.fSep, WallMargin: t.fWallMargin, Rho: t.fRho, LaterBorn: t.fLater})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LogicID < out[j].LogicID })

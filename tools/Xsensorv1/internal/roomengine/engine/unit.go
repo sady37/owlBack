@@ -94,17 +94,24 @@ func (u *Unit) Tick(roomID string, fi adapter.FrameInput) Frame {
 		u.lostAt[roomID] = nowMs
 	}
 
-	// D/UD timer 兜底（per lost-room；各房在各自 tick 处理自己的 timer）。**取消条件按房型分**（架构师拍）：
-	//   - bathroom 走 D：私密关门，邻房有人也看不见里面 → **只认本人交代** = recovery（雷达重抓到=本房 present，
-	//     正常如厕会动→不停重抓→到不了 20min）OR handoff（本人现身隔壁，rho>0，neighbor W=45-90s）。**不认别房有人**。
-	//   - 其它走 UD：开放空间 → unit 内**任何 track** 都取消（recovery/handoff/backup 都算）。
+	// D/UD timer 决断窗（per lost-room；各房在各自 tick 处理自己的 timer）。
+	//
+	// 裁决模型（无二义性，全 belief 抢先发 + 决断窗保底）：track lost 起设窗倒计时。窗内各状态赛跑——
+	//   任一状态后验 ≥0.85 抢先发（belief 胜出，floor 时长兜底也算 fr.Decision.Fire）→ **清窗**
+	//   （胜出即结束，窗不得残留到下一轮否则下轮一开局就到点误兜）；窗内不抢发、到点仍无状态达阈
+	//   → **保底发 SFallen**（FN-safe 默认摔：人消失整窗未自证离开/未被重抓，按摔处理）。
+	//
+	// **取消条件按房型分**（架构师拍）：
+	//   - bathroom 走 D：私密关门，邻房有人也看不见里面 → 只认本人交代 = recovery（雷达重抓到=本房 present，
+	//     正常如厕会动→不停重抓）OR handoff（本人现身隔壁，rho>0，neighbor W=45-90s）。不认别房有人。
+	//   - 其它走 UD：开放空间 → unit 内任何 track 都取消（recovery/handoff/backup 都算）。
 	// 无 neighbor（单房 unit）→ 不设 timer（克制）。
 	if len(u.rooms) > 1 {
 		isBath := u.roomType[roomID] == card.RoomTypeBathroom
 		var cancelled bool
 		switch {
 		case fr.LostExited:
-			cancelled = true // 丢轨人本人 ExitRoom 过门（按 track_id 反查）→ D/UD 都撤（人走了无人会摔）；多人时只撤走的那个不误撤摔的
+			cancelled = true // 丢轨人本人 ExitRoom 过门（按 track_id 反查）→ 撤窗（人走了无人会摔）；多人时只撤走的那个
 		case isBath:
 			cancelled = u.roomPresent[roomID] || rho > 0 // D：recovery 或 handoff
 		default:
@@ -112,12 +119,15 @@ func (u *Unit) Tick(roomID string, fi adapter.FrameInput) Frame {
 		}
 		switch {
 		case cancelled:
-			delete(u.udDeadline, roomID)
+			delete(u.udDeadline, roomID) // 撤窗（人走了/现身/重抓）
+		case fr.Decision.Fire:
+			delete(u.udDeadline, roomID) // 状态抢先发胜出（belief ≥0.85 / floor）→ 清窗，防残留影响下一轮
 		default:
 			if fr.LostReal && u.udDeadline[roomID] == 0 {
-				u.udDeadline[roomID] = nowMs + u.udLenFor(roomID)
+				u.udDeadline[roomID] = nowMs + u.udLenFor(roomID) // lost 起设窗
 			}
-			if dl := u.udDeadline[roomID]; dl > 0 && nowMs >= dl && !fr.Decision.Fire {
+			if dl := u.udDeadline[roomID]; dl > 0 && nowMs >= dl {
+				// 窗到点、整窗无状态达阈 → 保底发 SFallen（fr.Decision.Fire=true 即发 fall）
 				fr.Decision.Fire = true
 				if isBath {
 					fr.Decision.Band = "d_lost"

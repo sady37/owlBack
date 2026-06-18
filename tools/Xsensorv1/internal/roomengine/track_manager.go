@@ -492,6 +492,10 @@ const (
 const (
 	trackEvictMaxMs    = int64(12_000)
 	heartbeat88EvictMs = int64(6_000)
+	// lostStillCarryMs：lost track 冻结坐标续 still-box 的保留上限（25min，覆盖 bathroom floor 20min+余量）。
+	// 1Hz 固件下精度做不了 lost 判定，靠时长累积兜底真摔；撤销由 belief SLeft 压 floor 承担（人走了不兜底），
+	// 超此上限或固件明示无目标(88)才删 track。
+	lostStillCarryMs = int64(1_500_000)
 )
 
 // ghostJudgable ghost≥2 闸：ghost 是真 track 的镜像/反射，需 ≥2 条 track（至少 1 条作母体）才可判 ghost。
@@ -1135,18 +1139,28 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		if dt <= 0 {
 			dt = 1
 		}
-		ts.Kalman.PredictOnly(dt)
+		ts.Kalman.PredictOnly(dt) // 外推位置仅供 PathBreak/exit 旁证；still-box 用冻结坐标另算
 		ts.LastUpdateMs = nowMs
 
-		// 驱逐 = 帧计数(MaxMissCount) ∪ 时间兜底(trackEvictMaxMs) ∪ 88-加速(固件持续无目标≥6s)。
-		// 治"88 稀疏心跳下 MissCount 凑满 10 要 142s"（Case2）：LastObservedMs 是上次真观测，按真实时间判，
-		// 不受帧稀疏影响。88-加速：固件明示无目标且持续 ≥ heartbeat88EvictMs 时，6s 即驱逐进 lost_fall/vanish。
+		// lost 续 still-box：用最后已知坐标冻结续算（1Hz 固件下靠时长不靠精度，FN-safe 默认兜底）。
+		//   位移恒=0 → still 保持/新起 → StillBoxSec 续涨喂 FloorGuard（engine floor 解锁消费）。
+		//   手动 append History 不用 PushPoint（PushPoint 设 LastObservedMs 会假装在场破坏 blind）；
+		//   不碰 LastObservedMs → Present=false 仍走 blind 续存。residualF=0 不污染 MaxKalmanResidual。
+		if len(ts.History) > 0 {
+			last := ts.History[len(ts.History)-1]
+			ts.History = append(ts.History, TimedPoint{X: last.X, Y: last.Y, Z: last.Z, TMs: nowMs})
+			if len(ts.History) > HistoryLen {
+				ts.History = ts.History[len(ts.History)-HistoryLen:]
+			}
+			tm.updateContinuousIndicators(ts, TrackFrame{TrackID: id, X: last.X, Y: last.Y, Z: last.Z, Pose: ts.LastPose, TMs: nowMs}, nowMs, 0)
+		}
+
+		// 驱逐：续 still-box 期间保留到 lostStillCarryMs 上限（让 still 累积到 floor 兜底）。
+		//   不用 noTargetSustained(固件 88 无目标)删——它分不清"人走了"vs"跟丢摔倒的人"，删了=漏摔；
+		//   撤销（人真走了不兜底）由 belief exitL≥flip(ExitRoom 硬证据)压 floor 承担，不在此删 track。
 		unseenMs := nowMs - ts.LastObservedMs
-		noTargetSustained := tm.noTargetSinceMs > 0 && nowMs-tm.noTargetSinceMs >= heartbeat88EvictMs
-		if ts.Kalman.MissCount > MaxMissCount ||
-			unseenMs > trackEvictMaxMs ||
-			(noTargetSustained && unseenMs >= heartbeat88EvictMs) {
-			// track 消失：lost-fall 判定已迁出 gate-list（DBN belief shadow lost-track 路径）。
+		if unseenMs > lostStillCarryMs {
+			// track 消失：lost-fall 判定已迁出 gate-list（DBN belief blind 续存路径）。
 			// 此处仅保留 PathBreak——非门区 Real track 突然消失的非 fall 异常标记。
 			if ts.Verdict == VerdictReal {
 				pxF, pyF := ts.Kalman.Position()

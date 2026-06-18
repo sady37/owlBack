@@ -152,6 +152,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 
 		var logPsi, logPhi belief.JointVector
 		var obs belief.Observation
+		exitL := 0.0 // 离房对数几率（per-track）：present=0；消失态由 ExitLogOdds 算，floor 撤销(②)复用
 		if ts.Present {
 			obs = adapter.BuildObservation(ts.Obs.RadarTrack, fi.Sleepads, fi.Beds, r.p)
 			logPsi = r.cp.LogPsi(r.js, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p))
@@ -165,7 +166,8 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 			// 离房证据按 track_id 注入 SLeft 对数似然（ExitRoom 硬 + trend+np 软，源在 track_manager）：
 			//   抬 SLeft → 压 pF（不 fire）+ 够强自然 absorbed-drop。≥flip 阈 → Unit timer cancel（lostExited）。
 			if fi.ExitLogOdds != nil {
-				if exitL := fi.ExitLogOdds(ts.Obs.TrackID, fi.NowMs); exitL > 0 {
+				exitL = fi.ExitLogOdds(ts.Obs.TrackID, fi.NowMs)
+				if exitL > 0 {
 					r.js.AddLogToS(logPhi, belief.SLeft, exitL)
 					if exitL >= exitFlipLogOdds {
 						lostExited = true
@@ -186,17 +188,8 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		pF := f.Space().PFallen(f.Alpha())
 		lam := belief.ComputeLambda(f.Space(), neutralIfNil(logPsi, r.js), neutralIfNil(logPhi, r.js))
 		d := dec.Step(fi.NowMs, pF, lam, rc)
-		// FN-safe 兜底 floor（契约其十五）：present 时总时长 ≥ T_floor(按 area) 且无正向休息证据 → 强制 fire。
-		//   接住 emission 被 area误学/z假阳/接触假阳误压的真摔。消失态不走 floor（走 blind 续存）。
-		//   zUp/contactInBed 抽取已收进 FloorGuard.Step(obs)——engine 只 OR verdict 不碰 obs。
-		if ts.Present && fg.Step(obs) {
-			d.Fire = true
-			if d.Band == "" || d.Band == "no" || d.Band == "indeterminate" {
-				d.Band = "floor"
-			}
-		}
 		// lost fire（自然 belief）：blind 时 belief 自然演化到 0.85 → fire "lost"（loss 时已确认摔的 carry-over）。
-		//   二义 lost（pF<0.85）不在此发，交 Unit UD timer 兜底。三 cancel（离房趋势/handoff→SLeft/在床→SBed）
+		//   二义 lost（pF<0.85）不在此发，交 floor 总时长兜底 / Unit UD timer。三 cancel（离房趋势/handoff→SLeft/在床→SBed）
 		//   经压低 P^F 使到不了 0.85 实现；present 摔走 firmware/dbn_mode（不进此分支=结构免疫）。
 		if !ts.Present {
 			// 离房抑制已由上方 SLeft 注入承担（抬 SLeft→压 pF）：朝门走/过门 → pF 到不了阈 → 不 fire。
@@ -204,6 +197,21 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 				d.Fire, d.Band = true, "lost"
 			} else {
 				d.Fire = false
+			}
+		}
+		// FN-safe 兜底 floor（契约其十五）：总时长 ≥ T_floor(按 area) 且无正向休息证据 → 强制 fire。
+		//   置于 lost fire **之后**：floor 是独立兜底腿（数时长不看 pF），不被消失态 pF<0.85 的 d.Fire=false 压回。
+		//   ② 解锁消失态：present 用 obs；lost 用 track 续算的 StillSec(① 冻结坐标累积)构造 floorObs
+		//   —— 1Hz 固件下精度做不了 lost 判定，靠时长累积兜住摔进盲区/pose 错报的真摔。
+		//   撤销(人走了不兜底)：exitL≥flip(ExitRoom 硬证据 / trend×np) → 不 floor-fire(③复用 SLeft 注入)。
+		floorObs := obs
+		if !ts.Present {
+			floorObs = adapter.BuildObservation(ts.Obs.RadarTrack, fi.Sleepads, fi.Beds, r.p)
+		}
+		if fg.Step(floorObs) && exitL < exitFlipLogOdds {
+			d.Fire = true
+			if d.Band == "" || d.Band == "no" || d.Band == "indeterminate" {
+				d.Band = "floor"
 			}
 		}
 		// 资格恒真：realness 绝不按 PR 把 fall 排出 room OR。任一 track（含 blind 续存）的摔都进房间 OR——

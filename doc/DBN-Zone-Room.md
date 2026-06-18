@@ -399,3 +399,32 @@ $$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\te
 | 裁决（§8 $C_{FN}$）| 风险因子 | 主框架；$C_{FN}$ 连续代价函数须 decide 落地 |
 | 跨房（§A neighbor ρ_xroom）| 兄弟房**有向** hand-off | 框架命题 + **方程已落（§A.1 ρ_xroom / §A.2 $T_S$ 门控 / §A.3 §10 接口）**；曲线参数待标定 |
 | realness（§G Real vs Mirror）| mirror: co-existence $\rho$+反射几何（成对）／ 单 track 伪迹: speed·跳跃（数量×时间，§G七）／ 出生地·metal: 几何·拓扑 | **框架重定（§G）**：主职 = $N_r$ 排除 ghost；两轴 FN-safe 默认；Static 溶解；ghost 信号三分（§G七：桶一 census 兑现/桶二 几何依赖/桶三 病根删）；leak 凭空造 ghost 已码层删 |
+
+---
+
+### §H per-area 静止时长统计标定 — floor / D-DU / emission 单源 $(\mu,\sigma)$（2026-06-18，用户定）
+
+**问题**：「久静多久算摔」的时长门限原本三处各漂——floor `tFloor`、D/DU `udLenFor`、`ThresholdNonRest` 各拍各的数；且 emission 当初否决 still-box 进发射（全局硬阈 `stillTau=60` 致 d523 站立伪迹 $P^F=0.945$ FP，§十四/十五）。**根因 = 缺 per-area 标定**：一个全局阈对伪迹和真摔一视同仁。
+
+**标定法（高斯分位）**：各区「正常停留时长」$\sim$ 高斯 $(\mu,\sigma)$，**异常阈 $=\mu+1.5\sigma$**（上侧分位）。
+- $\pm 1.5\sigma$ 含 **86.64%**；只取**上侧**（停留太久=疑似摔；太短=人正常离开非异常）→ 单侧上尾 $P(Z>1.5)=6.68\%$ = **异常阈自带 FP 率**。
+- 选 $1.5\sigma$ 而非 $2\sigma$（上尾 2.3%）：高危跌倒宁多扰、少漏（知情 FP）。
+- $\times 1.5$（均值倍）$=\mu+1.5\sigma$ 仅当 $\sigma=\mu/3$（CV=1/3）；无真 $\sigma$ 时以此近似。
+
+**per-area $(\mu,\sigma)$ 与数据来源**（铁律 [[fall_data_is_artificial_test]]：无真摔数据标定，留 oracle）：
+
+| 区 | $\mu$ | $\sigma$ | 异常阈 $\mu+1.5\sigma$ | 依据 |
+|---|---|---|---|---|
+| **Bath**（toilet/shower）| 12min | **4min（真 σ）** | **18min** | 医学建议正常 5–10min；健康人 >20min 仅 0.5%($\approx\mu+2\sigma$) 反推 $\sigma\approx4$；老人便秘倾向取 $\mu=12$；18min 覆盖 ~80% 便秘、severe 20min($\mu+2\sigma$)。**文献硬支撑** |
+| **Sit·Lying**（含 Bed）| 60min | 20min($\mu/3$) | **90min** | 文献久坐单次 MBD 11.7–16min、prolonged ≥30min；$\mu=60$ 取久坐久卧「容忍上限」(看电视/午睡，FN-safe 高于平均、低危别老打扰)。**保守** |
+| **default**（开阔/站立）| 8min | 2.67min($\mu/3$) | **12min** | 无直接文献（非标准观测场景），类比久坐短 bout <10min。**经验，oracle 待真实数据调** |
+
+数据来源：CNN「马桶<10min」· anorectal PMC12669168（>20min 0.5% 健康 vs 8.1% 病）· sedentary PMC8679788（MBD 11.7–16）· stroke PMC9166254（≥17min 高危）。
+
+**三处单源 + emission 内化**：
+- **floor**（已落 `belief/floor.go`）：`tFloor(area)=μ+1.5σ`，常量由 `Mu*Sec/Sigma*Sec` 派生（`TFloorBathSec=1080/18min` 等）。Bed 并入 Sit·Lying 档。
+- **D/DU 保底窗**（规划，`engine/unit.go`）：`udLenFor` 锚 `tFloor` 取极限——bathroom→`tFloor_Bath`(18min) 走 D；其它→`tFloor_Sit·Lying`(90min) 走 DU（lost 不知人在哪区→取最宽容值避免误报）。互斥（D 或 DU 其一，另一 =-1）。
+- **emission 高斯 CDF**（规划，取代「floor 独立 fire + still 不进发射」）：$\text{SFallen 贡献}=\Phi\big((\text{StillboxSec}-\mu)/\sigma\big)$，正常值$\approx0.5$、异常阈$\approx0.93$。per-area $(\mu,\sigma)$ 完全决定曲线，$k$ 不再单独拍。**解 §十四/十五「still 进发射单向爬 FP」**——伪迹区 $(\mu,\sigma)$ 大则推得慢、到不了 0.85。
+- **床边跌倒**：emission $\Phi(\cdot)$ 须配 sleepad 接触轴（真 InBed 压 SFallen / LeftBed 放行 radar 假阳 InBed，[[bed_stale_leftbed_vetoes_radar_inbed]]）——$(\mu,\sigma)$ 单独搞不定接触假阳。
+
+**裁决统一**：emission 各状态后验赛跑 $\ge0.85$ 抢先发（belief，无二义性）；D/DU 决断窗到点无人达阈 → 保底发 SFallen；任一状态 $\ge0.85$ 胜出 → 清窗（防残留污染下一轮）。

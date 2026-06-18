@@ -219,7 +219,8 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	for _, b := range bases {
 		raw = append(raw, map[string]interface{}{
 			"tid": b.TrackID, "present": b.Present, "pose": b.Pose,
-			"x": b.X, "y": b.Y, "z": b.Z, "stillbox": b.StillBoxSec, "verdict": int(b.Verdict),
+			"x": b.X, "y": b.Y, "z": b.Z, "stillbox": b.StillBoxSec, "stillsec": b.StillSec,
+			"area": int(b.CellAreaType), "verdict": int(b.Verdict),
 		})
 	}
 	dbn := make([]map[string]interface{}, 0, len(fr.Tracks))

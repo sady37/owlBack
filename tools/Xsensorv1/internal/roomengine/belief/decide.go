@@ -2,19 +2,15 @@ package belief
 
 import "math"
 
-// decide.go — 读出与裁决（§26 用户裁定 55% 三分判据，资源稀缺前提；推翻 §8 全局 C_FN 兜底）。
-//   P^F ≥ 55%            → 报（证据自足，C_FN 不需要）
-//   P^F ≤ 45%            → 不报
-//   45–55% 两可 且 可判    → C_FN 风险偏好打破平衡（C_FN **唯一作用窗口**）
-//   高度不可判（Λ 无判别力）→ 默认不报（C_FN 不介入）   ← §26 知情设计决定（署名）
-// 持续 ≥ T_hold 防瞬时噪声。
+// decide.go — 读出与裁决（用户 2026-06-17 裁定：状态转移单阈，不受 P^F 区间限制）。
+//   P^F(SFallen) ≥ pFire(0.85) → 报；持续 ≥ T_hold 防瞬时噪声。
+//   不再有 55% 三分带区间（≥55报/≤45不报/45-55两可 C_FN）+ Λ gate（高度不可判默认不报）——
+//   裁决只看 SFallen 后验是否达阈，与 P^F 落在哪个区间无关、不被 Λ 可判性门控。
+//   与 engine lost-fire 的 0.85 阈统一（present/lost 同一状态转移判据）。
 //
-// 知情设计决定（用户 2026-06-15 署名）：高度不可判默认不报 = 知情接受「设备不足时漏掉一部分**高度
-// 不可判**真摔，换告警可信度」。理由：资源稀缺→护理注意力稀缺→低置信告警烧穿注意力(alarm fatigue)
-// →真摔也被忽略，比偶尔漏报更糟。仅高度不可判侧；可判侧（≥55%/≤45%）正常报/不报，不受影响。
-//
-// 推翻记录（诚实）：§8/§17「C_FN 全局兜底、不可判走同一不等式、Λ 不 gate」是资源充足逻辑，
-// 已被 §26 收窄——C_FN 只在 45–55% 两可窗打破平衡；高度不可判 **Λ 现作 gate**（默认不报）。
+// 推翻记录（诚实）：§26「55% 三分 + C_FN 仅两可窗 + Λ 作 gate」已废——实证 risk-time 被关在
+// 0.45–0.55 窄窗、够不着被上游 pose/z 错报压低的真摔（d5f7-0617 实测 P^F 峰值 0.249 进不了窗）。
+// risk-time 如何不受限地融入裁决 = 后续工单（cFN/Λ 暂留 forensic，不门控 fire）。
 //
 // 形态锚（铁律 [[fall_data_is_artificial_test]]：阈值/曲线全人为数据不可标定，留 oracle）。
 
@@ -87,11 +83,10 @@ type Decision struct {
 	FireSinceMs  int64   // 瞬时条件起始（持续计时；0=未武装）
 }
 
-// 55% 三分阈 + 可判阈（form-anchor，留 oracle）。
+// fire 单阈（form-anchor，留 oracle）。状态转移：SFallen 后验达阈即报，不受 P^F 区间限制。
 const (
-	pFireHi           = 0.55 // P^F ≥ → 报（证据自足）
-	pFireLo           = 0.45 // P^F ≤ → 不报
-	lambdaInformative = 3.0  // Λ > 此 = 可判；否则高度不可判（§26 gate 默认不报）
+	pFire             = 0.85 // P^F(SFallen) ≥ → 报；持续 T_hold 防瞬时
+	lambdaInformative = 3.0  // Λ > 此 = 可判（仅 forensic 诊断标记，不再 gate 裁决）
 )
 
 // Decider 持有持续计时状态（跨帧）。
@@ -104,19 +99,12 @@ func NewDecider() *Decider { return &Decider{p: defaultDecideParams()} }
 
 // Step 一帧裁决（§26 55% 三分）。pFallen=P^F_t（filter.PFallen）；lambda=ComputeLambda。
 func (d *Decider) Step(nowMs int64, pFallen, lambda float64, rc RiskContext) Decision {
-	cfn := d.p.cFN(rc)
-	identifiable := lambda > lambdaInformative
-	var inst bool
-	var band string
-	switch {
-	case pFallen >= pFireHi:
-		inst, band = true, "report" // ≥55% 证据自足（C_FN 不需要）
-	case pFallen <= pFireLo:
-		inst, band = false, "no" // ≤45% 不报
-	case !identifiable:
-		inst, band = false, "indeterminate" // 45-55% 但高度不可判 → 默认不报（§26 守告警可信度）
-	default:
-		inst, band = cfn > d.p.cFP, "tie" // 45-55% 可判两可 → C_FN 打破平衡（唯一作用窗口）
+	cfn := d.p.cFN(rc)                         // forensic：risk 融入裁决待后续工单，当前不门控 fire
+	identifiable := lambda > lambdaInformative // forensic：Λ 诊断标记，不再 gate
+	inst := pFallen >= pFire                   // 状态转移单阈：达阈即报，不受 P^F 区间限制、不 Λ gate
+	band := "no"
+	if inst {
+		band = "report"
 	}
 
 	if inst {
@@ -135,7 +123,7 @@ func (d *Decider) Step(nowMs int64, pFallen, lambda float64, rc RiskContext) Dec
 		PFallen:      pFallen,
 		PeopleCount:  rc.PeopleCount,
 		CFN:          cfn,
-		Margin:       pFallen - pFireHi, // 诊断：距报阈的距离
+		Margin:       pFallen - pFire, // 诊断：距报阈的距离
 		Lambda:       lambda,
 		Identifiable: identifiable,
 		FireSinceMs:  d.fireSinceMs,
