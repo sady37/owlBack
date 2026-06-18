@@ -59,11 +59,11 @@ func (r *StreamRepo) InsertMonitor(ctx context.Context, msg *owlredis.IoTStreamM
 
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO monitor_stream (
-			ts, device_addr, device_type, stream_type, payload,
+			ts, device_addr, device_uid, device_type, stream_type, payload,
 			datagram_id, trace_id, parent_span, severity, tags
-		) VALUES ($1, $2::INET, $3::device_type_enum, $4, $5::JSONB,
-		          NULL, NULLIF($6, ''), NULLIF($6, ''), 6, NULL)
-	`, ts, msg.DeviceAddr.String(), msg.DeviceType, streamType, string(payload), traceID)
+		) VALUES ($1, $2::INET, NULLIF($3, ''), $4::device_type_enum, $5, $6::JSONB,
+		          NULL, NULLIF($7, ''), NULLIF($7, ''), 6, NULL)
+	`, ts, msg.DeviceAddr.String(), deviceUID(msg.SubjectEntity), msg.DeviceType, streamType, string(payload), traceID)
 	if err != nil {
 		return fmt.Errorf("insert monitor_stream: %w", err)
 	}
@@ -89,13 +89,25 @@ func (r *StreamRepo) InsertEvent(ctx context.Context, msg *owlredis.IoTStreamMes
 	traceID := buildTraceID(msg.Producer, msg.SequenceNumber)
 	ts := tsFromMs(msg.Timestamp)
 
+	subjAddr := subjectAddr(msg.SubjectEntity)
+	uid := deviceUID(msg.SubjectEntity)
+	if uid == "" {
+		if s, ok := subjAddr.(string); ok {
+			u, lerr := r.lookupDeviceUID(ctx, s)
+			if lerr != nil {
+				return fmt.Errorf("lookup device_uid for subject %s: %w", s, lerr)
+			}
+			uid = u
+		}
+	}
+
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO event_log (
-			ts, device_addr, event_kind, subject_addr, payload,
+			ts, device_addr, device_uid, event_kind, subject_addr, payload,
 			datagram_id, trace_id, parent_span, severity, tags
-		) VALUES ($1, $2::INET, $3, $4::INET, $5::JSONB,
-		          NULL, NULLIF($6, ''), NULLIF($6, ''), 6, NULL)
-	`, ts, msg.DeviceAddr.String(), msg.Category, subjectAddr(msg.SubjectEntity), string(payload), traceID)
+		) VALUES ($1, $2::INET, NULLIF($3, ''), $4, $5::INET, $6::JSONB,
+		          NULL, NULLIF($7, ''), NULLIF($7, ''), 6, NULL)
+	`, ts, msg.DeviceAddr.String(), uid, msg.Category, subjAddr, string(payload), traceID)
 	if err != nil {
 		return fmt.Errorf("insert event_log: %w", err)
 	}
@@ -184,6 +196,39 @@ func subjectAddr(subjectEntity string) interface{} {
 		return s
 	}
 	return nil
+}
+
+// lookupDeviceUID 把派生事件的 subject_addr（spatial prefix）解析成对应设备的 device_uid。
+// 仅 /128 subject 能等值命中 devices.device_addr；room/bed prefix（/88·/96）不对应单一设备 →
+// ErrNoRows → 空串（落 NULL，由调用方写入），属正常业务语义不是错误；真 DB 错误向上传播。
+func (r *StreamRepo) lookupDeviceUID(ctx context.Context, addr string) (string, error) {
+	var uid string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT device_uid FROM devices WHERE device_addr = $1::INET`, addr).Scan(&uid)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return uid, nil
+}
+
+// deviceUID 是 subjectAddr 的互补：SubjectEntity 是 device-gateway raw 事件填的 device_uid
+// （非 INET 的 logMAC 串）时返回它落 device_uid 列；sensor 派生事件填的 spatial prefix（INET）
+// 或空串 → 返回空串（NULL）。raw=uid / derived=prefix 二选一，两列互斥落值。
+func deviceUID(subjectEntity string) string {
+	s := strings.TrimSpace(subjectEntity)
+	if s == "" {
+		return ""
+	}
+	if _, err := netip.ParsePrefix(s); err == nil {
+		return ""
+	}
+	if _, err := netip.ParseAddr(s); err == nil {
+		return ""
+	}
+	return s
 }
 
 // buildStreamType 构造 dot-namespaced stream_type："<deviceType>.<category>" 全小写。

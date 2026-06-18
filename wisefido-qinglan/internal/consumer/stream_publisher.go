@@ -234,18 +234,18 @@ func iotStreamMessageToMap(msg rediscommon.IoTStreamMessage) map[string]interfac
 
 // PublishDeviceStatus 发布设备状态到 iot:event:stream（device 属于 event）。
 //
-// addr 是路由主键；deviceUID 仅作 cardID 反查用。
-// subject_entity 永远空：cardagg IotPreparedHandler 按 device_addr LPM 反查解析。
+// deviceStatus 是设备自身的 raw 事件，按 envelope 约定 SubjectEntity = device_uid（事件主体 =
+// 观测设备本身）。cardagg 路由仍走 device_addr → cardID LPM，不依赖 SubjectEntity；填 uid
+// 让 event_log.device_uid 落稳定身份锚（device_addr 随 rebind 变，反查不回历史设备）。
 func (p *StreamPublisher) PublishDeviceStatus(
 	ctx context.Context,
 	addr netip.Addr,
 	deviceUID, deviceType string,
 	statuses map[string]int,
 ) error {
-	_ = deviceUID
 	msg := rediscommon.BuildDeviceStatusMessage(
 		addr,
-		"",
+		deviceUID,
 		deviceType,
 		time.Now().UnixMilli(),
 		statuses,
