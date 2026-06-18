@@ -1,8 +1,6 @@
 package engine
 
 import (
-	"owl-common/card"
-
 	"owlBack/tools/Xsensorv1/internal/roomengine/adapter"
 	"owlBack/tools/Xsensorv1/internal/roomengine/belief"
 )
@@ -38,22 +36,14 @@ type Unit struct {
 	gains         []gainEvent        // 近期跨房新现真人（窗内 pruned）
 	lostAt        map[string]int64   // 每房最近丢真人时戳（待 hand-off 解析；再现/解析后清）
 	lastRho       map[string]float64 // 末次喂各房的 ρ（forensic / 测试可观测）
-	// UD timer 兜底
-	roomType    map[string]int   // roomID → card.RoomType（1=Bathroom）→ per-room deadline
-	udDeadline  map[string]int64 // roomID → 活动 UD timer 到点 ms（0/缺=无）
-	roomPresent map[string]bool  // roomID → 末 tick 是否在场（PresentCount>0）
+	roomPresent map[string]bool  // roomID → 末 tick 是否在场（PresentCount>0；UnitState forensic）
 	roomTickMs  map[string]int64 // roomID → 末 tick 时戳（新鲜度）
-	udMul       float64          // timer 时长乘子（验证旋钮 XSENSOR_UD_MUL，默认 1；调小可短 case 验机制）
 }
 
-// NewUnit 建多房编排器。residentCount = unit 住户数（η 用）；pub = unit 公共度（规则④ 定找人窗 W）；
-// roomType = 各房 card.RoomType（UD timer 判 bathroom）；udMul = timer 时长乘子（验证旋钮，≤0 取 1）。
-func NewUnit(rooms map[string]*Room, residentCount int, pub belief.UnitPublicness, roomType map[string]int, udMul float64) *Unit {
+// NewUnit 建多房编排器。residentCount = unit 住户数（η 用）；pub = unit 公共度（规则④ 定找人窗 W）。
+func NewUnit(rooms map[string]*Room, residentCount int, pub belief.UnitPublicness) *Unit {
 	if residentCount < 1 {
 		residentCount = 1
-	}
-	if udMul <= 0 {
-		udMul = 1
 	}
 	np := belief.DefaultNeighborParams()
 	np.HandoffWindowMs = belief.HandoffWindowFor(pub) // 规则④：public 45s / share 60s / private 90s
@@ -64,11 +54,8 @@ func NewUnit(rooms map[string]*Room, residentCount int, pub belief.UnitPublicnes
 		cAttr:         0.8, // room-enter（雷达新现 track = 有人进房）
 		lostAt:        map[string]int64{},
 		lastRho:       map[string]float64{},
-		roomType:      roomType,
-		udDeadline:    map[string]int64{},
 		roomPresent:   map[string]bool{},
 		roomTickMs:    map[string]int64{},
-		udMul:         udMul,
 	}
 }
 
@@ -92,49 +79,16 @@ func (u *Unit) Tick(roomID string, fi adapter.FrameInput) Frame {
 		u.lostAt[roomID] = nowMs
 	}
 
-	// D/UD timer 决断窗（per lost-room；各房在各自 tick 处理自己的 timer）。
+	// §I 合体：floor（stillbox 计时器，engine.go per-track，StillSec≥tFloor→保底发 SFallen）= 唯一时长兜底；
+	//   旧 D/DU 决断窗退役被吸收（floor 用实际 StillSec，比 lostMs 倒计时统一——present 久静 + lost 续算同源）。
 	//
-	// 裁决模型（无二义性，全 belief 抢先发 + 决断窗保底）：track lost 起设窗倒计时。窗内各状态赛跑——
-	//   任一状态后验 ≥0.85 抢先发（belief 胜出，floor 时长兜底也算 fr.Decision.Fire）→ **清窗**
-	//   （胜出即结束，窗不得残留到下一轮否则下轮一开局就到点误兜）；窗内不抢发、到点仍无状态达阈
-	//   → **保底发 SFallen**（FN-safe 默认摔：人消失整窗未自证离开/未被重抓，按摔处理）。
-	//
-	// **取消条件按房型分**（架构师拍）：
-	//   - bathroom 走 D：私密关门，邻房有人也看不见里面 → 只认本人交代 = recovery（雷达重抓到=本房 present，
-	//     正常如厕会动→不停重抓）OR handoff（本人现身隔壁，rho>0，neighbor W=45-90s）。不认别房有人。
-	//   - 其它走 UD：开放空间 → unit 内任何 track 都取消（recovery/handoff/backup 都算）。
-	// 无 neighbor（单房 unit）→ 不设 timer（克制）。
-	if len(u.rooms) > 1 {
-		isBath := u.roomType[roomID] == card.RoomTypeBathroom
-		var cancelled bool
-		switch {
-		case fr.LostExited:
-			cancelled = true // 丢轨人本人 ExitRoom 过门（按 track_id 反查）→ 撤窗（人走了无人会摔）；多人时只撤走的那个
-		case isBath:
-			cancelled = u.roomPresent[roomID] || rho > 0 // D：recovery 或 handoff
-		default:
-			cancelled = u.unitHasTrack(nowMs) // UD：任何 track
-		}
-		switch {
-		case cancelled:
-			delete(u.udDeadline, roomID) // 撤窗（人走了/现身/重抓）
-		case fr.Decision.Fire:
-			delete(u.udDeadline, roomID) // 状态抢先发胜出（belief ≥0.85 / floor）→ 清窗，防残留影响下一轮
-		default:
-			if fr.LostReal && u.udDeadline[roomID] == 0 {
-				u.udDeadline[roomID] = nowMs + u.udLenFor(roomID) // lost 起设窗
-			}
-			if dl := u.udDeadline[roomID]; dl > 0 && nowMs >= dl {
-				// 窗到点、整窗无状态达阈 → 保底发 SFallen（fr.Decision.Fire=true 即发 fall）
-				fr.Decision.Fire = true
-				if isBath {
-					fr.Decision.Band = "d_lost"
-				} else {
-					fr.Decision.Band = "ud_lost"
-				}
-				delete(u.udDeadline, roomID)
-			}
-		}
+	// (b) **belief 抢发照常、只砍兜底**：band=lost/report（belief ≥0.85 抢发）不动；只对 floor 兜底腿做资源克制：
+	//   - **单房 unit**（len(rooms)==1）：资源少、无邻房印证、FP 风险剧增 → **不兜底**（belief 抢发仍报久躺强证据，§I/#1）；
+	//   - **hand-off**（ρ>0，本人现身隔壁，W 窗内）：人没在本房摔 → 不兜底。
+	//   其余取消已在 engine.go floor 块内：StillSec==0 → StillSec<tFloor 自然不 fire；exitL≥flip → floor 条件已挡。
+	if fr.Decision.Band == "floor" && (len(u.rooms) == 1 || rho > 0) {
+		fr.Decision.Fire = false
+		fr.Decision.Band = "no"
 	}
 
 	u.pruneGains(nowMs)
@@ -151,38 +105,12 @@ func (u *Unit) unitHasTrack(nowMs int64) bool {
 	return false
 }
 
-// D/DU 保底窗 = floor per-area 异常阈取极限（单源 belief.TFloor*Sec，§H）。**互斥**：每房只一种 timer，
-// 另一种 ≤0 = 无意义（该房不适用）。×udMul（验证旋钮）。
-//   - bathroom 走 D = tFloor_Bath(18min)：私密关门、信号易丢、高危、邻房看不见 = 唯一安全网，取卫浴阈（短，及时救）。
-//   - 其它走 UD = tFloor_Sit·Lying(90min)：开放空间，lost 不知人在哪区 → 取久坐久卧极限（最宽容，避免误报）。
-func (u *Unit) dLenFor(roomID string) int64 {
-	if u.roomType[roomID] != card.RoomTypeBathroom {
-		return 0 // 非 bathroom：D 无意义
-	}
-	return int64(float64(belief.TFloorBathSec*1000) * u.udMul)
-}
-
-func (u *Unit) duLenFor(roomID string) int64 {
-	if u.roomType[roomID] == card.RoomTypeBathroom {
-		return 0 // bathroom：UD 无意义
-	}
-	return int64(float64(belief.TFloorSitSec*1000) * u.udMul)
-}
-
-// udLenFor 取 D/DU 互斥中有效（>0）的那个保底窗长。
-func (u *Unit) udLenFor(roomID string) int64 {
-	if d := u.dLenFor(roomID); d > 0 {
-		return d
-	}
-	return u.duLenFor(roomID)
-}
-
 // LastRho 末次喂房 roomID 的 ρ_xroom（forensic / 测试）。
 func (u *Unit) LastRho(roomID string) float64 { return u.lastRho[roomID] }
 
-// UDState UD timer forensic（roomID 的 timer 到点 ms[0=无活动 timer] / unit 是否有在场 track / 是否有 neighbor）。
-func (u *Unit) UDState(roomID string, nowMs int64) (deadlineMs int64, unitHasTrack, hasNeighbor bool) {
-	return u.udDeadline[roomID], u.unitHasTrack(nowMs), len(u.rooms) > 1
+// UnitState forensic（unit 是否有在场 track / 是否有 neighbor）。
+func (u *Unit) UnitState(nowMs int64) (unitHasTrack, hasNeighbor bool) {
+	return u.unitHasTrack(nowMs), len(u.rooms) > 1
 }
 
 // rhoFor 房 roomID 的 ρ_xroom：若它有待解析的丢失，找**兄弟房**窗内新现真人 → SiblingHandoff → RhoXroom。

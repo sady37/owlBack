@@ -32,34 +32,16 @@ package belief
 //        → 异常 12min。oracle 待真实数据调。
 // ============================================================================
 const (
-	// 各区正常停留 (μ, σ) 秒——emission 高斯 CDF 用（SFallen=Φ((Still−μ)/σ)）
+	// 各区正常停留 (μ, σ) 秒——emission 高斯 CDF 与 floor 异常阈(tFloorFor=μ+1.5σ, room×cell 保守)共用单源(§H/§I)
 	MuDefaultSec, SigmaDefaultSec = 480, 160   // 8min, 2.67min
 	MuSitSec, SigmaSitSec         = 3600, 1200 // 60min, 20min
 	MuBathSec, SigmaBathSec       = 720, 240   // 12min, 4min
-
-	// 异常阈 = μ+1.5σ（floor 兜底 / D-DU 锚共用单源）
-	TFloorDefaultSec = MuDefaultSec + 3*SigmaDefaultSec/2 // 720s = 12min
-	TFloorSitSec     = MuSitSec + 3*SigmaSitSec/2         // 5400s = 90min (Sit/Bed)
-	TFloorBathSec    = MuBathSec + 3*SigmaBathSec/2       // 1080s = 18min
 )
 
-type FloorParams struct {
-	TFloorDefaultSec float64 // 开阔/未知区总时长阈(默认 600s=10min)
-	TFloorSitSec     float64 // 久坐·久卧区阈(默认 5400s=90min)
-	TFloorBathSec    float64 // 卫浴区阈(默认 1200s=20min)
-}
+// FloorGuard 单 logicID 兜底守门（§I stillbox 计时器；异常阈 tFloorFor=μ+1.5σ room×cell 保守，无跨帧状态）。
+type FloorGuard struct{}
 
-// DefaultFloorParams 形态默认(非权威值,留 oracle)。
-func DefaultFloorParams() FloorParams {
-	return FloorParams{TFloorDefaultSec: TFloorDefaultSec, TFloorSitSec: TFloorSitSec, TFloorBathSec: TFloorBathSec}
-}
-
-// FloorGuard 单 logicID 兜底守门（无跨帧状态：z 直立已并入有效 still 折扣，不再累计 zUpFrames）。
-type FloorGuard struct {
-	p FloorParams
-}
-
-func NewFloorGuard() *FloorGuard { return &FloorGuard{p: DefaultFloorParams()} }
+func NewFloorGuard() *FloorGuard { return &FloorGuard{} }
 
 // Step 一帧兜底判定（吃整条 obs，自抽派生量——engine 只 OR verdict 不碰 obs）。有效 still 时长
 // （obs.StillSec，已含直立折扣）≥ per-area 阈 → floorFire。track 消失帧不调(无观测);present 帧每帧调。
@@ -77,17 +59,13 @@ func (g *FloorGuard) Step(obs Observation) bool {
 	case contactInBed:
 		return false // 真在床
 	}
-	return obs.StillSec >= g.tFloor(obs.AreaType)
+	return obs.StillSec >= tFloorFor(obs.AreaType, obs.RoomType)
 }
 
-// tFloor per-area 总时长阈：久坐 90min / 卫浴 20min / 开阔·未知 10min。
-func (g *FloorGuard) tFloor(area int) float64 {
-	switch area {
-	case areaSit:
-		return g.p.TFloorSitSec
-	case areaToilet, areaShower:
-		return g.p.TFloorBathSec
-	default:
-		return g.p.TFloorDefaultSec
-	}
+// tFloorFor floor(= §I stillbox 计时器)异常阈 = stillMuSigma(area,room) 的 μ+1.5σ
+// （room×cell 保守合并，跟 emission CDF 同源 §H/§I）：bathroom 未画 toilet 也用 bathsec(18min)，
+// 不再 cell-only 12min 抢先于 CDF 的 18min。
+func tFloorFor(area, roomType int) float64 {
+	mu, sigma := stillMuSigma(area, roomType)
+	return mu + 1.5*sigma
 }

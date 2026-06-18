@@ -203,11 +203,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	}
 	fr := u.Tick(roomID, fi) // 多房编排：算 ρ_xroom（兄弟房守恒+时间窗）→ Room.Tick（单房无兄弟 ρ=0）
 	rho := u.LastRho(roomID)
-	udDeadline, unitHasTrack, hasNeighbor := u.UDState(roomID, nowMs)
-	udRemainMs := int64(0)
-	if udDeadline > 0 {
-		udRemainMs = udDeadline - nowMs
-	}
+	unitHasTrack, hasNeighbor := u.UnitState(nowMs)
 
 	top, tp := fr.Probe.MarginalS.Max()
 
@@ -245,7 +241,6 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Bool("fire", fr.Decision.Fire), zap.Float64("lambda", fr.Probe.Lambda),
 		zap.String("top_s", sName(int(top))), zap.Float64("top_p", tp),
 		zap.Float64("rho_xroom", rho),
-		zap.Bool("ud_active", udDeadline > 0), zap.Int64("ud_remain_ms", udRemainMs),
 		zap.Bool("unit_has_track", unitHasTrack), zap.Bool("has_neighbor", hasNeighbor),
 		zap.Bool("lost_exited", fr.LostExited),
 		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("bed_present", g.sleepadPresent),

@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
-	"strconv"
 
 	"owlBack/tools/Xsensorv1/internal/config"
 	"owlBack/tools/Xsensorv1/internal/roomengine"
@@ -50,21 +48,9 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB, rdb *r
 		}
 		unitRooms[unitKey][roomID] = router.rooms[roomID]
 	}
-	// UD timer 时长乘子（验证旋钮 XSENSOR_UD_MUL，默认 1）：调小可在短 case 验 deadline fire 机制（合法 config，非 test 脚手架）。
-	udMul := 1.0
-	if v := os.Getenv("XSENSOR_UD_MUL"); v != "" {
-		if m, err := strconv.ParseFloat(v, 64); err == nil && m > 0 {
-			udMul = m
-		}
-	}
 	for unitKey, rooms := range unitRooms {
 		// residentCount=1（单住户测试；多住户后续）；pub = 该 unit 公共度 → 找人窗 W（规则④）。
-		// roomTypes 子集（本 unit 各房 RoomType）→ UD timer per-room deadline（Bathroom→D=20min）。
-		rt := map[string]int{}
-		for roomID := range rooms {
-			rt[roomID] = router.roomType[roomID]
-		}
-		router.units[unitKey] = engine.NewUnit(rooms, 1, router.unitPub[unitKey], rt, udMul)
+		router.units[unitKey] = engine.NewUnit(rooms, 1, router.unitPub[unitKey])
 	}
 	logger.Info("xsensor: units built", zap.Int("units", len(router.units)), zap.Int("rooms", len(router.rooms)))
 

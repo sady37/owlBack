@@ -1,5 +1,5 @@
+# case-d5f7-0617-23252357
 case1  bathroom  still+D
-case-d5f7-0617-23252357
 E598A2ACD5F7 20260617 23:25  
 101 bathroom    
 
@@ -15,11 +15,19 @@ E598A2ACD5F7 20260617 23:25
 
 20min
 
-case-d5f7-0618-08500855
+# case-d5f7-0618-08500855
 进入bathroom,快速跌倒，被Radar检测，站起，再fall, 爬出room,在pose=2时， 人已出bathroom, 
 
 
-case2  bedroom 窗帘误报  这个基本无解
+# case-def7-0618-1138-1140
+
+11:38  进入， 
+11：40  缓慢爬出，很快firmware就过滤掉，应该在30s左右
+11:40:50 左右，  101GuestRoom Bed   inBed
+
+
+
+# case2  bedroom 窗帘误报  这个基本无解
 
 case-cd2b-0617-23302345-curtain
 2026-06-17 23:31:03(America/Denver)
