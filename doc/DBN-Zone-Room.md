@@ -402,7 +402,7 @@ $$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\te
 
 ---
 
-### §H per-area 静止时长统计标定 — floor / D-DU / emission 单源 $(\mu,\sigma)$（2026-06-18，用户定）
+### §H per-area 静止时长统计标定 — floor / emission 单源 $(\mu,\sigma)$（2026-06-18，用户定）
 
 **问题**：「久静多久算摔」的时长门限原本三处各漂——floor `tFloor`、D/DU `udLenFor`、`ThresholdNonRest` 各拍各的数；且 emission 当初否决 still-box 进发射（全局硬阈 `stillTau=60` 致 d523 站立伪迹 $P^F=0.945$ FP，§十四/十五）。**根因 = 缺 per-area 标定**：一个全局阈对伪迹和真摔一视同仁。
 
@@ -422,47 +422,52 @@ $$K^{unobs}_\lambda:\quad \text{occ}\to\text{vac}=\lambda,\quad \text{occ}\to\te
 数据来源：CNN「马桶<10min」· anorectal PMC12669168（>20min 0.5% 健康 vs 8.1% 病）· sedentary PMC8679788（MBD 11.7–16）· stroke PMC9166254（≥17min 高危）。
 
 **三处单源 + emission 内化**：
-- **floor**（已落 `belief/floor.go`）：`tFloor(area)=μ+1.5σ`，常量由 `Mu*Sec/Sigma*Sec` 派生（`TFloorBathSec=1080/18min` 等）。Bed 并入 Sit·Lying 档。
-- **D/DU 保底窗**（规划，`engine/unit.go`）：`udLenFor` 锚 `tFloor` 取极限——bathroom→`tFloor_Bath`(18min) 走 D；其它→`tFloor_Sit·Lying`(90min) 走 DU（lost 不知人在哪区→取最宽容值避免误报）。互斥（D 或 DU 其一，另一 =-1）。
+- **floor / stillbox 计时器**（已落 `belief/floor.go`）：`tFloorFor(area,room)=μ+1.5σ`，`(μ,σ)` 由 `stillMuSigma` room×cell 保守合并（§I）。Bed 并入 Sit·Lying 档。**原独立 D/DU 决断窗已退役并入此**（§I 合体）——不再有 `udLenFor`/per-room deadline/房型分 D-DU。
 - **emission 高斯 CDF**（规划，取代「floor 独立 fire + still 不进发射」）：$\text{SFallen 贡献}=\Phi\big((\text{StillboxSec}-\mu)/\sigma\big)$，正常值$\approx0.5$、异常阈$\approx0.93$。per-area $(\mu,\sigma)$ 完全决定曲线，$k$ 不再单独拍。**解 §十四/十五「still 进发射单向爬 FP」**——伪迹区 $(\mu,\sigma)$ 大则推得慢、到不了 0.85。
 - **床边跌倒**：emission $\Phi(\cdot)$ 须配 sleepad 接触轴（真 InBed 压 SFallen / LeftBed 放行 radar 假阳 InBed，[[bed_stale_leftbed_vetoes_radar_inbed]]）——$(\mu,\sigma)$ 单独搞不定接触假阳。
 
-**裁决统一**：emission 各状态后验赛跑 $\ge0.85$ 抢先发（belief，无二义性）；D/DU 决断窗到点无人达阈 → 保底发 SFallen；任一状态 $\ge0.85$ 胜出 → 清窗（防残留污染下一轮）。
+**裁决统一**：emission 各状态后验赛跑 $\ge0.85$ 抢先发（belief，无二义性）；floor / stillbox 计时器 `StillSec≥tFloor` 时长兜底发 SFallen（CDF 被假 InBed/area 压住到不了 0.85 时）；二者同 stillbox / 同 `tFloorFor` / 同 `StillSec==0` 清（§I 合体）。
 
-**落地进度（2026-06-18）**：emission 高斯 CDF **已落**（`belief/emission.go`，独立于 RadarOnline——lost 续算 StillSec 在消失态仍喂；权重 `lStill`=0.1 待标定）；`(μ,σ)` **room×cell 保守合并已落**（见 §I 之 stillMuSigma：取 max μ，bathroom 未画 toilet 也用 bathsec）；D/DU `udLenFor` 锚 `tFloor` **已落**（互斥用 0 表无意义）。实测 d5f7：SFallen 0.291→0.979，bathroom 保守阈下 ~18–20min 过 0.85，belief lost fire 主导。**待落 = §I 合体**。
+**落地进度（2026-06-18，commit fb0782d）**：emission 高斯 CDF **已落**（`belief/emission.go`，独立于 RadarOnline——lost 续算 StillSec 在消失态仍喂；权重 `lStill`=0.1 待标定）；`(μ,σ)` **room×cell 保守合并已落**（`stillMuSigma` 取 max μ，bathroom 未画 toilet 也用 bathsec）；**§I 合体已落**：D/DU 决断窗退役、floor 成唯一 stillbox 计时器、`tFloorFor` room×cell。实测 d5f7-0617：SFallen 0.291→0.979，fire=40（floor 7 + lost 33），首 floor-fire 18.3min（room×cell 生效），belief lost fire 主导。
 
 ---
 
-### §I floor / D-DU 合体 — 统一 stillbox 计时器（2026-06-18，用户定）
+### §I floor / D-DU 合体 — 统一 stillbox 计时器（2026-06-18，用户定；commit fb0782d 已落）
 
-**洞察**：floor 与 D/DU **本是同一件事的两个化身**——都在答「静止/失踪 tFloor 久没人接管 → 兜底发 SFallen」。唯一区别是计时基准：floor 用 `StillSec`（静止起，含 present），D/DU 用 `lostMs`（失踪起）。
+**洞察**：floor 与 D/DU **本是同一件事的两个化身**——都在答「静止/失踪 tFloor 久没人接管 → 兜底发 SFallen」。唯一区别是计时基准：floor 用 `StillSec`（静止起，含 present），D/DU 用 `lostMs`（失踪起）。① 的 lost 续算让 `StillSec` 跨 present/lost 不断——floor 的 `StillSec` 已天然覆盖 D/DU 的 lost 段，D/DU 多余。
 
-**合体**：让计时基准统一为 **stillbox**——计时器 `StillSec>0` 启动、`≥tFloor` 保底发 SFallen、`StillSec==0`（移动/回来）清零。则 `D/DU 到点 ≡ StillSec≥tFloor ≡ floor 触发`，**floor 被 D/DU 吸收、退役**，剩一个 per-track **stillbox 计时器**。① 的 lost 续算让 StillSec 跨 present/lost 不断，计时器天然贯通、不分阶段。
+**合体（落地形态）**：**D/DU 决断窗退役**，`belief/floor.go` 的 `FloorGuard`（per-track，`StillSec≥tFloorFor`→发 SFallen）成**唯一 stillbox 计时器**。`StillSec>0` 自然计时、`StillSec==0`（移动/回来）自然清零，**无独立 deadline 状态**（删 `engine/unit.go` 的 `udDeadline`/`udLenFor`/per-room timer）。
 
 **合体后架构 — 一个 stillbox 喂两个消费者**：
 ```
         stillbox 时长 (per-track, 含 lost 续算)
               │
    ┌──────────┴──────────┐
- emission CDF         stillbox 计时器(= floor+D/DU)
- 连续推 SFallen→赛跑0.85   ≥tFloor 保底发 SFallen
- (belief 抢先发)        (CDF 被假 InBed/area 压住、
+ emission CDF         floor (= stillbox 计时器)
+ 连续推 SFallen→赛跑0.85   StillSec≥tFloor 保底发 SFallen
+ (belief 抢先发, 所有 unit) (CDF 被假 InBed/area 压住、
                         到不了 0.85 时兜底)
    └──────────┬──────────┘
-        同锚 tFloor(room×cell 保守) + StillSec==0 清
+        同锚 tFloorFor(room×cell 保守) + StillSec==0 清
 ```
-- emission CDF = stillbox→SFallen 异常度（连续，belief 抢先发）；
-- stillbox 计时器 = 纯时长保底（**专治 CDF 被接触假阳/area redirect 压住、SFallen 到不了 0.85 的真摔**）；
-- 两者完全同源（同 stillbox、同 tFloor、同 StillSec==0 清）。
+- `tFloorFor(area,room)=stillMuSigma(area,room) 的 μ+1.5σ`——floor 与 CDF 用同一 `(μ,σ)`，bathroom 未画 toilet 也用 bathsec(18min)，floor 不再 cell-only 12min 抢先于 CDF 的 18min；
+- floor = 纯时长保底（**专治 CDF 被接触假阳/area redirect 压住、SFallen 到不了 0.85 的真摔**）。
 
-**取消条件（per-track，平移现 D/DU `cancelled` + 新增 stillSec=0）**：
-$$\text{撤计时器} \iff \text{StillSec==0(移动/回来)} \lor \text{exitL}\ge\text{flip(本人过门)} \lor \rho_{xroom}>0(\text{hand-off 现身隔壁})$$
-房型差异保留：bathroom 私密「只认本人 recovery/handoff/exit」；UD 开放「unit 内 any track 撤」。
+**资源克制 — (b) belief 抢发照常、只砍兜底**（用户拍，§I/#1）：单房 unit 资源少、无邻房印证、lost 后 FP 风险剧增 → **floor 兜底腿单房不发**；但 emission CDF 抢发**不**受单房 gate（belief 所有 unit 照常）：
+- **单房 unit 久躺真摔**：CDF 推 SFallen→0.85 抢发（强证据照报）；
+- **单房 unit lost 不确定**：floor 兜底被砍（无邻房印证、FP 高时不保底）；
+- **多房 unit**：CDF 抢发 + floor 兜底齐全。
+
+**取消条件**（`engine/unit.go`，只作用 `band=="floor"` 兜底腿，不碰 belief 抢发的 lost/report）：
+$$\text{撤 floor 兜底} \iff \text{单房 unit}(\text{len(rooms)==1}) \lor \rho_{xroom}>0(\text{hand-off 现身隔壁})$$
+`StillSec==0`(移动/回来) 与 `exitL≥flip`(本人过门) 的撤销已在 `floor.go` 内（`StillSec<tFloor` 自然不发 / `exitL<flip` 条件挡），不在 unit 层重做。**房型差异（bathroom-D / 开放-UD）取消**——合体后统一为「单房克制 + hand-off 撤」，不再按房型分 timer。
 
 **neighbor / hand-off 融入 — 一个量 `ρ_xroom` 两层，方向恒一致**：
-- **belief 塑形层**（`GateBlindRow` F→L，**不变**）：`ρ>0` 把 blind track 转移 SFallen→SLeft，跟 emission CDF 推 SFallen **拉锯**——hand-off 成立则 SFallen 上不去；
-- **计时器取消层**：`ρ>0` 撤计时器（人现身隔壁不兜本房）；
-- **W 窗**（`HandoffWindowFor` 45/60/90s 按 unit_type）= hand-off **时序门**：lost 后 W 窗内邻房 EnterRoom 才算 hand-off（[[partial_monitoring_fall_suppression_law]]：只有极近两事件能排除 lost-fall，过窗当人没走、计时器照兜）。
-- **两时标各管各**：W 窗(秒级)判「走没走邻房」、tFloor(分钟级)判「静止够久算摔」；ρ 同源→「belief 拉 SLeft」与「计时器撤」永不矛盾。
+- **belief 塑形层**（`GateBlindRow` F→L，**不变**）：`ρ>0` 把 blind track 转移 SFallen→SLeft，跟 emission CDF 推 SFallen **拉锯**——hand-off 成立则 SFallen 上不去（belief 抢发自然被压）；
+- **floor 取消层**：`ρ>0` 撤 floor 兜底（人现身隔壁不兜本房）；
+- **W 窗**（`HandoffWindowFor` 45/60/90s 按 unit_type）= hand-off **时序门**：lost 后 W 窗内邻房 EnterRoom 才算 hand-off（[[partial_monitoring_fall_suppression_law]]：只有极近两事件能排除 lost-fall，过窗当人没走、floor 照兜）；
+- **两时标各管各**：W 窗(秒级)判「走没走邻房」、tFloor(分钟级)判「静止够久算摔」；ρ 同源→「belief 拉 SLeft」与「floor 撤」永不矛盾。
 
-**改造要点**：① D/DU 计时基准 `lostMs`→`StillSec>0`；② 扩到**单房**（现 D/DU 仅 `len(rooms)>1`；floor 退役后单房靠计时器）；③ **per-track**（跟 emission CDF 一致，现 D/DU per-room）；④ floor.go 独立 fire 路径退役；⑤ `tFloor(room×cell 保守)` 作单源锚不变。
+**与原草案的出入（实现修正）**：原 §I 设想「floor 被 D/DU 吸收、扩到单房（floor 退役后单房靠计时器）」；落地**反转**为 **D/DU 退役、floor(FloorGuard) 成计时器本体、单房不兜底**——因单房扩兜底会 FP 剧增（无邻房印证），违 D/DU 初衷；(b) 改成「belief 抢发照常、只砍兜底」既护住单房久躺真摔（CDF）、又克制单房 lost FP（不兜底）。
+
+**实测（d5f7-0617 多房零回归）**：fire=40（floor 7 + lost 33），首 floor-fire 由 12.5min→18.3min（room×cell 生效），belief 抢发主导、floor 兜底退到 7 帧。
