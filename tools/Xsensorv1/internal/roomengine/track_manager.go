@@ -106,7 +106,8 @@ type TrackManager struct {
 	// 供 88-加速驱逐：持续无目标 ≥ heartbeat88EvictMs 时陈旧 track 不必等满 MaxMissCount
 	// （稀疏心跳下要 >120s，见 Case2 142s）即可快速进 lost_fall/vanish。镜像 cardagg ClearDeviceTracks。
 	noTargetSinceMs int64
-	// 占用账（enter/exit 权威的人数守恒）：房账"空" = lastExitMs > lastEnterMs（只信 ExitRoom，见 roomLedgerEmpty）。
+	// 占用账（enter/exit 权威的人数守恒）：lastEnterMs/lastExitMs 供 NeighborRoomEnterMs 跨房 hand-off 判占用。
+	//   lost-fall"人过门走了"已改按 track_id 算 SLeft 对数几率（ExitLogOdds），不再用房级 lastExit>lastEnter（多人误判）。
 	// lost_fall 入池前查：房账为空 → 失锁 track 是"人走后残影"（冻住的反射）→ 抑制。不靠 ghost，靠 enter/exit。
 	lastEnterMs int64
 	lastExitMs  int64
@@ -121,6 +122,11 @@ type TrackManager struct {
 	recentRadarAlarms map[int64]*RadarFallAlarm  // key = TMs
 	recentRadarEvents map[int64]*RadarTrackEvent // key = TMs
 	recentBufferMs    int64                      // 默认 5 min
+
+	// lostExitInfo：丢轨"离房趋势"快照（track 失锁前末 2s 朝门强度），key=track_id。
+	//   track 失锁 12s 即驱逐(trackEvictMaxMs)，但 blind 窗 12-14min——趋势须丢轨时存下，
+	//   np/ExitRoom 后到的按 track_id 实时查（见 ExitLogOdds）。由 age(recentBufferMs)淘汰。
+	lostExitInfo map[int]*lostExitRec
 
 	// logger：用于 ai.log 输出 ghost / fall 结构化事件。
 	// 默认 zap.NewNop()，engine.Run 会调 SetLogger 注入真 logger。
@@ -206,6 +212,7 @@ func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 		recentRadarAlarms:       make(map[int64]*RadarFallAlarm),
 		recentRadarEvents:       make(map[int64]*RadarTrackEvent),
 		recentBufferMs:          5 * 60 * 1000, // 5 min
+		lostExitInfo:            make(map[int]*lostExitRec),
 		logger:                  zap.NewNop(),
 		startupMs:               time.Now().UnixMilli(),
 		mirrorBuffer:            make(map[mirrorPairKey]*mirrorPairBuffer),
@@ -379,19 +386,6 @@ func (tm *TrackManager) HasOtherLiveTrackWithLogicID(logicID string, exceptTrack
 	return tm.hasOtherLiveTrackWithLogicID(logicID, exceptTrackID)
 }
 
-// roomLedgerEmpty 占用账是否为空：最近 ExitRoom 晚于最近 EnterRoom。
-// **只信 ExitRoom（过门的空间证据=确实离开），不信 np=0**——铁律：count=0≠离开
-// （人摔倒后雷达丢锁也会 np=0，用 np=0 抑制会漏真摔）。默认（无事件）=非空，保守不抑制。
-func (tm *TrackManager) roomLedgerEmpty() bool {
-	return tm.lastExitMs > tm.lastEnterMs
-}
-
-// RoomLedgerEmpty 自锁版（beliefShadowTick 不持 tm.mu；读 lastExit/lastEnterMs 与 RecordRadarEvent 写并发须锁）。
-func (tm *TrackManager) RoomLedgerEmpty() bool {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	return tm.roomLedgerEmpty()
-}
 
 // NeighborRoomEnterMs 跨房 hand-off：最近一次 EnterRoom 的 ts + 当前是否仍占用（未被 ExitRoom 翻掉）。
 // 自锁（与 RecordRadarEvent 写 lastEnterMs 持的 tm.mu 一致；仅 beliefShadowTick 跨房读，无重入）。
@@ -799,8 +793,8 @@ type TrackStatusBase struct {
 	Present          bool   // 本帧是否被真实观测（LastObservedMs == nowMs）；false=漏帧/丢轨 → DBN 走 blind 续存
 	TraverseDelta    int    // 自上次 SnapshotTrackStatuses 累计的 traverse cells（用于 SuiteCensus 升格判定）
 	SleepadInBed     bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
-	ExitTrend        bool   // §84 步3（原则1 离房趋势）：末 3s 朝 Enter 逼近 + 终点贴门 + 仍在移动 = 走向出口。
-	//                         engine 据此（经 ts.Obs 末帧保留）把 lost 判为"离房"→cancel（非真摔），不进 deadline fire。
+	// 离房（ExitRoom 硬 + trend+np 软）已改为丢轨时按 track_id 算 SLeft 对数几率（见 ExitLogOdds/lostExitInfo），
+	//   喂 blind track 的 logPhi[SLeft]，不再走 base 级 ExitTrend bool（事件无坐标 + 丢轨 base 空）。
 }
 
 // stillDiscount 直立证据对 still-box→fall 的一次性折扣（不改 raw 时钟，取最强 min 直立因子）：
@@ -882,7 +876,18 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 				tm.lastRadarInBedMs = nowMs
 			}
 		}
-		base.ExitTrend = tm.exitTrend(ts, px, py, nowMs)
+		// 离房趋势快照：仅丢轨首帧算一次（30s History 足够），冻结喂 ExitLogOdds（track 12s 驱逐后仍存）。
+		//   在场（含重新抓到）→ 清陈旧快照。ExitLogOdds 只被 belief 对 not-present track 查，在场轨的残留无害。
+		if !base.Present {
+			if _, done := tm.lostExitInfo[ts.TrackID]; !done {
+				tm.lostExitInfo[ts.TrackID] = &lostExitRec{
+					trendRatio: tm.exitTrendRatio(ts),
+					lostMs:     ts.LastObservedMs,
+				}
+			}
+		} else {
+			delete(tm.lostExitInfo, ts.TrackID)
+		}
 		// TraverseDelta：差分本 track 的 LifetimeTraverse 累计（无字段时退化为 0）。
 		// PR-3 暂用 FrameCount 近似单调累计；PR-5 (BathroomGate) 接入后换实际 grid.MarkTraverse 计数。
 		base.TraverseDelta = 0 // 留待 PR-5 wire 精确 delta；当前阶段 SuiteCensus traverse 升格走 sleepad 强锚 + 时长门
@@ -891,39 +896,92 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 	return out
 }
 
-// exitTrend §84 步3（原则1 离房趋势，lost 触发的 cancel 信号）。三条全真才判"走向出口"：
+// lostExitRec 丢轨离房趋势快照（SnapshotTrackStatuses 每帧算，丢轨后冻结）。
+type lostExitRec struct {
+	trendRatio float64 // 朝门强度 = 150/(d1+d2)，gate(d1<d2-margin ∧ 仍移动)后；0=没朝门走
+	lostMs     int64   // 末次真观测 ms（=失锁点，算 np gap 基准）
+}
+
+// exitTrendRatio 末 2s 朝门强度（离房软证据，喂 SLeft belief）。丢轨首帧算一次（30s History 足够）。
 //
-//	① 终点贴门（NearestEntryDist ≤ exitNearCm）——房中央消失=可能真摔，不撤；
-//	② 末 exitLookbackMs 内朝门逼近（NearestEntryDist 减小=移动趋势）——纯贴门不算（静止门口≠离房）；
-//	③ lost 时仍在移动（StillBoxRunStart==0）——"走到门口又摔"已静止 → ③假 → 不撤（FN-safe：门口摔仍 fire）。
-//
-// 形态阈（exitNearCm/exitLookbackMs）留 oracle（铁律 [[fall_data_is_artificial_test]]），只钉结构。
-func (tm *TrackManager) exitTrend(ts *TrackState, nowX, nowY int, nowMs int64) bool {
-	if tm.grid == nil {
-		return false
+//	d1 = 末次真观测点与门距离（History 末点，非 coast 位），d2 = 倒数第 2s 与门距离；
+//	gate：① 仍移动(StillBoxRunStart==0，门口摔已静止→0) ② d1 < d2 - exitMarginCm（朝门走，留 10cm 抗 XY 抖动）。
+//	强度 = 150/(d1+d2)：越贴门越大，封顶 exitRatioCap。形态阈留 oracle（[[fall_data_is_artificial_test]]），只钉结构。
+func (tm *TrackManager) exitTrendRatio(ts *TrackState) float64 {
+	if tm.grid == nil || ts.StillBoxRunStart != 0 || len(ts.History) == 0 {
+		return 0 // 无几何 / 已静止（门口摔）/ 无历史 → 不算离房
 	}
-	if tm.grid.NearestEntryDist(nowX, nowY) > exitNearCm {
-		return false // ① 终点不贴门
-	}
-	if ts.StillBoxRunStart != 0 {
-		return false // ③ lost 时已静止（门口摔）→ 不撤
-	}
-	pastDist := -1
-	cutoff := nowMs - exitLookbackMs
+	last := ts.History[len(ts.History)-1] // 末次真观测位
+	d1 := tm.grid.NearestEntryDist(last.X, last.Y)
+	d2 := -1 // 倒数第 2s
 	for _, p := range ts.History {
-		if p.TMs <= cutoff {
-			pastDist = tm.grid.NearestEntryDist(p.X, p.Y)
+		if p.TMs <= last.TMs-exitLookbackMs {
+			d2 = tm.grid.NearestEntryDist(p.X, p.Y)
 		}
 	}
-	if pastDist < 0 {
-		return false // 历史不足 3s → 保守不判离房（倾向保留 fire）
+	if d2 < 0 || d1 >= d2-exitMarginCm {
+		return 0 // 历史不足 / 没朝门走（含抖动余量）→ 0
 	}
-	return tm.grid.NearestEntryDist(nowX, nowY) < pastDist // ② 末 3s 朝门逼近
+	sum := d1 + d2
+	if sum < 1 {
+		sum = 1
+	}
+	r := exitNearScaleCm / float64(sum)
+	if r > exitRatioCap {
+		r = exitRatioCap
+	}
+	return r
+}
+
+// ExitLogOdds 丢轨人"离房"的 SLeft 对数几率（喂 blind track 的 logPhi[SLeft]）。两路相加：
+//
+//	① ExitRoom 硬证据（过门事件，按 track_id 反查）→ exitRoomLogOdds 大常量，单发顶过 absorbedThresh；
+//	② trend+np 软组合（乘法 AND，两证据互证才采信）：V = 0.85·(30/gap)·trendRatio，clamp[0,0.95]，加 logit(V)。
+//	   np=0 单看不可信（摔倒丢锁也 np=0），靠 ① trendRatio 的"朝门走"门挡住摔倒（摔倒 trendRatio=0→此路 0）。
+//
+// 自锁版（belief 经 OnRoomFrame 闭包调用，不持 tm.mu）。形态常量留 oracle，replay 标定。
+func (tm *TrackManager) ExitLogOdds(trackID int, nowMs int64) float64 {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	L := 0.0
+	cutoff := nowMs - tm.recentBufferMs
+	for k, e := range tm.recentRadarEvents {
+		if k >= cutoff && e.EventName == alarm.ExitRoom && e.TrackID == trackID {
+			L += exitRoomLogOdds // ① 硬证据
+			break
+		}
+	}
+	rec := tm.lostExitInfo[trackID]
+	if rec != nil && rec.trendRatio > 0 && tm.lastNumberPeople == 0 && tm.lastNumberPeopleTs >= rec.lostMs {
+		gapSec := float64(tm.lastNumberPeopleTs-rec.lostMs) / 1000.0
+		if gapSec < 1 {
+			gapSec = 1
+		}
+		npFactor := exitNpRefSec / gapSec
+		if npFactor > exitNpCap {
+			npFactor = exitNpCap
+		}
+		v := exitBase * npFactor * rec.trendRatio
+		if v > exitVMax {
+			v = exitVMax
+		}
+		if v > 0.5 { // 只加正向证据（V≤0.5 的 logit≤0 不往 SLeft 推）
+			L += math.Log(v / (1 - v)) // ② logit(V)
+		}
+	}
+	return L
 }
 
 const (
-	exitNearCm     = 30   // §84 原则1：终点距 Enter ≤30cm = 门附近（NearestEntryDist 在门带内回 0）
-	exitLookbackMs = 3000 // §84 原则1：lost 回看 3s
+	exitLookbackMs   = 1000 // d2 回看（末 2s 中倒数第 2s）
+	exitMarginCm     = 10   // d1<d2 余量：抗 1s 两点采样的 XY 抖动
+	exitNearScaleCm  = 150  // 朝门强度归一：d1+d2=150 → ratio=1（标称）
+	exitRatioCap     = 3.0  // trendRatio 封顶
+	exitRoomLogOdds  = 8.0  // ExitRoom 硬证据 log-odds（单发顶过 absorbedThresh）
+	exitNpRefSec     = 30.0 // np gap 参照：gap=30s → npFactor=1（标称）
+	exitNpCap        = 3.0  // npFactor 封顶
+	exitBase         = 0.85 // V 标称基（trend=1 ∧ np=1 → V=0.85）
+	exitVMax         = 0.95 // V 封顶（永留余地，到不了 1）
 )
 
 // ========================================================================

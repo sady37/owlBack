@@ -130,7 +130,7 @@ type dbnRouter struct {
 	logger   *zap.Logger
 }
 
-func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, bed card.BedState, nowMs int64) {
+func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(trackID int, atMs int64) float64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -156,11 +156,11 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	tracks := make([]adapter.TrackObs, 0, len(bases)+1)
 	for _, b := range bases {
 		tracks = append(tracks, adapter.TrackObs{RadarTrack: adapter.RadarTrack{
-			Online: b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
+			TrackID: b.TrackID, // logicID↔track_id 反查源（ExitRoom 按号反查丢轨人）
+			Online:  b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
 			StillSec:  float64(b.StillSec), // 有效时长（已含直立折扣，SnapshotTrackStatuses 算）→ FloorGuard
 
-			AreaType:  int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
-			ExitTrend: b.ExitTrend,         // §84 步3 离房趋势（lost 末帧保留 → engine cancel）
+			AreaType: int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
 		}})
 	}
 	// sleepad-only 房(无雷达 track)：InBed 合成一条 bed-track 作 B 轴载体(engine.Room track-centric，
@@ -183,16 +183,17 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	}
 
 	fi := adapter.FrameInput{
-		NowMs:     nowMs,
-		Tracks:    tracks,
-		Sleepads:  sleepads,
-		Beds:      g.beds,
-		Covers:    covers,
-		Onbed:     onbed,
-		Overlap:   overlap,
-		Walls:     g.walls,
-		RadarPos:  g.radarPos,
-		Entrances: g.entrances,
+		NowMs:      nowMs,
+		Tracks:     tracks,
+		Sleepads:   sleepads,
+		Beds:       g.beds,
+		Covers:     covers,
+		Onbed:      onbed,
+		Overlap:    overlap,
+		Walls:      g.walls,
+		RadarPos:   g.radarPos,
+		Entrances:  g.entrances,
+		ExitLogOdds: exitLogOdds,
 	}
 
 	u := d.units[d.roomUnit[roomID]]
@@ -244,6 +245,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Float64("rho_xroom", rho),
 		zap.Bool("ud_active", udDeadline > 0), zap.Int64("ud_remain_ms", udRemainMs),
 		zap.Bool("unit_has_track", unitHasTrack), zap.Bool("has_neighbor", hasNeighbor),
+		zap.Bool("lost_exited", fr.LostExited),
 		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("bed_present", g.sleepadPresent),
 		zap.Float64s("covers", covers), zap.Float64s("onbed", onbed),
 		zap.Any("s_dist", sDist), zap.Any("target", raw), zap.Any("dbn", dbn),

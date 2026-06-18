@@ -117,6 +117,15 @@ func (js *JointSpace) initFromPrior(prior Vector) JointVector {
 	return v
 }
 
+// AddLogToS 给 S==s 的所有联合 cell 的 log 值加 delta（注入 S 轴对数似然，如离房证据 → SLeft）。
+// 等价于发射 logPhi 对 S=s 整行加偏置（B 轴不变）：log 域 += → exp 域 ×，即似然比注入。
+func (js *JointSpace) AddLogToS(v JointVector, s State, delta float64) {
+	base := int(s) * js.bmaskN
+	for b := 0; b < js.bmaskN; b++ {
+		v[base+b] += delta
+	}
+}
+
 // MarginalS 边缘出 S 轴分布 P(S) = Σ_bmask exp(α(S,bmask))。
 func (js *JointSpace) MarginalS(v JointVector) Vector {
 	var out Vector

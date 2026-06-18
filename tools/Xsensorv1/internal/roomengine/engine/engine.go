@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"math"
+
 	"owlBack/tools/Xsensorv1/internal/roomengine/adapter"
 	"owlBack/tools/Xsensorv1/internal/roomengine/belief"
 )
@@ -21,6 +23,10 @@ const absorbedThresh = 0.9
 //   二义 lost（pF 自然到不了 0.85）不在此发，交 Unit UD timer 兜底。form-anchor 留 oracle。
 const lostFireThresh = 0.85
 
+// exitFlipLogOdds 离房翻转阈 = logit(0.85)：注入的 SLeft 对数似然 ≥ 此 → 确认离房 → Unit timer cancel。
+//   与 track_manager 离房公式 V 的 0.85 翻转点同源（ExitRoom 硬证据 log-odds=8 ≫ 此，单发即翻）。
+var exitFlipLogOdds = math.Log(0.85 / 0.15)
+
 // arrivalConfirmFrames hand-off 信号「确认真人」所需连续在场真人帧数（§64 噪声防线，form-anchor）。
 //
 //	gained/lost 不用瞬时 PReal≥0.5——cd2b 式噪声尖峰 >AssocCm 瞬拆**新 logicID**（PReal=1 未及去 ghost），
@@ -34,6 +40,7 @@ type Frame struct {
 	Decision belief.Decision
 	// 步4 跨设备 hand-off 信号（Unit 编排器消费，§A 守恒+时间窗）：
 	LostReal   bool    // 本帧一条真人 track 消失（上帧在场真人、本帧不在）= hand-off 源候选
+	LostExited bool    // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）= Unit D/UD timer cancel（人走了无人会摔）
 	GainedReal float64 // 本帧新现真人 track 的去 ghost 后验（0=无）= hand-off 宿候选（守恒重现）
 	// forensic（全切片观测，不参与裁决）：
 	PresentCount int             // 本帧在场 track 数（§61 共存源/消费门控判据）
@@ -127,7 +134,8 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 
 	curReal := map[int]float64{} // 本 tick 在场真人(PReal≥0.5) logicID→PReal（算 lost/gained）
 	var dropIDs []int
-	realOccupancy := 0 // F1 本 tick 真人占用数（PReal≥0.5 ∧ S∉{E,L}）→ 末更 alone-streak
+	realOccupancy := 0  // F1 本 tick 真人占用数（PReal≥0.5 ∧ S∉{E,L}）→ 末更 alone-streak
+	lostExited := false // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）→ Unit timer cancel
 	for _, ts := range tracks {
 		if ts.Present && ts.PReal >= 0.5 {
 			curReal[ts.LogicID] = ts.PReal
@@ -154,6 +162,16 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 			//   loss 时已高 pF（已确认摔）→ 自然到 0.85 即发；二义 lost（pF~0.5）不自爬 → 交 Unit UD timer 兜底。
 			obs = adapter.BuildObservation(adapter.RadarTrack{Online: false}, fi.Sleepads, fi.Beds, r.p)
 			logPhi = r.em.LogPhi(r.js, obs)
+			// 离房证据按 track_id 注入 SLeft 对数似然（ExitRoom 硬 + trend+np 软，源在 track_manager）：
+			//   抬 SLeft → 压 pF（不 fire）+ 够强自然 absorbed-drop。≥flip 阈 → Unit timer cancel（lostExited）。
+			if fi.ExitLogOdds != nil {
+				if exitL := fi.ExitLogOdds(ts.Obs.TrackID, fi.NowMs); exitL > 0 {
+					r.js.AddLogToS(logPhi, belief.SLeft, exitL)
+					if exitL >= exitFlipLogOdds {
+						lostExited = true
+					}
+				}
+			}
 		}
 		// 消失态：雷达中性 + 接触轴 + lost ramp（非离房趋势）；present 全发射。Predict 自持，无 TTL。
 		f.Step(fi.NowMs, online, logPsi, logPhi, rhoXroom)
@@ -181,7 +199,8 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		//   二义 lost（pF<0.85）不在此发，交 Unit UD timer 兜底。三 cancel（离房趋势/handoff→SLeft/在床→SBed）
 		//   经压低 P^F 使到不了 0.85 实现；present 摔走 firmware/dbn_mode（不进此分支=结构免疫）。
 		if !ts.Present {
-			if pF >= lostFireThresh && !ts.Obs.ExitTrend {
+			// 离房抑制已由上方 SLeft 注入承担（抬 SLeft→压 pF）：朝门走/过门 → pF 到不了阈 → 不 fire。
+			if pF >= lostFireThresh {
 				d.Fire, d.Band = true, "lost"
 			} else {
 				d.Fire = false
@@ -195,9 +214,9 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 			PMirror: ts.PMirror, IsReflection: ts.IsReflection, PFallen: pF, Fire: d.Fire, Band: d.Band,
 			X: ts.Obs.X, Y: ts.Obs.Y, Sep: ts.Sep, WallMargin: ts.WallMargin, Rho: ts.Rho, LaterBorn: ts.LaterBorn})
 
-		// drop（状态驱动）：消失 track 吸收到 {Left,Empty}（handoff 经 GateBlindRow 整流）或离房趋势
-		//   （§84 步3：走向出口）→ 离场确认 → drop（非 TTL，cancel 非 fire）。
-		if !ts.Present && (mS[belief.SLeft]+mS[belief.SEmpty] >= absorbedThresh || ts.Obs.ExitTrend) {
+		// drop（状态驱动）：消失 track 吸收到 {Left,Empty}（handoff 经 GateBlindRow 整流 / 离房证据注入抬 SLeft）
+		//   → 离场确认 → drop（非 TTL，cancel 非 fire）。离房趋势已折进 SLeft 后验，不再单列 bool 门。
+		if !ts.Present && mS[belief.SLeft]+mS[belief.SEmpty] >= absorbedThresh {
 			dropIDs = append(dropIDs, ts.LogicID)
 		}
 	}
@@ -251,6 +270,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 
 	fr := r.aggregate(results, nr, fi.NowMs)
 	fr.LostReal, fr.GainedReal = lost, gained
+	fr.LostExited = lostExited
 	fr.PresentCount, fr.Tracks = presentCount, forensic
 	return fr
 }

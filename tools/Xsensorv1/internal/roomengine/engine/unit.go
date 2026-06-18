@@ -102,9 +102,12 @@ func (u *Unit) Tick(roomID string, fi adapter.FrameInput) Frame {
 	if len(u.rooms) > 1 {
 		isBath := u.roomType[roomID] == card.RoomTypeBathroom
 		var cancelled bool
-		if isBath {
+		switch {
+		case fr.LostExited:
+			cancelled = true // 丢轨人本人 ExitRoom 过门（按 track_id 反查）→ D/UD 都撤（人走了无人会摔）；多人时只撤走的那个不误撤摔的
+		case isBath:
 			cancelled = u.roomPresent[roomID] || rho > 0 // D：recovery 或 handoff
-		} else {
+		default:
 			cancelled = u.unitHasTrack(nowMs) // UD：任何 track
 		}
 		switch {

@@ -24,13 +24,13 @@ type Point struct{ X, Y int }
 
 // RadarTrack 单 track raw 量（observation.Track 投影）。
 type RadarTrack struct {
+	TrackID   int     // firmware track_id（透传供 logicID↔track_id 反查：ExitRoom 事件只带 track_id 无坐标，须按号反查丢轨人）
 	Online    bool    // 本 tick 在 radar TTL 内有上报
 	Pose      int     // observation pose 枚举（6=Lying）
 	X, Y, Z   int     // canvas cm
 	HR, RR    int     // 0=无信号
 	StillSec  float64 // 连续静止秒（still-box 总时长）
 	AreaType  int     // track 当前 cell.Belief[0].Type（CellAreaType 透传）→ emission 正向压制 + floor per-area 阈
-	ExitTrend bool    // §84 步3（原则1 离房趋势）：lost 末帧朝门逼近+贴门+仍移动 → engine 判 lost=离房 cancel（非真摔）
 }
 
 // SleepadFrame 单床 sleepad raw 量（§32 二态：设备在线 OR 没有，不建模中途掉线）。
@@ -66,6 +66,10 @@ type FrameInput struct {
 	RadarPos Point
 	// §9.3① enter 区（门，areaType=4）矩形：出生地距门 D 软发射（无门→D=-1 跳过近门似然）。
 	Entrances []Rect
+	// ExitLogOdds 按 track_id 算这条丢轨人"离房"的 SLeft 对数几率（ExitRoom 硬 + trend+np 软；事件无坐标
+	//   走不了 census 关联，丢轨后 base 也空，故按号反查）。喂 blind track 的 logPhi[SLeft]：够强 → 自然
+	//   absorbed-drop + 压低 pF 不 fire；≥ExitFlipLogOdds → Unit D/UD timer cancel。nil=无源→0（保守不抑制）。
+	ExitLogOdds func(trackID int, atMs int64) float64
 }
 
 // Params 派生层参数（form-anchor，标定留 oracle）。
