@@ -94,24 +94,36 @@ func (u *Unit) Tick(roomID string, fi adapter.FrameInput) Frame {
 		u.lostAt[roomID] = nowMs
 	}
 
-	// UD timer 兜底。
-	switch {
-	case u.unitHasTrack(nowMs):
-		// unit 有人 → 取消所有 timer（资源克制：有人在场能发现/施救，含本人起身/他人到场/兄弟房现人）。
-		for id := range u.udDeadline {
-			delete(u.udDeadline, id)
+	// D/UD timer 兜底（per lost-room；各房在各自 tick 处理自己的 timer）。**取消条件按房型分**（架构师拍）：
+	//   - bathroom 走 D：私密关门，邻房有人也看不见里面 → **只认本人交代** = recovery（雷达重抓到=本房 present，
+	//     正常如厕会动→不停重抓→到不了 20min）OR handoff（本人现身隔壁，rho>0，neighbor W=45-90s）。**不认别房有人**。
+	//   - 其它走 UD：开放空间 → unit 内**任何 track** 都取消（recovery/handoff/backup 都算）。
+	// 无 neighbor（单房 unit）→ 不设 timer（克制）。
+	if len(u.rooms) > 1 {
+		isBath := u.roomType[roomID] == card.RoomTypeBathroom
+		var cancelled bool
+		if isBath {
+			cancelled = u.roomPresent[roomID] || rho > 0 // D：recovery 或 handoff
+		} else {
+			cancelled = u.unitHasTrack(nowMs) // UD：任何 track
 		}
-	case len(u.rooms) > 1:
-		// unit 空 + 有 neighbor：lost 起 timer；到点 unit 仍空且 belief 未自然 fire → 补 SFall。
-		if fr.LostReal && u.udDeadline[roomID] == 0 {
-			u.udDeadline[roomID] = nowMs + u.udLenFor(roomID)
-		}
-		if dl := u.udDeadline[roomID]; dl > 0 && nowMs >= dl && !fr.Decision.Fire {
-			fr.Decision.Fire = true
-			fr.Decision.Band = "ud_lost"
+		switch {
+		case cancelled:
 			delete(u.udDeadline, roomID)
+		default:
+			if fr.LostReal && u.udDeadline[roomID] == 0 {
+				u.udDeadline[roomID] = nowMs + u.udLenFor(roomID)
+			}
+			if dl := u.udDeadline[roomID]; dl > 0 && nowMs >= dl && !fr.Decision.Fire {
+				fr.Decision.Fire = true
+				if isBath {
+					fr.Decision.Band = "d_lost"
+				} else {
+					fr.Decision.Band = "ud_lost"
+				}
+				delete(u.udDeadline, roomID)
+			}
 		}
-		// 无 neighbor（单房 unit）：不进此分支 → 不设 timer（克制）。
 	}
 
 	u.pruneGains(nowMs)
