@@ -47,6 +47,9 @@ type Frame struct {
 	// forensic（全切片观测，不参与裁决）：
 	PresentCount int             // 本帧在场 track 数（§61 共存源/消费门控判据）
 	Tracks       []TrackForensic // 每 track 内部量（realness/ghost/消费门控/per-track 裁决）
+	// FiredTrackIDs 本帧 fall fire 的 firmware track_id：回传 track_manager 复位 still-box（跨层 StillSec 在 tm），
+	//   与本帧已就地复位的 belief 配套——fall fire = 该 track 推断 episode 结束 → 从 0 热机重判。
+	FiredTrackIDs []int
 }
 
 // TrackForensic 单 track 的 DBN 内部量（forensic 暴露，X 光全切片用，不参与裁决）。
@@ -140,6 +143,8 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 
 	curReal := map[int]float64{} // 本 tick 在场真人(PReal≥0.5) logicID→PReal（算 lost/gained）
 	var dropIDs []int
+	var firedTrackIDs []int // 本帧 fall fire 的 firmware track_id（回传 tm 复位 still-box）
+	var firedLogicIDs []int // 本帧 fall fire 的 census logicID（就地复位 belief）
 	realOccupancy := 0  // F1 本 tick 真人占用数（PReal≥0.5 ∧ S∉{E,L}）→ 末更 alone-streak
 	lostExited := false // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）→ Unit timer cancel
 	for _, ts := range tracks {
@@ -242,6 +247,12 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 				}
 			}
 		}
+		// fall fire 后该 track 推断 episode 结束（fired ⇒ 非 absorbed-drop，互斥）：记下供下方 belief 就地复位
+		//   + track_id 回传 tm 复位 still-box，从 0 热机重判（不动 census 身份/realness、不动 repeat 前科）。
+		if d.Fire {
+			firedTrackIDs = append(firedTrackIDs, ts.Obs.TrackID)
+			firedLogicIDs = append(firedLogicIDs, ts.LogicID)
+		}
 		// 资格恒真：realness 绝不按 PR 把 fall 排出 room OR。任一 track（含 blind 续存）的摔都进房间 OR——
 		//   ghost fall 可能是真人摔的镜像，宁报不漏。realness 的影响只在 N_r（→ C_FN 折扣，帮 fire）。
 		eligible := true
@@ -309,6 +320,13 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	fr.LostReal, fr.GainedReal = lost, gained
 	fr.LostExited = lostExited
 	fr.PresentCount, fr.Tracks = presentCount, forensic
+	// belief 就地复位（置于 aggregate 后：本帧 forensic 仍显发火态，下帧起从 prior 热机）。
+	//   只复位 filter(S/B 信念)+decider(发火计时)；census/escalator(repeat 前科)保留。
+	for _, id := range firedLogicIDs {
+		r.filters[id] = belief.NewFilter(r.model, r.nb)
+		r.deciders[id] = belief.NewDecider()
+	}
+	fr.FiredTrackIDs = firedTrackIDs
 	return fr
 }
 

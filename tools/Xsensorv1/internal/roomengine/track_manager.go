@@ -2323,6 +2323,23 @@ func (tm *TrackManager) otherDeviceRealTrackRecent(excludeDevice string, nowMs i
 	return false
 }
 
+// ResetStillBox 清空一条 track 的 still-box 累积，使 StillSec 从 0 冷启重数（fall fire 后该 track 推断 episode
+// 结束 → 从 0 热机，需重新攒满 tFloor 才再发）。清 StillBoxRunStart/起点坐标 + History（History 不清则下帧
+// 会回锚到 30s 窗最早帧 → StillSec 跳回 ~30s 非真 0）。只复位 still-box；身份(LogicID)/realness(Score/Verdict)/
+// Kalman 跟踪连续性保留（对应 DBN 侧"不清 census"）。
+func (tm *TrackManager) ResetStillBox(trackID int) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	ts, ok := tm.tracks[trackID]
+	if !ok {
+		return // 已被 lost-reap 驱逐 → firmware 再发即 NewTrackState，本就从 0
+	}
+	ts.StillBoxRunStart = 0
+	ts.StillBoxStartX = 0
+	ts.StillBoxStartY = 0
+	ts.History = ts.History[:0]
+}
+
 // updateContinuousIndicators 每帧维护 StillBox（静止无移动）检测 + Kalman birth-coherence 指标。
 //
 //  1. StillBox（静止无移动）检测（box 判据，2026-05-03 由 byte-equal 改为 box）：

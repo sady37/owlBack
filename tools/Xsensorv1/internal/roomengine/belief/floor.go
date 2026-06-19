@@ -10,7 +10,8 @@ package belief
 // z/pose 直立证据已并入有效 still（stillDiscount：pose=sit×0.8 / z 坐×0.9 / z 站×0.5），floor 不再单独
 // 看 z（避免同一 z 双压 SFallen → 站立瘫倒过压漏报）。豁免**挂可观测证据,不挂 label**:
 //   - AreaDeny(15天高bar 静态反射)→ 非真占用,交 realness。
-//   - 接触 InBed → 真在床。
+//   - **本 track 所在床** 接触 InBed → 真在床（按 NearBedMask 收窄到本床，非任一房间 sleepad——
+//     否则双人房里他人在床会误豁免地板上的摔者 = FN）。
 
 // ============================================================================
 // per-area 静止时长统计模型（单源）：floor 兜底 + D/DU 保底窗(engine/unit.go)
@@ -46,9 +47,9 @@ func NewFloorGuard() *FloorGuard { return &FloorGuard{} }
 // Step 一帧兜底判定（吃整条 obs，自抽派生量——engine 只 OR verdict 不碰 obs）。有效 still 时长
 // （obs.StillSec，已含直立折扣）≥ per-area 阈 → floorFire。track 消失帧不调(无观测);present 帧每帧调。
 func (g *FloorGuard) Step(obs Observation) bool {
-	contactInBed := false
-	for _, br := range obs.Sleepad {
-		if br == BedInBed {
+	contactInBed := false // 仅**本 track 所在床**(NearBedMask)的 InBed 才豁免——他人在床不豁免本摔者
+	for j, br := range obs.Sleepad {
+		if br == BedInBed && obs.NearBedMask[j] {
 			contactInBed = true
 			break
 		}

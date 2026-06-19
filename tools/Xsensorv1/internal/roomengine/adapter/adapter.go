@@ -120,7 +120,7 @@ func Gxy(t RadarTrack, beds []Rect, p Params) []float64 {
 	return g
 }
 
-// nearBed HR/RR 空间门控：XY 在某床 NearBedMargin 内。per-track（§57 步2）。
+// nearBed HR/RR 空间门控：XY 在某床 NearBedMargin 内。per-track（§57 步2）。门控 Online（离线无新鲜 XY）。
 func nearBed(t RadarTrack, beds []Rect, p Params) bool {
 	if !t.Online {
 		return false
@@ -131,6 +131,16 @@ func nearBed(t RadarTrack, beds []Rect, p Params) bool {
 		}
 	}
 	return false
+}
+
+// nearBedMask 逐床几何邻近（XY 在该床 NearBedMargin 内）。不门控 Online：present 用当前 XY、lost 用冻结坐标
+// ——供 FloorGuard 把"接触 InBed 豁免"收窄到本 track 所在床。长 numBeds，与 Sleepad 同索引。
+func nearBedMask(t RadarTrack, beds []Rect, p Params) []bool {
+	m := make([]bool, len(beds))
+	for j, r := range beds {
+		m[j] = distCm(t.X, t.Y, r) <= float64(p.NearBedMarginCm)
+	}
+	return m
 }
 
 // BedGeoms Covers/Onbed/Overlap → []belief.BedGeom。
@@ -171,6 +181,7 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, p Para
 		PoseLying:   t.Online && t.Pose == p.PoseLying,
 		StillSec:    t.StillSec,
 		NearBed:     nb,
+		NearBedMask: nearBedMask(t, beds, p),
 		// HRRRObserved 仅当雷达**真返** HR/RR（铁律 [[radar_hr_rr_bed_enter_gated]]：radar enter-gate，
 		// 近床但无 vital = 结构性未测 = 零信息，**非「观测到 absent」**；否则 §D 会在合法在床期误否决 AtBed）。
 		HRRRObserved:      t.HR > 0 || t.RR > 0,

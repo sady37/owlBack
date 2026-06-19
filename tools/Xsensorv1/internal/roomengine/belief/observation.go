@@ -22,7 +22,11 @@ type Observation struct {
 	RadarOnline bool
 	PoseLying   bool    // pose=Lying（二义：AtBed ∨ Fallen，刻意不分）
 	StillSec    float64 // still-box 总时长（连续静止秒）：喂 FloorGuard 非累加兜底（main 读 b.StillBoxSec）。emission 不消费
-	NearBed     bool    // HR/RR 空间邻域门控（§5 用 nearBed 非 enterBed）
+	NearBed     bool    // HR/RR 空间邻域门控（§5 用 nearBed 非 enterBed，门控 Online）
+	// NearBedMask 逐床几何邻近（XY 在该床 NearBedMargin 内）。不门控 Online——present 用当前 XY，
+	// lost 用冻结坐标。FloorGuard 用它把"接触 InBed 豁免"收窄到**本 track 所在床**，避免同房他人
+	// 在床误豁免地板上的摔者。长 numBeds，与 Sleepad 同索引。
+	NearBedMask []bool
 	// AreaType track 当前 cell.Belief[0].Type（CellAreaType 每帧读活的，经 seam）。FN-safe **正向压制**：
 	// bed/sit/toilet 区 → 抬对应静止态压 Fallen（redirect）。权重有上限（守门1：低到 still 久静能翻，不锁死）。
 	// Bed=2/Sit=3/Active=4/Deny=5/Shower=6/Toilet=7（同 roomengine.AreaType）。

@@ -194,7 +194,8 @@ type Engine struct {
 
 	// OnRoomFrame seam：每帧 ProcessFrame + SnapshotTrackStatuses 之后触发，交上层 DBN（engine.Room）裁决。
 	// nil = 不裁决（纯馈送，无下游）。Engine 不 import belief/adapter/engine 包，靠回调解耦。
-	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(trackID int, atMs int64) float64)
+	// 返回本帧 fall fire 的 firmware track_id → Engine 复位其 still-box（belief 已在 DBN 侧就地复位）。
+	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(trackID int, atMs int64) float64) []int
 }
 
 // RuntimeConfig 与 owlBack/tools/Xsensorv1/internal/config::RoomEngineConfig 一一对应；
@@ -676,13 +677,19 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 	if e.OnRoomFrame != nil {
 		var bed card.BedState
 		var exitLogOdds func(trackID int, atMs int64) float64
-		if tm := e.rooms[roomID]; tm != nil {
+		tm := e.rooms[roomID]
+		if tm != nil {
 			bed = tm.BedOccupancyState(nowMs) // room 级权威 bed 读数（sleepad+radar 床事件融合）→ B 轴
 			// 离房 SLeft 对数几率（ExitRoom 硬 + trend+np 软），按 track_id 反查：事件无坐标走不了 census 关联，
 			//   且丢轨 12s 驱逐后 base 空——闭包持 tm（recentRadarEvents/lostExitInfo 按 age 淘汰，不随 track drop）。
 			exitLogOdds = tm.ExitLogOdds
 		}
-		e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds)
+		fired := e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds)
+		if tm != nil {
+			for _, tid := range fired {
+				tm.ResetStillBox(tid) // fall fire → still-box 从 0 热机（belief 已在 DBN 侧就地复位）
+			}
+		}
 	}
 }
 
