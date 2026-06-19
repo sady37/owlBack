@@ -10,6 +10,45 @@
 
 ---
 
+## 2026-06-18（其十六）— pose=2/7 抬 SFall belief + 重复跌倒「带记忆漏衰减」升级（护理域 + 无动态阈值调制铁律的化解）
+
+> **⚠️ 重头设计订正（2026-06-18 晚，用户拍）**：本节下文的「① 单次 pose-CDF 抬 SFall（60s）」**已撤回**——用户定**第一次/孤立摔归 firmware，Xsensor 只做"重复摔提前报"**。最终落地设计 = `R_prior>0 ∧ R_prior+credit≥1` 的 per-logicID engine 残余器（第一次 R=0 永不触发），见 **`doc/DBN-Zone-Room.md` §J「已落地」** 为准。下文护理域框架 + 铁律化解仍有效，仅"①单次检测"作废。
+
+**问题来源**：333b-0618 case，firmware 发了"保留不发"的 `pose=2(SuspectedFall)` 33 帧 / `pose=7(SuspectedSittingOnGround)` 12 帧（与 PoseMap 注释矛盾，firmware **确实在发**）。引出两问：①pose=2/7 怎么抬 SFall belief；②"摔→起→再摔→可能恢复/可能走出覆盖再摔"这种重复跌倒，护理行业怎么处理。
+
+### 护理域框架（domain ground truth）
+1. **报警判据不是"摔那一刻"，是"摔后起不来"= long lie（长躺）**。真正杀人的是长躺（横纹肌溶解/压疮/低体温/吸入肺炎）；老人长躺 >1h 半年死亡率 ~50%。firmware 的时长 gate（pose2→5@**30~60s** / pose7→8@90s）就是"疑似→持续→确认"的硬件版——**用持续时长把疑似升成确认**。
+2. **两条独立线**：**记录(incident log)** = 每一次摔都留痕（**含自救站起**，因跌倒史 = 下次跌倒最强预测因子 + 法规 CMS/CQC 必报）；**派人(dispatch)** = 仅 long-lie/起不来/受伤/**反复摔** 触发。recovery 可 cancel 派人，**绝不抹掉记录**（对齐 [[silent_leftbed_fall_recovery_window_gap]]）。
+3. **反复摔 = 急性恶化红旗**（UTI/体位性低血压/卒中/药物）→ **升级不取消**，不让每次站起清零。
+4. **走出 bathroom / radar border 再摔** = 盲区，靠 ①超时/welfare-check（进卫生间超时=独立报警，不需看见摔；卫生间最高发）②可穿戴补盲。带未了结 suspected-fall 走出覆盖 → 进 [[partial_monitoring_fall_suppression_law]] 耐心窗，不被 stale recovery 抑制。
+
+### 与「无动态阈值调制」铁律的对撞 + 化解（A 自审 → 用户拍）
+项目组初提两公式升级重复跌倒：A `ThrouFall/n`（按次缩门槛）、B 累加器 `C≥1 fire`。A 自审认为撞 [[feedback_no_dynamic_threshold_modulation]]（派生累积值改 fire 时序/阈值）。**用户拍回并厘清边界**：
+- `ThrouFall` 是 **Xsensor 内部启发式常量**，**非** firmware/客户面 fall 灵敏度——firmware pose=5 gate 独立照 fire，本设计**不改、不否决 firmware**，只在其**前更早 fire = 补漏**，FN-safe（只增发不压制）。故"firmware/客户阈值不可改"那条**不撞**。
+- 残留措辞（"内部常量不能被 runtime 派生信号自动调"）的**干净化解 = 不实现成"派生 n 调阈值"，而实现成「SFall belief 带记忆、recovery 不清零、按 τ 漏衰减」**：阈值/severity 全为死常量，第二次摔从**上次残余 belief 起步**（非从 0）→ 自然更快到阈。**这是 DBN 本就该有的带记忆滤波（原生动力学），非外挂调制。**
+- **与被禁 WeakBio 的本质区别（边界，防变种再试）**：WeakBio（体征长期弱）是**正交外来信号**改 fall → 禁；"刚摔过"是**同一根跌倒风险轴**（跌倒史=临床第一预测因子）的内禀记忆 → 准。**判据：调制源与被改报警是否同一风险轴；同轴内禀=准，正交外来=禁。**
+
+### 设计（落 belief 层）
+| 块 | 机制 | 合规性 |
+|---|---|---|
+| ① 单次持续抬 SFall | pose=2/7 时把 still-CDF 的 (μ,σ) 切到 gate-aligned 短组（异常阈 μ+1.5σ=ThrouFall）；**用户拍 ThrouFall=60s**（firmware gate 30~60s 取保守端，单次 <60s 双方都不报防 FP）；pose=7=90s | ✅ 主检测器读时长，非派生改阈 |
+
+**① 实现状态（2026-06-18，已落地 + 4x 验证）**：emission `MuSuspectFallSec=40,σ=13.33`（μ+1.5σ=60）/ SitGround `μ=60,σ=20`（=90）；pose=2/7 仅 RadarOnline 时切短组、lost 续算回落 per-area。**去掉初版逐帧直接 tilt**（lPoseSuspect*，曾致 333b 14s 抢跑，违"保守最低 60s"）→ 单次只走"疑似摔姿势+持续静止数够 60s"。实测 333b（still 19s<60s）fire=0、pF 守基线 0.155（人 60s 前自救 → 不报，符合保守）；cd2b 无 pose=2/7、代码 pose-gated 结构性零回归。早发只来自 ③ 残余。
+| ② 每次摔留痕（含自救） | recovery → 退 fire 但 emit 低 severity `fall.self_recovered` 记录，belief 不归零 | ✅ 审计/FE/医护（铁律明列允许） |
+| ③ 重复跌倒升级 | **leaky 残余 R**（per logicID）：合格摔贡献 `credit=min(1, FallSec/ThrouFall)`（单次满门槛=1，可独立发）；`R = R·decay(Δt) + credit`，**recovery 不清零、按 τ 漏衰减**；R 抬 SFall 起步 belief → 第二次更快到阈 | ✅ 化解为带记忆滤波；**只提前 fire 时序，不改 verdict 标签、不跳 severity 档**（timing-only / FN-safe） |
+
+**关键修正（A 推荐 vs 项目组原 B）**：原 B 的 `0.85` 当 per-episode 封顶 → 单次满 30s 只得 0.85<1 **发不出 = 基本 case FN**；改成 `0.85`（或 `e^{−Δt/τ}`）当 **leak 衰减因子**、单次 credit 用 `min(1, FallSec/ThrouFall)` 让第一次能独立发。原 A `ThrouFall/n` 谐波衰减无底（n=30→1s 误火）+ 二元丢"差一点" → 否。
+
+### 数据 / 验证（铁律 [[fall_data_is_artificial_test]]）
+- 常数（τ、leak、ThrouFall、credit cap、fire 阈）**无真实重复跌倒数据 → 全留 oracle 保守拍**；机制安全性（真长躺>5min 永不被抑制、recovery 不抹记录）不依赖数据，现在锁。
+- **零回归闸**：cd2b / d5f7 / 333b **均无重复跌倒**（R 退化为单 episode）→ 接 ③ 后 belief 数值**必须与基线逐 tick 等价**（leaky 残余在无第二次摔时 = 单次贡献，不改既有路径）。
+
+### 给 C
+- 请审 ③ 的"leaky 残余只提前 timing、不动 verdict/severity 档"是否真守住 timing-only；及"同轴内禀 vs 正交外来"边界判据是否足以挡 WeakBio 变种。
+- 数值全留 oracle；规格只钉结构（credit=min(1,FallSec/ThrouFall) / leak 衰减 / recovery 不清零 / 记录线独立于派人线 / 不跳 severity 档）。
+
+---
+
 ## 2026-06-16（其十五）— silent-fall FN-safe 契约：default-fall + 正向压制 + 总时长兜底（给 C 审 FN 守门）
 
 **纠其十四的二次错误**：其十四把 still-box 摆回观测层（对），但顺手提的"排除法涌现"（Fallen=残差，排干净才出）**把 FN-safe 默认方向反了**——二义时变成默认不报=低召回，违背"保不漏"长期路线图（漏报≫误报）。架构师拍回：**除非有正向数据，否则偏 Fallen。默认有罪（偏摔），正向数据无罪释放**——不是默认无罪、要凑齐证据才定罪。

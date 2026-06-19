@@ -471,3 +471,40 @@ $$\text{撤 floor 兜底} \iff \text{单房 unit}(\text{len(rooms)==1}) \lor \rh
 **与原草案的出入（实现修正）**：原 §I 设想「floor 被 D/DU 吸收、扩到单房（floor 退役后单房靠计时器）」；落地**反转**为 **D/DU 退役、floor(FloorGuard) 成计时器本体、单房不兜底**——因单房扩兜底会 FP 剧增（无邻房印证），违 D/DU 初衷；(b) 改成「belief 抢发照常、只砍兜底」既护住单房久躺真摔（CDF）、又克制单房 lost FP（不兜底）。
 
 **实测（d5f7-0617 多房零回归）**：fire=40（floor 7 + lost 33），首 floor-fire 由 12.5min→18.3min（room×cell 生效），belief 抢发主导、floor 兜底退到 7 帧。
+
+### §J 重复跌倒提前报 — per-logicID leaky 残余（2026-06-18，用户定 + **已落地**；contract 6A 其十六）
+
+**来源**：333b-0618 firmware 实发 `pose=2(SuspectedFall)`/`pose=7(SuspectedSittingOnGround)`（PoseMap 注释说不发，实际发）。护理域："摔→起→再摔"是急性恶化红旗，要升级（第二次更敏感），不是每次站起清零。
+
+**定位（用户 2026-06-18 重头拍）——只做"重复摔提前报"，第一次归 firmware**：
+- **第一次/孤立摔 → firmware 负责**（pose=2→5@30~60s / pose=7→8@90s 确认报）。Xsensor **从不抢第一次**。
+- Xsensor 唯一职责：**人刚摔过、又摔 → 抢在 firmware 前提前报**（补漏）。
+- 这彻底避开「无动态阈值调制」争议——**我们根本不报单次/孤立摔**；调制源="刚摔过"=**同一跌倒风险轴**（跌倒史=临床第一预测因子，内禀），非 WeakBio 式正交外来信号；不改 firmware 阈、不否决 firmware（FN-safe 只增发不压制）。
+
+**模型（per logicID 残余器，engine 层挂载，类比 FloorGuard）**：
+
+fall episode = 连续处于 fall 族 pose $\{2,5,7,8\}$ 且 `PReal≥0.5` 真人；起身离族 → episode 结束。设本 episode 持续 $\text{FallSec}$、与上个 episode 间隔 $\Delta t$、前科残余 $R_{\text{prior}}=R\cdot e^{-\Delta t/\tau}$（进 episode 时一次性衰减）：
+
+$$\text{credit}=\min\!\big(1,\ \tfrac{\text{FallSec}}{\text{Throu}}\big)\qquad \boxed{R_{\text{prior}}>0 \ \land\ R_{\text{prior}}+\text{credit}\ge 1 \ \Rightarrow\ \text{提前 fire}}$$
+
+episode 结束烘进残余：$R \leftarrow R_{\text{prior}}+\text{credit}$，并 emit `self_recovered` 记录。
+
+- **$R_{\text{prior}}>0$ 闸 = 第一次（$R=0$）永不触发**——天然交 firmware。只有"有前科"才可能提前。
+- **隔久没摔** → $R$ 经 $e^{-\Delta t/\tau}$ 衰减回 0 → 又算第一次（firmware 负责）。
+- **timing-only**：只提前 fire 时序，不改 fire 阈、不跳 severity 档（severity 随 R 升 = 待评，暂未做）。
+- **不再走 belief/emission**：单次 pose-CDF 抬 SFall 的方案（曾试）已**撤回**（belief 层恢复干净）——单次归 firmware，belief 不需为单次摔加料。
+
+**常数（`engine/repeat_fall.go`，留 oracle [[fall_data_is_artificial_test]]）**：
+- `throuFallSec=60`（pose 2/5 族；firmware 保守端，用户拍）、`throuSitSec=90`（pose 7/8 族）。
+- `repeatFallTauS=866`（残余漏衰减 τ；半衰期 ~10min = 急性聚集窗）。
+
+**两条线分离（护理域）**：
+- **派人线（dispatch）**：上式 $R\ge1$ → 提前 fire（band=`repeat`）。
+- **记录线（incident log）**：每次 episode 结束（**含自救**）emit `self_recovered`（审计/FE/医护，铁律明列允许，**不受 $R$ 回落影响**——recovery cancel 派人，绝不抹记录）。当前落 xray forensic（`self_recovered`/`repeat_r` 字段）；推 `iot:event:stream`→event_log 待 publish 接线（随 cardagg wiring 一并，已 defer）。
+
+**盲区衔接**：带 $R>0$（未了结）走出覆盖 → 进 [[partial_monitoring_fall_suppression_law]] 耐心窗，不被 stale recovery 抑制；卫浴超时另走 welfare-check（§I bathroom 段）。
+
+**实现 + 验证（已落地 2026-06-18）**：
+- 落点：`engine/repeat_fall.go`（`RepeatFallEscalator` per-logicID）+ `engine.go`（map 挂载/`Tick` present 帧调用/`dropTrack` 销毁/forensic `RepeatR`+`SelfRecovered`）+ `cmd/xsensor/main.go`（xray `repeat_r`/`self_recovered`）。belief/observation/adapter 已恢复干净（单次方案撤回）。
+- **333b 4x 实测**（逐帧 R 轨迹）：第 1 段疑似摔(~15s) → $R:0\to0.244$（第一次 $R_{\text{prior}}=0$ **不报**，记 self_recovered）；间隔衰减 $0.244\to0.242$；第 2 段(~28s) $R_{\text{prior}}=0.242>0$ 进提前判、峰值 $0.703<1$ **不报**（没攒够），$R\to0.703$ 记 self_recovered。**fire=0**（333b 两段都不够久，正确不误报）。反推：若第 2 段 ≥45s 则 $0.242+45/60\ge1$ → ~45s 提前报（早于 firmware 60s）。
+- **零回归**：escalator 只"加"火不"减"火，单次 fall $R_{\text{prior}}=0$ 永不触发 → cd2b 等单次 case 结构安全（escalator 不改既有 belief/floor/lost 火路）。

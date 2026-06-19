@@ -20,11 +20,13 @@ import (
 const absorbedThresh = 0.9
 
 // lostFireThresh = lost 专用高阈：blind 时 belief 自然演化到此 → fire（present 摔走 firmware/dbn_mode，与此分开）。
-//   二义 lost（pF 自然到不了 0.85）不在此发，交 Unit UD timer 兜底。form-anchor 留 oracle。
+//
+//	二义 lost（pF 自然到不了 0.85）不在此发，交 Unit UD timer 兜底。form-anchor 留 oracle。
 const lostFireThresh = 0.85
 
 // exitFlipLogOdds 离房翻转阈 = logit(0.85)：注入的 SLeft 对数似然 ≥ 此 → 确认离房 → Unit timer cancel。
-//   与 track_manager 离房公式 V 的 0.85 翻转点同源（ExitRoom 硬证据 log-odds=8 ≫ 此，单发即翻）。
+//
+//	与 track_manager 离房公式 V 的 0.85 翻转点同源（ExitRoom 硬证据 log-odds=8 ≫ 此，单发即翻）。
 var exitFlipLogOdds = math.Log(0.85 / 0.15)
 
 // arrivalConfirmFrames hand-off 信号「确认真人」所需连续在场真人帧数（§64 噪声防线，form-anchor）。
@@ -49,19 +51,21 @@ type Frame struct {
 
 // TrackForensic 单 track 的 DBN 内部量（forensic 暴露，X 光全切片用，不参与裁决）。
 type TrackForensic struct {
-	LogicID      int
-	Present      bool
-	PReal        float64 // 真人后验（realness 轴；ghost→低）
-	PMirror      float64 // 镜像后验
-	IsReflection bool    // 桶二镜面几何判定
-	PFallen      float64 // per-track P^F
-	Fire         bool    // per-track 裁决（持续≥T_hold）
-	Band         string  // per-track 档（report/no/tie/indeterminate）
-	X, Y         int     // forensic：末帧 canvas 坐标
-	Sep          float64 // forensic：reflectSep cm（墙外反射裕度）
-	WallMargin   float64 // forensic：mEv 墙外项
-	Rho          float64 // forensic：CoexistRho 同步移动强度
-	LaterBorn    bool    // forensic：成对后到
+	LogicID       int
+	Present       bool
+	PReal         float64 // 真人后验（realness 轴；ghost→低）
+	PMirror       float64 // 镜像后验
+	IsReflection  bool    // 桶二镜面几何判定
+	PFallen       float64 // per-track P^F
+	Fire          bool    // per-track 裁决（持续≥T_hold）
+	Band          string  // per-track 档（report/no/tie/indeterminate）
+	X, Y          int     // forensic：末帧 canvas 坐标
+	Sep           float64 // forensic：reflectSep cm（墙外反射裕度）
+	WallMargin    float64 // forensic：mEv 墙外项
+	Rho           float64 // forensic：CoexistRho 同步移动强度
+	LaterBorn     bool    // forensic：成对后到
+	RepeatR       float64 // forensic：重复摔残余 R（§J；前科强度，>0=有近期摔史）
+	SelfRecovered bool    // forensic：本帧 fall episode 刚结束（起身自救）= 记录线 self_recovered
 }
 
 // Room 单房多 track 引擎：每 logicID 一份 belief 滤波 + 裁决器；census 管身份/realness/人数。
@@ -71,9 +75,10 @@ type Room struct {
 	cp            *belief.Coupling
 	em            *belief.Emission
 	census        *adapter.TrackCensus
-	filters       map[int]*belief.Filter     // 每 logicID 一份 S/B 联合滤波（§A.3② 隐维复制）
-	deciders      map[int]*belief.Decider    // 每 logicID 一份持续计时裁决
-	floorGuards   map[int]*belief.FloorGuard // 每 logicID 一份 FN-safe 兜底（总时长 floor，契约其十五）
+	filters       map[int]*belief.Filter       // 每 logicID 一份 S/B 联合滤波（§A.3② 隐维复制）
+	deciders      map[int]*belief.Decider      // 每 logicID 一份持续计时裁决
+	floorGuards   map[int]*belief.FloorGuard   // 每 logicID 一份 FN-safe 兜底（总时长 floor，契约其十五）
+	escalators    map[int]*RepeatFallEscalator // 每 logicID 一份重复摔残余器（§J；第一次归 firmware，只提前重复摔）
 	nb            int
 	p             adapter.Params
 	lastMarg      belief.Vector // 末帧房间代表 track 的 S 边缘（MarginalS 读出）
@@ -98,6 +103,7 @@ func NewRoom(geom []belief.BedGeom, nb int) *Room {
 		filters:       map[int]*belief.Filter{},
 		deciders:      map[int]*belief.Decider{},
 		floorGuards:   map[int]*belief.FloorGuard{},
+		escalators:    map[int]*RepeatFallEscalator{},
 		nb:            nb,
 		p:             adapter.DefaultParams(),
 		realStreak:    map[int]int{},
@@ -143,11 +149,13 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		f := r.filters[ts.LogicID]
 		dec := r.deciders[ts.LogicID]
 		fg := r.floorGuards[ts.LogicID]
+		esc := r.escalators[ts.LogicID]
 		if f == nil {
 			f = belief.NewFilter(r.model, r.nb) // 出生：新 logicID 起一份滤波（隐维复制）
 			dec = belief.NewDecider()
 			fg = belief.NewFloorGuard()
-			r.filters[ts.LogicID], r.deciders[ts.LogicID], r.floorGuards[ts.LogicID] = f, dec, fg
+			esc = NewRepeatFallEscalator()
+			r.filters[ts.LogicID], r.deciders[ts.LogicID], r.floorGuards[ts.LogicID], r.escalators[ts.LogicID] = f, dec, fg, esc
 		}
 
 		var logPsi, logPhi belief.JointVector
@@ -219,13 +227,29 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 				d.Band = "floor"
 			}
 		}
+		// 重复跌倒提前报（§J）：第一次/孤立摔归 firmware（escalator R_prior>0 闸天然不触发）；
+		//   只在"刚摔过又摔"时抢在 firmware 前 fire。仅 present 帧（pose 须 live；消失态 pose 陈旧不喂）。
+		repeatR := 0.0
+		selfRecovered := false
+		if ts.Present {
+			early, recovered := esc.Step(fi.NowMs, ts.Obs.RadarTrack.Pose, ts.PReal >= 0.5)
+			repeatR = esc.Residual()
+			selfRecovered = recovered
+			if early {
+				d.Fire = true
+				if d.Band == "" || d.Band == "no" || d.Band == "indeterminate" {
+					d.Band = "repeat"
+				}
+			}
+		}
 		// 资格恒真：realness 绝不按 PR 把 fall 排出 room OR。任一 track（含 blind 续存）的摔都进房间 OR——
 		//   ghost fall 可能是真人摔的镜像，宁报不漏。realness 的影响只在 N_r（→ C_FN 折扣，帮 fire）。
 		eligible := true
 		results = append(results, trackResult{d: d, pF: pF, lam: lam, eligible: eligible, f: f})
 		forensic = append(forensic, TrackForensic{LogicID: ts.LogicID, Present: ts.Present, PReal: ts.PReal,
 			PMirror: ts.PMirror, IsReflection: ts.IsReflection, PFallen: pF, Fire: d.Fire, Band: d.Band,
-			X: ts.Obs.X, Y: ts.Obs.Y, Sep: ts.Sep, WallMargin: ts.WallMargin, Rho: ts.Rho, LaterBorn: ts.LaterBorn})
+			X: ts.Obs.X, Y: ts.Obs.Y, Sep: ts.Sep, WallMargin: ts.WallMargin, Rho: ts.Rho, LaterBorn: ts.LaterBorn,
+			RepeatR: repeatR, SelfRecovered: selfRecovered})
 
 		// drop（状态驱动）：消失 track 吸收到 {Left,Empty}（handoff 经 GateBlindRow 整流 / 离房证据注入抬 SLeft）
 		//   → 离场确认 → drop（非 TTL，cancel 非 fire）。离房趋势已折进 SLeft 后验，不再单列 bool 门。
@@ -355,5 +379,6 @@ func (r *Room) dropTrack(id int) {
 	delete(r.filters, id)
 	delete(r.deciders, id)
 	delete(r.floorGuards, id)
+	delete(r.escalators, id)
 	r.census.Drop(id)
 }

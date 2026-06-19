@@ -24,14 +24,14 @@ type Point struct{ X, Y int }
 
 // RadarTrack 单 track raw 量（observation.Track 投影）。
 type RadarTrack struct {
-	TrackID   int     // firmware track_id（透传供 logicID↔track_id 反查：ExitRoom 事件只带 track_id 无坐标，须按号反查丢轨人）
-	Online    bool    // 本 tick 在 radar TTL 内有上报
-	Pose      int     // observation pose 枚举（6=Lying）
-	X, Y, Z   int     // canvas cm
-	HR, RR    int     // 0=无信号
-	StillSec  float64 // 连续静止秒（still-box 总时长）
-	AreaType  int     // track 当前 cell.Belief[0].Type（CellAreaType 透传）→ emission 正向压制 + floor per-area 阈
-	RoomType  int     // 房型(card.RoomType: 1=Bathroom)透传 → emission still CDF (μ,σ) room×cell 保守合并
+	TrackID  int     // firmware track_id（透传供 logicID↔track_id 反查：ExitRoom 事件只带 track_id 无坐标，须按号反查丢轨人）
+	Online   bool    // 本 tick 在 radar TTL 内有上报
+	Pose     int     // observation pose 枚举（6=Lying）
+	X, Y, Z  int     // canvas cm
+	HR, RR   int     // 0=无信号
+	StillSec float64 // 连续静止秒（still-box 总时长）
+	AreaType int     // track 当前 cell.Belief[0].Type（CellAreaType 透传）→ emission 正向压制 + floor per-area 阈
+	RoomType int     // 房型(card.RoomType: 1=Bathroom)透传 → emission still CDF (μ,σ) room×cell 保守合并
 }
 
 // SleepadFrame 单床 sleepad raw 量（§32 二态：设备在线 OR 没有，不建模中途掉线）。
