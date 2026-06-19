@@ -235,6 +235,10 @@ func NewTrackState(trackID int, deviceAddr, roomID string, x, y, z int, tMs int6
 // 实测倒地质心抖 50×40cm → 50 才正确判 still 不误判"动"。
 const stillBoxCm = 50
 
+// stillPathCm：30s 窗内逐帧累计路程 >此 cm → 判"50cm 盒内踱步"非静止，清零 still-box。
+// 补 box(max-min) 盲区：盒内反复踱步包围盒小但累计走好几米；用运动量直接量出，不靠 pose。
+const stillPathCm = 200
+
 // track birth 终判延迟（ms）：track 帧与 EnterRoom 分两条流，birth 时仅初步分留 Pending，此后 deadline 重算。
 const birthFinalGraceMs = 2000
 
@@ -331,6 +335,31 @@ func (ts *TrackState) BoxRangeWithinMs(windowMs int64, nowMs int64) int {
 		return dx
 	}
 	return dy
+}
+
+// PathLengthWithinMs 累计 History 过去 windowMs 内逐帧位移之和（cm）。
+//
+// 与 BoxRangeWithinMs（只看 max-min 包围盒）互补：包围盒对"50cm 盒内反复踱步"会误判 still
+// （盒小但累计走好几米）。路程逐帧累加直接量出运动量，>stillPathCm 即真在动，不靠 firmware pose。
+// lost-carry 冻结帧位移恒=0 → 不累加 → 不破真摔者的久静（只接住活人踱步）。
+func (ts *TrackState) PathLengthWithinMs(windowMs int64, nowMs int64) int {
+	cutoff := nowMs - windowMs
+	var sum float64
+	prevValid := false
+	var px, py int
+	for _, p := range ts.History {
+		if p.TMs < cutoff {
+			continue
+		}
+		if prevValid {
+			dx := float64(p.X - px)
+			dy := float64(p.Y - py)
+			sum += math.Sqrt(dx*dx + dy*dy)
+		}
+		px, py = p.X, p.Y
+		prevValid = true
+	}
+	return int(sum)
 }
 
 // StillBoxBoundsWithinMs still 区在窗口内的 bounding box（画布 cm）。ok=false（<2 帧）→ 调用方回退单格。

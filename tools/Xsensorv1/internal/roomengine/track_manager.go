@@ -2337,12 +2337,15 @@ func (tm *TrackManager) otherDeviceRealTrackRecent(excludeDevice string, nowMs i
 //
 // 调用位置：processFrameAt 已有 track 分支，Kalman.Update 之后。
 func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame, nowMs int64, residualF float64) {
-	// ---- StillBox（静止无移动）检测（50×50 per-axis box 判据）----
+	// ---- StillBox（静止无移动）检测（50×50 per-axis box 判据 + 累计路程闸）----
 	// 用 BoxRangeWithinMs（max(dx,dy)）而非 DisplacementWithinMs（对角线）：50×40 倒地框
 	// 对角线 64 会被误判成"动"，per-axis 算 50（≤StillBoxCm=50）才正确判 still。
+	// 但 box(max-min) 对"50cm 盒内反复踱步"会误判 still（盒小但累计走好几米）→ 再叠累计
+	// 路程闸 PathLengthWithinMs ≤stillPathCm：踱步累计 >200cm 即破盒,用运动量直接量,不靠 pose。
 	ts.StillBoxBreakDurMs = 0 // 每帧清；仅本帧 break 时设（移动块 MarkDwell 消费）
 	disp := ts.BoxRangeWithinMs(30_000, nowMs)
-	if disp <= stillBoxCm && len(ts.History) >= 2 {
+	path := ts.PathLengthWithinMs(30_000, nowMs)
+	if disp <= stillBoxCm && path <= stillPathCm && len(ts.History) >= 2 {
 		if ts.StillBoxRunStart == 0 {
 			// 起点回填到 History 最早帧（box 内最早可见点）；同步存起点位置（cell engine 久静量单源读）。
 			ts.StillBoxRunStart = ts.History[0].TMs
@@ -2358,14 +2361,10 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 				zap.Int("track_id", f.TrackID),
 				zap.Int64("duration_ms", dur),
 				zap.Int("disp_cm", disp),
+				zap.Int("path_cm", path),
 				zap.Int64("now_ms", nowMs))
 		}
 	}
-	// NOTE（防御层备忘，未实施）：box 判据只看 max-min 范围。理论 edge case：
-	// box 内反复抖动（30cm 范围内来回跨越）→ box 小但累计位移大 → 误判 still。
-	// 实测 D523/CD2B/D5F7 未观察到（firmware 单帧抖动通常 ±5-10cm）。生产若遇
-	// 此类"假 still 导致 lost-fall 误判"再加：30s 内逐帧累计 > 200cm 也清零
-	// StillBoxRunStart（200cm = box 周长 120cm × 1.6 倍，超过即反复跨越）。
 
 	// ---- MaxKalmanResidual ----
 	if residualF > ts.MaxKalmanResidual {

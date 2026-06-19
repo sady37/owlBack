@@ -16,20 +16,13 @@ import "math"
 // 涌现 SFallen（C 独立测试 0.995 验证）。floor-strip 是补丁，框架 Ψ 让 cd2b 零补丁涌现。
 
 type emissionParams struct {
-	lIn      float64 // ℓ_sj(InBed|occ)=L_in≫1
-	lLeft    float64 // ℓ_sj(LeftBed|vac)=L_left≫1
-	lPose    float64 // ℓ_pose(lying|AtBed)=ℓ_pose(lying|F)>1（二义，刻意）
-	lHR      float64 // L_hr：present|AtBed 倍数（absent|AtBed=1/L_hr）
-	lArea    float64 // area_type 正向压制倍数（bed/sit/toilet→抬对应静止态）。area 误学(如假 Sit)的真摔
-	//                  由 still 高斯 CDF 兜底（异常阈 μ+1.5σ 翻 area redirect），故 lArea 仅作 redirect 偏置
-	lStill   float64 // still 高斯 CDF → SFallen 的 logit 权重（异常度强度，待标定 oracle）
+	lIn   float64 // ℓ_sj(InBed|occ)=L_in≫1
+	lLeft float64 // ℓ_sj(LeftBed|vac)=L_left≫1
+	lPose float64 // ℓ_pose(lying|AtBed)=ℓ_pose(lying|F)>1（二义，刻意）
+	lHR   float64 // L_hr：present|AtBed 倍数（absent|AtBed=1/L_hr）
+	lArea float64 // area_type 正向压制倍数（bed/sit/toilet→抬对应静止态）。area 误学(如假 Sit)的真摔
+	//                  由 FloorGuard 非累加总时长兜底（still 不进 emission，避免前向滤波累积），故 lArea 仅作 redirect 偏置
 }
-
-// still 高斯 CDF 的 CDF 钳位（防 odds→0/∞ 累积爆，§H）。
-const (
-	stillCDFMin = 0.02
-	stillCDFMax = 0.98
-)
 
 // roomengine.AreaType 枚举值（belief 不 import roomengine，本地常量对齐）。
 const (
@@ -45,19 +38,17 @@ const (
 func defaultEmissionParams() emissionParams {
 	return emissionParams{
 		lIn: 20, lLeft: 20, lPose: 3, lHR: 5,
-		lArea: 2, lStill: 0.1,
+		lArea: 2,
 	}
 }
-
-// normalCDF 标准正态 CDF Φ(x)=½(1+erf(x/√2))。
-func normalCDF(x float64) float64 { return 0.5 * (1 + math.Erf(x/math.Sqrt2)) }
 
 // roomBathroom = card.RoomTypeBathroom（belief 不 import card，本地常量对齐）。
 const roomBathroom = 1
 
 // stillMuSigma 正常停留 (μ,σ) 秒 = cell area 与 room **保守合并**（取 μ 更大 = 更晚报 = 低 FP，§H）。
-//   解决「bathroom 房未画 toilet → cell 落 unknown → 用激进 default 过早误报」：bathroom 房至少按 bathsec 兜。
-//   bed 区(areaBed)的 cell 走 default(unknown)——床边跌倒靠接触轴(sleepad InBed 压/LeftBed 放行)区分，不改 areaType。
+//
+//	解决「bathroom 房未画 toilet → cell 落 unknown → 用激进 default 过早误报」：bathroom 房至少按 bathsec 兜。
+//	bed 区(areaBed)的 cell 走 default(unknown)——床边跌倒靠接触轴(sleepad InBed 压/LeftBed 放行)区分，不改 areaType。
 func stillMuSigma(areaType, roomType int) (mu, sigma float64) {
 	cMu, cSig := cellMuSigma(areaType)
 	rMu, rSig := roomMuSigma(roomType)
@@ -135,24 +126,10 @@ func (e *Emission) contactLogB(o Observation) [][numBedStates]float64 {
 // radarLogS 雷达轴 → S 的 log 似然（[numStates]）。RadarOnline=false → 全 0 中性。
 func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 	var logS [numStates]float64
-	// still-box 时长 → SFallen 异常度（per-area 高斯 CDF，§H；取代旧"不进 emission"+FloorGuard 独立兜底）。
-	//   **独立于 RadarOnline**：lost 续算 StillSec(① 冻结坐标)在消失态仍是有效"持续静止"证据，须照常喂。
-	//   ℓ=odds(CDF)，CDF=Φ((StillSec−μ)/σ)：正常区<0.5 压 SFallen、=μ 中性、异常阈(μ+1.5σ)=0.93 推。
-	//   per-area (μ,σ) 解耦（伪迹区短静止 CDF<0.5 自压防 d523 FP）；bed 区走 default(unknown,接触轴区分)；钳位防累积爆。
-	//   权重 lStill 独立(不乘 covers)——静止异常度与床覆盖无关。
-	if o.StillSec > 0 {
-		mu, sigma := stillMuSigma(o.AreaType, o.RoomType)
-		cdf := normalCDF((o.StillSec - mu) / sigma)
-		if cdf < stillCDFMin {
-			cdf = stillCDFMin
-		} else if cdf > stillCDFMax {
-			cdf = stillCDFMax
-		}
-		addLogLk(&logS, Vector{SFallen: cdf / (1 - cdf)}, e.p.lStill, SFallen)
-	}
-
+	// still-box 时长不进 emission：per-tick 注入会被前向滤波累积（同一久静证据按帧重复计、清零不释放）。
+	// 静止→fall 改由 FloorGuard 非累加消费当前总时长（present-only，engine.go OR verdict）。
 	if !o.RadarOnline {
-		return logS // 雷达 pose/z/area redirect 中性；still CDF 已加（消失态续算仍喂）
+		return logS // 离线=中性
 	}
 	w := e.geom0Covers() // w_pose=w_δ=covers(r,·)
 
