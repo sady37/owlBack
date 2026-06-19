@@ -22,7 +22,15 @@ type emissionParams struct {
 	lHR   float64 // L_hr：present|AtBed 倍数（absent|AtBed=1/L_hr）
 	lArea float64 // area_type 正向压制倍数（bed/sit/toilet→抬对应静止态）。area 误学(如假 Sit)的真摔
 	//                  由 FloorGuard 非累加总时长兜底（still 不进 emission，避免前向滤波累积），故 lArea 仅作 redirect 偏置
+	// 直立/活动证据对 SFallen 的抑制乘子（<1=压；移自 floor stillDiscount，单一归 emission 杜绝双压）。
+	// 逐帧物理排除倒地，取最强(min)；pose=Lying 真倒地时三条件全 false → 不压（lPose boost 照常）。
+	supWalk  float64 // pose∈{Walking,Running} → ×supWalk（在走=最强非摔）
+	supSit   float64 // pose=Sitting（仅椅/沙发）→ ×supSit
+	supStand float64 // z≥zStandCm（站立身高）→ ×supStand
 }
+
+// zStandCm 站立身高阈：z≥此 → 与"躺地"互斥（摔倒质心 z 必低）。高 bar，单帧噪声 z<80 不误压真摔。
+const zStandCm = 80
 
 // roomengine.AreaType 枚举值（belief 不 import roomengine，本地常量对齐）。
 const (
@@ -38,7 +46,8 @@ const (
 func defaultEmissionParams() emissionParams {
 	return emissionParams{
 		lIn: 20, lLeft: 20, lPose: 3, lHR: 5,
-		lArea: 2,
+		lArea:   2,
+		supWalk: 0.5, supSit: 0.8, supStand: 0.5,
 	}
 }
 
@@ -152,8 +161,12 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 		addLogLk(&logS, Vector{SOpenFloor: e.p.lArea}, w, SOpenFloor)
 	}
 
-	// z 直立证据已并入 still-box 折扣（track_manager.stillDiscount：z 坐×0.9 / z 站×0.5 削有效 still 时长），
-	// 不再走 emission redirect——同一 z 既压 emission 又削 still = 双压站立瘫倒 → 过压漏报（C 裁定撤 ZBand）。
+	// 直立/活动证据压 SFallen（移自 floor stillDiscount，单一归 emission）：逐帧物理排除倒地，取最强(min)。
+	//   pose=Lying 真倒地 → 三条件全 false → d=1.0 不压（lPose ×3 boost 照常确认）。覆盖窄于 RadarPoseToCore：
+	//   不含坐地/床坐起/疑似摔（坐地=摔二义，FN-safe 不压）。z≥80 用身高硬证而非 pose=Stand。
+	if d := uprightSuppress(o, e.p); d < 1.0 {
+		addLogLk(&logS, Vector{SFallen: d}, w, SFallen)
+	}
 
 	// HR/RR（非对称 + §D 门控）：w_hrrr=covers·1[nearBed]。
 	if o.NearBed && o.HRRRObserved {
@@ -188,6 +201,22 @@ func (e *Emission) geom0Covers() float64 {
 		}
 	}
 	return mx
+}
+
+// uprightSuppress 直立/活动证据对 SFallen 的抑制乘子，取最强(min)。仅 RadarOnline 调（调用方已 gate）。
+// pose=Lying 真倒地时 PoseWalking/PoseSit=false 且 z<80 → d=1.0 不压；否则按命中项取 min。
+func uprightSuppress(o Observation, p emissionParams) float64 {
+	d := 1.0
+	if o.PoseWalking {
+		d = math.Min(d, p.supWalk)
+	}
+	if o.PoseSit {
+		d = math.Min(d, p.supSit)
+	}
+	if o.Z >= zStandCm {
+		d = math.Min(d, p.supStand)
+	}
+	return d
 }
 
 // addLogLk 把似然向量 comp（仅 keys 给定态非中性，其余视为 1）按权重 w 加进 logS。

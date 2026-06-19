@@ -3,6 +3,7 @@ package adapter
 import (
 	"math"
 
+	"owl-common/observation"
 	"owlBack/tools/Xsensorv1/internal/roomengine/belief"
 )
 
@@ -179,6 +180,9 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, p Para
 		Sleepad:     sl,
 		RadarOnline: t.Online,
 		PoseLying:   t.Online && t.Pose == p.PoseLying,
+		PoseWalking: t.Online && (t.Pose == observation.PoseWalking || t.Pose == observation.PoseRunning),
+		PoseSit:     t.Online && t.Pose == observation.PoseSitting,
+		Z:           t.Z,
 		StillSec:    t.StillSec,
 		NearBed:     nb,
 		NearBedMask: nearBedMask(t, beds, p),

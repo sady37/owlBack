@@ -1,14 +1,15 @@
 package belief
 
-// floor.go — FN-safe last-resort floor（契约 6A 其十五）。召回兜底:**有效 still 总时长**（obs.StillSec，
-// 已含直立折扣 stillDiscount，SnapshotTrackStatuses 算）≥ per-area T_floor 且无正向休息证据 → 强制
-// fall-suspect。接住 emission 被 area误学/接触假阳**误压**的真摔。
+// floor.go — FN-safe last-resort floor（契约 6A 其十五）。召回兜底:**still raw 总时长**（obs.StillSec=
+// StillBoxSec 纯计时器，无直立折扣）≥ per-area T_floor 且无正向休息证据 → 强制 fall-suspect。
+// 接住 emission 被 area误学/接触假阳**误压**的真摔。
 //
 // 与被否的 60s 直投区别:60s 是**主路径+短阈**(海量 FP);floor 是**兜底+保守 per-area 长阈**(正常活动不触,
-// 只接被误压真摔)。绕过前向滤波——floor 不看 P(Fallen),只看有效总时长 + 可观测豁免。
+// 只接被误压真摔)。绕过前向滤波——floor 不看 P(Fallen),只看 raw 总时长 + 可观测豁免。
 //
-// z/pose 直立证据已并入有效 still（stillDiscount：pose=sit×0.8 / z 坐×0.9 / z 站×0.5），floor 不再单独
-// 看 z（避免同一 z 双压 SFallen → 站立瘫倒过压漏报）。豁免**挂可观测证据,不挂 label**:
+// 直立/活动证据（z≥80 / pose=sit·walk）已单一归 emission（压 SFallen，移自旧 stillDiscount）——floor 是
+// **不信 pose/z 的纯时间兜底**（pose/z 错报时正是 floor 该接的场景），故 floor 绝不再看 z/pose（杜绝双压）。
+// 豁免**挂可观测证据,不挂 label**:
 //   - AreaDeny(15天高bar 静态反射)→ 非真占用,交 realness。
 //   - **本 track 所在床** 接触 InBed → 真在床（按 NearBedMask 收窄到本床，非任一房间 sleepad——
 //     否则双人房里他人在床会误豁免地板上的摔者 = FN）。
@@ -45,7 +46,7 @@ type FloorGuard struct{}
 func NewFloorGuard() *FloorGuard { return &FloorGuard{} }
 
 // Step 一帧兜底判定（吃整条 obs，自抽派生量——engine 只 OR verdict 不碰 obs）。有效 still 时长
-// （obs.StillSec，已含直立折扣）≥ per-area 阈 → floorFire。track 消失帧不调(无观测);present 帧每帧调。
+// （obs.StillSec，still raw 时长）≥ per-area 阈 → floorFire。track 消失帧不调(无观测);present 帧每帧调。
 func (g *FloorGuard) Step(obs Observation) bool {
 	contactInBed := false // 仅**本 track 所在床**(NearBedMask)的 InBed 才豁免——他人在床不豁免本摔者
 	for j, br := range obs.Sleepad {

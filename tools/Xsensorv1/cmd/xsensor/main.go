@@ -158,7 +158,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		tracks = append(tracks, adapter.TrackObs{RadarTrack: adapter.RadarTrack{
 			TrackID: b.TrackID, // logicID↔track_id 反查源（ExitRoom 按号反查丢轨人）
 			Online:  b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
-			StillSec:  float64(b.StillSec), // 有效时长（已含直立折扣，SnapshotTrackStatuses 算）→ FloorGuard
+			StillSec:  float64(b.StillBoxSec), // still-box raw 时长 → FloorGuard 纯计时器（直立折扣已移 emission 压 SFallen）
 
 			AreaType: int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
 			RoomType: d.roomType[roomID],  // 房型 → still CDF room×cell 保守合并(bathroom 未画 toilet 也用 bathsec)
@@ -216,7 +216,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	for _, b := range bases {
 		raw = append(raw, map[string]interface{}{
 			"tid": b.TrackID, "present": b.Present, "pose": b.Pose,
-			"x": b.X, "y": b.Y, "z": b.Z, "stillbox": b.StillBoxSec, "stillsec": b.StillSec,
+			"x": b.X, "y": b.Y, "z": b.Z, "stillbox": b.StillBoxSec,
 			"area": int(b.CellAreaType), "verdict": int(b.Verdict),
 		})
 	}

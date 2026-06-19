@@ -789,8 +789,7 @@ type TrackStatusBase struct {
 	X, Y, Z          int // 画布坐标（grid/cell 算法用；Kalman 输出）
 	RawH, RawV, RawZ int // firmware raw 雷达本地坐标 — alarm publish 用，对外契约不变
 	Pose             int
-	StillSec         int // 有效 still 时长 = StillBoxSec × 直立折扣（stillDiscount，喂 FloorGuard）
-	StillBoxSec      int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动，显示用）
+	StillBoxSec      int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动）→ FloorGuard 纯计时器（直立折扣已移 emission）
 	CellAreaType     AreaType
 	EnterTarget      string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
 	MoveActive       bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
@@ -799,23 +798,6 @@ type TrackStatusBase struct {
 	SleepadInBed     bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
 	// 离房（ExitRoom 硬 + trend+np 软）已改为丢轨时按 track_id 算 SLeft 对数几率（见 ExitLogOdds/lostExitInfo），
 	//   喂 blind track 的 logPhi[SLeft]，不再走 base 级 ExitTrend bool（事件无坐标 + 丢轨 base 空）。
-}
-
-// stillDiscount 直立证据对 still-box→fall 的一次性折扣（不改 raw 时钟，取最强 min 直立因子）：
-// pose=sit 0.8 / z∈[30,80] 0.9 / z>80 0.5；躺/贴地(z<30) 无折扣 1.0。单帧噪声只削当帧、不清零
-// 累积时钟（FN-safe：绝不因瞬时直立抹掉真摔的久静证据）。z 复用 firmware 标定档 30/80。
-func stillDiscount(pose, z int) float64 {
-	d := 1.0
-	if RadarPoseToCore(pose) == CorePoseSit {
-		d = 0.8
-	}
-	switch {
-	case z > 80:
-		d = math.Min(d, 0.5)
-	case z >= 30:
-		d = math.Min(d, 0.9)
-	}
-	return d
 }
 
 // SnapshotTrackStatuses 返回当前所有 live track 的 Layer 1 原始投影。
@@ -859,10 +841,9 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			Present:      ts.LastObservedMs == nowMs,
 			SleepadInBed: sleepadInBed,
 		}
-		// StillBoxSec=raw box run 秒（30s 滚动 50×50 抗抖动，显示用）；StillSec=直立折扣后的有效时长（喂 FloorGuard）。
+		// StillBoxSec=raw box run 秒（30s 滚动 50×50 抗抖动）→ FloorGuard 纯计时器。直立折扣已移 emission（压 SFallen）。
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
-			base.StillSec = int(math.Round(float64(base.StillBoxSec) * stillDiscount(base.Pose, base.Z)))
 		}
 		// LongSurvival / StartupGrace 锚定 → 升格 Anchored verdict（v2 §10.1.1）
 		if base.Verdict == VerdictReal && (ts.LongSurvivalAnchored || ts.StartupGrace) {

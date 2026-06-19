@@ -20,8 +20,11 @@ type Observation struct {
 
 	// 雷达轴 → S。RadarOnline=false → 雷达全轴 ℓ≡1（离线=中性）。
 	RadarOnline bool
-	PoseLying   bool    // pose=Lying（二义：AtBed ∨ Fallen，刻意不分）
-	StillSec    float64 // still-box 总时长（连续静止秒）：喂 FloorGuard 非累加兜底（main 读 b.StillBoxSec）。emission 不消费
+	PoseLying   bool    // pose=Lying（二义：AtBed ∨ Fallen，刻意不分）→ boost SBed+SFallen
+	PoseWalking bool    // pose∈{Walking,Running}（逐帧）→ 压 SFallen（在走=非摔）
+	PoseSit     bool    // pose=Sitting（仅椅/沙发，刻意不含坐地/床坐起=摔二义）→ 压 SFallen
+	Z           int     // 雷达本帧高度(canvas cm)：z≥80=站立身高，与"躺地"互斥 → 压 SFallen
+	StillSec    float64 // still-box raw 总时长（连续静止秒）：喂 FloorGuard 纯计时器（不再含直立折扣）。emission 不消费
 	NearBed     bool    // HR/RR 空间邻域门控（§5 用 nearBed 非 enterBed，门控 Online）
 	// NearBedMask 逐床几何邻近（XY 在该床 NearBedMargin 内）。不门控 Online——present 用当前 XY，
 	// lost 用冻结坐标。FloorGuard 用它把"接触 InBed 豁免"收窄到**本 track 所在床**，避免同房他人
