@@ -1,0 +1,523 @@
+# CABB 4D8710D5CABB  room fd00:0:3:411:1:200::/88  Unit tz=Asia/Shanghai(UTC+8)
+# window 17:44:00-18:02:30 local | source: PG monitor_stream(radar.track) + event_log
+# pose: 1=Walking 3=Sitting 4=Standing 7=SuspectedSitOnGround 8=SitOnGround | note: walking / SITONGROUND / Z>80
+# ----------------------------------------------------------------------
+17:44:03  pose-  z0    xy(   0,   0) tid88  
+17:44:34  pose-  z0    xy(   0,   0) tid88  
+17:44:37  >>>>>> EVENT: number_people (1)
+17:44:37  >>>>>> EVENT: EnterRoom
+17:44:37  pose4  z95   xy(  80,  10) tid0   Z>80
+17:44:37  pose4  z88   xy(  60,  10) tid0   Z>80
+17:44:38  pose1  z78   xy(   0,  40) tid0   walking
+17:44:39  pose1  z112  xy( -10,  40) tid0   walking Z>80
+17:44:40  pose1  z114  xy( -20,  40) tid0   walking Z>80
+17:44:41  pose1  z90   xy( -30,  50) tid0   walking Z>80
+17:44:43  pose1  z96   xy( -20,  50) tid0   walking Z>80
+17:44:43  pose1  z93   xy(   0,  50) tid0   walking Z>80
+17:44:44  pose1  z113  xy( -20,  50) tid0   walking Z>80
+17:44:45  pose1  z91   xy( -20,  50) tid0   walking Z>80
+17:44:46  pose1  z90   xy( -30,  60) tid0   walking Z>80
+17:44:47  pose1  z56   xy( -40,  60) tid0   walking
+17:44:48  pose1  z97   xy( -30,  50) tid0   walking Z>80
+17:44:49  pose1  z70   xy( -40,  60) tid0   walking
+17:44:50  pose1  z70   xy(   0,  40) tid0   walking
+17:44:51  pose1  z78   xy(  30,  10) tid0   walking
+17:44:52  pose1  z92   xy(  50, -10) tid0   walking Z>80
+17:44:53  pose1  z47   xy(  40,   0) tid0   walking
+17:44:54  pose1  z0    xy(  40,  10) tid0   walking
+17:44:55  pose3  z0    xy(  40,  10) tid0   
+17:44:56  pose3  z0    xy(  40,  10) tid0   
+17:44:57  pose3  z0    xy(  40,  10) tid0   
+17:44:58  pose3  z0    xy(  40,  10) tid0   
+17:44:59  pose3  z0    xy(  40,  10) tid0   
+17:45:00  pose3  z0    xy(  40,  10) tid0   
+17:45:01  pose3  z0    xy(  40,  10) tid0   
+17:45:02  pose3  z0    xy(  40,  10) tid0   
+17:45:03  pose3  z0    xy(  40,  10) tid0   
+17:45:04  pose3  z0    xy(  40,  10) tid0   
+17:45:05  pose3  z0    xy(  40,  10) tid0   
+17:45:06  pose3  z0    xy(  40,  10) tid0   
+17:45:07  pose3  z0    xy(  40,  10) tid0   
+17:45:08  pose3  z0    xy(  40,  10) tid0   
+17:45:09  pose3  z0    xy(  40,  10) tid0   
+17:45:10  pose3  z0    xy(  40,  10) tid0   
+17:45:11  pose3  z0    xy(  40,  10) tid0   
+17:45:12  pose3  z0    xy(  40,  10) tid0   
+17:45:13  pose3  z0    xy(  40,  10) tid0   
+17:45:14  pose3  z0    xy(  40,  10) tid0   
+17:45:15  pose3  z0    xy(  40,  10) tid0   
+17:45:16  pose3  z0    xy(  40,  10) tid0   
+17:45:17  pose3  z0    xy(  40,  10) tid0   
+17:45:18  pose3  z0    xy(  40,  10) tid0   
+17:45:19  pose3  z0    xy(  40,  10) tid0   
+17:45:20  pose3  z0    xy(  40,  10) tid0   
+17:45:21  pose3  z0    xy(  40,  10) tid0   
+17:45:22  pose3  z0    xy(  40,  10) tid0   
+17:45:23  pose3  z0    xy(  40,  10) tid0   
+17:45:24  pose3  z0    xy(  40,  10) tid0   
+17:45:25  pose3  z0    xy(  40,  10) tid0   
+17:45:27  pose3  z0    xy(  40,  10) tid0   
+17:45:27  >>>>>> EVENT: number_people (2)
+17:45:27  pose4  z0    xy(-110,  70) tid1   
+17:45:27  pose3  z0    xy(  40,  10) tid0   
+17:45:28  pose4  z0    xy(-110,  70) tid1   
+17:45:28  pose3  z0    xy(  40,  10) tid0   
+17:45:29  pose3  z0    xy(  40,  10) tid0   
+17:45:29  pose4  z0    xy(-110,  70) tid1   
+17:45:30  pose4  z0    xy(-110,  70) tid1   
+17:45:30  pose3  z0    xy(  40,  10) tid0   
+17:45:31  pose4  z0    xy(-110,  70) tid1   
+17:45:31  pose3  z0    xy(  40,  10) tid0   
+17:45:32  pose4  z0    xy(-110,  70) tid1   
+17:45:32  pose3  z0    xy(  40,  10) tid0   
+17:45:33  pose4  z0    xy(-110,  60) tid1   
+17:45:33  pose3  z0    xy(  40,  10) tid0   
+17:45:34  pose4  z0    xy(-110,  60) tid1   
+17:45:34  pose3  z0    xy(  40,  10) tid0   
+17:45:35  pose4  z0    xy(-110,  60) tid1   
+17:45:35  pose3  z0    xy(  40,  10) tid0   
+17:45:36  pose4  z0    xy(-110,  60) tid1   
+17:45:36  pose3  z0    xy(  40,  10) tid0   
+17:45:37  pose4  z0    xy(-110,  60) tid1   
+17:45:37  pose3  z0    xy(  40,  10) tid0   
+17:45:38  pose4  z0    xy(-110,  60) tid1   
+17:45:38  pose3  z0    xy(  40,  10) tid0   
+17:45:39  pose4  z0    xy(-110,  60) tid1   
+17:45:39  pose3  z0    xy(  40,  10) tid0   
+17:45:40  pose4  z0    xy(-110,  60) tid1   
+17:45:40  pose3  z0    xy(  40,  10) tid0   
+17:45:41  pose4  z0    xy(-110,  60) tid1   
+17:45:41  pose3  z0    xy(  40,  10) tid0   
+17:45:42  pose4  z0    xy(-110,  60) tid1   
+17:45:42  pose3  z0    xy(  40,  10) tid0   
+17:45:43  pose3  z0    xy(  40,  10) tid0   
+17:45:43  pose4  z0    xy(-110,  60) tid1   
+17:45:44  pose4  z0    xy(-110,  60) tid1   
+17:45:44  pose3  z0    xy(  40,  10) tid0   
+17:45:45  pose4  z0    xy(-110,  60) tid1   
+17:45:45  pose3  z0    xy(  40,  10) tid0   
+17:45:46  pose4  z0    xy(-110,  60) tid1   
+17:45:46  pose3  z0    xy(  40,  10) tid0   
+17:45:47  pose4  z0    xy(-110,  60) tid1   
+17:45:47  pose3  z0    xy(  40,  10) tid0   
+17:45:48  pose4  z0    xy(-110,  60) tid1   
+17:45:48  pose3  z0    xy(  40,  10) tid0   
+17:45:49  pose4  z0    xy(-110,  60) tid1   
+17:45:49  pose3  z0    xy(  40,  10) tid0   
+17:45:50  pose4  z0    xy(-110,  60) tid1   
+17:45:50  pose3  z0    xy(  40,  10) tid0   
+17:45:51  pose4  z0    xy(-110,  60) tid1   
+17:45:51  pose3  z0    xy(  40,  10) tid0   
+17:45:52  pose4  z0    xy(-110,  60) tid1   
+17:45:52  pose3  z0    xy(  40,  10) tid0   
+17:45:53  pose4  z0    xy(-110,  60) tid1   
+17:45:53  pose3  z0    xy(  40,  10) tid0   
+17:45:54  pose3  z0    xy(  40,  10) tid0   
+17:45:54  pose4  z0    xy(-110,  60) tid1   
+17:45:55  pose4  z0    xy(-110,  60) tid1   
+17:45:55  pose3  z0    xy(  40,  10) tid0   
+17:45:55  pose4  z0    xy(-110,  60) tid1   
+17:45:55  pose3  z0    xy(  40,  10) tid0   
+17:45:56  pose4  z0    xy( -90,  60) tid1   
+17:45:56  pose3  z0    xy(  40,  10) tid0   
+17:45:57  pose3  z0    xy(  40,  10) tid0   
+17:45:57  pose4  z0    xy( -90,  60) tid1   
+17:45:59  pose4  z0    xy( -90,  60) tid1   
+17:45:59  pose3  z0    xy(  40,  10) tid0   
+17:45:59  pose4  z0    xy( -90,  60) tid1   
+17:45:59  pose3  z0    xy(  40,  10) tid0   
+17:46:00  pose4  z0    xy( -90,  60) tid1   
+17:46:00  pose3  z0    xy(  40,  10) tid0   
+17:46:01  pose4  z0    xy( -90,  60) tid1   
+17:46:01  pose3  z0    xy(  40,  10) tid0   
+17:46:02  pose4  z0    xy( -90,  60) tid1   
+17:46:02  pose3  z0    xy(  40,  10) tid0   
+17:46:04  pose4  z0    xy( -90,  60) tid1   
+17:46:04  pose3  z0    xy(  40,  10) tid0   
+17:46:04  pose4  z0    xy( -90,  60) tid1   
+17:46:04  pose3  z0    xy(  40,  10) tid0   
+17:46:05  pose4  z0    xy( -90,  60) tid1   
+17:46:05  pose3  z0    xy(  40,  10) tid0   
+17:46:06  pose4  z0    xy( -90,  60) tid1   
+17:46:06  pose3  z0    xy(  40,  10) tid0   
+17:46:07  pose4  z0    xy( -90,  60) tid1   
+17:46:07  pose3  z0    xy(  40,  10) tid0   
+17:46:08  pose4  z0    xy( -90,  60) tid1   
+17:46:08  pose3  z0    xy(  40,  10) tid0   
+17:46:09  pose4  z0    xy( -90,  60) tid1   
+17:46:09  pose3  z0    xy(  40,  10) tid0   
+17:46:10  pose4  z0    xy( -90,  60) tid1   
+17:46:10  pose3  z0    xy(  40,  10) tid0   
+17:46:11  pose3  z0    xy(  40,  10) tid0   
+17:46:11  pose4  z0    xy( -90,  60) tid1   
+17:46:12  pose4  z0    xy( -90,  60) tid1   
+17:46:12  pose3  z0    xy(  40,  10) tid0   
+17:46:13  pose4  z0    xy( -90,  60) tid1   
+17:46:13  pose3  z0    xy(  40,  10) tid0   
+17:46:14  pose4  z0    xy( -90,  60) tid1   
+17:46:14  pose3  z0    xy(  40,  10) tid0   
+17:46:15  pose4  z0    xy( -90,  60) tid1   
+17:46:15  pose3  z0    xy(  40,  10) tid0   
+17:46:16  pose4  z0    xy( -90,  60) tid1   
+17:46:16  pose3  z0    xy(  40,  10) tid0   
+17:46:17  pose4  z0    xy( -90,  60) tid1   
+17:46:17  pose3  z0    xy(  40,  10) tid0   
+17:46:18  pose4  z0    xy( -90,  60) tid1   
+17:46:18  pose3  z0    xy(  40,  10) tid0   
+17:46:19  pose4  z0    xy( -90,  60) tid1   
+17:46:19  pose3  z0    xy(  40,  10) tid0   
+17:46:20  pose4  z0    xy( -90,  60) tid1   
+17:46:20  pose3  z0    xy(  40,  10) tid0   
+17:46:21  pose3  z0    xy(  40,  10) tid0   
+17:46:21  pose4  z0    xy( -90,  60) tid1   
+17:46:22  pose3  z0    xy(  40,  10) tid0   
+17:46:22  pose4  z0    xy( -90,  60) tid1   
+17:46:23  pose4  z0    xy( -90,  60) tid1   
+17:46:23  pose3  z0    xy(  40,  10) tid0   
+17:46:24  pose4  z0    xy( -90,  60) tid1   
+17:46:24  pose3  z0    xy(  40,  10) tid0   
+17:46:25  pose3  z0    xy(  40,  10) tid0   
+17:46:25  pose4  z0    xy( -90,  60) tid1   
+17:46:26  pose4  z0    xy( -90,  60) tid1   
+17:46:26  pose3  z0    xy(  40,  10) tid0   
+17:46:27  pose4  z0    xy( -90,  60) tid1   
+17:46:27  pose3  z0    xy(  40,  10) tid0   
+17:46:28  pose4  z0    xy( -90,  60) tid1   
+17:46:28  pose3  z0    xy(  40,  10) tid0   
+17:46:29  pose4  z0    xy( -90,  60) tid1   
+17:46:29  pose3  z0    xy(  40,  10) tid0   
+17:46:30  pose4  z0    xy( -90,  60) tid1   
+17:46:30  pose3  z0    xy(  40,  10) tid0   
+17:46:31  pose4  z0    xy( -90,  60) tid1   
+17:46:31  pose3  z0    xy(  40,  10) tid0   
+17:46:32  pose4  z0    xy( -90,  60) tid1   
+17:46:32  pose3  z0    xy(  40,  10) tid0   
+17:46:33  pose4  z0    xy( -90,  60) tid1   
+17:46:33  pose3  z0    xy(  40,  10) tid0   
+17:46:34  pose4  z0    xy( -90,  60) tid1   
+17:46:34  pose3  z0    xy(  40,  10) tid0   
+17:46:35  pose4  z0    xy( -90,  60) tid1   
+17:46:35  pose3  z0    xy(  40,  10) tid0   
+17:46:36  pose3  z0    xy(  40,  10) tid0   
+17:46:36  pose4  z0    xy( -90,  60) tid1   
+17:46:37  pose4  z0    xy( -90,  60) tid1   
+17:46:37  pose3  z0    xy(  40,  10) tid0   
+17:46:38  pose4  z0    xy( -90,  60) tid1   
+17:46:38  pose3  z0    xy(  40,  10) tid0   
+17:46:39  pose3  z0    xy(  40,  10) tid0   
+17:46:39  pose4  z0    xy( -90,  60) tid1   
+17:46:40  pose4  z0    xy( -90,  60) tid1   
+17:46:40  pose3  z0    xy(  40,  10) tid0   
+17:46:41  pose4  z0    xy( -90,  60) tid1   
+17:46:41  pose3  z0    xy(  40,  10) tid0   
+17:46:42  pose4  z0    xy( -90,  60) tid1   
+17:46:42  pose3  z0    xy(  40,  10) tid0   
+17:46:43  pose4  z0    xy( -90,  60) tid1   
+17:46:43  pose3  z0    xy(  40,  10) tid0   
+17:46:44  pose4  z0    xy( -90,  60) tid1   
+17:46:44  pose3  z0    xy(  40,  10) tid0   
+17:46:45  pose4  z0    xy( -90,  60) tid1   
+17:46:45  pose3  z0    xy(  40,  10) tid0   
+17:46:46  pose4  z0    xy( -90,  60) tid1   
+17:46:46  pose3  z0    xy(  40,  10) tid0   
+17:46:47  pose4  z0    xy( -90,  60) tid1   
+17:46:47  pose3  z0    xy(  40,  10) tid0   
+17:46:48  pose4  z0    xy( -90,  60) tid1   
+17:46:48  pose3  z0    xy(  40,  10) tid0   
+17:46:49  pose4  z0    xy( -90,  60) tid1   
+17:46:49  pose3  z0    xy(  40,  10) tid0   
+17:46:50  pose3  z0    xy(  40,  10) tid0   
+17:46:50  pose4  z0    xy( -90,  60) tid1   
+17:46:51  pose3  z0    xy(  40,  10) tid0   
+17:46:51  pose4  z0    xy( -90,  60) tid1   
+17:46:52  pose3  z0    xy(  40,  10) tid0   
+17:46:52  pose4  z0    xy( -90,  60) tid1   
+17:46:53  pose3  z0    xy(  40,  10) tid0   
+17:46:53  pose4  z0    xy( -90,  60) tid1   
+17:46:54  pose3  z0    xy(  40,  10) tid0   
+17:46:54  pose4  z0    xy( -90,  60) tid1   
+17:46:55  pose4  z0    xy( -90,  60) tid1   
+17:46:55  pose3  z0    xy(  40,  10) tid0   
+17:46:56  pose4  z0    xy( -90,  60) tid1   
+17:46:56  pose3  z0    xy(  40,  10) tid0   
+17:46:57  pose4  z0    xy( -90,  60) tid1   
+17:46:57  pose3  z0    xy(  40,  10) tid0   
+17:46:58  pose4  z0    xy( -90,  60) tid1   
+17:46:58  pose3  z0    xy(  40,  10) tid0   
+17:46:59  pose4  z0    xy( -90,  60) tid1   
+17:46:59  pose3  z0    xy(  40,  10) tid0   
+17:47:00  pose4  z0    xy( -90,  60) tid1   
+17:47:00  pose3  z0    xy(  40,  10) tid0   
+17:47:01  pose4  z0    xy( -90,  60) tid1   
+17:47:01  pose3  z0    xy(  40,  10) tid0   
+17:47:02  pose4  z0    xy( -90,  60) tid1   
+17:47:02  pose3  z0    xy(  40,  10) tid0   
+17:47:03  pose4  z0    xy( -90,  60) tid1   
+17:47:03  pose3  z0    xy(  40,  10) tid0   
+17:47:04  pose4  z0    xy( -90,  60) tid1   
+17:47:04  pose3  z0    xy(  40,  10) tid0   
+17:47:05  pose4  z0    xy( -90,  60) tid1   
+17:47:05  pose3  z0    xy(  40,  10) tid0   
+17:47:07  pose4  z0    xy( -90,  60) tid1   
+17:47:07  pose3  z0    xy(  40,  10) tid0   
+17:47:07  pose4  z0    xy( -90,  60) tid1   
+17:47:07  pose3  z0    xy(  40,  10) tid0   
+17:47:08  pose4  z0    xy( -90,  60) tid1   
+17:47:08  pose3  z0    xy(  40,  10) tid0   
+17:47:09  pose3  z0    xy(  40,  10) tid0   
+17:47:09  pose4  z0    xy( -90,  60) tid1   
+17:47:10  pose4  z0    xy( -90,  60) tid1   
+17:47:10  pose3  z0    xy(  40,  10) tid0   
+17:47:11  pose4  z0    xy( -90,  60) tid1   
+17:47:11  pose3  z0    xy(  40,  10) tid0   
+17:47:12  pose4  z0    xy( -90,  60) tid1   
+17:47:12  pose3  z0    xy(  40,  10) tid0   
+17:47:13  pose4  z0    xy( -90,  60) tid1   
+17:47:13  pose3  z0    xy(  40,  10) tid0   
+17:47:14  pose4  z0    xy( -90,  60) tid1   
+17:47:14  pose3  z0    xy(  40,  10) tid0   
+17:47:15  pose4  z0    xy( -90,  60) tid1   
+17:47:15  pose3  z0    xy(  40,  10) tid0   
+17:47:16  pose4  z0    xy( -90,  60) tid1   
+17:47:16  pose3  z0    xy(  40,  10) tid0   
+17:47:17  pose4  z0    xy( -90,  60) tid1   
+17:47:17  pose3  z0    xy(  40,  10) tid0   
+17:47:18  pose4  z0    xy( -90,  60) tid1   
+17:47:18  pose3  z0    xy(  40,  10) tid0   
+17:47:19  pose4  z0    xy( -90,  60) tid1   
+17:47:19  pose3  z0    xy(  40,  10) tid0   
+17:47:20  pose3  z0    xy(  40,  10) tid0   
+17:47:20  pose4  z0    xy( -90,  60) tid1   
+17:47:21  pose4  z0    xy( -90,  60) tid1   
+17:47:21  pose3  z0    xy(  40,  10) tid0   
+17:47:22  pose4  z0    xy( -90,  60) tid1   
+17:47:22  pose3  z0    xy(  40,  10) tid0   
+17:47:23  pose4  z0    xy( -90,  60) tid1   
+17:47:23  pose3  z0    xy(  40,  10) tid0   
+17:47:24  pose3  z0    xy(  40,  10) tid0   
+17:47:24  pose4  z0    xy( -90,  60) tid1   
+17:47:25  pose4  z0    xy( -90,  60) tid1   
+17:47:25  pose3  z0    xy(  40,  10) tid0   
+17:47:26  pose4  z0    xy( -90,  60) tid1   
+17:47:26  pose3  z0    xy(  40,  10) tid0   
+17:47:27  pose4  z0    xy( -90,  60) tid1   
+17:47:27  pose3  z0    xy(  40,  10) tid0   
+17:47:27  pose3  z0    xy(  40,  10) tid0   
+17:47:27  pose4  z0    xy( -90,  60) tid1   
+17:47:27  >>>>>> EVENT: ExitRoom
+17:47:28  >>>>>> EVENT: number_people (1)
+17:47:28  pose4  z0    xy( -90,  60) tid1   
+17:47:29  pose4  z0    xy( -90,  60) tid1   
+17:47:30  pose4  z0    xy( -90,  60) tid1   
+17:47:31  pose4  z0    xy( -90,  60) tid1   
+17:47:32  pose4  z0    xy( -90,  60) tid1   
+17:47:33  pose4  z0    xy( -90,  60) tid1   
+17:47:35  pose4  z0    xy( -90,  60) tid1   
+17:47:35  pose4  z0    xy( -90,  60) tid1   
+17:47:37  pose4  z0    xy( -90,  60) tid1   
+17:47:37  pose4  z0    xy( -90,  60) tid1   
+17:47:38  pose4  z0    xy( -90,  60) tid1   
+17:47:39  pose4  z101  xy( -90,  50) tid1   Z>80
+17:47:40  pose4  z104  xy( -80,  40) tid1   Z>80
+17:47:41  pose4  z111  xy( -90,  40) tid1   Z>80
+17:47:42  pose4  z129  xy( -80,  40) tid1   Z>80
+17:47:43  pose4  z0    xy( -80,  30) tid1   
+17:47:44  pose4  z0    xy( -80,  30) tid1   
+17:47:45  pose4  z0    xy( -80,  30) tid1   
+17:47:47  pose4  z0    xy( -80,  30) tid1   
+17:47:47  pose4  z0    xy( -80,  30) tid1   
+17:47:48  pose4  z0    xy( -80,  30) tid1   
+17:47:49  pose4  z0    xy( -80,  30) tid1   
+17:47:50  pose4  z0    xy( -80,  30) tid1   
+17:47:51  pose4  z0    xy( -80,  30) tid1   
+17:47:52  pose4  z0    xy( -80,  30) tid1   
+17:47:53  pose4  z0    xy( -80,  30) tid1   
+17:47:54  pose4  z0    xy( -80,  30) tid1   
+17:47:55  pose4  z124  xy( -80,  40) tid1   Z>80
+17:47:56  pose4  z105  xy( -70,  30) tid1   Z>80
+17:47:57  pose4  z0    xy( -70,  30) tid1   
+17:47:58  pose4  z0    xy( -70,  30) tid1   
+17:47:59  pose4  z0    xy( -70,  30) tid1   
+17:48:00  pose4  z0    xy( -70,  30) tid1   
+17:48:02  pose4  z0    xy( -70,  30) tid1   
+17:48:02  pose4  z0    xy( -70,  30) tid1   
+17:48:02  pose4  z0    xy( -70,  30) tid1   
+17:48:03  pose4  z0    xy( -70,  30) tid1   
+17:48:04  pose4  z0    xy( -70,  30) tid1   
+17:48:05  pose4  z0    xy( -70,  30) tid1   
+17:48:06  pose4  z0    xy( -70,  30) tid1   
+17:48:07  pose4  z0    xy( -70,  30) tid1   
+17:48:08  pose4  z0    xy( -70,  30) tid1   
+17:48:09  pose4  z0    xy( -70,  30) tid1   
+17:48:10  pose4  z0    xy( -70,  30) tid1   
+17:48:11  pose4  z0    xy( -70,  30) tid1   
+17:48:12  pose4  z0    xy( -70,  30) tid1   
+17:48:13  pose4  z0    xy( -70,  30) tid1   
+17:48:14  pose4  z0    xy( -70,  30) tid1   
+17:48:15  pose4  z0    xy( -70,  30) tid1   
+17:48:16  pose4  z0    xy( -70,  30) tid1   
+17:48:17  pose4  z0    xy( -70,  30) tid1   
+17:48:18  pose4  z0    xy( -70,  30) tid1   
+17:48:19  pose4  z0    xy( -70,  30) tid1   
+17:48:20  pose4  z0    xy( -70,  30) tid1   
+17:48:21  pose4  z0    xy( -70,  30) tid1   
+17:48:22  pose4  z0    xy( -70,  30) tid1   
+17:48:23  pose4  z0    xy( -70,  30) tid1   
+17:48:24  pose4  z0    xy( -70,  30) tid1   
+17:48:25  pose4  z0    xy( -70,  30) tid1   
+17:48:27  pose4  z0    xy( -70,  30) tid1   
+17:48:27  pose4  z0    xy( -70,  30) tid1   
+17:48:28  pose4  z0    xy( -70,  30) tid1   
+17:48:29  pose4  z0    xy( -70,  30) tid1   
+17:48:30  pose4  z0    xy( -70,  30) tid1   
+17:48:31  pose4  z0    xy( -70,  30) tid1   
+17:48:32  pose4  z0    xy( -70,  30) tid1   
+17:48:34  pose4  z0    xy( -70,  30) tid1   
+17:48:34  pose4  z0    xy( -70,  30) tid1   
+17:48:35  pose4  z0    xy( -70,  30) tid1   
+17:48:36  pose4  z0    xy( -70,  30) tid1   
+17:48:44  pose4  z0    xy( -70,  30) tid1   
+17:48:44  pose4  z0    xy( -70,  30) tid1   
+17:48:44  pose4  z0    xy( -70,  30) tid1   
+17:48:44  pose4  z0    xy( -70,  30) tid1   
+17:48:44  pose4  z0    xy( -70,  30) tid1   
+17:48:44  pose4  z0    xy( -70,  30) tid1   
+17:48:44  pose4  z0    xy( -70,  30) tid1   
+17:48:44  pose4  z0    xy( -70,  30) tid1   
+17:48:45  pose4  z0    xy( -70,  30) tid1   
+17:48:46  pose4  z115  xy( -70,  30) tid1   Z>80
+17:48:48  pose4  z137  xy( -80,  40) tid1   Z>80
+17:48:48  pose4  z0    xy( -80,  30) tid1   
+17:48:49  pose4  z110  xy( -80,  40) tid1   Z>80
+17:48:50  pose4  z0    xy( -80,  30) tid1   
+17:48:51  pose4  z0    xy( -80,  30) tid1   
+17:48:52  pose4  z0    xy( -80,  30) tid1   
+17:48:53  pose4  z0    xy( -80,  30) tid1   
+17:48:55  pose4  z0    xy( -80,  30) tid1   
+17:48:55  pose4  z0    xy( -80,  30) tid1   
+17:48:56  pose4  z0    xy( -80,  30) tid1   
+17:48:57  pose4  z0    xy( -80,  30) tid1   
+17:48:58  pose4  z0    xy( -80,  30) tid1   
+17:48:59  pose4  z0    xy( -80,  30) tid1   
+17:49:00  pose4  z0    xy( -80,  30) tid1   
+17:49:01  pose4  z89   xy( -70,  30) tid1   Z>80
+17:49:02  pose4  z118  xy( -90,  40) tid1   Z>80
+17:49:03  pose4  z0    xy(-100,  30) tid1   
+17:49:04  pose4  z0    xy(-100,  30) tid1   
+17:49:06  pose4  z0    xy(-100,  30) tid1   
+17:49:06  pose4  z0    xy(-100,  30) tid1   
+17:49:08  pose4  z0    xy(-100,  30) tid1   
+17:49:08  pose4  z0    xy(-100,  30) tid1   
+17:49:09  pose4  z0    xy(-100,  30) tid1   
+17:49:10  pose4  z0    xy(-100,  30) tid1   
+17:49:11  pose4  z0    xy(-100,  30) tid1   
+17:49:12  pose4  z0    xy(-100,  30) tid1   
+17:49:13  pose4  z0    xy(-100,  30) tid1   
+17:49:14  pose4  z0    xy(-100,  30) tid1   
+17:49:15  pose4  z0    xy(-100,  30) tid1   
+17:49:16  pose4  z0    xy(-100,  30) tid1   
+17:49:17  pose4  z0    xy(-100,  30) tid1   
+17:49:18  pose4  z0    xy(-100,  30) tid1   
+17:49:19  pose4  z0    xy(-100,  30) tid1   
+17:49:20  pose4  z0    xy(-100,  30) tid1   
+17:49:22  pose4  z0    xy(-100,  30) tid1   
+17:49:22  pose4  z0    xy(-100,  30) tid1   
+17:49:23  pose4  z0    xy(-100,  30) tid1   
+17:49:25  pose4  z0    xy(-100,  30) tid1   
+17:49:25  pose4  z0    xy(-100,  30) tid1   
+17:49:27  pose4  z0    xy(-100,  30) tid1   
+17:49:27  pose4  z0    xy(-100,  30) tid1   
+17:49:28  pose4  z0    xy(-100,  30) tid1   
+17:49:29  pose4  z0    xy(-100,  30) tid1   
+17:49:30  pose4  z0    xy(-100,  30) tid1   
+17:49:32  pose4  z0    xy(-100,  30) tid1   
+17:49:32  pose4  z0    xy(-100,  30) tid1   
+17:49:33  pose4  z0    xy(-100,  30) tid1   
+17:49:34  pose4  z0    xy(-100,  30) tid1   
+17:49:35  pose4  z0    xy(-100,  30) tid1   
+17:49:36  pose4  z0    xy(-100,  30) tid1   
+17:49:37  >>>>>> EVENT: number_people (0)
+17:49:37  pose-  z0    xy(   0,   0) tid88  
+17:49:38  pose-  z0    xy(   0,   0) tid88  
+17:49:39  pose-  z0    xy(   0,   0) tid88  
+17:49:54  pose-  z0    xy(   0,   0) tid88  
+17:50:23  pose-  z0    xy(   0,   0) tid88  
+17:50:55  pose-  z0    xy(   0,   0) tid88  
+17:51:27  pose-  z0    xy(   0,   0) tid88  
+17:51:59  pose-  z0    xy(   0,   0) tid88  
+17:52:30  pose-  z0    xy(   0,   0) tid88  
+17:53:02  pose-  z0    xy(   0,   0) tid88  
+17:53:34  pose-  z0    xy(   0,   0) tid88  
+17:54:06  pose-  z0    xy(   0,   0) tid88  
+17:54:37  pose-  z0    xy(   0,   0) tid88  
+17:55:09  pose-  z0    xy(   0,   0) tid88  
+17:55:42  pose-  z0    xy(   0,   0) tid88  
+17:56:13  pose-  z0    xy(   0,   0) tid88  
+17:56:45  pose-  z0    xy(   0,   0) tid88  
+17:57:16  pose-  z0    xy(   0,   0) tid88  
+17:57:48  pose-  z0    xy(   0,   0) tid88  
+17:58:19  pose-  z0    xy(   0,   0) tid88  
+17:58:51  pose-  z0    xy(   0,   0) tid88  
+17:59:23  pose-  z0    xy(   0,   0) tid88  
+17:59:57  pose-  z0    xy(   0,   0) tid88  
+18:00:26  pose-  z0    xy(   0,   0) tid88  
+18:00:59  pose-  z0    xy(   0,   0) tid88  
+18:01:30  pose-  z0    xy(   0,   0) tid88  
+18:02:02  pose-  z0    xy(   0,   0) tid88  
+
+# =====================================================================
+# MARKED POINTS  (PG turning point  x  Xsensor.log belief state)
+# columns: time | pose | z | event | stillboxSec | stillsec | ratio | SFall | SLeft
+# real person = pose3 track @xy(-40,290); ghost = pose4 @xy(10,160)/(-20,150)
+# =====================================================================
+time      event                        track(pose/z/pres)         -     stillboxSec stillsec  ratio   SFall   SLeft  
+------------------------------------------------------------------------------------------------------------------------
+17:44:37  EnterRoom (people=1)         pose4 z95 P xy(-40,330)          0         0         -       0.000  0.037
+17:44:38  walking start                pose4 z88 P xy(-40,320)          0         0         -       0.001  0.013
+17:44:54  z<30 (z->0)                  pose1 z47 P xy(-56,297)          0         0         -       0.035  0.018
+17:44:55  pose1->3 Sitting/down        pose1 z0 P xy(-43,292)           0         0         -       0.038  0.018
+17:45:27  ghost appears people=2       pose3 z0 P xy(-40,290)           36        29        0.81    0.107  0.017
+17:47:27  ExitRoom + real track lost   pose3 z0 P xy(-40,290)           156       125       0.80    0.221  0.015
+          (同tick)                      pose4 z0 abs xy(10,160)          119       119       1.00   
+17:49:37  people=0 -> tid88(all lost)  pose3 z0 abs xy(-40,290)         286       229       0.80    0.000  0.972
+          (同tick)                      pose4 z0 abs xy(-20,150)         250       250       1.00   
+
+# =====================================================================
+# SELECTED TIMESTAMPS  (用户选定行 x Xsensor.log 信念态)
+# columns: time | pose | z | event | stillboxSec | stillsec | ratio | SFall | SLeft
+# ratio=stillsec/stillboxSec=stillDiscount(z) ; * = Xsensor 中该 track absent(丢轨续算)
+# 注: z 不进 DBN 发射(ZBand 已撤); SFall=前向滤波(转移漏入近吸收 Fallen), 与 stillsec 解耦
+# =====================================================================
+time      pose  z     event            stillboxSec stillsec  ratio   SFall   SLeft  
+--------------------------------------------------------------------------------------------
+17:44:37  4     95                     0           0         -       0.000  0.037
+17:44:38  1     78                     0           0         -       0.002  0.019
+17:44:39  1     78                     0           0         -       0.002  0.019
+17:44:40  1     112                    0           0         -       0.004  0.018
+17:44:41  1     114                    0           0         -       0.005  0.017
+17:44:43  1     96                     0           0         -       0.009  0.017
+17:44:44  1     93                     0           0         -       0.011  0.017
+17:44:45  1     113                    0           0         -       0.015  0.017
+17:44:46  1     91                     0           0         -       0.017  0.017
+17:44:47  1     90                     0           0         -       0.019  0.017
+17:44:48  1     56                     0           0         -       0.021  0.018
+17:44:49  1     97                     0           0         -       0.024  0.018
+17:44:50  1     70                     0           0         -       0.026  0.018
+17:44:51  1     70                     0           0         -       0.028  0.018
+17:44:52  1     78                     0           0         -       0.031  0.018
+17:44:53  1     92                     0           0         -       0.033  0.018
+17:44:54  1     47                     0           0         -       0.035  0.018
+17:45:27  3     0     number_people=2  36          29        0.81    0.107  0.017
+17:47:27  4*    0     ExitRoom         119         119       1.00    0.221  0.015
+17:47:28  4     0     number_people=1  121         121       1.00    0.193  0.016
+17:47:38  4     0                      130         130       1.00    0.000  0.972
+17:47:39  4     101                    131         66        0.50    0.000  0.972
+17:47:40  4     104                    132         66        0.50    0.000  0.011
+17:49:00  4     0                      212         212       1.00    0.000  0.972
+17:49:01  4     0                      213         213       1.00    0.000  0.972
+17:49:02  4     89                     214         107       0.50    0.000  0.972
+17:49:03  4     118                    215         108       0.50    0.000  0.972
+17:49:36  4     0                      248         248       1.00    0.000  0.969
+17:49:37  3*    0     number_people=0  286         229       0.80    0.000  0.972
+
+* = Xsensor 中该 track 为 absent(丢轨续算)
