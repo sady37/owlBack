@@ -239,6 +239,10 @@ const stillBoxCm = 50
 // 补 box(max-min) 盲区：盒内反复踱步包围盒小但累计走好几米；用运动量直接量出，不靠 pose。
 const stillPathCm = 200
 
+// stillStepFloorCm：累计路程只计单段位移 ≥此 cm 的帧间步；< 此 = firmware 抖动(±5-10cm,
+// 段间距≈1.77σ≤18cm)不计。源头滤抖动 → 静止者路程恒 0 不误破盒;真挪步(≥30cm)逐段穿过。
+const stillStepFloorCm = 30
+
 // track birth 终判延迟（ms）：track 帧与 EnterRoom 分两条流，birth 时仅初步分留 Pending，此后 deadline 重算。
 const birthFinalGraceMs = 2000
 
@@ -342,6 +346,8 @@ func (ts *TrackState) BoxRangeWithinMs(windowMs int64, nowMs int64) int {
 // 与 BoxRangeWithinMs（只看 max-min 包围盒）互补：包围盒对"50cm 盒内反复踱步"会误判 still
 // （盒小但累计走好几米）。路程逐帧累加直接量出运动量，>stillPathCm 即真在动，不靠 firmware pose。
 // lost-carry 冻结帧位移恒=0 → 不累加 → 不破真摔者的久静（只接住活人踱步）。
+// 单段 <stillStepFloorCm 视为抖动不计：从源头滤掉 ±5-10cm firmware 抖动的逐段累积（否则静止者
+// 29 段抖动可累计 >200cm 误破盒 → 漏报真摔者）。
 func (ts *TrackState) PathLengthWithinMs(windowMs int64, nowMs int64) int {
 	cutoff := nowMs - windowMs
 	var sum float64
@@ -354,7 +360,9 @@ func (ts *TrackState) PathLengthWithinMs(windowMs int64, nowMs int64) int {
 		if prevValid {
 			dx := float64(p.X - px)
 			dy := float64(p.Y - py)
-			sum += math.Sqrt(dx*dx + dy*dy)
+			if seg := math.Sqrt(dx*dx + dy*dy); seg >= stillStepFloorCm {
+				sum += seg
+			}
 		}
 		px, py = p.X, p.Y
 		prevValid = true
