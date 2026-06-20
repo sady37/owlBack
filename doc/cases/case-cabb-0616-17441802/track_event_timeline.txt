@@ -521,3 +521,172 @@ time      pose  z     event            stillboxSec stillsec  ratio   SFall   SLe
 17:49:37  3*    0     number_people=0  286         229       0.80    0.000  0.972
 
 * = Xsensor 中该 track 为 absent(丢轨续算)
+
+# =====================================================================
+# SELECTED TIMESTAMPS  —  POST-CHANGE (commit 7a1ec6a: stillDiscount 从 floor 移入 emission)
+# 改动: z≥80 / pose=walk(0.5) / pose=sit(0.8) 直接压 SFallen 前向滤波似然(取最强 min);
+#       floor 退回纯 raw 计时器 → stillsec≡stillboxSec, ratio 恒=1.00(折扣不再作用 stillsec)。
+# 对比要点: z/pose 效果从"折 stillsec"转为"压 SFall"。活动期 SFall 被显著压低:
+#   17:44:50 walk: 0.026→0.003(~9x) ; 17:45:27: 0.107→0.012(~9x) ; 17:47:27 sit: 0.221→0.192(温和×0.8)
+#   机理=前向滤波累积(每 walk/z≥80 帧 ×0.5 复合压整条轨迹)。全程无 emission fire,收敛 Left(无摔,安全)。
+# 注: 整窗尾 18:02:50 有 1 次 band=floor fire,是雷达原点(-50,250)冻结幽灵 sb1080(n_r=1 realness gap,
+#     既有问题非本改动;旧码 discounted stillsec 972>720 亦开火,本改动仅早 ~80s)。
+# 轨道选择同旧表(早期/末尾 tid0,17:47:27→17:49:36 tid1);* = absent 丢轨续算。SFall=房级 p_fallen。
+# =====================================================================
+time      pose  z     event            stillboxSec stillsec  ratio   SFall   SLeft
+--------------------------------------------------------------------------------------------
+17:44:37  4     95                     0           0         1.00    0.000  0.037
+17:44:38  1     78                     0           0         1.00    0.001  0.019
+17:44:39  1     112                    0           0         1.00    0.001  0.018
+17:44:40  1     114                    0           0         1.00    0.001  0.017
+17:44:41  1     90                     0           0         1.00    0.002  0.017
+17:44:43  1     96                     0           0         1.00    0.002  0.017
+17:44:44  1*    93                     0           0         1.00    0.004  0.017
+17:44:45  1     91                     0           0         1.00    0.003  0.018
+17:44:46  1     90                     0           0         1.00    0.003  0.018
+17:44:47  1     56                     0           0         1.00    0.002  0.018
+17:44:48  1     97                     0           0         1.00    0.002  0.018
+17:44:49  1     70                     0           0         1.00    0.003  0.018
+17:44:50  1     70                     0           0         1.00    0.003  0.018
+17:44:51  1     78                     0           0         1.00    0.003  0.018
+17:44:52  1     92                     0           0         1.00    0.003  0.019
+17:44:53  1     47                     0           0         1.00    0.003  0.019
+17:44:54  1     0                      0           0         1.00    0.003  0.019
+17:45:27  3     0     number_people=2  36          36        1.00    0.012  0.019
+17:47:27  4*    0     ExitRoom         119         119       1.00    0.192  0.016
+17:47:28  4     0     number_people=1  121         121       1.00    0.193  0.016
+17:47:38  4     0                      130         130       1.00    0.000  0.972
+17:47:39  4     101                    131         131       1.00    0.000  0.972
+17:47:40  4     104                    132         132       1.00    0.000  0.972
+17:49:00  4     0                      213         213       1.00    0.000  0.965
+17:49:01  4     89                     214         214       1.00    0.000  0.972
+17:49:02  4     118                    215         215       1.00    0.000  0.972
+17:49:03  4     0                      216         216       1.00    0.000  0.972
+17:49:36  4     0                      248         248       1.00    0.000  0.965
+17:49:37  3*    0     number_people=0  286         286       1.00    0.000  0.972
+
+* = Xsensor 中该 track 为 absent(丢轨续算)  |  ratio≡1.00(折扣已移 emission)
+
+# =====================================================================
+# EXPANDED A: 17:45:20-17:46:00 — ghost 检查 (number_people=2 onset)
+# tid0(p3坐)+tid1(p4站,17:45:27进) 全程 Anch+p_mirror=0 → 两真人非ghost(track=2 mirror检测开启并放行). SFall缓升=坐久tid0 supSit×0.8温和压.
+# track 格式: [tid pose z sb verdict P/a]  P=present a=absent(丢轨续算) | n_r=census真人数
+# =====================================================================
+time     n_r top    SFall   SLeft    tracks
+--------------------------------------------------------------------------------------------
+17:45:20 1   Empty  0.012   0.019   [0 p3 z0 sb29 Anch P]
+17:45:21 1   Empty  0.012   0.019   [0 p3 z0 sb30 Anch P]
+17:45:22 1   Empty  0.012   0.019   [0 p3 z0 sb31 Anch P]
+17:45:23 1   Empty  0.012   0.019   [0 p3 z0 sb32 Anch P]
+17:45:24 1   Empty  0.012   0.019   [0 p3 z0 sb33 Anch P]
+17:45:25 1   Empty  0.012   0.019   [0 p3 z0 sb34 Anch P]
+17:45:27 1   Empty  0.012   0.019   [0 p3 z0 sb36 Anch P]
+17:45:27 1   Empty  0.015   0.019   [0 p3 z0 sb36 Anch a] [1 p4 z0 sb0 Anch P]
+17:45:27 2   Empty  0.012   0.019   [0 p3 z0 sb36 Anch P] [1 p4 z0 sb0 Anch P]
+17:45:28 1   Empty  0.015   0.019   [1 p4 z0 sb0 Anch P] [0 p3 z0 sb37 Anch a]
+17:45:28 2   Empty  0.012   0.019   [0 p3 z0 sb37 Anch P] [1 p4 z0 sb0 Anch P]
+17:45:29 1   Empty  0.012   0.019   [0 p3 z0 sb38 Anch P] [1 p4 z0 sb1 Anch a]
+17:45:29 2   Empty  0.010   0.019   [0 p3 z0 sb38 Anch P] [1 p4 z0 sb1 Anch P]
+17:45:30 1   Empty  0.013   0.019   [0 p3 z0 sb39 Anch a] [1 p4 z0 sb2 Anch P]
+17:45:30 2   Empty  0.010   0.019   [0 p3 z0 sb39 Anch P] [1 p4 z0 sb2 Anch P]
+17:45:31 1   Empty  0.011   0.019   [0 p3 z0 sb40 Anch P] [1 p4 z0 sb3 Anch a]
+17:45:31 2   Empty  0.009   0.019   [0 p3 z0 sb40 Anch P] [1 p4 z0 sb3 Anch P]
+17:45:32 1   Empty  0.012   0.019   [0 p3 z0 sb41 Anch a] [1 p4 z0 sb4 Anch P]
+17:45:32 2   Empty  0.010   0.019   [0 p3 z0 sb41 Anch P] [1 p4 z0 sb4 Anch P]
+17:45:33 1   Empty  0.010   0.019   [0 p3 z0 sb42 Anch P] [1 p4 z0 sb5 Anch a]
+17:45:33 2   Empty  0.008   0.019   [1 p4 z0 sb5 Anch P] [0 p3 z0 sb42 Anch P]
+17:45:34 1   Empty  0.011   0.019   [0 p3 z0 sb43 Anch a] [1 p4 z0 sb6 Anch P]
+17:45:34 2   Empty  0.009   0.019   [0 p3 z0 sb43 Anch P] [1 p4 z0 sb6 Anch P]
+17:45:35 1   Empty  0.010   0.019   [0 p3 z0 sb44 Anch P] [1 p4 z0 sb7 Anch a]
+17:45:35 2   Empty  0.009   0.015   [1 p4 z0 sb7 Anch P] [0 p3 z0 sb44 Anch P]
+17:45:36 1   Empty  0.011   0.019   [0 p3 z0 sb45 Anch a] [1 p4 z0 sb8 Anch P]
+17:45:36 2   Empty  0.011   0.016   [0 p3 z0 sb45 Anch P] [1 p4 z0 sb8 Anch P]
+17:45:37 1   Empty  0.013   0.016   [0 p3 z0 sb46 Anch P] [1 p4 z0 sb9 Anch a]
+17:45:37 2   Empty  0.013   0.016   [0 p3 z0 sb46 Anch P] [1 p4 z0 sb9 Anch P]
+17:45:38 1   Empty  0.015   0.017   [0 p3 z0 sb47 Anch a] [1 p4 z0 sb10 Anch P]
+17:45:38 2   Empty  0.015   0.017   [0 p3 z0 sb47 Anch P] [1 p4 z0 sb10 Anch P]
+17:45:39 1   Empty  0.017   0.017   [0 p3 z0 sb48 Anch a] [1 p4 z0 sb11 Anch P]
+17:45:39 2   Empty  0.017   0.017   [0 p3 z0 sb48 Anch P] [1 p4 z0 sb11 Anch P]
+17:45:40 1   Empty  0.019   0.017   [0 p3 z0 sb49 Anch P] [1 p4 z0 sb12 Anch a]
+17:45:40 2   Empty  0.019   0.017   [0 p3 z0 sb49 Anch P] [1 p4 z0 sb12 Anch P]
+17:45:41 1   Empty  0.021   0.017   [0 p3 z0 sb50 Anch P] [1 p4 z0 sb13 Anch a]
+17:45:41 2   Empty  0.021   0.017   [0 p3 z0 sb50 Anch P] [1 p4 z0 sb13 Anch P]
+17:45:42 1   Empty  0.023   0.018   [0 p3 z0 sb51 Anch a] [1 p4 z0 sb14 Anch P]
+17:45:42 2   Empty  0.023   0.018   [0 p3 z0 sb51 Anch P] [1 p4 z0 sb14 Anch P]
+17:45:43 1   Empty  0.026   0.018   [0 p3 z0 sb52 Anch P] [1 p4 z0 sb15 Anch a]
+17:45:43 2   Empty  0.026   0.018   [0 p3 z0 sb52 Anch P] [1 p4 z0 sb15 Anch P]
+17:45:44 1   Empty  0.028   0.018   [0 p3 z0 sb53 Anch a] [1 p4 z0 sb16 Anch P]
+17:45:44 2   Empty  0.028   0.018   [0 p3 z0 sb53 Anch P] [1 p4 z0 sb16 Anch P]
+17:45:45 0   Empty  0.030   0.018   [0 p3 z0 sb54 Anch a] [1 p4 z0 sb17 Anch a]
+17:45:45 1   Empty  0.032   0.018   [0 p3 z0 sb54 Anch a] [1 p4 z0 sb18 Anch P]
+17:45:45 2   Empty  0.032   0.018   [0 p3 z0 sb54 Anch P] [1 p4 z0 sb18 Anch P]
+17:45:46 1   Empty  0.035   0.018   [0 p3 z0 sb55 Anch a] [1 p4 z0 sb18 Anch P]
+17:45:46 2   Empty  0.035   0.018   [0 p3 z0 sb55 Anch P] [1 p4 z0 sb18 Anch P]
+17:45:47 1   Empty  0.037   0.018   [0 p3 z0 sb56 Anch a] [1 p4 z0 sb19 Anch P]
+17:45:47 2   Empty  0.037   0.018   [0 p3 z0 sb56 Anch P] [1 p4 z0 sb19 Anch P]
+17:45:48 1   Empty  0.040   0.018   [0 p3 z0 sb57 Anch P] [1 p4 z0 sb20 Anch a]
+17:45:48 2   Empty  0.040   0.018   [1 p4 z0 sb20 Anch P] [0 p3 z0 sb57 Anch P]
+17:45:49 1   Empty  0.042   0.018   [0 p3 z0 sb58 Anch a] [1 p4 z0 sb21 Anch P]
+17:45:49 2   Empty  0.042   0.018   [0 p3 z0 sb58 Anch P] [1 p4 z0 sb21 Anch P]
+17:45:50 1   Empty  0.044   0.018   [0 p3 z0 sb59 Anch P] [1 p4 z0 sb22 Anch a]
+17:45:50 2   Empty  0.044   0.018   [0 p3 z0 sb59 Anch P] [1 p4 z0 sb22 Anch P]
+17:45:51 1   Empty  0.047   0.018   [1 p4 z0 sb23 Anch P] [0 p3 z0 sb60 Anch a]
+17:45:51 2   Empty  0.047   0.018   [0 p3 z0 sb60 Anch P] [1 p4 z0 sb23 Anch P]
+17:45:52 1   Empty  0.049   0.018   [0 p3 z0 sb61 Anch P] [1 p4 z0 sb24 Anch a]
+17:45:52 2   Empty  0.049   0.018   [0 p3 z0 sb61 Anch P] [1 p4 z0 sb24 Anch P]
+17:45:53 1   Empty  0.051   0.018   [0 p3 z0 sb62 Anch P] [1 p4 z0 sb25 Anch a]
+17:45:53 2   Empty  0.051   0.018   [0 p3 z0 sb62 Anch P] [1 p4 z0 sb25 Anch P]
+17:45:54 1   Empty  0.054   0.018   [0 p3 z0 sb63 Anch a] [1 p4 z0 sb26 Anch P]
+17:45:54 2   Empty  0.054   0.018   [0 p3 z0 sb63 Anch P] [1 p4 z0 sb26 Anch P]
+17:45:55 1   Empty  0.056   0.018   [0 p3 z0 sb64 Anch a] [1 p4 z0 sb27 Anch P]
+17:45:55 2   Empty  0.056   0.018   [0 p3 z0 sb64 Anch P] [1 p4 z0 sb27 Anch P]
+17:45:55 1   Empty  0.058   0.018   [0 p3 z0 sb65 Anch a] [1 p4 z0 sb28 Anch P]
+17:45:55 2   Empty  0.058   0.018   [0 p3 z0 sb65 Anch P] [1 p4 z0 sb28 Anch P]
+17:45:56 1   Empty  0.061   0.018   [0 p3 z0 sb66 Anch a] [1 p4 z0 sb29 Anch P]
+17:45:56 2   Empty  0.061   0.018   [1 p4 z0 sb29 Anch P] [0 p3 z0 sb66 Anch P]
+17:45:57 1   Empty  0.063   0.018   [0 p3 z0 sb67 Anch P] [1 p4 z0 sb30 Anch a]
+17:45:57 2   Empty  0.063   0.018   [0 p3 z0 sb67 Anch P] [1 p4 z0 sb30 Anch P]
+17:45:59 1   Empty  0.065   0.018   [0 p3 z0 sb68 Anch a] [1 p4 z0 sb31 Anch P]
+17:45:59 2   Empty  0.065   0.018   [0 p3 z0 sb68 Anch P] [1 p4 z0 sb31 Anch P]
+17:45:59 1   Empty  0.068   0.018   [0 p3 z0 sb69 Anch P] [1 p4 z0 sb32 Anch a]
+17:45:59 2   Empty  0.068   0.018   [0 p3 z0 sb69 Anch P] [1 p4 z0 sb32 Anch P]
+
+# =====================================================================
+# EXPANDED B: 17:47:22-17:47:45 — ExitRoom@17:47:27 影响
+# ExitRoom→engine注入SLeft对数几率→~3s后SLeft→0.98压崩坐久累积SFall(峰0.192,top=Fallen). 改动前峰0.221→改后0.192=给ExitRoom更大余量. SLeft注入逻辑未改.
+# track 格式: [tid pose z sb verdict P/a]  P=present a=absent(丢轨续算) | n_r=census真人数
+# =====================================================================
+time     n_r top    SFall   SLeft    tracks
+--------------------------------------------------------------------------------------------
+17:47:22 1   Fallen 0.188   0.016   [0 p3 z0 sb151 Anch a] [1 p4 z0 sb114 Anch P]
+17:47:22 2   Fallen 0.188   0.016   [0 p3 z0 sb151 Anch P] [1 p4 z0 sb114 Anch P]
+17:47:23 1   Fallen 0.189   0.016   [0 p3 z0 sb152 Anch a] [1 p4 z0 sb115 Anch P]
+17:47:23 2   Fallen 0.189   0.016   [0 p3 z0 sb152 Anch P] [1 p4 z0 sb115 Anch P]
+17:47:24 1   Fallen 0.190   0.016   [0 p3 z0 sb154 Anch a] [1 p4 z0 sb117 Anch P]
+17:47:24 2   Fallen 0.190   0.016   [0 p3 z0 sb154 Anch P] [1 p4 z0 sb117 Anch P]
+17:47:25 1   Fallen 0.190   0.016   [0 p3 z0 sb154 Anch a] [1 p4 z0 sb117 Anch P]
+17:47:25 2   Fallen 0.190   0.016   [0 p3 z0 sb154 Anch P] [1 p4 z0 sb117 Anch P]
+17:47:26 1   Fallen 0.191   0.016   [0 p3 z0 sb155 Anch a] [1 p4 z0 sb118 Anch P]
+17:47:26 2   Fallen 0.191   0.016   [0 p3 z0 sb155 Anch P] [1 p4 z0 sb118 Anch P]
+17:47:27 1   Fallen 0.192   0.016   [0 p3 z0 sb156 Anch P] [1 p4 z0 sb119 Anch a]
+17:47:27 2   Fallen 0.192   0.016   [0 p3 z0 sb156 Anch P] [1 p4 z0 sb119 Anch P]
+17:47:27 1   Fallen 0.193   0.016   [0 p3 z0 sb156 Anch a] [1 p4 z0 sb120 Anch P]
+17:47:27 2   Fallen 0.193   0.016   [0 p3 z0 sb156 Anch P] [1 p4 z0 sb120 Anch P]
+17:47:28 1   Fallen 0.193   0.016   [0 p3 z0 sb157 Anch a] [1 p4 z0 sb121 Anch P]
+17:47:29 1   Fallen 0.194   0.016   [1 p4 z0 sb121 Anch P] [0 p3 z0 sb158 Anch a]
+17:47:30 1   Left   0.004   0.980   [0 p3 z0 sb159 Anch a] [1 p4 z0 sb122 Anch P]
+17:47:31 1   Left   0.000   0.972   [0 p3 z0 sb160 Anch a] [1 p4 z0 sb123 Anch P]
+17:47:32 1   Empty  0.000   0.011   [1 p4 z0 sb124 Anch P] [0 p3 z0 sb161 Anch a]
+17:47:33 1   Left   0.000   0.965   [0 p3 z0 sb162 Anch a] [1 p4 z0 sb125 Anch P]
+17:47:35 1   Empty  0.000   0.011   [1 p4 z0 sb127 Anch P] [0 p3 z0 sb164 Anch a]
+17:47:35 1   Left   0.000   0.965   [0 p3 z0 sb164 Anch a] [1 p4 z0 sb128 Anch P]
+17:47:37 1   Left   0.000   0.972   [0 p3 z0 sb167 Anch a] [1 p4 z0 sb130 Anch P]
+17:47:37 1   Left   0.000   0.972   [0 p3 z0 sb167 Anch a] [1 p4 z0 sb130 Anch P]
+17:47:38 1   Left   0.000   0.972   [0 p3 z0 sb167 Anch a] [1 p4 z0 sb130 Anch P]
+17:47:39 1   Left   0.000   0.972   [0 p3 z0 sb168 Anch a] [1 p4 z101 sb131 Anch P]
+17:47:40 1   Left   0.000   0.972   [0 p3 z0 sb169 Anch a] [1 p4 z104 sb132 Anch P]
+17:47:41 1   Left   0.000   0.972   [0 p3 z0 sb170 Anch a] [1 p4 z111 sb133 Anch P]
+17:47:42 1   Left   0.000   0.972   [0 p3 z0 sb171 Anch a] [1 p4 z129 sb134 Anch P]
+17:47:43 0   Left   0.000   0.972   [0 p3 z0 sb172 Anch a] [1 p4 z129 sb135 Anch a]
+17:47:43 1   Left   0.000   0.972   [0 p3 z0 sb172 Anch a] [1 p4 z0 sb136 Anch P]
+17:47:44 1   Left   0.000   0.972   [0 p3 z0 sb173 Anch a] [1 p4 z0 sb136 Anch P]
