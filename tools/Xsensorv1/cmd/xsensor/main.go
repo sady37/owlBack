@@ -160,7 +160,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 
 	tracks := make([]adapter.TrackObs, 0, len(bases)+1)
 	for _, b := range bases {
-		tracks = append(tracks, adapter.TrackObs{RadarTrack: adapter.RadarTrack{
+		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, RadarTrack: adapter.RadarTrack{
 			TrackID: b.TrackID, // logicID↔track_id 反查源（ExitRoom 按号反查丢轨人）
 			Online:  b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
 			StillSec:  float64(b.StillBoxSec), // still-box raw 时长 → FloorGuard 纯计时器（直立折扣已移 emission 压 SFallen）
@@ -178,7 +178,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		if len(g.bedAreaIDs) > 0 {
 			fwArea = g.bedAreaIDs[0] // 自洽：合成 bed-track 的 area_id = 床声明 id → 命中 N → 压 SBed
 		}
-		tracks = append(tracks, adapter.TrackObs{RadarTrack: adapter.RadarTrack{
+		tracks = append(tracks, adapter.TrackObs{LogicID: "sleepad-bed", RadarTrack: adapter.RadarTrack{
 			Online: true, Pose: poseLying, X: 0, Y: 0, Z: 0,
 			FwAreaID: fwArea, // sleepad-only 床占用 → N 命中 → SBed（无摔判定，sleepad 看不到姿态）
 		}})

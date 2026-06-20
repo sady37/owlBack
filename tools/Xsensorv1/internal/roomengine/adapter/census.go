@@ -32,7 +32,8 @@ func DefaultTrackCensusParams() TrackCensusParams {
 // TrackObs 一帧一条 raw track（§57 步2 全量：纯雷达量）——既数 N_r 又驱动 per-track 滤波。
 // 桶二（§69）：IsReflection 由 census 本层几何算（出生位 + 墙 + 雷达坐标），不再外部标注透传。
 type TrackObs struct {
-	RadarTrack // Online/Pose/X,Y,Z/HR,RR/StillSec（X,Y 经嵌入提升供 census 关联/速度）
+	RadarTrack // Online/Pose/X,Y,Z/HR,RR/StillSec（X,Y 经嵌入提升供 census 速度/realness 几何）
+	LogicID string // tm 出生锚定的唯一逻辑身份（nearestAliveTrack 最小作功距离继承+EnterRoom 门）；census 不再按位置重造 int logicID，直接引用此
 }
 
 type censusTrack struct {
@@ -55,21 +56,29 @@ type censusTrack struct {
 // TrackCensus 房内多 track 集：最小作功 logicID + 每 track realness + N_r。
 type TrackCensus struct {
 	p      TrackCensusParams
-	nextID int
-	tracks map[int]*censusTrack
+	tracks map[string]*censusTrack // 键=tm 出生 LogicID（唯一身份；census 不再自发 int 号）
 	tick   int64
 }
 
 // NewTrackCensus 建空 census。
 func NewTrackCensus(p TrackCensusParams) *TrackCensus {
-	return &TrackCensus{p: p, tracks: map[int]*censusTrack{}}
+	return &TrackCensus{p: p, tracks: map[string]*censusTrack{}}
 }
 
 // Update 一帧推进：① 最小作功距离关联 raw→logicID；② track 数==2 算 co-existence ρ；
 // ③ 各 track 译软证据喂 RealnessTrack 前向滤波（§9）。速度按 cm/s（位移/dt，帧间隔非恒 1s）。
 func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, entrances []Rect) {
 	c.tick++
-	ids := c.associate(obs, nowMs, entrances)
+	// 身份直接引用 tm 出生 LogicID（§G六 关联在 tm nearestAliveTrack 已做,census 不重造）；
+	//   首次见的 LogicID 初始化 censusTrack（出生窗 realness 锚:doorD/birthXY/birthMs）。
+	ids := make([]string, len(obs))
+	for i, o := range obs {
+		ids[i] = o.LogicID
+		if _, ok := c.tracks[ids[i]]; !ok {
+			dd := birthDoorDist(o.X, o.Y, entrances)
+			c.tracks[ids[i]] = &censusTrack{rt: belief.NewRealnessTrack(dd), birthX: o.X, birthY: o.Y, birthMs: nowMs, doorD: dd, x: o.X, y: o.Y, lastMs: nowMs}
+		}
+	}
 
 	// 帧间速度（cm/s）→ co-existence ρ。出生/同帧（dt≤0）= 无速度基准 → 0。
 	speeds := make([]float64, len(obs))
@@ -80,7 +89,7 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 		}
 	}
 	rho, coexist := 0.0, 0.0
-	laterID := -1
+	laterID := ""
 	if len(obs) == 2 { // §G六：mirror co-existence 仅 track 数==2（1=永发 / 3+=不处理 → coexist 0）
 		rho = speedSync(speeds[0], speeds[1])
 		coexist = 1
@@ -130,7 +139,7 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 					verdict = "ghost"
 				}
 				zap.L().Info("birth_verdict",
-					zap.Int("logic_id", ids[i]),
+					zap.String("logic_id", ids[i]),
 					zap.String("verdict", verdict),
 					zap.Float64("p_real", pr), zap.Float64("p_mirror", t.rt.PMirror()),
 					zap.Bool("is_refl", t.isRefl), zap.Float64("sep", t.fSep),
@@ -148,31 +157,6 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 	}
 }
 
-// associate 最小作功距离关联（贪心最近邻；≤2 track 足够，多 track 交叉的最优指派后续再说）。
-func (c *TrackCensus) associate(obs []TrackObs, nowMs int64, entrances []Rect) []int {
-	ids := make([]int, len(obs))
-	used := map[int]bool{}
-	for i, o := range obs {
-		best, bestD := -1, math.MaxFloat64
-		for id, t := range c.tracks {
-			if used[id] {
-				continue
-			}
-			if d := math.Hypot(float64(o.X-t.x), float64(o.Y-t.y)); d < bestD {
-				best, bestD = id, d
-			}
-		}
-		if best >= 0 && bestD <= float64(c.p.AssocCm) {
-			ids[i], used[best] = best, true
-			continue
-		}
-		c.nextID++
-		dd := birthDoorDist(o.X, o.Y, entrances)
-		c.tracks[c.nextID] = &censusTrack{rt: belief.NewRealnessTrack(dd), birthX: o.X, birthY: o.Y, birthMs: nowMs, doorD: dd, x: o.X, y: o.Y, lastMs: nowMs}
-		ids[i], used[c.nextID] = c.nextID, true
-	}
-	return ids
-}
 
 // Nr 房内真人数 = 本 tick 在场且 PReal≥0.5 的 track 数（realness 后验软阈；排 Mirror ghost）。
 //
@@ -194,7 +178,7 @@ func (c *TrackCensus) Nr() int {
 
 // TrackState 一条 track 对 engine 的读出（§57 步2：身份 + 末帧 obs + realness + 是否在场）。
 type TrackState struct {
-	LogicID      int
+	LogicID      string   // tm 出生唯一身份（与 tm.TrackState.LogicID 同一标识）
 	Obs          TrackObs // 在场=本帧 / 消失=末帧（喂 per-track 滤波发射；消失态走 blind 续存仅 Predict）
 	PReal        float64  // 真人后验（ghost→低）；engine OR 聚合只算 PReal≥0.5 的真人 track
 	Present      bool     // 本 tick 匹配到 raw（false=消失，engine 据此走 blind 续存 Predict-only）
@@ -220,7 +204,7 @@ func (c *TrackCensus) Tracks() []TrackState {
 }
 
 // Drop 移除一条 track（engine 在其 S^(i) 被吸收到 Left/Empty 后调用；非 TTL，状态驱动）。
-func (c *TrackCensus) Drop(logicID int) { delete(c.tracks, logicID) }
+func (c *TrackCensus) Drop(logicID string) { delete(c.tracks, logicID) }
 
 // birthDoorDist 出生地→最近 enter 区(门)距离 cm；无 enter 区 → -1（§9.3① 跳过近门似然，
 //

@@ -59,7 +59,7 @@ type Frame struct {
 
 // TrackForensic 单 track 的 DBN 内部量（forensic 暴露，X 光全切片用，不参与裁决）。
 type TrackForensic struct {
-	LogicID       int
+	LogicID       string
 	Present       bool
 	PReal         float64 // 真人后验（realness 轴；ghost→低）
 	PMirror       float64 // 镜像后验
@@ -84,15 +84,15 @@ type Room struct {
 	cp            *belief.Coupling
 	em            *belief.Emission
 	census        *adapter.TrackCensus
-	filters       map[int]*belief.Filter       // 每 logicID 一份 S/B 联合滤波（§A.3② 隐维复制）
-	deciders      map[int]*belief.Decider      // 每 logicID 一份持续计时裁决
-	floorGuards   map[int]*belief.FloorGuard   // 每 logicID 一份 FN-safe 兜底（总时长 floor，契约其十五）
-	escalators    map[int]*RepeatFallEscalator // 每 logicID 一份重复摔残余器（§J；第一次归 firmware，只提前重复摔）
+	filters       map[string]*belief.Filter       // 每 logicID(tm 出生 string) 一份 S/B 联合滤波（§A.3② 隐维复制）
+	deciders      map[string]*belief.Decider      // 每 logicID 一份持续计时裁决
+	floorGuards   map[string]*belief.FloorGuard   // 每 logicID 一份 FN-safe 兜底（总时长 floor，契约其十五）
+	escalators    map[string]*RepeatFallEscalator // 每 logicID 一份重复摔残余器（§J；第一次归 firmware，只提前重复摔）
 	nb            int
 	p             adapter.Params
-	lastMarg      belief.Vector // 末帧房间代表 track 的 S 边缘（MarginalS 读出）
-	realStreak    map[int]int   // 每 logicID 连续在场真人帧数（步4 hand-off：confirmed=streak≥K，抗噪声 churn）
-	prevConfirmed map[int]bool  // 上 tick 已确认真人(streak≥K)的 logicID 集（算 lost）
+	lastMarg      belief.Vector  // 末帧房间代表 track 的 S 边缘（MarginalS 读出）
+	realStreak    map[string]int // 每 logicID 连续在场真人帧数（步4 hand-off：confirmed=streak≥K，抗噪声 churn）
+	prevConfirmed map[string]bool // 上 tick 已确认真人(streak≥K)的 logicID 集（算 lost）
 	// F1 独居连续计时（跨 tick，与 realStreak 同层）：真人占用==1 连续起点 ms（0=当前非独居）。
 	//   占用判据 = PReal≥0.5 ∧ S∉{Empty,Left}（含 blind 续存的 faller，filter 后的 MarginalS），
 	//   **非** census.Nr() present-only——否则独居者摔进 blind 时占用掉 0 误清零计时（lost-fall FN）。
@@ -110,14 +110,14 @@ func NewRoom(geom []belief.BedGeom, nb int) *Room {
 		cp:            belief.NewCoupling(geom),
 		em:            belief.NewEmission(geom),
 		census:        adapter.NewTrackCensus(adapter.DefaultTrackCensusParams()),
-		filters:       map[int]*belief.Filter{},
-		deciders:      map[int]*belief.Decider{},
-		floorGuards:   map[int]*belief.FloorGuard{},
-		escalators:    map[int]*RepeatFallEscalator{},
+		filters:       map[string]*belief.Filter{},
+		deciders:      map[string]*belief.Decider{},
+		floorGuards:   map[string]*belief.FloorGuard{},
+		escalators:    map[string]*RepeatFallEscalator{},
 		nb:            nb,
 		p:             adapter.DefaultParams(),
-		realStreak:    map[int]int{},
-		prevConfirmed: map[int]bool{},
+		realStreak:    map[string]int{},
+		prevConfirmed: map[string]bool{},
 		kappaLedger:   make([]bedKappaLedger, nb),
 	}
 }
@@ -255,11 +255,11 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		}
 	}
 
-	curReal := map[int]float64{} // 本 tick 在场真人(PReal≥0.5) logicID→PReal（算 lost/gained）
-	var dropIDs []int
+	curReal := map[string]float64{} // 本 tick 在场真人(PReal≥0.5) logicID→PReal（算 lost/gained）
+	var dropIDs []string
 	var droppedTrackIDs []int // 本帧状态驱动 drop 的 firmware track_id（回传 tm evict，停 re-feed churn）
 	var firedTrackIDs []int   // 本帧 fall fire 的 firmware track_id（回传 tm 复位 still-box）
-	var firedLogicIDs []int // 本帧 fall fire 的 census logicID（就地复位 belief）
+	var firedLogicIDs []string // 本帧 fall fire 的 logicID（就地复位 belief）
 	realOccupancy := 0  // F1 本 tick 真人占用数（PReal≥0.5 ∧ S∉{E,L}）→ 末更 alone-streak
 	lostExited := false // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）→ Unit timer cancel
 	for _, ts := range tracks {
@@ -412,7 +412,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	}
 
 	// 步4 hand-off 信号（§64 噪声防线：连续 K 帧真人才算确认，抗噪声 churn 造假 lost/gain）。
-	newStreak := make(map[int]int, len(curReal))
+	newStreak := make(map[string]int, len(curReal))
 	for id := range curReal {
 		newStreak[id] = r.realStreak[id] + 1 // 连续在场真人 → 累计；断了 → 不在 newStreak（归零）
 	}
@@ -429,7 +429,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		}
 	}
 	r.realStreak = newStreak
-	r.prevConfirmed = map[int]bool{}
+	r.prevConfirmed = map[string]bool{}
 	for id, s := range newStreak {
 		if s >= arrivalConfirmFrames {
 			r.prevConfirmed[id] = true
@@ -517,7 +517,7 @@ func (r *Room) aloneMinAsOf(nowMs int64) float64 {
 }
 
 // dropTrack 移除一条 track 的全部 per-logicID 状态（filter/decider/floor + census）。状态驱动，非 TTL。
-func (r *Room) dropTrack(id int) {
+func (r *Room) dropTrack(id string) {
 	delete(r.filters, id)
 	delete(r.deciders, id)
 	delete(r.floorGuards, id)

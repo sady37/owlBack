@@ -815,6 +815,7 @@ func (tm *TrackManager) SetSleepadInBedCount(count int) {
 // SnapshotTrackStatuses 返回 base 列表，engine 层进一步 enrich 成 TrackStatus 再 publish。
 type TrackStatusBase struct {
 	TrackID          int
+	LogicID          string // tm 出生锚定唯一逻辑身份（透传给 census/engine 作身份键，下游不再按位置重造）
 	DeviceAddr       string
 	RoomID           string
 	Verdict          TrackVerdict
@@ -860,6 +861,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 
 		base := TrackStatusBase{
 			TrackID:      ts.TrackID,
+			LogicID:      ts.LogicID,
 			DeviceAddr:   ts.DeviceAddr,
 			RoomID:       ts.RoomID,
 			Verdict:      ts.Verdict,
