@@ -130,13 +130,13 @@ type dbnRouter struct {
 	logger   *zap.Logger
 }
 
-func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(trackID int, atMs int64) float64) []int {
+func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(trackID int, atMs int64) float64) (fired, dropped []int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	g := d.geom[roomID]
 	if g == nil {
-		return nil // 无信号源(无 layout 无 sleepad)→ 不进 DBN
+		return nil, nil // 无信号源(无 layout 无 sleepad)→ 不进 DBN
 	}
 
 	// B 轴读数 = room 级权威 bed 状态(sleepad+radar 床事件融合，带时戳)。治本 bed-reading：
@@ -199,7 +199,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 
 	u := d.units[d.roomUnit[roomID]]
 	if u == nil {
-		return nil // room 不属任何 unit（无 layout placeholder）
+		return nil, nil // room 不属任何 unit（无 layout placeholder）
 	}
 	fr := u.Tick(roomID, fi) // 多房编排：算 ρ_xroom（兄弟房守恒+时间窗）→ Room.Tick（单房无兄弟 ρ=0）
 	rho := u.LastRho(roomID)
@@ -249,7 +249,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Any("s_dist", sDist), zap.Any("target", raw), zap.Any("dbn", dbn),
 		zap.Any("walls", walls), zap.Int("radar_x", g.radarPos.X), zap.Int("radar_y", g.radarPos.Y))
 
-	return fr.FiredTrackIDs // fall fire 的 track_id → Engine 复位 still-box（belief 已就地复位）
+	return fr.FiredTrackIDs, fr.DroppedTrackIDs // fired→复位 still-box；dropped(确认离场/空)→evict track,停 coast re-feed
 }
 
 // bedReadingName B 轴 sleepad 读数名（X 光可读）。

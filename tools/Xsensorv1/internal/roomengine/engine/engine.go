@@ -50,6 +50,11 @@ type Frame struct {
 	// FiredTrackIDs 本帧 fall fire 的 firmware track_id：回传 track_manager 复位 still-box（跨层 StillSec 在 tm），
 	//   与本帧已就地复位的 belief 配套——fall fire = 该 track 推断 episode 结束 → 从 0 热机重判。
 	FiredTrackIDs []int
+	// DroppedTrackIDs 本帧 belief 状态驱动 drop（确认离场/空：!Present ∧ SLeft+SEmpty≥absorbedThresh）的 firmware
+	//   track_id：回传 track_manager 立即 evict，停止 12s coast 期对已离场 track 的 re-feed（否则 census 每帧重发
+	//   新 logicID = churn）。与 FiredTrackIDs 互斥（fire⇒SFallen 高⇒不进 drop）。闪失重捕的 coast 不受影响
+	//   （无离场证据 belief 不 drop）。
+	DroppedTrackIDs []int
 }
 
 // TrackForensic 单 track 的 DBN 内部量（forensic 暴露，X 光全切片用，不参与裁决）。
@@ -143,7 +148,8 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 
 	curReal := map[int]float64{} // 本 tick 在场真人(PReal≥0.5) logicID→PReal（算 lost/gained）
 	var dropIDs []int
-	var firedTrackIDs []int // 本帧 fall fire 的 firmware track_id（回传 tm 复位 still-box）
+	var droppedTrackIDs []int // 本帧状态驱动 drop 的 firmware track_id（回传 tm evict，停 re-feed churn）
+	var firedTrackIDs []int   // 本帧 fall fire 的 firmware track_id（回传 tm 复位 still-box）
 	var firedLogicIDs []int // 本帧 fall fire 的 census logicID（就地复位 belief）
 	realOccupancy := 0  // F1 本 tick 真人占用数（PReal≥0.5 ∧ S∉{E,L}）→ 末更 alone-streak
 	lostExited := false // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）→ Unit timer cancel
@@ -266,6 +272,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		//   → 离场确认 → drop（非 TTL，cancel 非 fire）。离房趋势已折进 SLeft 后验，不再单列 bool 门。
 		if !ts.Present && mS[belief.SLeft]+mS[belief.SEmpty] >= absorbedThresh {
 			dropIDs = append(dropIDs, ts.LogicID)
+			droppedTrackIDs = append(droppedTrackIDs, ts.Obs.TrackID) // 回传 tm evict：停 12s coast re-feed
 		}
 	}
 	for _, id := range dropIDs {
@@ -327,6 +334,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		r.deciders[id] = belief.NewDecider()
 	}
 	fr.FiredTrackIDs = firedTrackIDs
+	fr.DroppedTrackIDs = droppedTrackIDs
 	return fr
 }
 

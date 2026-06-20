@@ -2321,6 +2321,17 @@ func (tm *TrackManager) ResetStillBox(trackID int) {
 	ts.History = ts.History[:0]
 }
 
+// EvictTrack 立即删除一条 track（belief 状态驱动 drop 回传：确认离场/空）。停止 12s coast 期对已离场 track 的
+// re-feed——否则 belief 已 drop 其 logicID 但 SnapshotTrackStatuses 仍每帧把它当 base 发出 → census 无对应
+// logicID → 每帧重发新号 = churn。只删 tracks/outputs；lostExitInfo/recentRadarEvents 保留按 age 自然淘汰
+// （in-flight 邻居 handoff / 离房证据仍可能被 belief 查）。幂等(delete 缺失 key 安全)。
+func (tm *TrackManager) EvictTrack(trackID int) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	delete(tm.tracks, trackID)
+	delete(tm.outputs, trackID)
+}
+
 // updateContinuousIndicators 每帧维护 StillBox（静止无移动）检测 + Kalman birth-coherence 指标。
 //
 //  1. StillBox（静止无移动）检测（box 判据，2026-05-03 由 byte-equal 改为 box）：
