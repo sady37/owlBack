@@ -48,13 +48,18 @@ func NewFloorGuard() *FloorGuard { return &FloorGuard{} }
 // Step 一帧兜底判定（吃整条 obs，自抽派生量——engine 只 OR verdict 不碰 obs）。有效 still 时长
 // （obs.StillSec，still raw 时长）≥ per-area 阈 → floorFire。track 消失帧不调(无观测);present 帧每帧调。
 func (g *FloorGuard) Step(obs Observation) bool {
-	contactInBed := false // 仅**本 track 所在床**(NearBedMask)的 InBed 才豁免——他人在床不豁免本摔者
-	for j, br := range obs.Sleepad {
-		if br == BedInBed && obs.NearBedMask[j] {
-			contactInBed = true
-			break
+	// 接触豁免收窄到**唯一一张近床且 InBed**（FN-safe 二值）：近多张床=床归属分不清（NearBedMask 非互斥，
+	// 摔者同时在两床 100cm 内 → 他人在床会误豁免本摔者）→ 不豁免照报。1 张近床 = 归属确定（你说的"1张床100%"）。
+	// 残留：摔倒紧贴某占用床(仅近这一张)仍会豁免——雷达分不清"我在床"vs"我摔在床边"的固有二义（belief Ψ 同此，
+	// 靠 a_j 概率软化），floor 二值兜底取保守不细分。多床二义这条已堵。
+	nearCount, nearJ := 0, -1
+	for j, near := range obs.NearBedMask {
+		if near {
+			nearCount++
+			nearJ = j
 		}
 	}
+	contactInBed := nearCount == 1 && nearJ < len(obs.Sleepad) && obs.Sleepad[nearJ] == BedInBed
 	switch {
 	case obs.AreaType == areaDeny:
 		return false // 静态反射 → realness 管
