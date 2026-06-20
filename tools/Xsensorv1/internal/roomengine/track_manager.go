@@ -2355,6 +2355,16 @@ func (tm *TrackManager) EvictTrack(trackID int) {
 	defer tm.mu.Unlock()
 	delete(tm.tracks, trackID)
 	delete(tm.outputs, trackID)
+	// 生命周期 purge（logicID 根治第一刀）：track 确认离场 → 连带清该 track_id 的离场证据。
+	// 否则 ExitRoom（firmware 常不带 track_id → 默认 0）+ trend 快照按 recentBufferMs(5min) 滞留，
+	// track_id 复用时（A 离房 0 / B 在床 0）被下一占用者经 ExitLogOdds 误翻 → 误抬 SLeft → churn/二义 lost-fall FN。
+	// 触发离场的那条 ExitRoom 就此被它造成的 drop 消费掉，绑 coast 生命周期而非死等 age。
+	delete(tm.lostExitInfo, trackID)
+	for k, e := range tm.recentRadarEvents {
+		if e.TrackID == trackID {
+			delete(tm.recentRadarEvents, k)
+		}
+	}
 }
 
 // updateContinuousIndicators 每帧维护 StillBox（静止无移动）检测 + Kalman birth-coherence 指标。
