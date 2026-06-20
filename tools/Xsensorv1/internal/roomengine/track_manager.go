@@ -53,10 +53,11 @@ type TrackFrame struct {
 
 // TrackManager 管理一个房间内所有 track 的生命周期
 type TrackManager struct {
-	mu      sync.Mutex
-	roomID  string
-	grid    *RoomGrid
-	tracks  map[int]*TrackState
+	mu         sync.Mutex
+	roomID     string
+	grid       *RoomGrid
+	bedAreaIDs []int // firmware 床区 area_id（baseline type2/5）→ radar InBed 判定用 area_id 非 cell（排 sofa）
+	tracks     map[int]*TrackState
 	outputs map[int]*TrackOutput
 
 	// lastRealTrackByDevice：每雷达设备最近一次本房观测到"真 track"的 ms（key=源 device_addr）。
@@ -198,10 +199,11 @@ var defaultBedsideFallCfg = BedsideFallConfig{
 }
 
 // NewTrackManager 创建 track 管理器
-func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
+func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackManager {
 	return &TrackManager{
 		roomID:                  roomID,
 		grid:                    grid,
+		bedAreaIDs:              bedAreaIDs,
 		tracks:                  make(map[int]*TrackState),
 		outputs:                 make(map[int]*TrackOutput),
 		lastRealTrackByDevice:   make(map[string]int64),
@@ -585,6 +587,19 @@ func (tm *TrackManager) sleepadOffBed(nowMs int64) bool {
 // BedConfidence=90(sleepad 接触式)/30(radar-only 降档)/0(无床数据→bedAdapter Fresh=false 不喂)。
 // 供 belief shadow P5:bedAdapter→ObsBedOccupied 占用概率压 SFallen(无 radar-on-bed 要求,R5-clean 接触占用非 pose/z)。
 // 自锁(beliefShadowTick 不持 tm.mu)。
+// fwIsBed firmware area_id 命中声明的床区（baseline type2/5,设备真值）。0/255=声明区外。
+func (tm *TrackManager) fwIsBed(areaID int) bool {
+	if areaID == 0 || areaID == 255 {
+		return false
+	}
+	for _, id := range tm.bedAreaIDs {
+		if id != 0 && id != 255 && areaID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (tm *TrackManager) BedOccupancyState(nowMs int64) card.BedState {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -852,16 +867,16 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			base.Verdict = VerdictAnchored
 		}
 		if c := tm.grid.CellAt(px, py); c != nil {
-			base.CellAreaType = c.Belief[0].Type
+			base.CellAreaType = c.Belief[0].Type // cell 仍喂 tFloor 阈 + sit/bath/active redirect（含 sofa 的 lying 区，故不换 baseline）
 			if c.Belief[0].Type == AreaEnter {
 				base.EnterTarget = c.EnterTarget
 			}
-			// qinglan 补强：present track 连续在床区(AreaBed=position 在 layout 床区)= radar 连续 InBed 证据，
-			//   刷新 lastRadarInBedMs（不只离散 InBed 事件——事件常缺前置/窗裁）。sleepace 连续 bed_status 的对称项。
-			//   离床后人移出床区→不再刷→LeftBed 胜；跌床落床边(非 AreaBed)→不刷→LeftBed→Ψ→SFallen。
-			if base.Present && c.Belief[0].Type == AreaBed {
-				tm.lastRadarInBedMs = nowMs
-			}
+		}
+		// present track 在 firmware 床区 = radar 连续 InBed 证据，刷新 lastRadarInBedMs（事件常缺前置/窗裁，连续刷补上）。
+		//   用 **firmware area_id（baseline type2/5，设备真值）** 而非 cell AreaBed：cell 含 sofa(lying 区)会把沙发误判成床；
+		//   firmware 床区只真床。离床后 area_id 变→不刷→LeftBed 胜；跌床落床边(area_id 非床)→不刷→LeftBed→Ψ→SFallen。
+		if base.Present && tm.fwIsBed(ts.LastFwAreaID) {
+			tm.lastRadarInBedMs = nowMs
 		}
 		// 离房趋势快照：仅丢轨首帧算一次（30s History 足够），冻结喂 ExitLogOdds（track 12s 驱逐后仍存）。
 		//   在场（含重新抓到）→ 清陈旧快照。ExitLogOdds 只被 belief 对 not-present track 查，在场轨的残留无害。

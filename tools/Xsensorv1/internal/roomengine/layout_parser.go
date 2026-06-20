@@ -303,28 +303,80 @@ func parseRadarMount(geom json.RawMessage, outerAngle *float64, device json.RawM
 	return m, nil
 }
 
-// parseRadarBedAreas 从 device.iot.radar.areas[] 抽 areaType∈{2床,5监护床} 的 objectId→areaId 映射。
-// 协议 §3.4.3：0无效/1自定义/2床/3干扰/4门/5监护床。areaId 是固件地面真值，不随 canvas drift。
+// parseRadarBedAreas 抽 areaType∈{2床,5监护床} 的床区，objectId → **firmware area_id** 映射。
+// 协议 §3.4.3：0无效/1自定义/2床/3干扰/4门/5监护床。
+//
+// 关键（way3，2026-06-20）：firmware track 上报的 area_id 用的是**设备自己的槽位号**（radar.baseline.areas，
+// query 回来的真值），不是 canvas 声明号（radar.areas，FE 内部号、设备不报）。同一床两边同顶点、号不同
+// （实测 canvas=8 / firmware=1）。故：canvas 区经 objectId 关联 cfg.Beds，再经**顶点 bbox**关联到 baseline
+// 同顶点区 → 取其 firmware 号。两边都是 radar h,v 帧，bbox 精确匹配、不碰 canvas x,y 转换。
+// baseline 缺/无匹配 → 回退 canvas 号（旧行为，至少不崩）。
 func parseRadarBedAreas(device json.RawMessage) map[string]int {
 	out := map[string]int{}
+	type vertex struct {
+		H int `json:"h"`
+		V int `json:"v"`
+	}
+	type area struct {
+		AreaID   int      `json:"areaId"`
+		AreaType int      `json:"areaType"`
+		ObjectID string   `json:"objectId"`
+		Vertices []vertex `json:"vertices"`
+	}
 	var w struct {
 		Iot struct {
 			Radar struct {
-				Areas []struct {
-					AreaID   int    `json:"areaId"`
-					AreaType int    `json:"areaType"`
-					ObjectID string `json:"objectId"`
-				} `json:"areas"`
+				Areas    []area `json:"areas"`
+				Baseline struct {
+					Areas []area `json:"areas"`
+				} `json:"baseline"`
 			} `json:"radar"`
 		} `json:"iot"`
 	}
 	if json.Unmarshal(device, &w) != nil {
 		return out
 	}
-	for _, a := range w.Iot.Radar.Areas {
-		if a.AreaType == 2 || a.AreaType == 5 {
-			out[a.ObjectID] = a.AreaID
+	type bbox struct{ minH, minV, maxH, maxV int }
+	boxOf := func(vs []vertex) (bbox, bool) {
+		if len(vs) == 0 {
+			return bbox{}, false
 		}
+		b := bbox{vs[0].H, vs[0].V, vs[0].H, vs[0].V}
+		for _, v := range vs[1:] {
+			if v.H < b.minH {
+				b.minH = v.H
+			}
+			if v.H > b.maxH {
+				b.maxH = v.H
+			}
+			if v.V < b.minV {
+				b.minV = v.V
+			}
+			if v.V > b.maxV {
+				b.maxV = v.V
+			}
+		}
+		return b, true
+	}
+	fwByBox := map[bbox]int{}
+	for _, a := range w.Iot.Radar.Baseline.Areas {
+		if a.AreaType == 2 || a.AreaType == 5 {
+			if b, ok := boxOf(a.Vertices); ok {
+				fwByBox[b] = a.AreaID
+			}
+		}
+	}
+	for _, a := range w.Iot.Radar.Areas {
+		if a.AreaType != 2 && a.AreaType != 5 {
+			continue
+		}
+		id := a.AreaID // 回退：canvas 号
+		if b, ok := boxOf(a.Vertices); ok {
+			if fw, hit := fwByBox[b]; hit {
+				id = fw // 优先 firmware 真号（顶点对上 baseline）
+			}
+		}
+		out[a.ObjectID] = id
 	}
 	return out
 }
