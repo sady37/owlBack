@@ -215,8 +215,19 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 			for len(beds) < nb {
 				beds = append(beds, adapter.Rect{}) // 补 nominal 床(radar-less 无几何意义)
 			}
+			// bedAreaIDs 与 beds 同序：有 layout 取 firmware 声明 area_id；sleepad-only 房无雷达声明区，
+			//   给虚拟非零 id 让合成 bed-track 自洽命中 N（否则 sleepad InBed 无 SBed boost → 误判摔）。
+			bedAreaIDs := make([]int, nb)
+			for j := 0; j < nb; j++ {
+				if j < len(cfg.BedAreaIDs) && cfg.BedAreaIDs[j] != 0 {
+					bedAreaIDs[j] = cfg.BedAreaIDs[j]
+				} else if !hasLayout {
+					bedAreaIDs[j] = j + 1
+				}
+			}
 			router.geom[roomID] = &roomGeom{
 				beds:           beds,
+				bedAreaIDs:     bedAreaIDs,
 				walls:          wallsFromPolygon(cfg.WallPolygon),
 				entrances:      rectsFrom(cfg.Enters),
 				radarPos:       adapter.Point{X: cfg.Radar.Center.X, Y: cfg.Radar.Center.Y},

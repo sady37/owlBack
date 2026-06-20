@@ -109,6 +109,7 @@ const poseLying = 6
 // roomGeom 一房的 config-static 几何（RegisterRoom 时从 RoomConfig 派生，OnRoomFrame 构造 FrameInput 用）。
 type roomGeom struct {
 	beds           []adapter.Rect
+	bedAreaIDs     []int // 与 beds 一一对齐：firmware radar.areas 床 area_id（N 判定）
 	walls          []adapter.Rect
 	entrances      []adapter.Rect // §9.3① enter 区（门，areaType=4）→ 出生地距门 D 软发射
 	radarPos       adapter.Point
@@ -162,15 +163,20 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 
 			AreaType: int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
 			RoomType: d.roomType[roomID],  // 房型 → still CDF room×cell 保守合并(bathroom 未画 toilet 也用 bathsec)
+			FwAreaID: b.FwAreaID,          // firmware area_id（present=本帧/lost=冻结）→ 命中床 areaId = N（在床）
 		}})
 	}
 	// sleepad-only 房(无雷达 track)：InBed 合成一条 bed-track 作 B 轴载体(engine.Room track-centric，
 	//   无 track 无载体)。pose=Lying + 床占用 → S=Bed（无摔判定，sleepad 看不到姿态）；
 	//   LeftBed → 不合成 → 上一帧 bed-track 缺席 → blind→S→Left → LostReal hand-off 源（人离本房床去隔壁）。
 	if g.radarLess && reading == belief.BedInBed {
+		fwArea := 0
+		if len(g.bedAreaIDs) > 0 {
+			fwArea = g.bedAreaIDs[0] // 自洽：合成 bed-track 的 area_id = 床声明 id → 命中 N → 压 SBed
+		}
 		tracks = append(tracks, adapter.TrackObs{RadarTrack: adapter.RadarTrack{
 			Online: true, Pose: poseLying, X: 0, Y: 0, Z: 0,
-			AreaType: 2, // 合成 bed-track：AreaBed → 压向 SBed（sleepad-only 床占用，无摔判定）
+			FwAreaID: fwArea, // sleepad-only 床占用 → N 命中 → SBed（无摔判定，sleepad 看不到姿态）
 		}})
 	}
 
@@ -188,6 +194,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		Tracks:     tracks,
 		Sleepads:   sleepads,
 		Beds:       g.beds,
+		BedAreaIDs: g.bedAreaIDs,
 		Covers:     covers,
 		Onbed:      onbed,
 		Overlap:    overlap,

@@ -32,9 +32,14 @@ type Observation struct {
 	// 在床误豁免地板上的摔者。长 numBeds，与 Sleepad 同索引。
 	NearBedMask []bool
 	// AreaType track 当前 cell.Belief[0].Type（CellAreaType 每帧读活的，经 seam）。FN-safe **正向压制**：
-	// bed/sit/toilet 区 → 抬对应静止态压 Fallen（redirect）。权重有上限（守门1：低到 still 久静能翻，不锁死）。
-	// Bed=2/Sit=3/Active=4/Deny=5/Shower=6/Toilet=7（同 roomengine.AreaType）。
+	// sit/toilet 区 → 抬对应静止态压 Fallen（redirect）。权重有上限（守门1：低到 still 久静能翻，不锁死）。
+	// Sit=3/Active=4/Deny=5/Shower=6/Toilet=7（同 roomengine.AreaType）。床(Bed)这一支已移出 → RadarBedHitMask 驱动。
 	AreaType int
+
+	// RadarBedHitMask 逐床 N：firmware area_id 命中该床声明的 areaId（= 雷达判"人在该床上"）。长 numBeds。
+	// 替代旧 cell-area 床判定：cell 几何随 canvas drift 误判，firmware area_id 是雷达地面真值。
+	// emission 床 boost = lArea × 该床 covers(M) × N（命中才抬 SBed）。离线 = 全 false。
+	RadarBedHitMask []bool
 
 	// RoomType 房型(card.RoomType: 1=Bathroom)：still 高斯 CDF 的 (μ,σ) 与 cell area **保守合并**(取 max μ)——
 	// bathroom 房即使 cell 未画 toilet(落 unknown) 也至少用 bathsec(18min)，避免激进 default(12min) 过早误报。

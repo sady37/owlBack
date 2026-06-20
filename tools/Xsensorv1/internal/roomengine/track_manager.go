@@ -791,6 +791,7 @@ type TrackStatusBase struct {
 	Pose             int
 	StillBoxSec      int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动）→ FloorGuard 纯计时器（直立折扣已移 emission）
 	CellAreaType     AreaType
+	FwAreaID         int // firmware area_id（present=本帧；lost=冻结末值）→ adapter N 床判定
 	EnterTarget      string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
 	MoveActive       bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
 	Present          bool   // 本帧是否被真实观测（LastObservedMs == nowMs）；false=漏帧/丢轨 → DBN 走 blind 续存
@@ -840,6 +841,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			MoveActive:   ts.StillBoxRunStart == 0 || ts.LastObservedMs == nowMs,
 			Present:      ts.LastObservedMs == nowMs,
 			SleepadInBed: sleepadInBed,
+			FwAreaID:     ts.LastFwAreaID,
 		}
 		// StillBoxSec=raw box run 秒（30s 滚动 50×50 抗抖动）→ FloorGuard 纯计时器。直立折扣已移 emission（压 SFallen）。
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
@@ -1047,6 +1049,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			ts.LastRawH = f.RawH
 			ts.LastRawV = f.RawV
 			ts.LastRawZ = f.RawZ
+			ts.LastFwAreaID = f.AreaType
 			quality = ts.Score
 			dtSec = 1
 		} else {
@@ -1085,6 +1088,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			ts.LastRawH = f.RawH
 			ts.LastRawV = f.RawV
 			ts.LastRawZ = f.RawZ
+			ts.LastFwAreaID = f.AreaType
 		}
 
 		// 维度 B: 历史流（每帧无条件）

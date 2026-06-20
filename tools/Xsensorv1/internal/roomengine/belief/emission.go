@@ -41,7 +41,6 @@ const zStandCm = 80
 
 // roomengine.AreaType 枚举值（belief 不 import roomengine，本地常量对齐）。
 const (
-	areaBed    = 2
 	areaSit    = 3
 	areaActive = 4
 	areaEnter  = 1
@@ -65,7 +64,7 @@ const roomBathroom = 1
 // stillMuSigma 正常停留 (μ,σ) 秒 = cell area 与 room **保守合并**（取 μ 更大 = 更晚报 = 低 FP，§H）。
 //
 //	解决「bathroom 房未画 toilet → cell 落 unknown → 用激进 default 过早误报」：bathroom 房至少按 bathsec 兜。
-//	bed 区(areaBed)的 cell 走 default(unknown)——床边跌倒靠接触轴(sleepad InBed 压/LeftBed 放行)区分，不改 areaType。
+//	bed 区(床, areaType=2)的 cell 走 default(unknown)——床边跌倒靠接触轴(sleepad InBed 压/LeftBed 放行)区分，不改 areaType。
 func stillMuSigma(areaType, roomType int) (mu, sigma float64) {
 	cMu, cSig := cellMuSigma(areaType)
 	rMu, rSig := roomMuSigma(roomType)
@@ -155,12 +154,18 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 		addLogLk(&logS, Vector{SBed: e.p.lPose, SFallen: e.p.lPose}, w, SBed, SFallen)
 	}
 
+	// 床（N×M）：firmware area_id 命中床 areaId（N=1）才抬 SBed，权重 = 该床 covers（M，§F per-bed 不取 max）。
+	//   N 是雷达地面真值（不随 canvas drift），替代旧 cell area=Bed 判定。多床命中各用自己床的 covers。
+	for j, hit := range o.RadarBedHitMask {
+		if hit && j < len(e.geom) {
+			addLogLk(&logS, Vector{SBed: e.p.lArea}, e.geom[j].Covers, SBed)
+		}
+	}
+
 	// area_type 正向压制（每帧读活的 cell）：FN-safe 默认偏 Fallen，由位置正向证据 redirect 到对应静止态。
-	//   bed→SBed / sit→SSit / toilet·shower→SBath+SSit / active·enter→SOpenFloor；deny·unknown 中性。
+	//   sit→SSit / toilet·shower→SBath+SSit / active·enter→SOpenFloor；deny·unknown 中性。床走上方 firmware N。
 	//   area 误学(如假 Sit)的真摔由 FloorGuard 总时长兜底（不靠 emission still 路径翻 area）。
 	switch o.AreaType {
-	case areaBed:
-		addLogLk(&logS, Vector{SBed: e.p.lArea}, w, SBed)
 	case areaSit:
 		addLogLk(&logS, Vector{SSit: e.p.lArea}, w, SSit)
 	case areaToilet, areaShower:

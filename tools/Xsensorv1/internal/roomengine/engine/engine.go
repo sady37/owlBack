@@ -174,7 +174,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		var obs belief.Observation
 		exitL := 0.0 // 离房对数几率（per-track）：present=0；消失态由 ExitLogOdds 算，floor 撤销(②)复用
 		if ts.Present {
-			obs = adapter.BuildObservation(ts.Obs.RadarTrack, fi.Sleepads, fi.Beds, r.p)
+			obs = adapter.BuildObservation(ts.Obs.RadarTrack, fi.Sleepads, fi.Beds, fi.BedAreaIDs, r.p)
 			logPsi = r.cp.LogPsi(r.js, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p))
 			logPhi = r.em.LogPhi(r.js, obs)
 		} else {
@@ -186,7 +186,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 			obs = adapter.BuildObservation(adapter.RadarTrack{
 				Online: false, StillSec: ts.Obs.RadarTrack.StillSec,
 				AreaType: ts.Obs.RadarTrack.AreaType, RoomType: ts.Obs.RadarTrack.RoomType,
-			}, fi.Sleepads, fi.Beds, r.p)
+			}, fi.Sleepads, fi.Beds, fi.BedAreaIDs, r.p)
 			logPhi = r.em.LogPhi(r.js, obs)
 			// 离房证据按 track_id 注入 SLeft 对数似然（ExitRoom 硬 + trend+np 软，源在 track_manager）：
 			//   抬 SLeft → 压 pF（不 fire）+ 够强自然 absorbed-drop。≥flip 阈 → Unit timer cancel（lostExited）。
@@ -231,7 +231,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		//   撤销(人走了不兜底)：exitL≥flip(ExitRoom 硬证据 / trend×np) → 不 floor-fire(③复用 SLeft 注入)。
 		floorObs := obs
 		if !ts.Present {
-			floorObs = adapter.BuildObservation(ts.Obs.RadarTrack, fi.Sleepads, fi.Beds, r.p)
+			floorObs = adapter.BuildObservation(ts.Obs.RadarTrack, fi.Sleepads, fi.Beds, fi.BedAreaIDs, r.p)
 		}
 		if fg.Step(floorObs) && exitL < exitFlipLogOdds {
 			d.Fire = true

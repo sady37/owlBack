@@ -44,8 +44,14 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 	var wallPoints []radarutils.Point
 	var allObjectPoints []radarutils.Point
 
+	// firmware area_id 床判定：radar.areas 里 areaType==2(床)/5(监护床) 的 objectId→areaId 映射，
+	// 与 bedObjIDs(各 Bed 对象 id，与 cfg.Beds 同序) 对齐后产出 cfg.BedAreaIDs。
+	bedAreaByObj := map[string]int{}
+	var bedObjIDs []string
+
 	for _, objRaw := range layout.Objects {
 		var hdr struct {
+			ID          string          `json:"id"`
 			TypeName    string          `json:"typeName"`
 			Geometry    json.RawMessage `json:"geometry"`
 			Angle       *float64        `json:"angle,omitempty"`
@@ -69,6 +75,9 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 			if err == nil {
 				cfg.Radar = m
 			}
+			for objID, areaID := range parseRadarBedAreas(hdr.Device) {
+				bedAreaByObj[objID] = areaID
+			}
 
 		case "Wall":
 			// Wall 可能是 line 段或 rectangle —— 把所有涉及的顶点收进来
@@ -89,6 +98,7 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
 				cfg.Beds = append(cfg.Beds, *rect)
 				cfg.BedHeights = append(cfg.BedHeights, objHeight)
+				bedObjIDs = append(bedObjIDs, hdr.ID)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
@@ -136,6 +146,13 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 				allObjectPoints = append(allObjectPoints, *pt)
 			}
 		}
+	}
+
+	// firmware area_id 床判定：按 objectId 把 radar 声明的 bed areaId 对到 cfg.Beds（同序）。
+	// 无对应声明区 → 0（adapter N 判定时 0/255 不命中）。
+	cfg.BedAreaIDs = make([]int, len(cfg.Beds))
+	for i, objID := range bedObjIDs {
+		cfg.BedAreaIDs[i] = bedAreaByObj[objID]
 	}
 
 	// 根据 Wall 顶点围出多边形（bbox）
@@ -284,6 +301,32 @@ func parseRadarMount(geom json.RawMessage, outerAngle *float64, device json.RawM
 	}
 
 	return m, nil
+}
+
+// parseRadarBedAreas 从 device.iot.radar.areas[] 抽 areaType∈{2床,5监护床} 的 objectId→areaId 映射。
+// 协议 §3.4.3：0无效/1自定义/2床/3干扰/4门/5监护床。areaId 是固件地面真值，不随 canvas drift。
+func parseRadarBedAreas(device json.RawMessage) map[string]int {
+	out := map[string]int{}
+	var w struct {
+		Iot struct {
+			Radar struct {
+				Areas []struct {
+					AreaID   int    `json:"areaId"`
+					AreaType int    `json:"areaType"`
+					ObjectID string `json:"objectId"`
+				} `json:"areas"`
+			} `json:"radar"`
+		} `json:"iot"`
+	}
+	if json.Unmarshal(device, &w) != nil {
+		return out
+	}
+	for _, a := range w.Iot.Radar.Areas {
+		if a.AreaType == 2 || a.AreaType == 5 {
+			out[a.ObjectID] = a.AreaID
+		}
+	}
+	return out
 }
 
 func parseInstallModel(s string) radarutils.InstallModel {

@@ -39,6 +39,10 @@ type RoomConfig struct {
 	// 人工标注的矩形先验
 	Enters     []radarutils.Rect // AreaEnter
 	Beds       []radarutils.Rect // AreaBed
+
+	// BedAreaIDs 与 Beds 一一对齐：firmware radar.areas 里该床的 area_id（areaType==2/5）。
+	// 0=该床无声明区。radar track 帧的 area_id 命中此 → N=1（人在该床上），驱动 emission SBed boost。
+	BedAreaIDs []int
 	Toilets    []radarutils.Rect // AreaToilet
 	Showers    []radarutils.Rect // AreaShower
 	Chairs     []radarutils.Rect // AreaSit（粗标沙发/椅子，Conf=80）

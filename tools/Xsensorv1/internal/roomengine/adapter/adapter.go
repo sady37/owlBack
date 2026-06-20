@@ -33,6 +33,7 @@ type RadarTrack struct {
 	StillSec float64 // 连续静止秒（still-box 总时长）
 	AreaType int     // track 当前 cell.Belief[0].Type（CellAreaType 透传）→ emission 正向压制 + floor per-area 阈
 	RoomType int     // 房型(card.RoomType: 1=Bathroom)透传 → emission still CDF (μ,σ) room×cell 保守合并
+	FwAreaID int     // firmware area_id（地面真值，不随 canvas drift）→ 命中床 areaId = N（在床）→ 驱动 emission SBed
 }
 
 // SleepadFrame 单床 sleepad raw 量（§32 二态：设备在线 OR 没有，不建模中途掉线）。
@@ -59,7 +60,10 @@ type FrameInput struct {
 	Tracks   []TrackObs
 	Sleepads []SleepadFrame
 	Beds     []Rect
-	Covers   []float64
+	// BedAreaIDs 与 Beds 一一对齐：firmware radar.areas 该床的 area_id（0=无声明区）。
+	// track.FwAreaID 命中 → 该床 N=1（在床），驱动 emission SBed boost（替代旧 cell area 判定）。
+	BedAreaIDs []int
+	Covers     []float64
 	Onbed    []float64
 	Overlap  []float64
 	Census   Census
@@ -164,9 +168,24 @@ func Online(fi FrameInput) belief.BedOnline {
 	return o
 }
 
+// bedHitMask N 床判定：track.FwAreaID 命中某床声明的 areaId → 该床 true。
+// 0/255（无区/声明区外）不命中。离线 = 全 false（无新鲜帧）。长 = len(bedAreaIDs)（= numBeds）。
+func bedHitMask(t RadarTrack, bedAreaIDs []int) []bool {
+	m := make([]bool, len(bedAreaIDs))
+	if !t.Online || t.FwAreaID == 0 || t.FwAreaID == 255 {
+		return m
+	}
+	for j, id := range bedAreaIDs {
+		if id != 0 && id != 255 && t.FwAreaID == id {
+			m[j] = true
+		}
+	}
+	return m
+}
+
 // BuildObservation raw 帧 → belief.Observation（§5 分轴输入）。per-track（§57 步2）：t 为本 track 的雷达量，
 // sleepads/beds 为房共享床证据（每 track 滤波各自吃自己的雷达 + 共享床）。
-func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, p Params) belief.Observation {
+func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, bedAreaIDs []int, p Params) belief.Observation {
 	sl := make([]belief.BedReading, len(sleepads))
 	vitalSrc := false
 	for j, s := range sleepads {
@@ -194,6 +213,7 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, p Para
 		VitalSourceOnline: vitalSrc,
 		AreaType:          t.AreaType,
 		RoomType:          t.RoomType,
+		RadarBedHitMask:   bedHitMask(t, bedAreaIDs),
 	}
 }
 
