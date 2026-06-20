@@ -8,9 +8,10 @@ package belief
 type BedReading int
 
 const (
-	BedNoReport BedReading = iota // 离线/无报：零信息
-	BedInBed                      // sleepad InBed 翻转
-	BedLeftBed                    // sleepad LeftBed 翻转
+	BedNoReport    BedReading = iota // 离线/无报：零信息
+	BedInBed                         // InBed 翻转（接触/事件）
+	BedLeftBed                       // sleepad 接触 LeftBed：果断清床占用（接触确定）
+	BedLeftBedRadar                  // radar 几何 LeftBed：弱清（radar 在床稳定性<50%，可能是 track 漂移误报离床）
 )
 
 // Observation 一帧的原始观测。Sleepad 长 = numBeds（逐床接触读数）。

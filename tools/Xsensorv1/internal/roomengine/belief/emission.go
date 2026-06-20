@@ -16,8 +16,9 @@ import "math"
 // 涌现 SFallen（C 独立测试 0.995 验证）。floor-strip 是补丁，框架 Ψ 让 cd2b 零补丁涌现。
 
 type emissionParams struct {
-	lIn   float64 // ℓ_sj(InBed|occ)=L_in≫1
-	lLeft float64 // ℓ_sj(LeftBed|vac)=L_left≫1
+	lIn        float64 // ℓ_sj(InBed|occ)=L_in≫1
+	lLeft      float64 // ℓ_sj(LeftBed|vac)=L_left≫1（sleepad 接触 LeftBed：果断清，残留~0.02）
+	lLeftRadar float64 // radar 几何 LeftBed：弱清（<50% 可信，残留~0.10），lLeftRadar<lLeft
 	lPose float64 // ℓ_pose(lying|AtBed)=ℓ_pose(lying|F)>1（二义，刻意）
 	lHR   float64 // L_hr：present|AtBed 倍数（absent|AtBed=1/L_hr）
 	lArea float64 // area_type 正向压制倍数（bed/sit/toilet→抬对应静止态）。area 误学(如假 Sit)的真摔
@@ -51,7 +52,7 @@ const (
 
 func defaultEmissionParams() emissionParams {
 	return emissionParams{
-		lIn: 20, lLeft: 20, lPose: 3, lHR: 5,
+		lIn: 20, lLeft: 60, lLeftRadar: 8, lPose: 3, lHR: 5,
 		lArea:   2,
 		supWalk: 0.5, supStand: 0.5,
 		redOpen: 2, redSit: 2,
@@ -131,8 +132,10 @@ func (e *Emission) contactLogB(o Observation) [][numBedStates]float64 {
 		switch rd {
 		case BedInBed: // ℓ(InBed|occ)=L_in, ℓ(InBed|vac)=1
 			out[j][BOcc] = w * math.Log(e.p.lIn)
-		case BedLeftBed: // ℓ(LeftBed|vac)=L_left, ℓ(LeftBed|occ)=1
+		case BedLeftBed: // sleepad 接触 LeftBed：果断清 BVac（残留~0.02）
 			out[j][BVac] = w * math.Log(e.p.lLeft)
+		case BedLeftBedRadar: // radar 几何 LeftBed：弱清（<50% 可信，残留~0.10）
+			out[j][BVac] = w * math.Log(e.p.lLeftRadar)
 			// BedNoReport: 两态皆 0 = 中性
 		}
 	}

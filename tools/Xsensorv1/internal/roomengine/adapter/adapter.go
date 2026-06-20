@@ -193,8 +193,8 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, bedAre
 	vitalSrc := false
 	for j, s := range sleepads {
 		sl[j] = s.Reading
-		if s.Present && s.Reading != belief.BedNoReport {
-			vitalSrc = true // 独立在线 vital 源（§D：radar absent 须 gate 在此下）= 存在且有实读数
+		if s.Present && s.Reading != belief.BedNoReport && s.Reading != belief.BedLeftBedRadar {
+			vitalSrc = true // 独立在线 vital 源（§D：radar absent 须 gate）= sleepad 接触有实读数；radar 几何 LeftBed 非接触源,不算
 		}
 	}
 	nb := nearBed(t, beds, p)

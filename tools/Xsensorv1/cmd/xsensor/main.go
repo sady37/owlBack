@@ -148,7 +148,11 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		case bed.BedConfidence == 0:
 			reading = belief.BedNoReport
 		case bed.BedStatus == 1:
+			// LeftBed 来源差异化(BedOccupancyState 用 conf 编码):sleepad 接触(90)果断清/radar 几何(20)弱清。
 			reading = belief.BedLeftBed
+			if bed.BedConfidence < 50 {
+				reading = belief.BedLeftBedRadar
+			}
 		default:
 			reading = belief.BedInBed
 		}

@@ -610,12 +610,13 @@ func (tm *TrackManager) BedOccupancyState(nowMs int64) card.BedState {
 	//   几何续命(lastRadarInBedGeomMs)**不**进此层——它服从下方离床 latch。
 	var latestInBedEvt, latestLeftBed int64
 	inBedFromSleepad := false
+	leftFromSleepad := false // LeftBed 来源:sleepad 接触(果断清) vs radar 几何(弱清,<50% 可信)
 	for _, s := range tm.bedSessions {
 		if s.InBedSinceMs > latestInBedEvt {
 			latestInBedEvt, inBedFromSleepad = s.InBedSinceMs, true
 		}
 		if s.LeftBedAtMs > latestLeftBed {
-			latestLeftBed = s.LeftBedAtMs
+			latestLeftBed, leftFromSleepad = s.LeftBedAtMs, true
 		}
 	}
 	// 连续 sleepad InBed monitor（bed_status=0）也算接触在床(非几何):InBed 事件常缺前置（窗裁/重启/
@@ -629,7 +630,7 @@ func (tm *TrackManager) BedOccupancyState(nowMs int64) card.BedState {
 		latestInBedEvt, inBedFromSleepad = tm.lastRadarInBedMs, false
 	}
 	if tm.lastRadarLeftBedMs > latestLeftBed {
-		latestLeftBed = tm.lastRadarLeftBedMs
+		latestLeftBed, leftFromSleepad = tm.lastRadarLeftBedMs, false
 	}
 	// 离床 latch:任一源 LeftBed 事件 ≥ 最近离散 InBed 事件 → 释放(any-source-OR veto,审查㊾ 漏报-safe)。
 	//   **几何续命被 latch 否决**:radar firmware-area 分不出"躺床/站床边"，不得越过离散 LeftBed 续命床占用
@@ -637,7 +638,13 @@ func (tm *TrackManager) BedOccupancyState(nowMs int64) card.BedState {
 	//   解 latch 须靠后续离散 InBed 事件(任一源接触/firmware 进床)，非几何。含"无在先 InBed"(latestInBedEvt==0):
 	//   LeftBed 从宽认定离床(sensor 重启/数据裁切丢 InBed 不吞离床)。
 	if latestLeftBed > 0 && latestLeftBed >= latestInBedEvt {
-		return card.BedState{BedStatus: 1, BedStatusTs: latestLeftBed, BedConfidence: bedConfSleepad}
+		// conf 编码 LeftBed 来源(下游 onRoomFrame 据此分 BedLeftBed/BedLeftBedRadar 差异化清空力度):
+		//   sleepad 接触 LeftBed=权威果断清(conf=90);radar 几何 LeftBed=弱清(conf=20,<50% 可信防漂移误清)。
+		conf := bedConfSleepad
+		if !leftFromSleepad {
+			conf = bedConfSleepad - bedConfRadar
+		}
+		return card.BedState{BedStatus: 1, BedStatusTs: latestLeftBed, BedConfidence: conf}
 	}
 	// 未被 latch:事件层 InBed 胜(或从无 LeftBed)。此时几何续命才作"连续在床"补证(InBed 事件常缺前置)。
 	latestInBed := latestInBedEvt
