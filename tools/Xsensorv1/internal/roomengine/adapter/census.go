@@ -4,6 +4,7 @@ import (
 	"math"
 	"sort"
 
+	"go.uber.org/zap"
 	"owlBack/tools/Xsensorv1/internal/roomengine/belief"
 )
 
@@ -44,6 +45,7 @@ type censusTrack struct {
 	fWallMargin    float64  // forensic：末帧 WallMargin（sep/WallScale，喂 mEv 墙外项）
 	fRho           float64  // forensic：末帧 CoexistRho（同步移动强度）
 	fLater         bool     // forensic：末帧 LaterBorn（成对后到=ghost 候选）
+	birthLogged    bool     // 出生窗冻结那帧已写过 birth_verdict log（一次性 forensic，避免逐帧刷）
 	x, y           int      // 上一 tick 坐标
 	lastTick       int64    // 最近匹配 tick
 	lastMs         int64    // 最近匹配时戳（算 cm/s 速度，帧间隔非恒 1s）
@@ -116,6 +118,24 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 		} else {
 			// 窗后：判定冻结，**不算 reflectSep**（省算力，最贵的穿墙求交）。仅守孤轨永 Real override：
 			//   配对源离开 → Coexist==0 → 立即纠回 Real，防冻结成 Mirror 的轨变孤轨后 N_r 算 0。
+			if !t.birthLogged {
+				// 出生窗冻结那帧固化一次判定（ForceReal/reset 之前 = 5s 窗累积的几何+sync 裁决）。
+				t.birthLogged = true
+				pr := t.rt.PReal()
+				verdict := "real"
+				if pr < 0.5 {
+					verdict = "ghost"
+				}
+				zap.L().Info("birth_verdict",
+					zap.Int("logic_id", ids[i]),
+					zap.String("verdict", verdict),
+					zap.Float64("p_real", pr), zap.Float64("p_mirror", t.rt.PMirror()),
+					zap.Bool("is_refl", t.isRefl), zap.Float64("sep", t.fSep),
+					zap.Float64("wall_margin", t.fWallMargin), zap.Float64("rho", t.fRho),
+					zap.Bool("later_born", t.fLater),
+					zap.Int("birth_x", t.birthX), zap.Int("birth_y", t.birthY),
+					zap.Float64("door_d", t.doorD))
+			}
 			if coexist == 0 {
 				t.rt.ForceReal()
 			}
