@@ -95,18 +95,21 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 	for i, o := range obs {
 		t := c.tracks[ids[i]]
 		if nowMs-t.birthMs <= c.p.MirrorWindowMs {
-			// 出生窗（≤5s）：算墙外反射几何 + sync，喂 realness 判定（ghost 只能出生时判，过期难判）。
-			sep := reflectSep(o.X, o.Y, radar, walls, c.p.ReflSepCm) // 桶二：墙外反射裕度 cm（0=墙内/非反射）
-			t.isRefl = sep > 0
+			// 出生窗（≤5s）：喂 realness 判定（ghost 只能出生时判，过期难判）。**reflectSep（最贵的穿墙求交）
+			// 仅 coexist>0=track==2 才算**（成本：ghost 仅 track==2；孤轨 mEv=Coexist×(…)=0,跳过 reflectSep 结果中性）。
+			sep := 0.0
 			wallMargin := 0.0
-			if sep > 0 {
-				if wallMargin = sep / float64(c.p.WallScaleCm); wallMargin > 1 {
-					wallMargin = 1
+			if coexist > 0 {
+				sep = reflectSep(o.X, o.Y, radar, walls, c.p.ReflSepCm) // 桶二：墙外反射裕度 cm（0=墙内/非反射）
+				if sep > 0 {
+					if wallMargin = sep / float64(c.p.WallScaleCm); wallMargin > 1 {
+						wallMargin = 1
+					}
 				}
 			}
+			t.isRefl = sep > 0
 			later := ids[i] == laterID
 			t.rt.Update(belief.RealnessObs{
-				BirthDoorD: t.doorD,
 				Displaced:  math.Hypot(float64(o.X-t.birthX), float64(o.Y-t.birthY)) > float64(c.p.MoveCm),
 				CoexistRho: rho,
 				LaterBorn:  later,
@@ -164,7 +167,8 @@ func (c *TrackCensus) associate(obs []TrackObs, nowMs int64, entrances []Rect) [
 			continue
 		}
 		c.nextID++
-		c.tracks[c.nextID] = &censusTrack{rt: belief.NewRealnessTrack(), birthX: o.X, birthY: o.Y, birthMs: nowMs, doorD: birthDoorDist(o.X, o.Y, entrances), x: o.X, y: o.Y, lastMs: nowMs}
+		dd := birthDoorDist(o.X, o.Y, entrances)
+		c.tracks[c.nextID] = &censusTrack{rt: belief.NewRealnessTrack(dd), birthX: o.X, birthY: o.Y, birthMs: nowMs, doorD: dd, x: o.X, y: o.Y, lastMs: nowMs}
 		ids[i], used[c.nextID] = c.nextID, true
 	}
 	return ids
@@ -200,6 +204,7 @@ type TrackState struct {
 	WallMargin   float64  // forensic：WallMargin（mEv 墙外项）
 	Rho          float64  // forensic：CoexistRho（同步移动强度）
 	LaterBorn    bool     // forensic：成对后到（ghost 候选，破同步对称）
+	DoorD        float64  // forensic：出生地→最近门 cm（设出生先验 bR₀；<0=无 enter 区）
 }
 
 // Tracks engine 读 census 已知的全部 track（在场 + 消失未 drop），按 LogicID 升序（确定性）。
@@ -208,7 +213,7 @@ func (c *TrackCensus) Tracks() []TrackState {
 	out := make([]TrackState, 0, len(c.tracks))
 	for id, t := range c.tracks {
 		out = append(out, TrackState{LogicID: id, Obs: t.lastObs, PReal: t.rt.PReal(), Present: t.lastTick == c.tick && t.lastObs.Online, PMirror: t.rt.PMirror(), IsReflection: t.isRefl,
-			Sep: t.fSep, WallMargin: t.fWallMargin, Rho: t.fRho, LaterBorn: t.fLater})
+			Sep: t.fSep, WallMargin: t.fWallMargin, Rho: t.fRho, LaterBorn: t.fLater, DoorD: t.doorD})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LogicID < out[j].LogicID })
 	return out

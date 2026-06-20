@@ -72,6 +72,7 @@ type TrackForensic struct {
 	WallMargin    float64 // forensic：mEv 墙外项
 	Rho           float64 // forensic：CoexistRho 同步移动强度
 	LaterBorn     bool    // forensic：成对后到
+	DoorD         float64 // forensic：出生地→最近门 cm（设出生先验 bR₀）
 	RepeatR       float64 // forensic：重复摔残余 R（§J；前科强度，>0=有近期摔史）
 	SelfRecovered bool    // forensic：本帧 fall episode 刚结束（起身自救）= 记录线 self_recovered
 }
@@ -266,7 +267,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		forensic = append(forensic, TrackForensic{LogicID: ts.LogicID, Present: ts.Present, PReal: ts.PReal,
 			PMirror: ts.PMirror, IsReflection: ts.IsReflection, PFallen: pF, Fire: d.Fire, Band: d.Band,
 			X: ts.Obs.X, Y: ts.Obs.Y, Sep: ts.Sep, WallMargin: ts.WallMargin, Rho: ts.Rho, LaterBorn: ts.LaterBorn,
-			RepeatR: repeatR, SelfRecovered: selfRecovered})
+			DoorD: ts.DoorD, RepeatR: repeatR, SelfRecovered: selfRecovered})
 
 		// drop（状态驱动）：消失 track 吸收到 {Left,Empty}（handoff 经 GateBlindRow 整流 / 离房证据注入抬 SLeft）
 		//   → 离场确认 → drop（非 TTL，cancel 非 fire）。离房趋势已折进 SLeft 后验，不再单列 bool 门。

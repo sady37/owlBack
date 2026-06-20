@@ -18,49 +18,61 @@ import "math"
 // 权重 = 形态锚(铁律 [[fall_data_is_artificial_test]]：非权威值，留 oracle)。
 const (
 	rcRealBase    = 0.02  // M→R baseline 恢复率/s（misjudged mirror 慢回 real 安全阀）
-	rcDoorScaleCm = 120.0 // §9.3① D 软斜坡尺度(近门→real；老人走得慢、出生在门边 D 小)
-	rcWDoor       = 1.2   // 近门 real 率权
+	rcRealFloor   = 0.5   // §9.3① 远门出生先验下限 bR₀(far-born 起点)；不为 0 = FN-safe(光凭出生地永不判死成 ghost)
+	rcDoorScaleCm = 120.0 // §9.3① door_d 出生先验尺度：door_d→0 近门 bR₀→1；door_d≥此 bR₀→floor
 	rcWAuto       = 1.5   // 自主独立移动 real 率权
-	rcWWall       = 1.5   // 墙外反射 mirror 率权
-	rcWSync       = 1.2   // 同步移动 mirror 率权
+	rcWWall       = 1.5   // 墙外反射 mirror 率权（× Coexist：ghost 仅 track==2）
+	rcWSync       = 1.2   // 同步移动 mirror 率权（× Coexist：需配对）
 )
 
-// RealnessObs 一帧 realness 软证据(census 由 logic_ID 身份 + 出生位 + 墙/门几何 + 同步度 + 配对译入)。
+// RealnessObs 一帧 realness 软证据(census 由 墙/门几何 + 同步度 + 配对译入)。door_d 已移出(出生先验,见 NewRealnessTrack)。
 type RealnessObs struct {
-	BirthDoorD float64 // §9.3① 出生地→最近门 cm；<0=无 enter 区(跳过近门率)
-	Displaced  bool    // 相对出生位自主位移(走动/跌倒)
+	Displaced  bool    // 相对出生位自主位移(走动/跌倒)→ real(镜像不自主动)
 	CoexistRho float64 // §9.3② 与配对 track 同步移动强度[0,1]
 	LaterBorn  bool    // §9.1 成对中后到者(ghost 候选)：破同步对称——同步 ρ 双 track 共享，只归后到者
-	WallMargin float64 // §9.2 墙外反射裕度[0,1](穿墙交点距/尺度；0=墙内非反射；自判别不依赖 LaterBorn)
-	Coexist    float64 // co-existence 配对存在[0,1](孤轨=0 → mEv=0 → track==2 涌现)
+	WallMargin float64 // §9.2 墙外反射裕度[0,1](穿墙交点距/尺度；0=墙内非反射/非 track==2)
+	Coexist    float64 // co-existence 配对存在[0,1](孤轨=0 → mEv=0 → ghost 仅 track==2)
 	DtMs       int64   // 距上帧 ms(率→概率时间积分；单 tick dt 小→跳变概率≈0→§9.4 自然忽略)
 }
 
 // RealnessTrack realness 后验(2 态前向滤波)。bR+bM=1。
 type RealnessTrack struct{ bR, bM float64 }
 
-// NewRealnessTrack 起纯 Real（PReal=1；无 mirror 证据则恒 1 = 默认 real + latch）。
-func NewRealnessTrack() *RealnessTrack { return &RealnessTrack{bR: 1, bM: 0} }
+// NewRealnessTrack 起 realness，出生先验 bR₀ 由 door_d 设(§9.3① 出生一次性事实,非 per-frame 率)：
+//
+//	近门(door_d→0)→ bR₀=1(确实进门)；远门(door_d≥rcDoorScaleCm,常伴无 EnterRoom)→ bR₀→rcRealFloor
+//	(可疑,可能凭空出现/反射)；door_d<0(无 enter 区不可测)→ bR₀=1 不 penalize。floor 不为 0 = FN-safe。
+//	confidence(=PReal)不压 fire(eligible 恒真),故远门降 confidence 零 FN 风险(最坏 N_r 少算=偏激进)。
+func NewRealnessTrack(birthDoorD float64) *RealnessTrack {
+	bR := 1.0
+	if birthDoorD >= 0 {
+		near := (rcDoorScaleCm - birthDoorD) / rcDoorScaleCm
+		if near < 0 {
+			near = 0
+		} else if near > 1 {
+			near = 1
+		}
+		bR = rcRealFloor + (1-rcRealFloor)*near
+	}
+	return &RealnessTrack{bR: bR, bM: 1 - bR}
+}
 
-// Update 一帧两态跳变：mEv 开 R→M（mirror 证据，co-existence 耦合）/ rEv 开 M→R（real 证据 + baseline）。
+// Update 一帧两态跳变：mEv 开 R→M（mirror 证据）/ rEv 开 M→R（real 证据 + baseline 恢复）。
 func (r *RealnessTrack) Update(o RealnessObs) {
 	dt := float64(o.DtMs) / 1000.0
 	if dt <= 0 {
 		return // 出生帧/同帧无时间推进
 	}
-	// mirror 跳变率：墙外几何自判别 + 同步 ρ(只归后到者破对称)，× co-existence(孤轨=0 → 永 Real)。
+	// mirror 跳变率：墙外几何 + 同步 ρ(只归后到者破对称)，× co-existence(孤轨=0 → mEv=0)。
+	// **ghost 计算仅 track==2 + 出生 5s 窗**(成本)：census 在窗内且 coexist>0 才算 reflectSep,孤轨/窗后不算;
+	// 此处 ×Coexist 与之一致(孤轨 wall_margin 本就 0)。door_d 不在此(出生先验,NewRealnessTrack 一次性)。
 	sync := 0.0
 	if o.LaterBorn {
 		sync = rcWSync * o.CoexistRho
 	}
 	mEv := o.Coexist * (rcWWall*o.WallMargin + sync)
-	// real 跳变率：baseline 恢复 + 近门(D 软斜坡) + 自主独立移动(ρ 低)。
+	// real 跳变率：baseline 恢复 + 自主独立移动(ρ 低)。door_d 已移出 → 出生先验(NewRealnessTrack)。
 	rEv := rcRealBase
-	if o.BirthDoorD >= 0 {
-		if near := (rcDoorScaleCm - o.BirthDoorD) / rcDoorScaleCm; near > 0 {
-			rEv += rcWDoor * near
-		}
-	}
 	if o.Displaced {
 		rEv += rcWAuto * (1 - o.CoexistRho)
 	}
