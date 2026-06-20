@@ -508,3 +508,35 @@ episode 结束烘进残余：$R \leftarrow R_{\text{prior}}+\text{credit}$，并
 - 落点：`engine/repeat_fall.go`（`RepeatFallEscalator` per-logicID）+ `engine.go`（map 挂载/`Tick` present 帧调用/`dropTrack` 销毁/forensic `RepeatR`+`SelfRecovered`）+ `cmd/xsensor/main.go`（xray `repeat_r`/`self_recovered`）。belief/observation/adapter 已恢复干净（单次方案撤回）。
 - **333b 4x 实测**（逐帧 R 轨迹）：第 1 段疑似摔(~15s) → $R:0\to0.244$（第一次 $R_{\text{prior}}=0$ **不报**，记 self_recovered）；间隔衰减 $0.244\to0.242$；第 2 段(~28s) $R_{\text{prior}}=0.242>0$ 进提前判、峰值 $0.703<1$ **不报**（没攒够），$R\to0.703$ 记 self_recovered。**fire=0**（333b 两段都不够久，正确不误报）。反推：若第 2 段 ≥45s 则 $0.242+45/60\ge1$ → ~45s 提前报（早于 firmware 60s）。
 - **零回归**：escalator 只"加"火不"减"火，单次 fall $R_{\text{prior}}=0$ 永不触发 → cd2b 等单次 case 结构安全（escalator 不改既有 belief/floor/lost 火路）。
+
+---
+
+### §K 直立证据「压/抬」分治 + 身份离场 evict — 2026-06-19 变更思路（A/C 互核；commit 7a1ec6a / def5940 / 748f4c3 / bdb9764）
+
+本日四改一条主线：**把判断放对层 → 分到具体对象 → 腾出的质量要有去处 → FN 默认**。
+
+**1. stillDiscount 从 floor 移入 emission（7a1ec6a）—— 单源不双压**
+- 旧：z/pose 直立证据在 floor 折 still 时长（`stillDiscount`），emission 另有 ZBand 也压 → 同一 z 压两处 = 站立瘫倒过压漏报（**ZBand 原罪**）。
+- 改：z/pose **单一归 emission**；floor 退回**纯 raw-still 计时器**（`StillSec=StillBoxSec`，不信 pose/z——pose/z 错报正是 floor 该兜的场景）。两层职责正交：emission = pose/z-aware 精判；floor = 不信标签的纯时间兜底。
+
+**2. 「压 vs 抬」分治（bdb9764）—— 压 ⟺ 物理互斥，抬 ⟺ 治 Empty**
+- **关键认知**：S 的「有人」态全**绑位置**（Bed/Sit/OpenFloor/Bath），无「在场·直立·未定位」格。只压 SFallen → 腾出质量归一漏进默认 **Empty** → present 真人判空房（`n_r=1` 但 `top=Empty` 自相矛盾）+ **Empty→Fallen 转移种子 = 0** 拖慢/漏真摔（FN）。**SOpenFloor 即「present·直立·未定位」兜底态**（复用，不必新增状态）。
+- **判据（物理互斥，非「标签可靠性」）**：
+  - **压 SFallen（<1，取 min）⟺ 与「倒地静止」物理互斥**：`z≥80`（身高硬测，质心高 ≠ 贴地）∨ `walk`（**运动 ⊥ 倒地静止**——摔者不动 → 不会被标 walking → 压不到真摔，故 walk 压**不要 z 门**纯标签可压）。
+  - **抬（>1）⟺ 治 Empty / 安置**：在场直立（walk ∨ z≥80 ∨ `Standing`）→ 抬 SOpenFloor；`sit` → 抬 SSit。**standing/sit 是静态直立（与「静态倒地 / 刚摔未及标 Lying」共享静止 → 可混）→ 只抬不压**（z 未知不赌 fall，z<30 中性红线延续）。
+  - walk∧z≥80：压 min 一次 / 抬 SOpenFloor 一次（**不叠**防过抬）。硬互斥的「压+抬」是 **feature**（互斥该压死，且压不到真摔）；软的「只抬」保边界报路 = FN-safe。
+- 公式（log 域，权重 $w=\text{covers}$）：`logS[SFallen]+=w·ln(min(supWalk,supStand))`（压）；`logS[SOpenFloor]+=w·ln(redOpen)` / `logS[SSit]+=w·ln(redSit)`（抬）。进 `filter.Correct` 平滑单帧噪声，非乘递归 P。
+- ⚠️ **walk 边界**：地板挣扎摔者（低 z + 乱动）可能误标 walk 被压 → FN；靠 floor 时长兜底（不看 pose）+ 挣扎停转 Lying 接住（有界瞬态，留 oracle 真挣扎数据验）。
+
+**3. ExitRoom 后 logicID churn 根治（def5940）—— belief 离场判定要回传 track_manager**
+- 根因：belief 状态驱动 drop（`!Present ∧ SLeft+SEmpty≥0.9`）只删 belief/census 的 logicID，但 **track_manager 12s coast（`trackEvictMaxMs`）仍每帧把已离场 track 当 base 重发** → census 无对应 logicID → 每帧重发新号 = churn（cabb `lid 3→145`）+ rebirth FN 隐患（[[w3_3_realness_wired_rebirth_fn]] 另一触发路径）。
+- 改：镜像「fire→`ResetStillBox`」通道，加「belief drop→`tm.EvictTrack`」（立即删 tracks/outputs，停 coast re-feed）。FN-safe：摔倒高 SFallen 永不进 drop → faller 绝不被 evict；闪失重捕的 coast 不动（无离场证据 belief 不 drop）。白赚消掉 churn 重生轨攒出的雷达原点幽灵 floor FP。
+- 区分：12s coast 对「瞬时丢轨重捕」是对的（不能动，否则真人闪一下碎轨）；对「确认离场」是错的（人真走不会重捕）。evict 只在 belief 确认离场时触发，绕过 coast 但不动它。
+
+**4. floor 接触豁免收窄（748f4c3）—— 分到具体床，分不清照报**
+- floor `contactInBed` 从「任一近床 InBed 豁免」收窄到「**唯一一张近床 ∧ InBed**」；近多张床 = 床归属分不清（`NearBedMask` 非互斥，摔者同时在两床 100cm）→ 不豁免照报（FN-safe）。单床 sleeper 豁免不变（无回归）。
+- **认知**：「InBed→压摔」的「分具体床 + 分不清用概率（1/n）+ 用 MM」原理，**belief Ψ 早已实现**——`Ψ = Σ_j a_j ψ̃_j + a_∅` 是 **mixture 非 product**，`a_j = κ_j·g^xy_j` 归一 = MM 归属概率（1 床→a≈1=100%、2 床分不清→对半=1/n），注释明否决 product（「任一床 occ 压死 F = 漏报」）。floor 是二值离群，本次对齐为 FN-safe。
+
+**贯穿主线（一句话）**：**分到具体对象**（具体 track / 具体床 / 具体态）→ **分不清用概率**（Ψ mixture / 压取 min）→ **腾出质量要有去处**（抬 SOpenFloor 不漏 Empty）→ **FN 默认**（软证据只抬不压、摔倒永不 evict、床分不清照报）。
+
+**验证 + 待验**：cabb-0616（无床退出负样本）全绿——churn `lid 145+→2`、幽灵 FP 消、幸存站立 `top Empty→OpenFloor`（SOpen 0.61 / SEmpty 0.04）、SFall `0.20→0.01`、`fire 0`。🔴 **带床真摔（cd2b / 9e7）未 replay**：四关待过——① z≥80 误压真摔 FN（emission 压，从未过 FN 关）② 抬-redirect / 软站 / sit→SSit 带床场景 ③ floor 多床二义 ④ EvictTrack 带床+离场。全部 `sup*/red*` 是 form-anchor 留 oracle（[[fall_data_is_artificial_test]]）。
