@@ -204,7 +204,7 @@ $$\delta_{\text{pad/floor}}=D_{\mathrm{KL}}\!\big(P(\text{XY}\mid\text{on-pad})\
 
 **真正要新建的只有两件**（cd2b 真解收敛于此，其余现成结构在干活）：
 
-1. **$\kappa$ 变活（wire `UpdateKappa`）** —— 现 orphan（零调用），$\kappa$ 死在几何冷启、只 $g^{xy}$ 半边活。落点：每帧每房在 per-track `LogPsi` loop 前调，`matched/live` per-bed 从 15s K 窗事件算。$\kappa$=**纯归属权重**，不碰 SBed 维持（承重不变量见 §4：SBed 由"证据抬 vs 0.80 自衰减"平衡决定，真睡者总有 $\kappa$-free 直接源撑，故 $\kappa$ 升降 FN-safe、**无需防睡眠者 gate**）。
+1. **$\kappa$ 变活（wire `UpdateKappa`）** —— 现 orphan（零调用），$\kappa$ 死在几何冷启、只 $g^{xy}$ 半边活。落点：每帧每房在 per-track `LogPsi` loop 前**无条件**调（末尾必调 `UpdateKappa`，防再成 orphan）。**$\kappa$ = sleepad$_j$ 与"雷达床 $j$ 占用"的持续状态一致性，非跳变事件**（C 2026-06-20 订正：旧"15s 窗事件 matched"漏持续项→熟睡无跳变会冻/衰 $\kappa$）：`matched[j]`=两方持续都说占用（sleepad InBed ∧ radar `FwAreaID==`床 $j$，与 M×N `RadarBedHitMask` 同信号），`live[j]`=双在线∧至少一方占用（both-vacant 空床无信息→冻结）。熟睡持续 matched=true→$\kappa$ 持续建高（"持续证据抬 $\kappa$ 对抗衰减"落地）；矛盾→live∧¬matched→衰减（多床消歧）。per-frame 连续条件非重数事件、慢 $\gamma$ 抗抖、**无需 deferred 窗**。$\kappa$=**纯归属权重**，不碰 SBed 维持（承重不变量见 §4：SBed 由"证据抬 vs 0.80 自衰减"平衡决定，真睡者总有 $\kappa$-free 直接源撑，故 $\kappa$ 升降 FN-safe、**无需防睡眠者 gate**）。
 
 2. **LeftBed → SOpenFloor（组件③，cd2b 主路径）** —— 现 emission 的 LeftBed 只推 $B{\to}$vac，需补：在 $S$ 轴**主动满幅**抬 SOpenFloor，按 $a_j$ 归属（$g^{xy}$ 几何门控：邻床 LeftBed 对在别床 track $g^{xy}{\approx}0\to a_j{\approx}0$ 不串=多住户假摔被几何自然兜住）。落点按 track 态：在场→SOpenFloor / lost→SBlindRest / 先 Open 再 lost→SBlindOpen。「满幅」= 不被 Con 二次折扣（$a_j$ 已分过概率），靠 SOpenFloor 单位量级 $\gg$ SBed 做"进床慢离床快"不对称。
 

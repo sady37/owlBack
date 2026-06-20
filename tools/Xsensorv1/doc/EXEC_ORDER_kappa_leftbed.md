@@ -73,99 +73,51 @@ for s, v := range lb {
 
 ## 落点 ①(后做,κ 动态;单床 κ 冷启≈1 本就够,① 主要给多床消歧)
 
-### ①.1 `engine/engine.go`:Room 加 per-bed 事件账 + 每帧解析
+### ①.1 `engine/engine.go`:每帧按"持续状态一致性"更新 κ(无 Room 状态)
 
-Room struct 加:
+**模型订正(C 2026-06-20)**:κ = sleepad_j 与"雷达床 j 占用"的**持续一致性**,**非跳变事件**。跳变只是一致性开始的瞬间;熟睡=两者持续都说"占用"=持续 `matched=true`,κ 被**持续建/保持高位**(不冻结不衰减)。这是 per-frame 的**连续条件**——**不是**"把一个离散事件数 15 遍"(那是重数事件),而是测"当前是否一致",每帧合法更新。故旧 deferred 窗/跳变检测/`bedKappaLedger` **全删**,**Room 不加任何状态**。
 
-```go
-kappaLedger []bedKappaLedger // len=nb；κ 事件驱动 EMA 的 15s 窗账(deferred 解析,防 spurious decay)
-```
+> 这也彻底解决早先"衰减 gate"之争:不靠 event-gate `live` 防熟睡衰减,而是让 `matched` 测持续一致——熟睡天然 `matched=true`,`live` 用 presence-gate 也安全。
 
-`NewRoom` 初始化 `kappaLedger: make([]bedKappaLedger, nb)`。新类型(同包):
+每帧在 per-track loop **之前**(census.Update 之后)**无条件**调 `r.updateKappaFromState(fi)`。**🔴 反-orphan**:末尾**必调** `r.cp.UpdateKappa(matched, live)`(全 false 也调)——别把"修一个 orphan(UpdateKappa)又造一个(结算器没人调)"。落地后 grep 调用点 + probe 看 κ 真在动(见验证)。
 
 ```go
-type bedKappaLedger struct {
-	sleepadPrev    belief.BedReading // 上帧 sleepad 态(检 InBed↔LeftBed 跳变)
-	radarInBedPrev bool              // 上帧"有 present track FwAreaID==本床 areaId"
-	pendActive     bool
-	pendMs         int64
-	pendSleepadDir int // +1 →InBed / -1 →LeftBed / 0 无
-	pendRadarDir   int // +1 enter / -1 leave / 0 无
-}
-
-const kappaWindowMs = 15000 // K 窗(case1/2 的 15s；标定项)
-```
-
-每帧在 per-track loop **之前**(census.Update 之后)调 `r.updateKappaFromEvents(fi)`:
-
-```go
-func (r *Room) updateKappaFromEvents(fi adapter.FrameInput) {
+func (r *Room) updateKappaFromState(fi adapter.FrameInput) {
 	matched := make([]bool, r.nb)
 	live := make([]bool, r.nb)
 	radarOnline := adapter.Online(fi)
 	for j := 0; j < r.nb; j++ {
-		L := &r.kappaLedger[j]
-
-		// sleepad 事件(InBed↔LeftBed 跳变)
-		cur := belief.BedNoReport
-		sleepadUp := false
-		if j < len(fi.Sleepads) {
-			cur = fi.Sleepads[j].Reading
-			sleepadUp = fi.Sleepads[j].Present
-		}
-		sDir := 0
-		if cur != L.sleepadPrev {
-			if cur == belief.BedInBed {
-				sDir = +1
-			} else if cur == belief.BedLeftBed {
-				sDir = -1
-			}
-		}
-		L.sleepadPrev = cur
-
-		// radar 床事件(有/无 present track FwAreaID==本床 跳变)
-		curRadar := false
+		sleepadOnline := j < len(fi.Sleepads) && fi.Sleepads[j].Present
+		sleepadInBed := sleepadOnline && fi.Sleepads[j].Reading == belief.BedInBed
+		radarInBedJ := false
 		if j < len(fi.BedAreaIDs) && fi.BedAreaIDs[j] != 0 {
 			for _, t := range fi.Tracks {
-				if t.Online && t.FwAreaID == fi.BedAreaIDs[j] {
-					curRadar = true
+				if t.Online && t.FwAreaID == fi.BedAreaIDs[j] { // 同 M×N 的 RadarBedHitMask 信号
+					radarInBedJ = true
 					break
 				}
 			}
 		}
-		rDir := 0
-		if curRadar != L.radarInBedPrev {
-			if curRadar {
-				rDir = +1
-			} else {
-				rDir = -1
-			}
-		}
-		L.radarInBedPrev = curRadar
-
-		// 开窗 / 记方向
-		if sDir != 0 || rDir != 0 {
-			if !L.pendActive {
-				L.pendActive, L.pendMs = true, fi.NowMs
-			}
-			if sDir != 0 {
-				L.pendSleepadDir = sDir
-			}
-			if rDir != 0 {
-				L.pendRadarDir = rDir
-			}
-		}
-
-		// 窗满解析:一床一次 fire(防每帧重复 EMA)
-		if L.pendActive && fi.NowMs-L.pendMs >= kappaWindowMs {
-			matched[j] = L.pendSleepadDir != 0 && L.pendRadarDir != 0 && L.pendSleepadDir == L.pendRadarDir
-			live[j] = radarOnline && sleepadUp // 互活门控:双在线才算有效证据机会
-			*L = bedKappaLedger{sleepadPrev: cur, radarInBedPrev: curRadar} // 清窗,保留 prev
-		}
+		// live=双在线 ∧ 至少一方说"占用"(有待关联的人;both-vacant 空床无信息→冻结,不从互相"都说空"建同人相关)
+		live[j] = radarOnline && sleepadOnline && (sleepadInBed || radarInBedJ)
+		// matched=两方都说"占用"=同一人(持续在床→持续建 κ);一方占用另一方否=矛盾(live∧¬matched→衰减,多床消歧)
+		matched[j] = sleepadInBed && radarInBedJ
 	}
 	r.cp.UpdateKappa(matched, live)
 }
 ```
+
+**逐情形(验收口径)**:
+
+| 情形 | live | matched | κ |
+|---|---|---|---|
+| 熟睡(sleepad InBed + radar 在床 j,持续) | T | T | **持续建高/保持**(C 要的"持续证据抬 κ 对抗衰减")✓ |
+| 空床(both vacant) | F | — | **冻结**(空床不建同人相关) |
+| 矛盾(sleepad InBed 但 radar 明确不在床 j) | T | F | **衰减**(多床消歧;真矛盾才降,非"无事件") |
+| 一方离线 | F | — | 冻结 |
+| 雷达熟睡闪断 1 帧 | T | 瞬时 F | 慢 γ 的 EMA 几乎不动(旧窗版会误开窗误衰减,此版天然抗抖) |
+
+**γ 标定**:`couplingParams.gamma` 现 0.2 是为**稀疏事件**设的;改 **per-frame** 后 0.2 太快(~5s 饱和、闪断也敏感),应降到时间常数 ~20-100s(γ≈0.01-0.05)。`defaultCouplingParams` 的 gamma 随之调,留 oracle form-anchor。
 
 ### ①.2 `belief/probe.go`:κ 进 FrameProbe(验证用)
 
@@ -178,7 +130,8 @@ func (r *Room) updateKappaFromEvents(fi adapter.FrameInput) {
 - **守 DBN §4 不变量**:① 只动权重,**绝不**在 κ 路径上碰 SBed 维持/衰减。
 - **③ 满幅与归属分离**:`lLeftOpen` 是量级(满幅),`a_j` 是归属——别把 `a_j` 再乘进 magnitude(那是 Con 二次折扣,弃)。
 - **lost gxy 取冻结末位**:从 `ts.Obs.RadarTrack`(保留 XY)算,不从被剥 XY 的 lost `obs`。
-- **①的 spurious decay 已用 deferred 窗规避**:一床一窗一 fire,sleepad/radar 谁先到都在窗内归并;窗满才判 matched。单床 κ 冷启≈1,① 不改单床结局,主要给多床。
+- **① 是持续状态一致性,非事件**:`matched`=两方持续都说"占用",熟睡持续 matched=true→持续建 κ(不衰减);`live`=双在线∧至少一方占用。慢 γ 抗抖,无需 deferred 窗。单床 κ 冷启≈1,① 主要给多床消歧。
+- **radar-InBed→SBed 是 M×N 的事(c7e8ebe),κ-free,§4 承重第一腿,别动**:① 的 `radarInBedJ` 与 M×N 的 `RadarBedHitMask` 用**同一信号**(`FwAreaID==bedAreaID`)——κ 相关性与 SBed 抬升同源。回归须验:radar 在床仍 κ-free 抬 SBed(不因接 ① 而把 SBed 抬升误绑到 κ)。
 - 守 CLAUDE.md:删即删不留兼容;不写 WHAT 注释;`go build ./... && go vet ./...` 全绿。
 
 ## 顺序
@@ -193,7 +146,8 @@ func (r *Room) updateKappaFromEvents(fi adapter.FrameInput) {
 - `go build ./... && go vet ./...` 全绿。
 - **③ / cd2b**:用 M×N 重测的同步 layout fixture 回放 cd2b——LeftBed 后状态应从 SBed 翻 SOpenFloor/SBlindRest → SFallen 可达 → fire。**这条是 ③ 成败判据**(若床矩形内的摔仍被 M×N 每帧 κ-free 重抬 SBed 顶住=量级不够,调 `lLeftOpen`/或 Ψ overlap 压制,不改 floor)。
 - **③ 回归**:非 LeftBed case 不受影响(无 LeftBed → `LeftBedOpenLogS` 全 0);现有 cd2b 0.5203 精确零回归基线(M×N 前)别破。
-- **① κ probe**:多床/多事件 fixture 看 `FrameProbe.Kappa`——同向共发 κ 升、安静熟睡(无事件)κ 冻结、矛盾(sleepad InBed 但 radar 别床)κ 降。
+- **① κ probe**:多床 fixture 看 `FrameProbe.Kappa`——**持续在床(sleepad InBed + radar 在床)κ 建高并保持**(不衰减,这是 C 6-20 catch 的验收点)、空床 κ 冻结、矛盾(sleepad InBed 但 radar 别床持续)κ 降。
+- **反-orphan**:`grep updateKappaFromState engine.go` 有调用点;probe 的 κ 在持续在床段确实**上升**(死函数 = κ 永远等于冷启值不动)。
 - **标定项**(留 oracle / form-anchor,铁律 [[fall_data_is_artificial_test]] 无真实多床/真摔数据):`lLeftOpen` 量级、`kappaWindowMs`=15s、`γ`。先锚方向/符号,曲线留实测。
 
 ## ⚠️ 注
