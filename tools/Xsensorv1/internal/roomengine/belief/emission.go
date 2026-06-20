@@ -22,11 +22,18 @@ type emissionParams struct {
 	lHR   float64 // L_hr：present|AtBed 倍数（absent|AtBed=1/L_hr）
 	lArea float64 // area_type 正向压制倍数（bed/sit/toilet→抬对应静止态）。area 误学(如假 Sit)的真摔
 	//                  由 FloorGuard 非累加总时长兜底（still 不进 emission，避免前向滤波累积），故 lArea 仅作 redirect 偏置
-	// 直立/活动证据对 SFallen 的抑制乘子（<1=压；移自 floor stillDiscount，单一归 emission 杜绝双压）。
-	// 逐帧物理排除倒地，取最强(min)；pose=Lying 真倒地时三条件全 false → 不压（lPose boost 照常）。
-	supWalk  float64 // pose∈{Walking,Running} → ×supWalk（在走=最强非摔）
-	supSit   float64 // pose=Sitting（仅椅/沙发）→ ×supSit
-	supStand float64 // z≥zStandCm（站立身高）→ ×supStand
+	// 直立证据（移自 floor stillDiscount，单一归 emission）：分两类施加，取最强(min) 压。
+	//   **压 SFallen（<1）⟺ 与"倒地静止"物理互斥**：z≥zStandCm（身高硬测，质心高≠贴地）∨ walk（运动⊥倒地静止：
+	//     摔者不动→不会被标 walking→压不到真摔；故 walk 压不要 z 门，纯标签可压）。standing/sit 是静态直立，与
+	//     "静态倒地（刚摔未及标 Lying）"共享静止→可混→**只抬不压**（z 未知不赌 fall，z<30 中性红线延续）。
+	//   **抬（>1）治 Empty/安置**：在场直立（walk/z≥80/standing）→ 抬 SOpenFloor（否则压腾出的质量归一漏进
+	//     默认 Empty=present 真人却判空房 + Empty→Fallen 种子 0 拖慢真摔）；sit → 抬 SSit。
+	//   walk∧z≥80：压取 min 一次、抬 SOpenFloor 一次（不叠，防过抬偏 SOpenFloor）。⚠️walk 边界：地板挣扎摔者
+	//     （低 z+乱动）可能误标 walk 被压→FN，靠 floor 时长兜底+转 Lying 接住（留 oracle 真挣扎数据验）。
+	supWalk  float64 // walk → SFallen ×supWalk（压，运动⊥倒地）
+	supStand float64 // z≥zStandCm → SFallen ×supStand（压，身高硬测）
+	redOpen  float64 // 在场直立 → SOpenFloor ×redOpen（抬，治 Empty/安置）
+	redSit   float64 // sit → SSit ×redSit（抬，弱排斥，不压 SFallen）
 }
 
 // zStandCm 站立身高阈：z≥此 → 与"躺地"互斥（摔倒质心 z 必低）。高 bar，单帧噪声 z<80 不误压真摔。
@@ -47,7 +54,8 @@ func defaultEmissionParams() emissionParams {
 	return emissionParams{
 		lIn: 20, lLeft: 20, lPose: 3, lHR: 5,
 		lArea:   2,
-		supWalk: 0.5, supSit: 0.8, supStand: 0.5,
+		supWalk: 0.5, supStand: 0.5,
+		redOpen: 2, redSit: 2,
 	}
 }
 
@@ -161,11 +169,26 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 		addLogLk(&logS, Vector{SOpenFloor: e.p.lArea}, w, SOpenFloor)
 	}
 
-	// 直立/活动证据压 SFallen（移自 floor stillDiscount，单一归 emission）：逐帧物理排除倒地，取最强(min)。
-	//   pose=Lying 真倒地 → 三条件全 false → d=1.0 不压（lPose ×3 boost 照常确认）。覆盖窄于 RadarPoseToCore：
-	//   不含坐地/床坐起/疑似摔（坐地=摔二义，FN-safe 不压）。z≥80 用身高硬证而非 pose=Stand。
-	if d := uprightSuppress(o, e.p); d < 1.0 {
-		addLogLk(&logS, Vector{SFallen: d}, w, SFallen)
+	// 直立证据（移自 floor stillDiscount，单一归 emission）：压 SFallen（仅与"倒地静止"物理互斥者）+ 抬直立态
+	//   （治 Empty/安置）。详见 emissionParams 注释。pose=Lying 真倒地 → 下列全不命中 → 不压（lPose ×3 boost 照常）。
+	d := 1.0
+	if o.PoseWalking { // 运动⊥倒地静止：摔者不动不会被标 walk，纯标签可压（不要 z 门）
+		d = math.Min(d, e.p.supWalk)
+	}
+	if o.Z >= zStandCm { // 身高硬测：质心 z≥80 与"贴地"互斥
+		d = math.Min(d, e.p.supStand)
+	}
+	if d < 1.0 {
+		addLogLk(&logS, Vector{SFallen: d}, w, SFallen) // 压（取最强 min）
+	}
+	// 抬：在场直立 → SOpenFloor（present-upright 兜底，否则归一漏进 Empty=判空房 + Empty→Fallen 种子 0 拖慢真摔）。
+	//   软站(Standing,z<80)只抬不压（z 未知不赌）；walk∧z≥80 也只抬一次（不叠）。
+	if o.PoseWalking || o.Z >= zStandCm || o.PoseStanding {
+		addLogLk(&logS, Vector{SOpenFloor: e.p.redOpen}, w, SOpenFloor)
+	}
+	// 坐=弱排斥：只抬 SSit（不压 SFallen——坐着可能下刻滑倒，软 redirect 保边界报路）。
+	if o.PoseSit {
+		addLogLk(&logS, Vector{SSit: e.p.redSit}, w, SSit)
 	}
 
 	// HR/RR（非对称 + §D 门控）：w_hrrr=covers·1[nearBed]。
@@ -201,22 +224,6 @@ func (e *Emission) geom0Covers() float64 {
 		}
 	}
 	return mx
-}
-
-// uprightSuppress 直立/活动证据对 SFallen 的抑制乘子，取最强(min)。仅 RadarOnline 调（调用方已 gate）。
-// pose=Lying 真倒地时 PoseWalking/PoseSit=false 且 z<80 → d=1.0 不压；否则按命中项取 min。
-func uprightSuppress(o Observation, p emissionParams) float64 {
-	d := 1.0
-	if o.PoseWalking {
-		d = math.Min(d, p.supWalk)
-	}
-	if o.PoseSit {
-		d = math.Min(d, p.supSit)
-	}
-	if o.Z >= zStandCm {
-		d = math.Min(d, p.supStand)
-	}
-	return d
 }
 
 // addLogLk 把似然向量 comp（仅 keys 给定态非中性，其余视为 1）按权重 w 加进 logS。

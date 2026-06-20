@@ -177,15 +177,16 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, p Para
 	}
 	nb := nearBed(t, beds, p)
 	return belief.Observation{
-		Sleepad:     sl,
-		RadarOnline: t.Online,
-		PoseLying:   t.Online && t.Pose == p.PoseLying,
-		PoseWalking: t.Online && (t.Pose == observation.PoseWalking || t.Pose == observation.PoseRunning),
-		PoseSit:     t.Online && t.Pose == observation.PoseSitting,
-		Z:           t.Z,
-		StillSec:    t.StillSec,
-		NearBed:     nb,
-		NearBedMask: nearBedMask(t, beds, p),
+		Sleepad:      sl,
+		RadarOnline:  t.Online,
+		PoseLying:    t.Online && t.Pose == p.PoseLying,
+		PoseWalking:  t.Online && (t.Pose == observation.PoseWalking || t.Pose == observation.PoseRunning),
+		PoseStanding: t.Online && t.Pose == observation.PoseStanding,
+		PoseSit:      t.Online && t.Pose == observation.PoseSitting,
+		Z:            t.Z,
+		StillSec:     t.StillSec,
+		NearBed:      nb,
+		NearBedMask:  nearBedMask(t, beds, p),
 		// HRRRObserved 仅当雷达**真返** HR/RR（铁律 [[radar_hr_rr_bed_enter_gated]]：radar enter-gate，
 		// 近床但无 vital = 结构性未测 = 零信息，**非「观测到 absent」**；否则 §D 会在合法在床期误否决 AtBed）。
 		HRRRObserved:      t.HR > 0 || t.RR > 0,
