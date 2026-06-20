@@ -854,7 +854,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			RawZ:         ts.LastRawZ,
 			Pose:         ts.LastPose,
 			MoveActive:   ts.StillBoxRunStart == 0 || ts.LastObservedMs == nowMs,
-			Present:      ts.LastObservedMs == nowMs,
+			Present:      nowMs-ts.LastObservedMs < presenceCoastMs,
 			SleepadInBed: sleepadInBed,
 			FwAreaID:     ts.LastFwAreaID,
 		}
@@ -897,6 +897,12 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 	}
 	return out
 }
+
+// presenceCoastMs：在场判定容忍窗——「最近一个 radar 周期内被观测过 = 仍在场」。radar ~1Hz（实测帧间隔
+// median 1000ms），跨流 tick（sleepad bed 事件 / neighbor / timer 触发，无新 radar 帧）的 nowMs 与 radar 末帧
+// 错开（实测 ≤807ms）；用 ==nowMs 严判会把连续在报的 radar track 一拍误判离场 → 误进 belief lost 分支 →
+// ExitLogOdds 翻陈旧 ExitRoom → absorbed-drop → census 重生 lid churn。1200ms 容忍跨流 tick，真丢轨（多秒）仍判离场。
+const presenceCoastMs = 1200
 
 // lostExitRec 丢轨离房趋势快照（SnapshotTrackStatuses 每帧算，丢轨后冻结）。
 type lostExitRec struct {
