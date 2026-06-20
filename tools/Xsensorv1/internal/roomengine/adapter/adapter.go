@@ -67,6 +67,9 @@ type FrameInput struct {
 	Onbed    []float64
 	Overlap  []float64
 	Census   Census
+	// RadarLess 无雷达 layout（sleepad-only 房）：无姿态轴 → 物理上测不了 fall。合成 bed-track 只带 B 轴占用，
+	// 其 pose=Lying 是占用载体非真姿态 → 硬闸 Decision.Fire=false，杜绝离床转 lost 时 SFallen 爬出的假 Fall。
+	RadarLess bool
 	// 桶二镜像几何（§69/§70）：墙矩形 + 雷达自身位置（房 config-static；无 wall→IsReflection 恒 false=零回归）。
 	Walls    []Rect
 	RadarPos Point

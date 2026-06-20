@@ -195,6 +195,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		Sleepads:   sleepads,
 		Beds:       g.beds,
 		BedAreaIDs: g.bedAreaIDs,
+		RadarLess:  g.radarLess,
 		Covers:     covers,
 		Onbed:      onbed,
 		Overlap:    overlap,

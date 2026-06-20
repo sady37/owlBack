@@ -254,6 +254,10 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 				}
 			}
 		}
+		// 无雷达房硬闸：sleepad-only 测不了姿态 → 永不出 Fall（合成 bed-track 的 Lying 是占用载体非真摔）。
+		if fi.RadarLess {
+			d.Fire = false
+		}
 		// fall fire 后该 track 推断 episode 结束（fired ⇒ 非 absorbed-drop，互斥）：记下供下方 belief 就地复位
 		//   + track_id 回传 tm 复位 still-box，从 0 热机重判（不动 census 身份/realness、不动 repeat 前科）。
 		if d.Fire {
