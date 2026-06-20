@@ -95,8 +95,11 @@ type TrackManager struct {
 	// PR-11: 双方一致 InBed 时间窗判定 — sleepad 与 radar 各自最近 InBed 事件 ts。
 	// 仅当 |sleepadInBed - radarInBed| ≤ 15s 时，sleepad HR/RR 视作可信，触发 AreaBed cell refresh。
 	lastSleepadInBedMs int64
-	lastRadarInBedMs   int64
+	lastRadarInBedMs   int64 // radar 离散 InBed **事件** ts（状态翻转权威；非每帧几何）
 	lastRadarLeftBedMs int64 // 审查㊾:radar LeftBed ts(any-source-OR bed 占用 veto)
+	// lastRadarInBedGeomMs：way3 每帧"present track 在 firmware 床区"几何续命 ts（连续在床补 InBed 事件缺失）。
+	// 与离散 InBed 事件分开存：几何分不出"躺床/站床边"，须服从离床 latch——不得越过离散 LeftBed 续命床占用。
+	lastRadarInBedGeomMs int64
 
 	// lastNumberPeople：固件最近一次上报的房内人数(单一 np latch,审查51 #1.3 单源真相)。
 	// np=0 ≡ count==0(原 lastNumberPeopleZeroMs subsume 进此,不留两个独立 latch 防 drift)。
@@ -603,38 +606,46 @@ func (tm *TrackManager) fwIsBed(areaID int) bool {
 func (tm *TrackManager) BedOccupancyState(nowMs int64) card.BedState {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	var latestInBed, latestLeftBed int64
+	// 离散事件层(状态翻转权威,any-source-OR):InBed/LeftBed 事件不分 sleepad/radar 平等参与。
+	//   几何续命(lastRadarInBedGeomMs)**不**进此层——它服从下方离床 latch。
+	var latestInBedEvt, latestLeftBed int64
 	inBedFromSleepad := false
 	for _, s := range tm.bedSessions {
-		if s.InBedSinceMs > latestInBed {
-			latestInBed, inBedFromSleepad = s.InBedSinceMs, true
+		if s.InBedSinceMs > latestInBedEvt {
+			latestInBedEvt, inBedFromSleepad = s.InBedSinceMs, true
 		}
 		if s.LeftBedAtMs > latestLeftBed {
 			latestLeftBed = s.LeftBedAtMs
 		}
 	}
-	// 连续 sleepad InBed monitor（bed_status=0）也建立 InBed，不只离散事件：InBed 事件常缺前置
-	//   （窗裁/sensor 重启/firmware 只发 monitor 不补事件），但连续 bed_status=0 在 sleepadStates 里持续报在床
-	//   → 用其最新 TMs 作 latestInBed（连续刷新，[[bed_stale_leftbed_vetoes_radar_inbed]]）。离床即 noreport→不再刷。
+	// 连续 sleepad InBed monitor（bed_status=0）也算接触在床(非几何):InBed 事件常缺前置（窗裁/重启/
+	//   firmware 只发 monitor），连续 bed_status=0 在 sleepadStates 持续报在床 → 用其最新 TMs。离床即 noreport→不再刷。
 	for _, s := range tm.sleepadStates {
-		if s.InBed && s.TMs > latestInBed {
-			latestInBed, inBedFromSleepad = s.TMs, true
+		if s.InBed && s.TMs > latestInBedEvt {
+			latestInBedEvt, inBedFromSleepad = s.TMs, true
 		}
 	}
-	if tm.lastRadarInBedMs > latestInBed {
-		latestInBed, inBedFromSleepad = tm.lastRadarInBedMs, false
+	if tm.lastRadarInBedMs > latestInBedEvt { // radar 离散 InBed 事件（firmware 进床判定，非每帧几何）
+		latestInBedEvt, inBedFromSleepad = tm.lastRadarInBedMs, false
 	}
 	if tm.lastRadarLeftBedMs > latestLeftBed {
 		latestLeftBed = tm.lastRadarLeftBedMs
 	}
-	if latestInBed == 0 && latestLeftBed == 0 {
-		return card.BedState{} // 真无床数据(InBed/LeftBed 都没)→ BedConfidence=0,不喂 shadow
-	}
-	if latestLeftBed >= latestInBed {
-		// 任一源 LeftBed ≥ 最近 InBed(any-source-OR veto)→ 离床 → 不压 → Fall 浮出(漏报-safe,审查㊾)。
-		// 含"无在先 InBed"(latestInBed==0):LeftBed 是观测信号 + 床边真摔高风险 → 从宽认定离床,
-		// 不依赖在先 InBed(否则 sensor 重启/数据裁切丢了 InBed 就吞掉离床=漏报)。
+	// 离床 latch:任一源 LeftBed 事件 ≥ 最近离散 InBed 事件 → 释放(any-source-OR veto,审查㊾ 漏报-safe)。
+	//   **几何续命被 latch 否决**:radar firmware-area 分不出"躺床/站床边"，不得越过离散 LeftBed 续命床占用
+	//   （治 way3 回归:人离床站床边 area_id 仍在床区→每帧顶掉 LeftBed→BedReleased 永假→压 SFallen=床边摔漏报）。
+	//   解 latch 须靠后续离散 InBed 事件(任一源接触/firmware 进床)，非几何。含"无在先 InBed"(latestInBedEvt==0):
+	//   LeftBed 从宽认定离床(sensor 重启/数据裁切丢 InBed 不吞离床)。
+	if latestLeftBed > 0 && latestLeftBed >= latestInBedEvt {
 		return card.BedState{BedStatus: 1, BedStatusTs: latestLeftBed, BedConfidence: bedConfSleepad}
+	}
+	// 未被 latch:事件层 InBed 胜(或从无 LeftBed)。此时几何续命才作"连续在床"补证(InBed 事件常缺前置)。
+	latestInBed := latestInBedEvt
+	if tm.lastRadarInBedGeomMs > latestInBed {
+		latestInBed, inBedFromSleepad = tm.lastRadarInBedGeomMs, false
+	}
+	if latestInBed == 0 {
+		return card.BedState{} // 真无床数据(InBed/LeftBed/几何 都没)→ BedConfidence=0,不喂 shadow
 	}
 	conf := bedConfSleepad // sleepad 接触式权威=90
 	if !inBedFromSleepad {
@@ -872,11 +883,12 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 				base.EnterTarget = c.EnterTarget
 			}
 		}
-		// present track 在 firmware 床区 = radar 连续 InBed 证据，刷新 lastRadarInBedMs（事件常缺前置/窗裁，连续刷补上）。
+		// present track 在 firmware 床区 = radar 连续 InBed 几何证据，刷 lastRadarInBedGeomMs（事件常缺前置/窗裁，连续刷补上）。
 		//   用 **firmware area_id（baseline type2/5，设备真值）** 而非 cell AreaBed：cell 含 sofa(lying 区)会把沙发误判成床；
-		//   firmware 床区只真床。离床后 area_id 变→不刷→LeftBed 胜；跌床落床边(area_id 非床)→不刷→LeftBed→Ψ→SFallen。
+		//   firmware 床区只真床。**写几何字段非离散事件字段**：几何分不出"躺床/站床边"，BedOccupancyState 让它服从离床 latch
+		//   （治 way3 回归:人离床站床边 area_id 仍在床区→每帧顶掉刚到的 LeftBed→床占用永不释放→压 SFallen）。
 		if base.Present && tm.fwIsBed(ts.LastFwAreaID) {
-			tm.lastRadarInBedMs = nowMs
+			tm.lastRadarInBedGeomMs = nowMs
 		}
 		// 离房趋势快照：仅丢轨首帧算一次（30s History 足够），冻结喂 ExitLogOdds（track 12s 驱逐后仍存）。
 		//   在场（含重新抓到）→ 清陈旧快照。ExitLogOdds 只被 belief 对 not-present track 查，在场轨的残留无害。
