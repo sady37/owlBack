@@ -98,6 +98,7 @@ type Room struct {
 	//   **非** census.Nr() present-only——否则独居者摔进 blind 时占用掉 0 误清零计时（lost-fall FN）。
 	aloneStreakStartMs int64
 	notSoloFrames      int // 连续占用≠1 帧数（重置抗抖动柱②：≥arrivalConfirmFrames 才清 alone-streak）
+	kappaLedger        []bedKappaLedger // ① 强化腿 per-bed 15s 窗（同向共跳）
 }
 
 // NewRoom 建单房引擎。geom = 床几何（adapter.BedGeoms 从 layout 派生）；nb = 床数。
@@ -117,6 +118,111 @@ func NewRoom(geom []belief.BedGeom, nb int) *Room {
 		p:             adapter.DefaultParams(),
 		realStreak:    map[int]int{},
 		prevConfirmed: map[int]bool{},
+		kappaLedger:   make([]bedKappaLedger, nb),
+	}
+}
+
+// bedKappaLedger ① 强化腿 per-bed 15s deferred 窗：检测 sleepad/radar 床事件同向共跳。
+type bedKappaLedger struct {
+	sleepadPrev belief.BedReading
+	radarPrev   bool
+	pend        bool
+	pendMs      int64
+	pendSDir    int // +1→InBed / -1→LeftBed
+	pendRDir    int // +1 enter / -1 leave
+}
+
+const kappaWindowMs = 15000 // ① 强化窗 K（case1/2 的 15s）
+
+// radarInBed ① 的 radar 半：FwAreaID==床。**不 gate Online**（钉① lost 边界）——lost-coasting track 的
+// FwAreaID 是 M×N 冻结末值；radar 半冻结、sleepad 半实时把关：人真离床→sleepad LeftBed→agree/matched=F
+// →κ 衰减，冻结 N 不会错误维持。evicted track 不在 fi.Tracks，自然不计。
+func radarInBed(fi adapter.FrameInput, j int) bool {
+	if j >= len(fi.BedAreaIDs) || fi.BedAreaIDs[j] == 0 {
+		return false
+	}
+	for _, t := range fi.Tracks {
+		if t.FwAreaID == fi.BedAreaIDs[j] {
+			return true
+		}
+	}
+	return false
+}
+
+// maintainKappa ① 维持腿（per-frame 弱 γ）：持续共态 agree=sIn∧rIn → 熟睡持续在床托住 κ 抗衰减。
+func (r *Room) maintainKappa(fi adapter.FrameInput) {
+	live := make([]bool, r.nb)
+	agree := make([]bool, r.nb)
+	for j := 0; j < r.nb; j++ {
+		sOn := j < len(fi.Sleepads) && fi.Sleepads[j].Present
+		sIn := sOn && fi.Sleepads[j].Reading == belief.BedInBed
+		rIn := radarInBed(fi, j)
+		live[j] = sOn && (sIn || rIn) // both-vacant→冻结；sleepad 离线→不动非衰减
+		agree[j] = sIn && rIn         // 持续共占→维持抬；真离床 sIn=F→agree=F→弱衰减
+	}
+	r.cp.MaintainKappa(agree, live)
+}
+
+// eventKappa ① 强化腿（15s deferred 窗，强 γ）：同向共跳→强抬（时间绑同人）。钉②：只"sleepad 在床
+// ∧ radar 持续别床"才强降；"sleepad 跳入 + radar 持续在床(agree)"→不强更新，交维持腿托（不误判矛盾）。
+func (r *Room) eventKappa(fi adapter.FrameInput) {
+	matched := make([]bool, r.nb)
+	live := make([]bool, r.nb)
+	for j := 0; j < r.nb; j++ {
+		L := &r.kappaLedger[j]
+		cur, sOn := belief.BedNoReport, false
+		if j < len(fi.Sleepads) {
+			cur, sOn = fi.Sleepads[j].Reading, fi.Sleepads[j].Present
+		}
+		sDir := 0
+		if cur != L.sleepadPrev {
+			if cur == belief.BedInBed {
+				sDir = +1
+			} else if cur == belief.BedLeftBed {
+				sDir = -1
+			}
+		}
+		L.sleepadPrev = cur
+		rNow := radarInBed(fi, j)
+		rDir := 0
+		if rNow != L.radarPrev {
+			if rNow {
+				rDir = +1
+			} else {
+				rDir = -1
+			}
+		}
+		L.radarPrev = rNow
+		if sDir != 0 || rDir != 0 {
+			if !L.pend {
+				L.pend, L.pendMs = true, fi.NowMs
+			}
+			if sDir != 0 {
+				L.pendSDir = sDir
+			}
+			if rDir != 0 {
+				L.pendRDir = rDir
+			}
+		}
+		if L.pend && fi.NowMs-L.pendMs >= kappaWindowMs {
+			coTrans := L.pendSDir != 0 && L.pendRDir != 0 && L.pendSDir == L.pendRDir
+			sInNow := sOn && cur == belief.BedInBed
+			contradiction := sInNow && !rNow // 钉②：仅 sleepad 在床∧radar 持续别床=真矛盾
+			matched[j] = coTrans
+			live[j] = coTrans || contradiction // 钉②：sleepad 跳入+radar 持续在床→双 F→no-op 交维持腿
+			*L = bedKappaLedger{sleepadPrev: cur, radarPrev: rNow}
+		}
+	}
+	r.cp.UpdateKappa(matched, live)
+}
+
+// applyLeftBedOpen ③：把 LeftBed→SOpenFloor/SBlindRest 的 S 轴满幅似然注入 logPhi（按 a_j 归属）。
+func (r *Room) applyLeftBedOpen(logPhi belief.JointVector, obs belief.Observation, gxy []float64, present bool) {
+	lb := r.cp.LeftBedOpenLogS(obs, gxy, present)
+	for s := range lb {
+		if lb[s] != 0 {
+			r.js.AddLogToS(logPhi, belief.State(s), lb[s])
+		}
 	}
 }
 
@@ -131,6 +237,8 @@ type trackResult struct {
 // Tick 一帧推进。rhoXroom（neighbor，单房=0）。每条 track 各跑一份滤波，房间 OR 聚合真人 fall。
 func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	r.census.Update(fi.NowMs, fi.Tracks, fi.RadarPos, fi.Walls, fi.Entrances)
+	r.maintainKappa(fi) // ① 维持腿（per-frame 弱 γ，熟睡托）
+	r.eventKappa(fi)    // ① 强化腿（15s 窗 强 γ，同向共跳建立）
 	online := adapter.Online(fi)
 	nr := r.census.Nr()
 	// 独居连续分钟用**上 tick 末**的 streak 状态（占用 streak 在本 tick 末更新，同 realStreak:208）→ 1 帧滞后，
@@ -175,8 +283,10 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		exitL := 0.0 // 离房对数几率（per-track）：present=0；消失态由 ExitLogOdds 算，floor 撤销(②)复用
 		if ts.Present {
 			obs = adapter.BuildObservation(ts.Obs.RadarTrack, fi.Sleepads, fi.Beds, fi.BedAreaIDs, r.p)
-			logPsi = r.cp.LogPsi(r.js, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p))
+			gxy := adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p)
+			logPsi = r.cp.LogPsi(r.js, gxy)
 			logPhi = r.em.LogPhi(r.js, obs)
+			r.applyLeftBedOpen(logPhi, obs, gxy, true) // ③ 在场 → SOpenFloor
 		} else {
 			// 消失态：雷达轴中性（RadarOnline=false），**接触轴(sleepad)仍应用**——在床 InBed→SBed
 			//   保护睡眠者；LeftBed→B vac→Ψ 放行 SFallen。belief **自然演化**（无人工 ramp，已作废）：
@@ -188,6 +298,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 				AreaType: ts.Obs.RadarTrack.AreaType, RoomType: ts.Obs.RadarTrack.RoomType,
 			}, fi.Sleepads, fi.Beds, fi.BedAreaIDs, r.p)
 			logPhi = r.em.LogPhi(r.js, obs)
+			r.applyLeftBedOpen(logPhi, obs, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p), false) // ③ lost → SBlindRest（gxy 用冻结末位）
 			// 离房证据按 track_id 注入 SLeft 对数似然（ExitRoom 硬 + trend+np 软，源在 track_manager）：
 			//   抬 SLeft → 压 pF（不 fire）+ 够强自然 absorbed-drop。≥flip 阈 → Unit timer cancel（lostExited）。
 			if fi.ExitLogOdds != nil {

@@ -8,13 +8,15 @@ package belief
 
 // couplingParams §3/§4 形态参数。开发阶段锚方向/符号，标定见 feedback-p6C（γ 遗忘率 / c_∅ / ε_art §C3）。
 type couplingParams struct {
-	gamma  float64 // κ EMA 遗忘率（§3：K 动作+延迟窗固定，只调 γ）
-	cEmpty float64 // a_∅ 的 c_∅（无床归属质量；远离床时 Ψ→中性的载体）
-	epsArt float64 // ψ_phys(F,occ) 被子残留极小（§E/§C3：用在床段 pose=Lying 占比反推，非凭空 1e-3）
+	gammaEvt  float64 // 强化腿:同向共跳 EMA（强,稀疏触发,15s 窗;建立绑同人）
+	gammaHold float64 // 维持腿:持续共态 per-frame EMA（弱,抗衰减;熟睡托）
+	cEmpty    float64 // a_∅ 的 c_∅（无床归属质量；远离床时 Ψ→中性的载体）
+	epsArt    float64 // ψ_phys(F,occ) 被子残留极小（§E/§C3：用在床段 pose=Lying 占比反推，非凭空 1e-3）
+	lLeftOpen float64 // ③ LeftBed→SOpenFloor 满幅似然（≫ SBed boost lArea；oracle）
 }
 
 func defaultCouplingParams() couplingParams {
-	return couplingParams{gamma: 0.2, cEmpty: 0.2, epsArt: 1e-2}
+	return couplingParams{gammaEvt: 0.2, gammaHold: 0.01, cEmpty: 0.2, epsArt: 1e-2, lLeftOpen: 5}
 }
 
 // Coupling 持有每床 κ 状态（跨帧 EMA）+ 几何。numBeds 显式（B1）。
@@ -36,22 +38,25 @@ func NewCoupling(geom []BedGeom) *Coupling {
 // Kappa 第 j 床当前耦合置信（诊断/probe 用）。
 func (c *Coupling) Kappa(j int) float64 { return c.kappa[j] }
 
-// UpdateKappa §3 互活门控 EMA（无 max，可升可降）。每床：
-//   live[j]   = r 与 s_j 在 [t_e±K] 均在线（互活门控；对方离线/沉默 → 不更新，非"不同床"）。
-//   matched[j]= 另一设备在 K 内有匹配床事件（Bernoulli 目标）。
-// 仅 live[j]=true 才更新；否则该床无信息、κ 不动（带遗忘 Beta–Bernoulli，几何作先验伪计数）。
-func (c *Coupling) UpdateKappa(matched, live []bool) {
-	g := c.p.gamma
+// emaKappa §3 互活门控 EMA（无 max，可升可降）。仅 live[j]=true 才更新；否则该床无信息、κ 不动
+// （带遗忘 Beta–Bernoulli，几何作先验伪计数）。两腿共用，差在 γ。
+func (c *Coupling) emaKappa(target, live []bool, gamma float64) {
 	for j := range c.kappa {
 		if j < len(live) && live[j] {
 			m := 0.0
-			if j < len(matched) && matched[j] {
+			if j < len(target) && target[j] {
 				m = 1.0
 			}
-			c.kappa[j] = (1-g)*c.kappa[j] + g*m // 无 max：可升可降
+			c.kappa[j] = (1-gamma)*c.kappa[j] + gamma*m // 无 max：可升可降
 		}
 	}
 }
+
+// UpdateKappa 强化腿：同向共跳 matched（15s 窗解析，强 γ_evt；时间共现绑同人，破空间平局）。
+func (c *Coupling) UpdateKappa(matched, live []bool) { c.emaKappa(matched, live, c.p.gammaEvt) }
+
+// MaintainKappa 维持腿：持续共态 agree（per-frame，弱 γ_hold；熟睡持续在床托住 κ 抗衰减）。
+func (c *Coupling) MaintainKappa(agree, live []bool) { c.emaKappa(agree, live, c.p.gammaHold) }
 
 // attachment §4 软床归属：a_j=κ_j g^xy_j / (Σ_j' κ_j' g^xy_j' + c_∅)，a_∅=c_∅/(·)。
 // gxy[j]=雷达对床 j 的几何 XY 可分性（能分→尖峰 / 只知在某床→床间均匀 / 看不见→0）。长 numBeds。
@@ -110,6 +115,24 @@ func (c *Coupling) LogPsi(js *JointSpace, gxy []float64) JointVector {
 			psi += a[j] * psiTilde
 		}
 		out[i] = logP(psi)
+	}
+	return out
+}
+
+// LeftBedOpenLogS ③ cd2b 主路径：sleepad LeftBed → 按 a_j 归属在 S 轴满幅抬 SOpenFloor（present）/
+// SBlindRest（lost）。满幅 lLeftOpen 不被 Con 二次折扣（a_j 已分概率）；g^xy 几何门控多住户假摔
+// （邻床 LeftBed 对在别床 track g^xy≈0→a_j≈0 不串）。注入 logPhi 的 S 轴（engine AddLogToS）。
+func (c *Coupling) LeftBedOpenLogS(o Observation, gxy []float64, present bool) [numStates]float64 {
+	var out [numStates]float64
+	a, _ := c.attachment(gxy)
+	target := SOpenFloor
+	if !present {
+		target = SBlindRest
+	}
+	for j := range c.kappa {
+		if j < len(o.Sleepad) && o.Sleepad[j] == BedLeftBed {
+			out[target] += a[j] * logP(c.p.lLeftOpen)
+		}
 	}
 	return out
 }
