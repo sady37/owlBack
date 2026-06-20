@@ -204,11 +204,11 @@ $$\delta_{\text{pad/floor}}=D_{\mathrm{KL}}\!\big(P(\text{XY}\mid\text{on-pad})\
 
 **真正要新建的只有两件**（cd2b 真解收敛于此，其余现成结构在干活）：
 
-1. **$\kappa$ 变活（wire `UpdateKappa`）** —— 现 orphan（零调用），$\kappa$ 死在几何冷启、只 $g^{xy}$ 半边活。落点：每帧每房在 per-track `LogPsi` loop 前**无条件**调（末尾必调 `UpdateKappa`，防再成 orphan）。**$\kappa$ = sleepad$_j$ 与"雷达床 $j$ 占用"的持续状态一致性，一个 per-frame `matched` 同时干"建立+维持"（C 2026-06-20 定稿，吸收跳变非二选一/非双腿）**：
-- `matched[j]` = sleepad InBed ∧ radar `FwAreaID==`床 $j$（per-frame 瞬时；radar 半 lost 时用 M×N 冻结末值、sleepad 半实时把关 = lost 边界）。
-- **建立** = `matched` 上升沿（0→1，"同步上床"那刻）——上升沿**就是**跳变，不必单独事件窗。**维持** = `matched` 持续 true（熟睡持续在床 → $\kappa$ 持续抬，天然抗衰减，无需冻结 gate）。
-- `live`=双在线（传感器级）∧ 至少一方占用（both-vacant→冻结）；**衰减仅 live∧¬matched**（都在线却一方说不在床=真矛盾，多床消歧），无 live→不动非衰减。
-- 小 $\gamma$（$\tau{\approx}20\text{-}100\text{s}$，per-frame 小步）→ 上升沿启动的 ramp 分钟级建稳不抖。删 deferred 窗，Room 无状态。$\kappa$=**纯归属权重**，不碰 SBed 维持（承重不变量见 §4：SBed 由"证据抬 vs 0.80 自衰减"平衡决定，真睡者总有 $\kappa$-free 直接源撑，故 $\kappa$ 升降 FN-safe、**无需防睡眠者 gate**）。
+1. **$\kappa$ 变活（wire `UpdateKappa`）** —— 现 orphan（零调用），$\kappa$ 死在几何冷启、只 $g^{xy}$ 半边活。落点：每帧每房在 per-track `LogPsi` loop 前**无条件**调（末尾必调 `UpdateKappa`，防再成 orphan）。**$\kappa$ 两条腿喂，各管各 $\gamma$（C feedback_a5 定稿：双腿不可合并，根在 $\gamma$ 矛盾）**。空间分不开哪张床时**靠时间共现破平局**——雷达只知 `pos`+`是床`，推不出 BedA/BedB（几何平局 $g^{xy}_A{\approx}g^{xy}_B$）；但 sleepad$_A$ InBed 事件与 radar track 入床区**同刻**（±15s）→ 绑同人（靠时间不靠位置）：
+- **强化腿**：同向共跳 15s deferred 窗（sleepad 与 radar 床事件同向、窗内）→ 强 $\gamma_{\text{evt}}{=}0.2$，建立关联（时间绑同人）。钉②：只在"sleepad 在床 ∧ radar 持续别床"=真矛盾→强降；"sleepad 跳入 + radar 持续在床（agree）"→不强更新，交维持腿。
+- **维持腿**：持续共态 `agree`=sleepad InBed ∧ radar `FwAreaID==`床 $j$（per-frame）→ 弱 $\gamma_{\text{hold}}{\approx}0.01$，维持 $\kappa$ 抗衰减（熟睡持续在床保持高）。`live`=双在线∧至少一方占用（both-vacant→冻结）。
+- **钉① lost 边界**：`radarInBed` 不 gate Online（用 M×N 冻结末值），sleepad 半实时把关——人真离床→sleepad LeftBed→agree/matched=F→$\kappa$ 衰减，冻结 N 不误维持。
+- 一个 $\gamma$ 做不到"建立要大步快锁、维持要小步稳不抖"→ 两腿不可合并。两腿同更 $c.\kappa$ 叠加：事件快跳、持续慢托。$\kappa$=**纯归属权重**，不碰 SBed 维持（承重不变量见 §4：SBed 由"证据抬 vs 0.80 自衰减"平衡决定，真睡者总有 $\kappa$-free 直接源撑，故 $\kappa$ 升降 FN-safe、**无需防睡眠者 gate**）。
 
 2. **LeftBed → SOpenFloor（组件③，cd2b 主路径）** —— 现 emission 的 LeftBed 只推 $B{\to}$vac，需补：在 $S$ 轴**主动满幅**抬 SOpenFloor，按 $a_j$ 归属（$g^{xy}$ 几何门控：邻床 LeftBed 对在别床 track $g^{xy}{\approx}0\to a_j{\approx}0$ 不串=多住户假摔被几何自然兜住）。落点按 track 态：在场→SOpenFloor / lost→SBlindRest / 先 Open 再 lost→SBlindOpen。「满幅」= 不被 Con 二次折扣（$a_j$ 已分过概率），靠 SOpenFloor 单位量级 $\gg$ SBed 做"进床慢离床快"不对称。
 
