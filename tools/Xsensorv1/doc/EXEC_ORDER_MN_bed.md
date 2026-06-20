@@ -58,10 +58,17 @@ radar 判"人在床上"→抬 SBed 的那一项,把 **N(在不在床)从 cell �
 cd2b 反射 track 几何/firmware 都在床区内 → **N=1**,M×N 仍高 → 反射照样钉 SBed → cd2b 还是漏。
 M×N 是把"雷达床判定"做成正确的概率加权(架构师要的"不管用不用先实现"),**不是 cd2b 的解**。
 
-## cd2b 的真解在后面(M×N 之后的路线,本会话已讨论定调)
-1. **各设备事件独立推 S,谁也不压谁**:radar area=bed→SBed(×M×N);sleepad+radar **LeftBed→快抬 SOpenFloor+SBlindRest**(不对称:进床慢、离床快)。
-2. **LeftBed 落点按 track 状态**:在场→SOpenFloor;lost→SBlindRest;先 SOpenFloor 再 lost→SBlindOpen。
-3. **牙齿问题**:反射每帧连续抬 SBed,LeftBed 是一次性 → LeftBed 要 **durable 赢**(latch:B 放空黏住,只新 InBed 能清 / 或离床态自持)。
-4. **Q3 状态驱动兜底**:floor 现在用 `tFloorFor(area)` 绕过 belief 状态(SBath/SBlindOpen 算了没当权威用);
-   要改成"**在态时长**"驱动(in SOpenFloor/SBlindOpen ≥ open-tFloor → fire;Empty 清各占用态)。SBath→Empty 转移现在=0,要补。
-5. sleepad-only(无 radar track)天生测不了 fall(没 pose 抬不了 SFall)—— 接受,不设计。
+## cd2b 真解(M×N 之后,2026-06-20 A+C 对码收敛 —— 权威见 `doc/DBN-Zone-Room.md` §11)
+
+**收敛:cd2b 真解只新建两件,其余现成结构在干活。**
+
+1. **① $\kappa$ 变活(wire `UpdateKappa`)**:现 orphan,$\kappa$ 死在几何冷启。落点=每帧每房 per-track `LogPsi` 前调,`matched/live` per-bed 从 15s K 窗事件算。$\kappa$=**纯归属权重**(决定 sleepad 床信息贴哪个雷达 logicID、贴多强),**不碰 SBed 维持**;无需防睡眠者衰减 gate(承重不变量见 DBN §4)。
+2. **③ LeftBed→SOpenFloor(主路径)**:emission 的 LeftBed 现只推 $B{\to}$vac,补:$S$ 轴**主动满幅**抬 SOpenFloor,按 $a_j$ 归属($g^{xy}$ 几何门控多住户假摔)。落点按 track 态:在场→SOpenFloor / lost→SBlindRest / 先 Open 再 lost→SBlindOpen。
+
+**不用单建(我曾当补丁加、已砍回)**:
+
+3. ~~**牙齿 latch**~~ **删**:「LeftBed 一次性 vs 反射每帧抬 SBed」的持久压制**已是 $B$ 轴结构自带**——`bed_axis.go` `kObs` $B\text{vac}{\to}B\text{vac}{\approx}0.99$ 自持 + 只 InBed($L_{\text{in}}{=}20$)能扳回,正是"咬住、只 InBed 能松";配 $\Psi(\text{SBed},\text{vac}){=}1{-}o_j$ 每帧压。LeftBed 经 $B$ 轴是持久、每帧施加的,非一次性。
+4. ~~**Q3 状态驱动兜底**~~ **作废,floor 不改**:`floor.go` `StillSec >= tFloorFor(area)` 是 **belief-独立天花板**(专为 belief 判错兜底)。"状态驱动 / per-state tFloor"会把兜底焊回它该兜的 belief 上=纵深防御塌一层,**不做**。床边摔(床矩形外=open cell)→ floor 12min 独立兜底,belief 卡 SBed 也照响;床矩形内+③失败=残留,靠实测验证③不靠改 floor。(`SBath→SEmpty=0` 是独立的转移完整性小修,有间接路 SBath→Left→Empty,低优可单独定。)
+5. **sleepad-only(无 radar track)天生测不了 fall**(没 pose 抬不了 SFall)—— 接受,不设计。
+
+**M×N 与 cd2b 的关系**:M×N(本批令)把"雷达床判定"做成正确概率加权,**不修 cd2b**(反射 firmware 也在床区→N=1→照钉 SBed);cd2b 靠上面 ①+③。

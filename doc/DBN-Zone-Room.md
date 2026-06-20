@@ -108,6 +108,14 @@ $$\tilde\psi_j(S,B^j)=\kappa_{r,s_j}\,\psi_{\text{phys}}(S,B^j)+(1-\kappa_{r,s_j
 - 远离任何床 → $g^{xy}_j\to0$ → $a_j\to0$ → $\Psi$ 中性：开阔地跌倒不牵涉床垫（**靠轨迹位置 $g^{xy}$ 门控，非显式势惩罚**；这也是为什么 `else=1` 不罚 $O$+occ 仍自洽）。
 - 几何 `overlap` 与时间 `co-occur` 是**同一个量 $\kappa$ 的两种估计**；但 `overlap` 还另含床内对齐 $o_j$，时间估不出——「时间替代几何」只对同床归属 $\kappa$ 成立。
 
+**$\kappa$ 衰减 FN-safe 的承重前提（2026-06-20，A+C 对码核实）**：曾担心「安静熟睡者无床事件 → $\kappa$ 衰减 → $a_j$ 降 → SBed 保护掉 = FN」，欲加「无事件不衰减」的 gate。核实后**收回，gate 不需要**——因为 SBed 有两类来源，$\kappa$ 只进其一：
+- **(a) 雷达直接抬 SBed，全 $\kappa$-free**：M×N(firmware 床 area_id)/HR-RR(近床 present)/pose=Lying，均在 `radarLogS` 直接 `addLogLk`，不过 $\kappa$。
+- **(b) 睡垫 B 轴 → $\Psi$ 耦合 → 拉 $S$ 向 SBed**：才过 $\kappa$（进 $a_j$ 与 $\tilde\psi=\kappa\psi_{\text{phys}}+(1-\kappa)$ **两处**，非单一线性权重）。
+
+SBed 在 $T$ 层有**自衰减 ≈0.80/tick**（model.go `SBed` 行自保持 $80/99.75$，~20% 流出；transition 层，**不分设备、不碰 $\kappa$**）。维持 = 「证据每帧抬 vs 自衰减」平衡：证据在→稳高位，证据没→几 tick 掉光（这本身就是正确的 FN-safe，不需主动清，亦答 §6 的「$B$/态无 →Empty 转移也不会永久滞留」）。$\kappa$ 衰减只削 (b)；真要保护的睡者**总有一条 (a) 的 $\kappa$-free 源撑 SBed**（雷达可见→HR/RR+firmware 床；睡垫-only→合成 bed-track 自带 pose=Lying+firmware 床），故 $\kappa$ 衰减**饿不死**他。结论：$\kappa$ = **纯归属权重**（多床多人时决定睡垫床信息贴哪个 track、贴多强），升降 FN-safe，wire UpdateKappa 不碰 SBed 维持。
+
+> ⚠️ **承重不变量**：「不要 gate」的安全**建立在**——*每个该保护的在床者都至少有一条 $\kappa$-free 直接 SBed 源（M×N / HR-RR / pose=Lying）*。现成立（firmware HR/RR-on-enterBed [[radar_hr_rr_bed_enter_gated]] + M×N + 合成 track pose=Lying 三重兜底）。**若哪天这条破了**（深睡 HR/RR 断流 / firmware 床 id 对真睡者漏报 / 合成 track 不再标 pose=Lying），(b) 路即承重，$\kappa$ 衰减就会 FN，gate 须回。这是承重**假设**非铁律，勿无声拆掉三重兜底之一。
+
 ### 5. 联合发射 $\Phi$（按 attachment 分轴，离线=中性）
 
 $$\Phi_t=\underbrace{\prod_{j}\ell_{s_j}\!\big(o^{s_j}_t\mid B^j\big)^{w_{s_j}}}_{\text{接触}\to B^j}\cdot\underbrace{\prod_{c}\ell_{c}\!\big(o^{c}_t\mid S\big)^{w_c}}_{\text{雷达 pose}/z/\text{dwell}/\text{hrrr}\to S}$$
@@ -189,6 +197,23 @@ $$\delta_{\text{pad/floor}}=D_{\mathrm{KL}}\!\big(P(\text{XY}\mid\text{on-pad})\
 - **单床退化**：$|\mathcal B|{=}1\Rightarrow a_1\!\approx\!1$、$B$ 向量降标量 → 回 18 态 $(S,B)$。
 - **一雷达多床**：$(r,s_1)/(r,s_2)$ 各维护 $\kappa_{r,s_1}/\kappa_{r,s_2}$，$\Psi$ 对各 $B^j$ 按各自 $\kappa$ 耦合；时间共现在几何分不开时把跌倒证据**路由到正确的床**。
 - **人数 $N_r$ / 真伪 ghost**：同构造换轴——$S^{(i)}$ 多份，$N_r=\sum_i\mathbb 1[S^{(i)}\notin\{E,L\}]$，realness $T^{(i)}$ 由跨 track $\rho$（与 $\kappa$ 同源的共现/镜面）耦合，$P(\text{ghost})$ 从 co-existence 涌现。与本床轴正交，同一滤波形式。（**realness 三类 → 两类 {Real, Mirror}、主职 = $N_r$ 排除 ghost、Static 溶解，见 §G**）
+
+### 11. radar↔sleepad logicID 融合定论（2026-06-20，A+C 同步，对码收敛）
+
+**设备 logicID 不硬合并、按相关性软摊**：每设备各有 track_id/logicID（雷达 track 会 switch 故用 logicID）。跨设备不强行归一（只能归一个=脆），而用相关性 $\text{Con}\in[0,1]$ 软分配——$\text{Con}{=}1$ 同一人完全合并，不确定按概率分。**Con 即本文 $\kappa/a_j/\Psi$，非新机制**：$\text{Con}_{ad}=\kappa_a(\text{房级})\cdot g^{xy}_a(\text{track }d)$，钉具体 track 靠 $g^{xy}$、$\kappa$ 管 sleepad 整体耦合强度。Fall 只由雷达 logicID 判，sleepad 经 Con 抬雷达 logicID 的 SBed（case3 平分 $=\sum_j a_j$ mixture，已在 `LogPsi`）。**case1**：$\text{win}_{15}(\text{InBed}_{\text{sleepad }a},\text{InBed}_{\text{radar }d})\to\text{Con}_{ad}{=}1$（雷达↔sleepad 共发，非两 sleepad，仍被 $g^{xy}$ 门控）。
+
+**真正要新建的只有两件**（cd2b 真解收敛于此，其余现成结构在干活）：
+
+1. **$\kappa$ 变活（wire `UpdateKappa`）** —— 现 orphan（零调用），$\kappa$ 死在几何冷启、只 $g^{xy}$ 半边活。落点：每帧每房在 per-track `LogPsi` loop 前调，`matched/live` per-bed 从 15s K 窗事件算。$\kappa$=**纯归属权重**，不碰 SBed 维持（承重不变量见 §4：SBed 由"证据抬 vs 0.80 自衰减"平衡决定，真睡者总有 $\kappa$-free 直接源撑，故 $\kappa$ 升降 FN-safe、**无需防睡眠者 gate**）。
+
+2. **LeftBed → SOpenFloor（组件③，cd2b 主路径）** —— 现 emission 的 LeftBed 只推 $B{\to}$vac，需补：在 $S$ 轴**主动满幅**抬 SOpenFloor，按 $a_j$ 归属（$g^{xy}$ 几何门控：邻床 LeftBed 对在别床 track $g^{xy}{\approx}0\to a_j{\approx}0$ 不串=多住户假摔被几何自然兜住）。落点按 track 态：在场→SOpenFloor / lost→SBlindRest / 先 Open 再 lost→SBlindOpen。「满幅」= 不被 Con 二次折扣（$a_j$ 已分过概率），靠 SOpenFloor 单位量级 $\gg$ SBed 做"进床慢离床快"不对称。
+
+**不用单建的两件**（我曾当补丁加、被砍回——「框架不是补丁」）：
+
+- **latch（牙齿）删**：「LeftBed 一次性 vs 反射每帧抬 SBed」的持久压制**已是结构自带**——$B$ 轴在线核 `kObs` $B\text{vac}{\to}B\text{vac}{=}1{-}\mu{\approx}0.99$（每帧 99% 黏住）、$B\text{vac}{\to}B\text{occ}{=}\mu{\approx}0.01$（只 InBed 似然 $L_{\text{in}}{=}20$ 能扳回），**正是「咬住、只 InBed 能松」**；离线走 `kUnobs` $\lambda$ 漏（半衰期 ~14s）。配 $\Psi(\text{SBed},\text{vac}){=}1{-}o_j$ 每帧压 SBed。LeftBed 的效果经 $B$ 轴是**持久、每帧施加**的，非一次性。
+- **floor 不改（⑤）**：`floor.go` `StillSec >= tFloorFor(area)` 是 **belief-独立的天花板**（不看 $P(\text{Fallen})$/不看状态，只 raw 时长 + area + 可观测豁免），专为「belief 判错时」兜底。**「状态驱动 / per-state tFloor」作废**（会把兜底焊回它该兜的 belief 上，纵深防御塌成一层）。床边摔（床矩形外=open cell）→ floor 12min **独立**兜底，哪怕 belief 被 M×N 卡 SBed 也照响；床矩形内 + ③ 失败=残留，靠**实测验证③**（cd2b 重测）不靠改 floor。（M×N firmware 床每帧 $\kappa$-free 重抬 SBed 是 ③/$B$-vac 压制的对手，胜负=量级问题，留实测。）
+
+> **大白话**：cd2b 真解 = ①让"睡垫和雷达是不是一个人"活起来（管贴给谁）+ ③ 人一离床立刻把"可能在地上"拉满（主动放行真摔）。牙齿是 $B$ 轴本来就有的，兜底 floor 本来就独立——都不用动。
 
 ---
 
