@@ -1,6 +1,0 @@
-{
-  "t_fire_ms": null,
-  "t_fire_utc": null,
-  "source": "alarm_events",
-  "note": "CABB最早alarm=05-21,本案05-04→firmware未火→非否决候选,从覆盖分母移除"
-}

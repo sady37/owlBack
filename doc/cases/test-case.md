@@ -1,4 +1,10 @@
-# case-d5f7-0617-23252357
+replay集
+# * case-d5f7-0617-23252357 replay  false stand, lost, 
+# * case-cabb-0616-17441802	replay  hunzi, bathroom lost,ghost,
+# * case-cd2b-0604-16141631  replay  201床边fall
+# case2  bedroom 窗帘误报  这个基本无解  replay
+
+# * case-d5f7-0617-23252357 replay
 case1  bathroom  still+D
 E598A2ACD5F7 20260617 23:25  
 101 bathroom    
@@ -19,7 +25,7 @@ E598A2ACD5F7 20260617 23:25
 进入bathroom,快速跌倒，被Radar检测，站起，再fall, 爬出room,在pose=2时， 人已出bathroom, 
 
 
-# case-def7-0618-1138-1142
+# * case-def7-0618-1138-1142  replay
 
 11:38  进入， 
 11：40  缓慢爬出，很快firmware就过滤掉，应该在30s左右
@@ -47,7 +53,7 @@ path 闸 + 30cm 抖动地板	✅ 2 次破盒均 disp=60>50, path=0——破在�
 
 
 
-# case2  bedroom 窗帘误报  这个基本无解
+# case2  bedroom 窗帘误报  这个基本无解  replay
 
 case-cd2b-0617-23302345-curtain
 2026-06-17 23:31:03(America/Denver)
@@ -61,7 +67,8 @@ case-333b-0618-13301333
 201bathroom  有跌倒，有ghost
 
 
-#	case (SH)	firmware	Xsensor	雷达姿态    bathroom 无ExitRoom
+# * case-cabb-0616-17441802	replay
+	case (SH)	firmware	Xsensor	雷达姿态    bathroom 无ExitRoom
 1	0612-05440555	报了 Fall	不报	Sitting×330 为主
 7	0616-09250933	报了 Fall	不报	Standing×499 / Sitting×415
 8	0616-17441802	报了 Fall	不报	Sitting×33 / Walking×17
