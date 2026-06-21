@@ -27,7 +27,8 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB, rdb *r
 	census := roomengine.NewSuiteCensusManager(rdb, roomengine.DefaultSuiteCensusConfig(), logger)
 	eng.SetSuiteCensus(census)
 
-	registered, err := registerAllRooms(ctx, eng, db, router, logger)
+	dac := newDeclareAreaClient(cfg.DataBaseURL, logger)
+	registered, err := registerAllRooms(ctx, eng, db, router, dac, logger)
 	if err != nil {
 		return nil, fmt.Errorf("register rooms: %w", err)
 	}
@@ -114,7 +115,7 @@ func buildRuntimeConfig(cfg *config.Config) roomengine.RuntimeConfig {
 }
 
 func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
-	router *dbnRouter, logger *zap.Logger) (int, error) {
+	router *dbnRouter, dac *declareAreaClient, logger *zap.Logger) (int, error) {
 
 	rows, err := db.QueryContext(ctx, `
 		SELECT r.room_id::text                                       AS room_id,
@@ -170,6 +171,25 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 	}
 	srows.Close()
 
+	// 每房雷达 device uid（hex）→ 取固件活体 declare_area 算床区 area_id。
+	radarUIDsByRoom := map[string][]string{}
+	rdrows, err := db.QueryContext(ctx, `
+		SELECT r.room_id::text, dfm.device_uid
+		FROM rooms r
+		JOIN devices d                ON r.room_id >>= d.device_addr
+		JOIN device_factory_meta dfm  ON dfm.device_uid = d.device_uid
+		WHERE dfm.device_type::text = 'Radar'`)
+	if err != nil {
+		return 0, err
+	}
+	for rdrows.Next() {
+		var rid, uid string
+		if rdrows.Scan(&rid, &uid) == nil && uid != "" {
+			radarUIDsByRoom[rid] = append(radarUIDsByRoom[rid], uid)
+		}
+	}
+	rdrows.Close()
+
 	count := 0
 	for rows.Next() {
 		var roomID, roomName, suiteID, tenantID string
@@ -201,6 +221,25 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 		cfg.SuiteID = suiteID
 		cfg.ResidentID = residentID
 
+		// 床区 area_id 单源 = 固件活体 declare_area（type∈{2,5}）。治 canvas 下发区域 vs 固件漂移：
+		// area_id 是固件槽位号，与上报 track FwAreaID 同源。覆盖 canvas 产出的 cfg.BedAreaIDs，
+		// 让 TrackManager.fwIsBed（membership）与 DBN bedHitMask（per-bed）同源。
+		var fwBeds []int
+		if hasLayout {
+			for _, uid := range radarUIDsByRoom[roomID] {
+				ids, ferr := dac.bedAreaIDs(ctx, uid)
+				if ferr != nil {
+					return 0, fmt.Errorf("room %s radar %s declare-area: %w", roomID, uid, ferr)
+				}
+				fwBeds = append(fwBeds, ids...)
+			}
+			cfg.BedAreaIDs = fwBeds
+			if len(fwBeds) == 0 {
+				logger.Warn("declare_area: no firmware bed area for layout room (N never hits → no SBed boost)",
+					zap.String("room", roomID))
+			}
+		}
+
 		eng.RegisterRoom(cfg)
 		eng.SetRoomTenant(roomID, tenantID)
 		// 进 DBN 判据 = 有任一信号源(雷达 layout OR sleepad)。bed_state 不依赖 layout：
@@ -215,13 +254,19 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 			for len(beds) < nb {
 				beds = append(beds, adapter.Rect{}) // 补 nominal 床(radar-less 无几何意义)
 			}
-			// bedAreaIDs 与 beds 同序：有 layout 取 firmware 声明 area_id；sleepad-only 房无雷达声明区，
-			//   给虚拟非零 id 让合成 bed-track 自洽命中 N（否则 sleepad InBed 无 SBed boost → 误判摔）。
+			// FrameInput.BedAreaIDs：per-bed 长度 nb，槽位填固件床区 area_id（与 beds 同序，bedHitMask 用）；
+			//   sleepad-only 房无雷达声明区 → 虚拟非零 id 让合成 bed-track 命中 N。固件源同 cfg.BedAreaIDs(fwBeds)。
 			bedAreaIDs := make([]int, nb)
-			for j := 0; j < nb; j++ {
-				if j < len(cfg.BedAreaIDs) && cfg.BedAreaIDs[j] != 0 {
-					bedAreaIDs[j] = cfg.BedAreaIDs[j]
-				} else if !hasLayout {
+			if hasLayout {
+				for j := 0; j < nb && j < len(fwBeds); j++ {
+					bedAreaIDs[j] = fwBeds[j]
+				}
+				if len(fwBeds) > nb {
+					logger.Warn("declare_area: firmware bed areas exceed canvas beds (truncated)",
+						zap.String("room", roomID), zap.Int("fw_beds", len(fwBeds)), zap.Int("nb", nb))
+				}
+			} else {
+				for j := 0; j < nb; j++ {
 					bedAreaIDs[j] = j + 1
 				}
 			}

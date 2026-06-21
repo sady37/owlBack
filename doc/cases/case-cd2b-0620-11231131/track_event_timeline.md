@@ -295,7 +295,7 @@ time     dev.tid  lid           pose  z    bed      event              top      
 11:29:00 CD2B.88  CD2B02338266  -     0    LeftBed  -                  BlindOpen  211   0.03  0.01  0.24  0.05  0.18  0.03
 11:29:32 CD2B.88  CD2B02338266  -     0    LeftBed  -                  BlindOpen  243   0.03  0.01  0.22  0.05  0.20  0.03
 11:29:32 CD2B.88  CD2B02338266  -     0    LeftBed  -                  BlindOpen  243   0.04  0.01  0.21  0.06  0.21  0.02
-11:30:04 CD2B.88  CD2B02338266  -     0    LeftBed  -                  BlindOpen  274   0.04  0.01  0.20  0.06  0.21  0.02
+11:30:04 CD2B.88  CD2B02338266  -     0    LeftBed  -                  BlindOpen  274   0.04  0.01  0.20  0.06  0.21  0.02 *no fire ,tFloor= μ + 1.5σ = 480 + 240 = 720s = 12min
 11:30:12 CD2B.0   CD2B02338266  stand 81   LeftBed  EnterRoom(rdr)     OpenFloor  0     0.01  0.01  0.50  0.04  0.14  0.01
 11:30:13 CD2B.0   CD2B02338266  stand 78   LeftBed  stand              OpenFloor  0     0.01  0.01  0.55  0.03  0.10  0.03
 11:30:14 CD2B.0   CD2B02338266  walk  73   LeftBed  walk               OpenFloor  0     0.01  0.01  0.59  0.02  0.09  0.03

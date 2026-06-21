@@ -40,8 +40,9 @@ type RoomConfig struct {
 	Enters     []radarutils.Rect // AreaEnter
 	Beds       []radarutils.Rect // AreaBed
 
-	// BedAreaIDs 与 Beds 一一对齐：firmware radar.areas 里该床的 area_id（areaType==2/5）。
-	// 0=该床无声明区。radar track 帧的 area_id 命中此 → N=1（人在该床上），驱动 emission SBed boost。
+	// BedAreaIDs 床区 area_id 集合（areaType∈{2床,5监护床}），来源=固件活体 declare_area
+	// （bootstrap 走 wisefido-data HTTP 覆盖，治 canvas 下发区域 vs 固件几何漂移）。
+	// radar track 帧的 area_id 命中此集合 → 在床（TrackManager.fwIsBed membership）→ N=1 驱动 SBed boost。
 	BedAreaIDs []int
 	Toilets    []radarutils.Rect // AreaToilet
 	Showers    []radarutils.Rect // AreaShower

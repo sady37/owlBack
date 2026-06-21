@@ -1,8 +1,10 @@
 replay集
 # * case-d5f7-0617-23252357 replay  false stand, lost, 
 # * case-cabb-0616-17441802	replay  hunzi, bathroom lost,ghost,
-# * case-cd2b-0604-16141631  replay  201床边fall
-# case2  bedroom 窗帘误报  这个基本无解  replay
+# * case-cd2b-0617-23302345-curtain  bedroom 窗帘误报  这个基本无解  replay
+# * case-cd2b-0620-11231131
+# * case-09e7-0620-22402242
+
 
 # * case-d5f7-0617-23252357 replay
 case1  bathroom  still+D

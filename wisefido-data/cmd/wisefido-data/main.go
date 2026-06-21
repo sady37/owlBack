@@ -271,6 +271,7 @@ func main() {
 		// 将 dataStreamSubscriber 传给 RadarHandler（供 SSE 推送使用）
 		radarHandler.SetDataStreamSubscriber(dataStreamSubscriber)
 		router.RegisterRadarRoutes(radarHandler)
+		router.RegisterRadarInternalRoutes(radarHandler)
 
 		trackPlaybackSvc := service.NewTrackPlaybackService(devicesRepo, monitorPlaybackRepo, alarmPlaybackRepo, logger)
 		playbackHandler := httpapi.NewPlaybackHandler(trackPlaybackSvc, tenantsRepo, db, logger)

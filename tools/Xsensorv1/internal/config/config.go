@@ -48,6 +48,11 @@ type Config struct {
 	AIPublish AIPublishConfig `yaml:"ai_publish"`
 
 	Identity IdentityConfig `yaml:"identity"`
+
+	// DataBaseURL wisefido-data 的 HTTP base（取固件活体 declare_area 算床区 area_id）。
+	// 治 canvas 下发区域 vs 固件活体几何漂移：床 area_id 不再读 canvas/baseline，
+	// 走 GET {base}/internal/radar/device/{uid}/declare-area 拿设备 cmd=read 活体。
+	DataBaseURL string `yaml:"data_base_url"`
 }
 
 // IdentityConfig — wisefido-sensor 进程的 platform agent IPv6 身份（v2 第一次落地）。
@@ -235,6 +240,18 @@ func (c *Config) setDefaults() {
 	c.setRoomEngineDefaults()
 	c.setAIPublishDefaults()
 	c.setIdentityDefaults()
+	c.setDataDefaults()
+}
+
+// setDataDefaults — wisefido-data HTTP base（ENV > yaml > 默认）。
+// 双路径(Load/LoadFromEnv)都调，避免 yaml 在场时 env 被静默忽略。
+func (c *Config) setDataDefaults() {
+	if v := os.Getenv("XSENSOR_DATA_URL"); v != "" {
+		c.DataBaseURL = v
+	}
+	if c.DataBaseURL == "" {
+		c.DataBaseURL = "http://127.0.0.1:8080"
+	}
 }
 
 // setIdentityDefaults — wisefido-sensor 的 platform agent IPv6 + UID。
@@ -427,6 +444,7 @@ func LoadFromEnv() (*Config, error) {
 	cfg.Log.Level = getEnv("LOG_LEVEL", "info")
 	cfg.Log.Format = getEnv("LOG_FORMAT", "json")
 	cfg.setAIPublishDefaults()
+	cfg.setDataDefaults()
 	return cfg, nil
 }
 

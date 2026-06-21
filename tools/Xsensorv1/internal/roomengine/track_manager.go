@@ -351,12 +351,13 @@ func makeLogicID(uidHex string, trackID int, birthMs int64) string {
 
 // nearestAliveTrack 在当前存活 track 中找离 (x,y)（画布坐标）最近、且已有 logic_id 的一条。
 // 用于"无 enter 事件的新 track"继承同一逻辑身份（firmware track_id 重用/跳变/分裂的数据关联）。
-// 无候选返回 nil。调用时新 track 尚未加入 tm.tracks，故不会自指。
-func (tm *TrackManager) nearestAliveTrack(x, y int) *TrackState {
+// **限同一设备**：多雷达同房各自独立 track/logicID，绝不跨设备继承（否则一台的 track 会并掉另一台的
+// 身份，如摔倒雷达被站立雷达吃掉 → SFallen 起不来漏报）。无候选返回 nil。调用时新 track 尚未加入 tm.tracks。
+func (tm *TrackManager) nearestAliveTrack(x, y int, deviceAddr string) *TrackState {
 	var best *TrackState
 	bestD := 1 << 30
 	for _, ts := range tm.tracks {
-		if ts.LogicID == "" || ts.Kalman == nil {
+		if ts.LogicID == "" || ts.Kalman == nil || ts.DeviceAddr != deviceAddr {
 			continue
 		}
 		px, py := ts.Kalman.Position()
@@ -1071,7 +1072,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			// 重用/跳变/分裂 → 继承最近存活 track 的 logic_id（跨 track_id 数据关联，
 			// 让"漂走/重编"的同一逻辑目标保持身份连续，供 ghost/lost-fall 按 logic_id 聚合）。
 			if !tm.hasRecentEnterRoom(f.TMs) {
-				if parent := tm.nearestAliveTrack(f.X, f.Y); parent != nil {
+				if parent := tm.nearestAliveTrack(f.X, f.Y, f.DeviceAddr); parent != nil {
 					ts.LogicID = parent.LogicID
 					tm.logger.Info("logic_id_inherited_no_enter",
 						zap.String("device_uid", f.DeviceAddr),
