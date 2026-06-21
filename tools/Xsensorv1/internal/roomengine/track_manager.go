@@ -135,12 +135,12 @@ type TrackManager struct {
 	// 全 0 = 用默认（180s / 100cm / 900s）。
 	bedsideFallCfg BedsideFallConfig
 
-	// recentRadarAlarms / recentRadarEvents：来自 iot:alarm:stream / iot:event:stream 的 radar 来源记录。
-	// 仅"落账"，当前无消费方；未来段 7 (radar fall verify) 会读取做 narrative。
-	// 保留窗口 = recentBufferMs（默认 5 min），由 RecordXxx 顺手 evict。
+	// recentRadarAlarms：firmware Fall 落账，当前无消费方（段 7 radar fall verify 会读），age=recentBufferMs(5min)。
+	// recentRadarEvents：ExitRoom/EnterRoom 离散事件，被 ExitLogOdds(12s claim)+出生关联(≤5s)消费，age=eventBufferMs(12s)。
+	//   两表 age 不同：events 久滞会 haunt 复用 track_id（误翻离房），故 12s evict；alarms 无此风险留 5min。
 	recentRadarAlarms map[int64]*RadarFallAlarm  // key = TMs
 	recentRadarEvents map[int64]*RadarTrackEvent // key = TMs
-	recentBufferMs    int64                      // 默认 5 min
+	recentBufferMs    int64                      // recentRadarAlarms 专用 age（5 min）
 
 	// lostExitInfo：丢轨"离房趋势"快照（track 失锁前末 2s 朝门强度），key=LogicID（身份单源,跨 evict 存活）。
 	//   track 失锁 12s 即驱逐(trackEvictMaxMs)，但 blind 窗 12-14min——趋势须丢轨时存下，
@@ -613,7 +613,7 @@ func (tm *TrackManager) sleepadOffBed(nowMs int64) bool {
 
 // BedOccupancyState P5(审查㊾):既有 bed 贝叶斯 Markov(BedSession)+ **any-source-OR LeftBed** → card.BedState。
 // 占用 = 最近一次床事件(任一源 sleepad∨radar)是 InBed(BedStatus=0);任一源 LeftBed 更晚 → NotInBed(=1,释放)。
-// BedConfidence=90(sleepad 接触式)/30(radar-only 降档)/0(无床数据→bedAdapter Fresh=false 不喂)。
+// BedConfidence=90(sleepad 接触式)/20(radar-only 降档=90-70)/0(无床数据→bedAdapter Fresh=false 不喂)。
 // 供 belief shadow P5:bedAdapter→ObsBedOccupied 占用概率压 SFallen(无 radar-on-bed 要求,R5-clean 接触占用非 pose/z)。
 // 自锁(beliefShadowTick 不持 tm.mu)。
 // fwIsBed firmware area_id 命中声明的床区（baseline type2/5,设备真值）。0/255=声明区外。
