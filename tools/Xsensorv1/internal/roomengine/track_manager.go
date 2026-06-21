@@ -770,7 +770,7 @@ func (tm *TrackManager) evictOldRadarAlarms(nowMs int64) {
 }
 
 func (tm *TrackManager) evictOldRadarEvents(nowMs int64) {
-	cutoff := nowMs - tm.recentBufferMs
+	cutoff := nowMs - eventBufferMs // 12s age（治误发 ExitRoom 久滞 haunt；EnterRoom 出生关联 ≤5s 仍够）
 	for k := range tm.recentRadarEvents {
 		if k < cutoff {
 			delete(tm.recentRadarEvents, k)
@@ -937,6 +937,12 @@ const presenceCoastMs = 1200
 // 用最近 fresh 窗续(非当帧),70s 容忍一个发包间隔。喂 belief SleepadVitalPresent 抬 SBed。
 const sleepadVitalTTLMs = 70_000
 
+// eventBufferMs：radar 离散事件(ExitRoom/EnterRoom)记录 age = 12s,12s 后清理。
+// ≤ 所有消费窗:EnterRoom 出生关联 enterPairWindowMs(3s)+birthGrace(2s)=5s;ExitRoom claim coast 12s
+// (def5940,= trackEvictMaxMs)。治旧 5min 窗下"误发 ExitRoom(人没走)残留几分钟,后续 lost track 被翻成离房"haunt。
+// (recentBufferMs 5min 仅保留给 recentRadarAlarms firmware Fall 落账。)
+const eventBufferMs = 12_000
+
 // lostExitRec 丢轨离房趋势快照（SnapshotTrackStatuses 每帧算，丢轨后冻结）。
 type lostExitRec struct {
 	trendRatio float64 // 朝门强度 = 150/(d1+d2)，gate(d1<d2-margin ∧ 仍移动)后；0=没朝门走
@@ -985,7 +991,7 @@ func (tm *TrackManager) ExitLogOdds(trackID int, nowMs int64) float64 {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	L := 0.0
-	cutoff := nowMs - tm.recentBufferMs
+	cutoff := nowMs - eventBufferMs // ExitRoom 硬证据消费窗 = 12s coast claim;超此=陈旧/误发,不再 haunt(records 也 12s evict)
 	for k, e := range tm.recentRadarEvents {
 		if k >= cutoff && e.EventName == alarm.ExitRoom && e.TrackID == trackID {
 			L += exitRoomLogOdds // ① 硬证据
