@@ -188,8 +188,15 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	covers := make([]float64, g.nb)
 	onbed := make([]float64, g.nb)
 	overlap := make([]float64, g.nb)
+	vitalPresent := false // 房级:任一 sleepad 在床 + HR/RR fresh(SnapshotTrackStatuses 算,塞每 base)
+	for _, b := range bases {
+		if b.SleepadVitalPresent {
+			vitalPresent = true
+			break
+		}
+	}
 	for j := 0; j < g.nb; j++ {
-		sleepads[j] = adapter.SleepadFrame{Present: g.sleepadPresent, Reading: reading}
+		sleepads[j] = adapter.SleepadFrame{Present: g.sleepadPresent, Reading: reading, VitalPresent: vitalPresent}
 		covers[j], onbed[j], overlap[j] = 1, 1, 1
 	}
 

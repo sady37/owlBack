@@ -107,6 +107,11 @@ func NewEmission(geom []BedGeom) *Emission {
 func (e *Emission) LogPhi(js *JointSpace, o Observation) JointVector {
 	radarS := e.radarLogS(o)     // [numStates]：雷达轴对 S 的 log 似然
 	contactB := e.contactLogB(o) // [numBeds][numBedStates]：接触轴对各 B^j 的 log 似然
+	// sleepad 接触 vital(InBed+HR/RR fresh)→ 活体在垫,抬 SBed。独立于 radar online/NearBed(接触权威；
+	// cd2b radar 不返 vital,这是唯一 vital 印证腿)。lHR 复用(与 radar HRRR 同力度)。
+	if o.SleepadVitalPresent {
+		radarS[SBed] += math.Log(e.p.lHR)
+	}
 	out := js.NewJointVector()
 	for i := 0; i < js.size; i++ {
 		s, bmask := js.decode(i)

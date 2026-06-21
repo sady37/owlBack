@@ -50,5 +50,9 @@ type Observation struct {
 	HRRRObserved      bool // 本 tick 有 vital 通道读数；false=无通道 → 中性
 	HRRRPresent       bool // HR>0 ∨ RR>0
 	VitalSourceOnline bool // 房内**独立在线** vital 源(sleepad)；§D：radar 自身 absent 不得否决 AtBed
+	// SleepadVitalPresent sleepad 接触 vital(InBed + HR/RR fresh within TTL)：活体在垫 → 抬 SBed。
+	// 接触权威，**不经 radar NearBed/online 门控**(radar 直立位置漂不可靠；sleepad 垫压即在床)。
+	// cd2b radar 不返 vital → 这条是 SBed 的唯一 vital 印证腿(radar HRRR 那条在 cd2b 恒空)。
+	SleepadVitalPresent bool
 	// 注（§32）：原 FloorStripXY（δ floor-strip）已删——cd2b 靠 LeftBed→B vac 经 Ψ 相容涌现，非雷达 XY 几何。
 }

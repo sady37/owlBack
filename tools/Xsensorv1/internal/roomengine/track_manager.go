@@ -831,6 +831,7 @@ type TrackStatusBase struct {
 	Present          bool   // 本帧是否被真实观测（LastObservedMs == nowMs）；false=漏帧/丢轨 → DBN 走 blind 续存
 	TraverseDelta    int    // 自上次 SnapshotTrackStatuses 累计的 traverse cells（用于 SuiteCensus 升格判定）
 	SleepadInBed     bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
+	SleepadVitalPresent bool // 任一 sleepad 在床 + HR/RR fresh(TTL 内)→ 活体在垫,喂 belief 抬 SBed
 	// 离房（ExitRoom 硬 + trend+np 软）已改为丢轨时按 track_id 算 SLeft 对数几率（见 ExitLogOdds/lostExitInfo），
 	//   喂 blind track 的 logPhi[SLeft]，不再走 base 级 ExitTrend bool（事件无坐标 + 丢轨 base 空）。
 }
@@ -846,10 +847,16 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 
 	// 同房间 sleepad InBed 状态（任一 sleepad inbed 即 true；多 sleepad 取或）
 	sleepadInBed := false
+	sleepadVitalPresent := false // sleepad 接触 vital:在床(垫压)+ HR/RR fresh(TTL 内)→ 活体在垫,抬 SBed
 	for _, obs := range tm.sleepadStates {
-		if obs != nil && obs.InBed {
+		if obs == nil {
+			continue
+		}
+		if obs.InBed {
 			sleepadInBed = true
-			break
+			if obs.HasVitalSign() && nowMs-obs.TMs < sleepadVitalTTLMs {
+				sleepadVitalPresent = true // sleepad 稀疏发 vital(分钟级),用 fresh 窗续(非当帧)
+			}
 		}
 	}
 
@@ -875,7 +882,8 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			Pose:         ts.LastPose,
 			MoveActive:   ts.StillBoxRunStart == 0 || ts.LastObservedMs == nowMs,
 			Present:      nowMs-ts.LastObservedMs < presenceCoastMs,
-			SleepadInBed: sleepadInBed,
+			SleepadInBed:        sleepadInBed,
+			SleepadVitalPresent: sleepadVitalPresent,
 			FwAreaID:     ts.LastFwAreaID,
 		}
 		// StillBoxSec=raw box run 秒（30s 滚动 50×50 抗抖动）→ FloorGuard 纯计时器。直立折扣已移 emission（压 SFallen）。
@@ -924,6 +932,10 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 // 错开（实测 ≤807ms）；用 ==nowMs 严判会把连续在报的 radar track 一拍误判离场 → 误进 belief lost 分支 →
 // ExitLogOdds 翻陈旧 ExitRoom → absorbed-drop → census 重生 lid churn。1200ms 容忍跨流 tick，真丢轨（多秒）仍判离场。
 const presenceCoastMs = 1200
+
+// sleepadVitalTTLMs：sleepad HR/RR fresh 窗。sleepad 稀疏发 vital(分钟级,cd2b 全程 13 帧≈37s/帧),
+// 用最近 fresh 窗续(非当帧),70s 容忍一个发包间隔。喂 belief SleepadVitalPresent 抬 SBed。
+const sleepadVitalTTLMs = 70_000
 
 // lostExitRec 丢轨离房趋势快照（SnapshotTrackStatuses 每帧算，丢轨后冻结）。
 type lostExitRec struct {

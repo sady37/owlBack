@@ -38,8 +38,9 @@ type RadarTrack struct {
 
 // SleepadFrame 单床 sleepad raw 量（§32 二态：设备在线 OR 没有，不建模中途掉线）。
 type SleepadFrame struct {
-	Present bool              // 房间有此 sleepad（config-static）→ ρ=1（K^obs）。false=radar-only 床（ρ=0）。
-	Reading belief.BedReading // InBed / LeftBed / NoReport(unknown，首报前；§30 unknown=后验不确定)
+	Present     bool              // 房间有此 sleepad（config-static）→ ρ=1（K^obs）。false=radar-only 床（ρ=0）。
+	Reading     belief.BedReading // InBed / LeftBed / NoReport(unknown，首报前；§30 unknown=后验不确定)
+	VitalPresent bool             // sleepad 接触 vital(InBed + HR/RR fresh within TTL)→ 活体在垫,抬 SBed
 }
 
 // Census 风险因子（risk_evaluator 同源）。
@@ -191,10 +192,14 @@ func bedHitMask(t RadarTrack, bedAreaIDs []int) []bool {
 func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, bedAreaIDs []int, p Params) belief.Observation {
 	sl := make([]belief.BedReading, len(sleepads))
 	vitalSrc := false
+	sleepadVital := false
 	for j, s := range sleepads {
 		sl[j] = s.Reading
 		if s.Present && s.Reading != belief.BedNoReport && s.Reading != belief.BedLeftBedRadar {
 			vitalSrc = true // 独立在线 vital 源（§D：radar absent 须 gate）= sleepad 接触有实读数；radar 几何 LeftBed 非接触源,不算
+		}
+		if s.VitalPresent {
+			sleepadVital = true // 任一 sleepad 接触 vital(InBed+HR/RR fresh)→ 活体在垫
 		}
 	}
 	nb := nearBed(t, beds, p)
@@ -211,9 +216,10 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, bedAre
 		NearBedMask:  nearBedMask(t, beds, p),
 		// HRRRObserved 仅当雷达**真返** HR/RR（铁律 [[radar_hr_rr_bed_enter_gated]]：radar enter-gate，
 		// 近床但无 vital = 结构性未测 = 零信息，**非「观测到 absent」**；否则 §D 会在合法在床期误否决 AtBed）。
-		HRRRObserved:      t.HR > 0 || t.RR > 0,
-		HRRRPresent:       t.HR > 0 || t.RR > 0,
-		VitalSourceOnline: vitalSrc,
+		HRRRObserved:        t.HR > 0 || t.RR > 0,
+		HRRRPresent:         t.HR > 0 || t.RR > 0,
+		VitalSourceOnline:   vitalSrc,
+		SleepadVitalPresent: sleepadVital,
 		AreaType:          t.AreaType,
 		RoomType:          t.RoomType,
 		RadarBedHitMask:   bedHitMask(t, bedAreaIDs),
