@@ -131,7 +131,7 @@ type dbnRouter struct {
 	logger   *zap.Logger
 }
 
-func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(trackID int, atMs int64) float64) (fired, dropped []int) {
+func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -163,7 +163,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, RadarTrack: adapter.RadarTrack{
 			TrackID: b.TrackID, // logicID↔track_id 反查源（ExitRoom 按号反查丢轨人）
 			Online:  b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
-			StillSec:  float64(b.StillBoxSec), // still-box raw 时长 → FloorGuard 纯计时器（直立折扣已移 emission 压 SFallen）
+			StillSec: float64(b.StillBoxSec), // still-box raw 时长 → FloorGuard 纯计时器（直立折扣已移 emission 压 SFallen）
 
 			AreaType: int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
 			RoomType: d.roomType[roomID],  // 房型 → still CDF room×cell 保守合并(bathroom 未画 toilet 也用 bathsec)
@@ -185,9 +185,6 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	}
 
 	sleepads := make([]adapter.SleepadFrame, g.nb)
-	covers := make([]float64, g.nb)
-	onbed := make([]float64, g.nb)
-	overlap := make([]float64, g.nb)
 	vitalPresent := false // 房级:任一 sleepad 在床 + HR/RR fresh(SnapshotTrackStatuses 算,塞每 base)
 	for _, b := range bases {
 		if b.SleepadVitalPresent {
@@ -197,22 +194,20 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	}
 	for j := 0; j < g.nb; j++ {
 		sleepads[j] = adapter.SleepadFrame{Present: g.sleepadPresent, Reading: reading, VitalPresent: vitalPresent}
-		covers[j], onbed[j], overlap[j] = 1, 1, 1
 	}
 
+	// covers/onbed/overlap 不再走 per-tick FrameInput（Tick 路径不消费）：真 covers 现 per-(设备×床)，
+	//   bootstrap SetDeviceGeom 一次注入冻结进各设备 Coupling/Emission（MM 床耦合，§K）。
 	fi := adapter.FrameInput{
-		NowMs:      nowMs,
-		Tracks:     tracks,
-		Sleepads:   sleepads,
-		Beds:       g.beds,
-		BedAreaIDs: g.bedAreaIDs,
-		RadarLess:  g.radarLess,
-		Covers:     covers,
-		Onbed:      onbed,
-		Overlap:    overlap,
-		Walls:      g.walls,
-		RadarPos:   g.radarPos,
-		Entrances:  g.entrances,
+		NowMs:       nowMs,
+		Tracks:      tracks,
+		Sleepads:    sleepads,
+		Beds:        g.beds,
+		BedAreaIDs:  g.bedAreaIDs,
+		RadarLess:   g.radarLess,
+		Walls:       g.walls,
+		RadarPos:    g.radarPos,
+		Entrances:   g.entrances,
 		ExitLogOdds: exitLogOdds,
 	}
 
@@ -248,6 +243,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			"x": t.X, "y": t.Y, "sep": t.Sep, "wall_margin": t.WallMargin, "rho": t.Rho, "later": t.LaterBorn,
 			"door_d": t.DoorD, "track_confidence": int(t.PReal*100 + 0.5),
 			"repeat_r": t.RepeatR, "self_recovered": t.SelfRecovered, "still_sec": t.StillSec,
+			"s_marg": t.SMarg, "covers": t.Covers, // per-track S 边缘 + per-device covers(MM)：看 D523 自身 SBed + covers=0
 		})
 	}
 	walls := make([][4]int, 0, len(g.walls))
@@ -265,11 +261,10 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Bool("unit_has_track", unitHasTrack), zap.Bool("has_neighbor", hasNeighbor),
 		zap.Bool("lost_exited", fr.LostExited),
 		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("bed_present", g.sleepadPresent),
-		zap.Float64s("covers", covers), zap.Float64s("onbed", onbed),
 		zap.Any("s_dist", sDist), zap.Any("target", raw), zap.Any("dbn", dbn),
 		zap.Any("walls", walls), zap.Int("radar_x", g.radarPos.X), zap.Int("radar_y", g.radarPos.Y))
 
-	return fr.FiredTrackIDs, fr.DroppedTrackIDs // fired→复位 still-box；dropped(确认离场/空)→evict track,停 coast re-feed
+	return fr.FiredLogicIDs, fr.DroppedLogicIDs // fired→复位 still-box；dropped(确认离场/空)→evict track,停 coast re-feed
 }
 
 // bedReadingName B 轴 sleepad 读数名（X 光可读）。

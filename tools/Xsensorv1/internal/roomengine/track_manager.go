@@ -52,13 +52,28 @@ type TrackFrame struct {
 }
 
 // TrackManager 管理一个房间内所有 track 的生命周期
+// trackKey track 身份键 = 源设备 + firmware track_id。多雷达同房各雷达独立从 0 编号，裸 track_id 会撞键
+// （后到雷达的帧覆盖先到雷达的 TrackState，摔倒轨被站立轨吞 → SFallen 起不来漏报）；带设备命名空间根治。
+type trackKey struct {
+	dev string
+	tid int
+}
+
+// less 确定性排序（map 迭代不稳定时固定顺序：先设备名后 firmware track_id）。
+func (k trackKey) less(o trackKey) bool {
+	if k.dev != o.dev {
+		return k.dev < o.dev
+	}
+	return k.tid < o.tid
+}
+
 type TrackManager struct {
 	mu         sync.Mutex
 	roomID     string
 	grid       *RoomGrid
 	bedAreaIDs []int // firmware 床区 area_id（baseline type2/5）→ radar InBed 判定用 area_id 非 cell（排 sofa）
-	tracks     map[int]*TrackState
-	outputs map[int]*TrackOutput
+	tracks     map[trackKey]*TrackState // 键=（设备,firmware track_id）：多雷达同房各台从 0 编号，不带设备会撞键互相覆盖
+	outputs map[trackKey]*TrackOutput
 
 	// lastRealTrackByDevice：每雷达设备最近一次本房观测到"真 track"的 ms（key=源 device_addr）。
 	// 同房多雷达占用对账：lost-fall fire 前若**另一台**雷达近期仍见真人 → 人还在房里被别台看着 → 抑制。
@@ -127,10 +142,10 @@ type TrackManager struct {
 	recentRadarEvents map[int64]*RadarTrackEvent // key = TMs
 	recentBufferMs    int64                      // 默认 5 min
 
-	// lostExitInfo：丢轨"离房趋势"快照（track 失锁前末 2s 朝门强度），key=track_id。
+	// lostExitInfo：丢轨"离房趋势"快照（track 失锁前末 2s 朝门强度），key=LogicID（身份单源,跨 evict 存活）。
 	//   track 失锁 12s 即驱逐(trackEvictMaxMs)，但 blind 窗 12-14min——趋势须丢轨时存下，
-	//   np/ExitRoom 后到的按 track_id 实时查（见 ExitLogOdds）。由 age(recentBufferMs)淘汰。
-	lostExitInfo map[int]*lostExitRec
+	//   np/ExitRoom 后到的按 LogicID 实时查（见 ExitLogOdds）。由 age(recentBufferMs)淘汰。
+	lostExitInfo map[string]*lostExitRec
 
 	// logger：用于 ai.log 输出 ghost / fall 结构化事件。
 	// 默认 zap.NewNop()，engine.Run 会调 SetLogger 注入真 logger。
@@ -166,7 +181,7 @@ type TrackManager struct {
 
 	// 静止金属反射体自学习（static_reflector.go）：wallPolygon 判近墙；staticReflectorLastMark 去抖。
 	wallPolygon             []radarutils.Point
-	staticReflectorLastMark map[int]int64
+	staticReflectorLastMark map[trackKey]int64
 
 	// startupMs：TrackManager 创建时间。用于"service 启动 5min grace"反 ghost 兜底
 	// （grace 内 first-seen 的 track 视为已存在，birth filter 不打 ghost）。
@@ -207,8 +222,8 @@ func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackMana
 		roomID:                  roomID,
 		grid:                    grid,
 		bedAreaIDs:              bedAreaIDs,
-		tracks:                  make(map[int]*TrackState),
-		outputs:                 make(map[int]*TrackOutput),
+		tracks:                  make(map[trackKey]*TrackState),
+		outputs:                 make(map[trackKey]*TrackOutput),
 		lastRealTrackByDevice:   make(map[string]int64),
 		bedSessions:             make(map[string]*BedSession),
 		sleepadStates:           make(map[string]*SleepadObservation),
@@ -217,12 +232,12 @@ func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackMana
 		recentRadarAlarms:       make(map[int64]*RadarFallAlarm),
 		recentRadarEvents:       make(map[int64]*RadarTrackEvent),
 		recentBufferMs:          5 * 60 * 1000, // 5 min
-		lostExitInfo:            make(map[int]*lostExitRec),
+		lostExitInfo:            make(map[string]*lostExitRec),
 		logger:                  zap.NewNop(),
 		startupMs:               time.Now().UnixMilli(),
 		mirrorBuffer:            make(map[mirrorPairKey]*mirrorPairBuffer),
 		mirrorCooldownMs:        60_000,
-		staticReflectorLastMark: make(map[int]int64),
+		staticReflectorLastMark: make(map[trackKey]int64),
 	}
 }
 
@@ -352,13 +367,23 @@ func makeLogicID(uidHex string, trackID int, birthMs int64) string {
 // nearestAliveTrack 在当前存活 track 中找离 (x,y)（画布坐标）最近、且已有 logic_id 的一条。
 // 用于"无 enter 事件的新 track"继承同一逻辑身份（firmware track_id 重用/跳变/分裂的数据关联）。
 // **限同一设备**：多雷达同房各自独立 track/logicID，绝不跨设备继承（否则一台的 track 会并掉另一台的
-// 身份，如摔倒雷达被站立雷达吃掉 → SFallen 起不来漏报）。无候选返回 nil。调用时新 track 尚未加入 tm.tracks。
-func (tm *TrackManager) nearestAliveTrack(x, y int, deviceAddr string) *TrackState {
+// 身份，如摔倒雷达被站立雷达吃掉 → SFallen 起不来漏报）。
+// **排并发 track**：继承只对"renumber/分裂"（旧 track_id 已不报、新号顶上同一目标）；并发上报的另一目标
+// （如静止反射 ghost 与摔倒真人各占一号、两台雷达交叉）不可被继承，否则两条并发 track 并成一个 logicID →
+// census 同号互相覆盖（faller pose5 被 ghost pose4 盖掉）→ 漏报。两道判据（任一命中即跳过候选）：
+//   ① frameKeys：候选在本批 frames 里（同一条消息同时报）；
+//   ② 新鲜度：候选末次观测距今 < presenceCoastMs（一个雷达周期内仍在报）= 并存，非"旧号已静默"的 renumber。
+//      （分批到达时 frameKeys 看不到对台/异步消息，靠新鲜度兜住。）
+// 无候选返回 nil。调用时新 track 尚未加入 tm.tracks。
+func (tm *TrackManager) nearestAliveTrack(x, y int, deviceAddr string, nowMs int64, frameKeys map[trackKey]bool) *TrackState {
 	var best *TrackState
 	bestD := 1 << 30
 	for _, ts := range tm.tracks {
 		if ts.LogicID == "" || ts.Kalman == nil || ts.DeviceAddr != deviceAddr {
 			continue
+		}
+		if frameKeys[trackKey{ts.DeviceAddr, ts.TrackID}] || nowMs-ts.LastObservedMs < presenceCoastMs {
+			continue // 并发上报（本帧/一个雷达周期内仍在报）= 并存目标，非 renumber，不继承
 		}
 		px, py := ts.Kalman.Position()
 		if d := distInt(x, y, int(math.Round(px)), int(math.Round(py))); d < bestD {
@@ -373,12 +398,12 @@ func (tm *TrackManager) nearestAliveTrack(x, y int, deviceAddr string) *TrackSta
 // 用于 lost_fall 的换ID守恒闸：某 track_id 失锁但其 logic_id 仍活在别的 track_id 上 =
 // 同一逻辑目标只是被 firmware 换了 ID（数量守恒，无人真消失）→ 不入 lost-fall pending。
 // 不依赖 ghost verdict（铁律：ghost 不进 Fall 决策路径），纯靠身份连续性。
-func (tm *TrackManager) hasOtherLiveTrackWithLogicID(logicID string, exceptTrackID int) bool {
+func (tm *TrackManager) hasOtherLiveTrackWithLogicID(logicID string, exceptKey trackKey) bool {
 	if logicID == "" {
 		return false
 	}
 	for id, ts := range tm.tracks {
-		if id != exceptTrackID && ts.LogicID == logicID {
+		if id != exceptKey && ts.LogicID == logicID {
 			return true
 		}
 	}
@@ -386,10 +411,10 @@ func (tm *TrackManager) hasOtherLiveTrackWithLogicID(logicID string, exceptTrack
 }
 
 // HasOtherLiveTrackWithLogicID 自锁版（beliefShadowTick 不持 tm.mu，跨 track range 须锁防并发 map 读写）。
-func (tm *TrackManager) HasOtherLiveTrackWithLogicID(logicID string, exceptTrackID int) bool {
+func (tm *TrackManager) HasOtherLiveTrackWithLogicID(logicID string, exceptKey trackKey) bool {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	return tm.hasOtherLiveTrackWithLogicID(logicID, exceptTrackID)
+	return tm.hasOtherLiveTrackWithLogicID(logicID, exceptKey)
 }
 
 
@@ -516,7 +541,7 @@ func (tm *TrackManager) ghostJudgable() bool {
 //
 // 调用方持锁。
 func (tm *TrackManager) markRadarInBedCell(e RadarTrackEvent) {
-	ts, ok := tm.tracks[e.TrackID]
+	ts, ok := tm.tracks[trackKey{e.DeviceUID, e.TrackID}]
 	if !ok || ts.Verdict == VerdictGhost {
 		return
 	}
@@ -911,14 +936,16 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		// 离房趋势快照：仅丢轨首帧算一次（30s History 足够），冻结喂 ExitLogOdds（track 12s 驱逐后仍存）。
 		//   在场（含重新抓到）→ 清陈旧快照。ExitLogOdds 只被 belief 对 not-present track 查，在场轨的残留无害。
 		if !base.Present {
-			if _, done := tm.lostExitInfo[ts.TrackID]; !done {
-				tm.lostExitInfo[ts.TrackID] = &lostExitRec{
+			if _, done := tm.lostExitInfo[ts.LogicID]; !done {
+				tm.lostExitInfo[ts.LogicID] = &lostExitRec{
 					trendRatio: tm.exitTrendRatio(ts),
 					lostMs:     ts.LastObservedMs,
+					dev:        ts.DeviceAddr,
+					fwTrackID:  ts.TrackID,
 				}
 			}
 		} else {
-			delete(tm.lostExitInfo, ts.TrackID)
+			delete(tm.lostExitInfo, ts.LogicID)
 		}
 		// TraverseDelta：差分本 track 的 LifetimeTraverse 累计（无字段时退化为 0）。
 		// PR-3 暂用 FrameCount 近似单调累计；PR-5 (BathroomGate) 接入后换实际 grid.MarkTraverse 计数。
@@ -948,6 +975,8 @@ const eventBufferMs = 12_000
 type lostExitRec struct {
 	trendRatio float64 // 朝门强度 = 150/(d1+d2)，gate(d1<d2-margin ∧ 仍移动)后；0=没朝门走
 	lostMs     int64   // 末次真观测 ms（=失锁点，算 np gap 基准）
+	dev        string  // 源设备（ExitRoom 硬证据按 设备+firmware track_id 匹配，多雷达防撞号）
+	fwTrackID  int     // firmware track_id（同上；logicID 不含设备全名，匹配 ExitRoom 事件需原始号）
 }
 
 // exitTrendRatio 末 2s 朝门强度（离房软证据，喂 SLeft belief）。丢轨首帧算一次（30s History 足够）。
@@ -983,23 +1012,27 @@ func (tm *TrackManager) exitTrendRatio(ts *TrackState) float64 {
 
 // ExitLogOdds 丢轨人"离房"的 SLeft 对数几率（喂 blind track 的 logPhi[SLeft]）。两路相加：
 //
-//	① ExitRoom 硬证据（过门事件，按 track_id 反查）→ exitRoomLogOdds 大常量，单发顶过 absorbedThresh；
+//	① ExitRoom 硬证据（过门事件，按 设备+firmware track_id 反查）→ exitRoomLogOdds 大常量，单发顶过 absorbedThresh；
 //	② trend+np 软组合（乘法 AND，两证据互证才采信）：V = 0.85·(30/gap)·trendRatio，clamp[0,0.95]，加 logit(V)。
 //	   np=0 单看不可信（摔倒丢锁也 np=0），靠 ① trendRatio 的"朝门走"门挡住摔倒（摔倒 trendRatio=0→此路 0）。
 //
-// 自锁版（belief 经 OnRoomFrame 闭包调用，不持 tm.mu）。形态常量留 oracle，replay 标定。
-func (tm *TrackManager) ExitLogOdds(trackID int, nowMs int64) float64 {
+// 自锁版（belief 经 OnRoomFrame 闭包调用，不持 tm.mu）。按 LogicID 身份查（多雷达同房 track_id 撞号已用
+// rec.dev+fwTrackID 还原源号匹配 ExitRoom，绝不跨设备误翻）。形态常量留 oracle，replay 标定。
+func (tm *TrackManager) ExitLogOdds(logicID string, nowMs int64) float64 {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
+	rec := tm.lostExitInfo[logicID]
+	if rec == nil {
+		return 0 // 无丢轨快照（不该被 belief 对 present track 查）→ 无离房证据
+	}
 	L := 0.0
 	cutoff := nowMs - eventBufferMs // ExitRoom 硬证据消费窗 = 12s coast claim;超此=陈旧/误发,不再 haunt(records 也 12s evict)
 	for k, e := range tm.recentRadarEvents {
-		if k >= cutoff && e.EventName == alarm.ExitRoom && e.TrackID == trackID {
+		if k >= cutoff && e.EventName == alarm.ExitRoom && e.DeviceUID == rec.dev && e.TrackID == rec.fwTrackID {
 			L += exitRoomLogOdds // ① 硬证据
 			break
 		}
 	}
-	rec := tm.lostExitInfo[trackID]
 	if rec != nil && rec.trendRatio > 0 && tm.lastNumberPeople == 0 && tm.lastNumberPeopleTs >= rec.lostMs {
 		gapSec := float64(tm.lastNumberPeopleTs-rec.lostMs) / 1000.0
 		if gapSec < 1 {
@@ -1054,15 +1087,23 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		tm.noTargetSinceMs = 0 // 收到真 track 帧 → 清"无目标"标记
 	}
 
-	activeIDs := make(map[int]bool)
+	activeIDs := make(map[trackKey]bool)
+
+	// frameKeys：本批次全部上报 track 的键（含尚未在循环中处理到的）。logicID 继承用之排并发 track
+	//   （本帧仍在报的 track = 并存目标非 renumber，不可被新生 track 继承走身份，见 nearestAliveTrack）。
+	frameKeys := make(map[trackKey]bool, len(frames))
+	for _, f := range frames {
+		frameKeys[trackKey{f.DeviceAddr, f.TrackID}] = true
+	}
 
 	// PR-9: v1 bathroomRealCount 入口盘点已删除（caregiver 例外抑制 dropped）。
 	// PR-10 BathroomStillFall 将通过 SuiteCensus.BathroomCount + AnchorRoomType 重新引入。
 
 	// ========== 段 1: 观测到的 track ==========
 	for _, f := range frames {
-		activeIDs[f.TrackID] = true
-		ts, exists := tm.tracks[f.TrackID]
+		key := trackKey{f.DeviceAddr, f.TrackID}
+		activeIDs[key] = true
+		ts, exists := tm.tracks[key]
 
 		var quality, vx, vy, dtSec int
 
@@ -1072,7 +1113,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			// 重用/跳变/分裂 → 继承最近存活 track 的 logic_id（跨 track_id 数据关联，
 			// 让"漂走/重编"的同一逻辑目标保持身份连续，供 ghost/lost-fall 按 logic_id 聚合）。
 			if !tm.hasRecentEnterRoom(f.TMs) {
-				if parent := tm.nearestAliveTrack(f.X, f.Y, f.DeviceAddr); parent != nil {
+				if parent := tm.nearestAliveTrack(f.X, f.Y, f.DeviceAddr, f.TMs, frameKeys); parent != nil {
 					ts.LogicID = parent.LogicID
 					tm.logger.Info("logic_id_inherited_no_enter",
 						zap.String("device_uid", f.DeviceAddr),
@@ -1103,7 +1144,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				ts.Score = ts.BirthScore
 				ts.GhostPenalty = b.penalty
 			}
-			tm.tracks[f.TrackID] = ts
+			tm.tracks[key] = ts
 			ts.PrevCore = RadarPoseToCore(f.Pose)
 			ts.LastPose = f.Pose
 			ts.LastZ = f.Z
@@ -1198,7 +1239,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			if len(ts.History) > HistoryLen {
 				ts.History = ts.History[len(ts.History)-HistoryLen:]
 			}
-			tm.updateContinuousIndicators(ts, TrackFrame{TrackID: id, X: last.X, Y: last.Y, Z: last.Z, Pose: ts.LastPose, TMs: nowMs}, nowMs, 0)
+			tm.updateContinuousIndicators(ts, TrackFrame{TrackID: ts.TrackID, X: last.X, Y: last.Y, Z: last.Z, Pose: ts.LastPose, TMs: nowMs}, nowMs, 0)
 		}
 
 		// 驱逐：续 still-box 期间保留到 lostStillCarryMs 上限（让 still 累积到 floor 兜底）。
@@ -1371,7 +1412,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			Source:     source,
 		}
 		results = append(results, out)
-		tm.outputs[ts.TrackID] = &out
+		tm.outputs[trackKey{ts.DeviceAddr, ts.TrackID}] = &out
 	}
 
 	return results
@@ -1613,14 +1654,14 @@ func (tm *TrackManager) checkMirrorSymmetry(ts *TrackState) (int, int, int, int,
 	bx, by := int(math.Round(bxF)), int(math.Round(byF))
 	for _, m := range tm.interferes {
 		rx, ry := reflectAcrossMirror(bx, by, m)
-		for tid, t := range tm.tracks {
-			if tid == ts.TrackID || t.Verdict != VerdictReal {
+		for _, t := range tm.tracks {
+			if t == ts || t.Verdict != VerdictReal {
 				continue
 			}
 			axF, ayF := t.Kalman.Position()
 			ax, ay := int(math.Round(axF)), int(math.Round(ayF))
 			if distInt(ax, ay, rx, ry) <= mirrorDistCm {
-				return tid, ax, ay, rx, ry, true
+				return t.TrackID, ax, ay, rx, ry, true
 			}
 		}
 	}
@@ -1669,8 +1710,8 @@ func (tm *TrackManager) checkMotionSymmetry(ts *TrackState, nowMs int64) bool {
 	)
 	// 找另一个共存 Real track
 	var partner *TrackState
-	for tid, t := range tm.tracks {
-		if tid == ts.TrackID {
+	for _, t := range tm.tracks {
+		if t == ts {
 			continue
 		}
 		if t.Verdict != VerdictReal {
@@ -2373,36 +2414,50 @@ func (tm *TrackManager) otherDeviceRealTrackRecent(excludeDevice string, nowMs i
 // 结束 → 从 0 热机，需重新攒满 tFloor 才再发）。清 StillBoxRunStart/起点坐标 + History（History 不清则下帧
 // 会回锚到 30s 窗最早帧 → StillSec 跳回 ~30s 非真 0）。只复位 still-box；身份(LogicID)/realness(Score/Verdict)/
 // Kalman 跟踪连续性保留（对应 DBN 侧"不清 census"）。
-func (tm *TrackManager) ResetStillBox(trackID int) {
+func (tm *TrackManager) ResetStillBox(logicID string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	ts, ok := tm.tracks[trackID]
-	if !ok {
-		return // 已被 lost-reap 驱逐 → firmware 再发即 NewTrackState，本就从 0
+	for _, ts := range tm.tracks {
+		if ts.LogicID != logicID {
+			continue
+		}
+		ts.StillBoxRunStart = 0
+		ts.StillBoxStartX = 0
+		ts.StillBoxStartY = 0
+		ts.History = ts.History[:0]
+		return
 	}
-	ts.StillBoxRunStart = 0
-	ts.StillBoxStartX = 0
-	ts.StillBoxStartY = 0
-	ts.History = ts.History[:0]
+	// 已被 lost-reap 驱逐 → firmware 再发即 NewTrackState，本就从 0
 }
 
 // EvictTrack 立即删除一条 track（belief 状态驱动 drop 回传：确认离场/空）。停止 12s coast 期对已离场 track 的
 // re-feed——否则 belief 已 drop 其 logicID 但 SnapshotTrackStatuses 仍每帧把它当 base 发出 → census 无对应
 // logicID → 每帧重发新号 = churn。只删 tracks/outputs；lostExitInfo/recentRadarEvents 保留按 age 自然淘汰
 // （in-flight 邻居 handoff / 离房证据仍可能被 belief 查）。幂等(delete 缺失 key 安全)。
-func (tm *TrackManager) EvictTrack(trackID int) {
+func (tm *TrackManager) EvictTrack(logicID string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	delete(tm.tracks, trackID)
-	delete(tm.outputs, trackID)
-	// 生命周期 purge（logicID 根治第一刀）：track 确认离场 → 连带清该 track_id 的离场证据。
+	var dev string
+	var fwTrackID int
+	found := false
+	for k, ts := range tm.tracks {
+		if ts.LogicID == logicID {
+			dev, fwTrackID, found = ts.DeviceAddr, ts.TrackID, true
+			delete(tm.tracks, k)
+			delete(tm.outputs, k)
+			break
+		}
+	}
+	// 生命周期 purge（logicID 根治第一刀）：track 确认离场 → 连带清该（设备,track_id）的离场证据。
 	// 否则 ExitRoom（firmware 常不带 track_id → 默认 0）+ trend 快照按 recentBufferMs(5min) 滞留，
 	// track_id 复用时（A 离房 0 / B 在床 0）被下一占用者经 ExitLogOdds 误翻 → 误抬 SLeft → churn/二义 lost-fall FN。
 	// 触发离场的那条 ExitRoom 就此被它造成的 drop 消费掉，绑 coast 生命周期而非死等 age。
-	delete(tm.lostExitInfo, trackID)
-	for k, e := range tm.recentRadarEvents {
-		if e.TrackID == trackID {
-			delete(tm.recentRadarEvents, k)
+	delete(tm.lostExitInfo, logicID)
+	if found {
+		for k, e := range tm.recentRadarEvents {
+			if e.DeviceUID == dev && e.TrackID == fwTrackID {
+				delete(tm.recentRadarEvents, k)
+			}
 		}
 	}
 }

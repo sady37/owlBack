@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/netip"
 
 	"owlBack/tools/Xsensorv1/internal/config"
 	"owlBack/tools/Xsensorv1/internal/roomengine"
@@ -14,6 +15,40 @@ import (
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
+
+// normAddr 归一 IPv6 字符串（canvas RadarAddrs vs DB host() 两形式对齐）。解析失败→原样。
+func normAddr(s string) string {
+	if a, err := netip.ParseAddr(s); err == nil {
+		return a.String()
+	}
+	return s
+}
+
+// uidLast4 device_uid hex 末 4 字符 = per-device 床耦合键（同 makeLogicID 前缀）。
+func uidLast4(uid string) string {
+	if len(uid) > 4 {
+		return uid[len(uid)-4:]
+	}
+	return uid
+}
+
+// deviceBedGeom 某雷达设备的 per-bed 几何：covers=1 当房床 j 是本设备**自己画的床**（rect 归属），否则 0。
+//
+//	Onbed/Overlap=1 与 seed 一致（零回归：单雷达拥有全部床→covers 全 1=改造前）。
+func deviceBedGeom(roomBeds, ownBeds []adapter.Rect) []belief.BedGeom {
+	g := make([]belief.BedGeom, len(roomBeds))
+	for j, rb := range roomBeds {
+		covers := 0.0
+		for _, ob := range ownBeds {
+			if ob == rb {
+				covers = 1
+				break
+			}
+		}
+		g[j] = belief.BedGeom{Covers: covers, Onbed: 1, Overlap: 1}
+	}
+	return g
+}
 
 // startRoomEngine 建 + 配 + 注册房间 + 接 DBN 顶层回调 + 启动消费循环。
 // 适配版（vs wisefido-sensor engine_bootstrap）：去掉已剥离的 AI publish / 每日 reload /
@@ -171,10 +206,11 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 	}
 	srows.Close()
 
-	// 每房雷达 device uid（hex）→ 取固件活体 declare_area 算床区 area_id。
+	// 每房雷达 device uid（hex）→ 取固件活体 declare_area 算床区 area_id；并存 addr→uid（per-device covers 注入用）。
 	radarUIDsByRoom := map[string][]string{}
+	radarUIDByAddr := map[string]map[string]string{} // roomID → 归一 addr → device_uid（MM per-device geom keying）
 	rdrows, err := db.QueryContext(ctx, `
-		SELECT r.room_id::text, dfm.device_uid
+		SELECT r.room_id::text, host(d.device_addr)::text, dfm.device_uid
 		FROM rooms r
 		JOIN devices d                ON r.room_id >>= d.device_addr
 		JOIN device_factory_meta dfm  ON dfm.device_uid = d.device_uid
@@ -183,9 +219,13 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 		return 0, err
 	}
 	for rdrows.Next() {
-		var rid, uid string
-		if rdrows.Scan(&rid, &uid) == nil && uid != "" {
+		var rid, addr, uid string
+		if rdrows.Scan(&rid, &addr, &uid) == nil && uid != "" {
 			radarUIDsByRoom[rid] = append(radarUIDsByRoom[rid], uid)
+			if radarUIDByAddr[rid] == nil {
+				radarUIDByAddr[rid] = map[string]string{}
+			}
+			radarUIDByAddr[rid][normAddr(addr)] = uid
 		}
 	}
 	rdrows.Close()
@@ -281,7 +321,22 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 				nb:             nb,
 			}
 			seed := adapter.FrameInput{Beds: beds, Covers: ones(nb), Onbed: ones(nb), Overlap: ones(nb)}
-			router.rooms[roomID] = engine.NewRoom(adapter.BedGeoms(seed), nb)
+			room := engine.NewRoom(adapter.BedGeoms(seed), nb)
+			// MM per-(设备×床) covers 注入：每雷达设备只盖它**自己 canvas 画的床**（rect 归属）→ covers=1，
+			//   别台没画的床=0（D523 没画床→全 0→跟床解耦）。defGeom(covers=1) 兜未注册/sleepad-only 合成 track。
+			//   key=uid_last4（与 track LogicID[:4] 同源 device_uid → 天然匹配）。Onbed/Overlap=1 同 seed（零回归）。
+			if hasLayout {
+				for _, addr := range cfg.RadarAddrs {
+					uid := radarUIDByAddr[roomID][normAddr(addr)]
+					if uid == "" {
+						logger.Warn("MM covers: radar addr 无 device_uid（跳过 per-device geom，回退 covers=1）",
+							zap.String("room", roomID), zap.String("addr", addr))
+						continue
+					}
+					room.SetDeviceGeom(uidLast4(uid), deviceBedGeom(beds, rectsFrom(cfg.DeviceBeds[addr])))
+				}
+			}
+			router.rooms[roomID] = room
 			router.roomType[roomID] = cfg.RoomType // UD timer per-room deadline（Bathroom=1→D=20min，余 UD=90min）
 			// unitKey = suiteID（SQL 已 network() zero 主机位 → 同 /80 房共享；public bathroom=自身/128 独立）。
 			router.roomUnit[roomID] = cfg.SuiteID

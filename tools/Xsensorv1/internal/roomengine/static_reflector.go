@@ -40,15 +40,15 @@ func (tm *TrackManager) scanStaticReflectors(nowMs int64) {
 	}
 
 	// 游走真人（仅作 log 信息，不 gate——无人时纯金属幻影也要能学）
-	roamer := -1
-	for tid, ts := range tm.tracks {
+	roamer := -1 // firmware track_id（仅 log；-1=无游走真人）
+	for _, ts := range tm.tracks {
 		if ts.Verdict == VerdictReal && ts.DisplacementWithinMs(30_000, nowMs) >= staticReflectorRoamMinCm {
-			roamer = tid
+			roamer = ts.TrackID
 			break
 		}
 	}
 
-	for tid, ts := range tm.tracks {
+	for key, ts := range tm.tracks {
 		pxF, pyF := ts.Kalman.Position()
 		px, py := int(math.Round(pxF)), int(math.Round(pyF))
 		// ① 出生即在此 + ② 从不移走：当前位置仍贴 BirthPos
@@ -64,10 +64,10 @@ func (tm *TrackManager) scanStaticReflectors(nowMs int64) {
 		if wallDist > staticReflectorWallMarginCm {
 			continue
 		}
-		if last, ok := tm.staticReflectorLastMark[tid]; ok && nowMs-last < staticReflectorMarkIntervalMs {
+		if last, ok := tm.staticReflectorLastMark[key]; ok && nowMs-last < staticReflectorMarkIntervalMs {
 			continue // 去抖
 		}
-		tm.staticReflectorLastMark[tid] = nowMs
+		tm.staticReflectorLastMark[key] = nowMs
 		tm.grid.MarkStaticReflector(px, py, nowMs)
 
 		count := 0
@@ -75,7 +75,7 @@ func (tm *TrackManager) scanStaticReflectors(nowMs int64) {
 			count = c.StaticReflectorCount
 		}
 		tm.logger.Info("static_reflector_candidate", // Phase A：log-only，不改 verdict
-			zap.Int("track_id", tid),
+			zap.Int("track_id", ts.TrackID),
 			zap.Int("x", px), zap.Int("y", py),
 			zap.Int("birth_x", ts.BirthPos.X), zap.Int("birth_y", ts.BirthPos.Y),
 			zap.Int("wall_dist_cm", wallDist),

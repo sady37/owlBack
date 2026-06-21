@@ -47,43 +47,51 @@ type Frame struct {
 	// forensic（全切片观测，不参与裁决）：
 	PresentCount int             // 本帧在场 track 数（§61 共存源/消费门控判据）
 	Tracks       []TrackForensic // 每 track 内部量（realness/ghost/消费门控/per-track 裁决）
-	// FiredTrackIDs 本帧 fall fire 的 firmware track_id：回传 track_manager 复位 still-box（跨层 StillSec 在 tm），
+	// FiredLogicIDs 本帧 fall fire 的 LogicID：回传 track_manager 复位 still-box（跨层 StillSec 在 tm），
 	//   与本帧已就地复位的 belief 配套——fall fire = 该 track 推断 episode 结束 → 从 0 热机重判。
-	FiredTrackIDs []int
-	// DroppedTrackIDs 本帧 belief 状态驱动 drop（确认离场/空：!Present ∧ SLeft+SEmpty≥absorbedThresh）的 firmware
-	//   track_id：回传 track_manager 立即 evict，停止 12s coast 期对已离场 track 的 re-feed（否则 census 每帧重发
-	//   新 logicID = churn）。与 FiredTrackIDs 互斥（fire⇒SFallen 高⇒不进 drop）。闪失重捕的 coast 不受影响
-	//   （无离场证据 belief 不 drop）。
-	DroppedTrackIDs []int
+	FiredLogicIDs []string
+	// DroppedLogicIDs 本帧 belief 状态驱动 drop（确认离场/空：!Present ∧ SLeft+SEmpty≥absorbedThresh）的 LogicID：
+	//   回传 track_manager 立即 evict，停止 12s coast 期对已离场 track 的 re-feed（否则 census 每帧重发
+	//   新 logicID = churn）。与 FiredLogicIDs 互斥（fire⇒SFallen 高⇒不进 drop）。闪失重捕的 coast 不受影响
+	//   （无离场证据 belief 不 drop）。身份用 LogicID（多雷达同房 firmware track_id 撞号已根治）。
+	DroppedLogicIDs []string
 }
 
 // TrackForensic 单 track 的 DBN 内部量（forensic 暴露，X 光全切片用，不参与裁决）。
 type TrackForensic struct {
 	LogicID       string
 	Present       bool
-	PReal         float64 // 真人后验（realness 轴；ghost→低）
-	PMirror       float64 // 镜像后验
-	IsReflection  bool    // 桶二镜面几何判定
-	PFallen       float64 // per-track P^F
-	Fire          bool    // per-track 裁决（持续≥T_hold）
-	Band          string  // per-track 档（report/no/tie/indeterminate）
-	X, Y          int     // forensic：末帧 canvas 坐标
-	Sep           float64 // forensic：reflectSep cm（墙外反射裕度）
-	WallMargin    float64 // forensic：mEv 墙外项
-	Rho           float64 // forensic：CoexistRho 同步移动强度
-	LaterBorn     bool    // forensic：成对后到
-	DoorD         float64 // forensic：出生地→最近门 cm（设出生先验 bR₀）
-	RepeatR       float64 // forensic：重复摔残余 R（§J；前科强度，>0=有近期摔史）
-	SelfRecovered bool    // forensic：本帧 fall episode 刚结束（起身自救）= 记录线 self_recovered
-	StillSec      float64 // forensic：still-box 总时长秒（FloorGuard 纯计时器输入；调 floor/still 看这个）
+	PReal         float64   // 真人后验（realness 轴；ghost→低）
+	PMirror       float64   // 镜像后验
+	IsReflection  bool      // 桶二镜面几何判定
+	PFallen       float64   // per-track P^F
+	Fire          bool      // per-track 裁决（持续≥T_hold）
+	Band          string    // per-track 档（report/no/tie/indeterminate）
+	X, Y          int       // forensic：末帧 canvas 坐标
+	Sep           float64   // forensic：reflectSep cm（墙外反射裕度）
+	WallMargin    float64   // forensic：mEv 墙外项
+	Rho           float64   // forensic：CoexistRho 同步移动强度
+	LaterBorn     bool      // forensic：成对后到
+	DoorD         float64   // forensic：出生地→最近门 cm（设出生先验 bR₀）
+	RepeatR       float64   // forensic：重复摔残余 R（§J；前科强度，>0=有近期摔史）
+	SelfRecovered bool      // forensic：本帧 fall episode 刚结束（起身自救）= 记录线 self_recovered
+	StillSec      float64   // forensic：still-box 总时长秒（FloorGuard 纯计时器输入；调 floor/still 看这个）
+	SMarg         []float64 // forensic：本 track 自己的 S 9 态边缘后验（看 D523 自身 SBed/SFallen，不只房级代表）
+	Covers        []float64 // forensic：本 track 所属设备 per-bed covers(MM)（D523=0 验证跟床解耦）
 }
 
 // Room 单房多 track 引擎：每 logicID 一份 belief 滤波 + 裁决器；census 管身份/realness/人数。
 type Room struct {
-	model         *belief.Model
-	js            *belief.JointSpace // 共享读出/发射空间（各 track 滤波同维，idx 一致）
-	cp            *belief.Coupling
-	em            *belief.Emission
+	model *belief.Model
+	js    *belief.JointSpace // 共享读出/发射空间（各 track 滤波同维，idx 一致）
+	// per-(设备×床) 床耦合：每雷达设备(uid_last4)一份 Coupling/Emission/κ-ledger，懒建（仿 filters）。
+	//   covers 从 MM 来（设备画了该床=1，否则 0）→ D523 没画床→covers=0→κ 冷启 0→sleepad 床读数不灌进 D523。
+	//   defGeom = 房级回退几何(covers=1，与改造前逐 tick 等价)：单雷达房/sleepad-only 合成 track/未注册设备走它。
+	defGeom       []belief.BedGeom
+	geoms         map[string][]belief.BedGeom // uid4 → 该设备 per-bed 几何（bootstrap 注入；无=用 defGeom）
+	cps           map[string]*belief.Coupling // uid4 → 该设备耦合（懒建）
+	ems           map[string]*belief.Emission // uid4 → 该设备发射（懒建）
+	ledgers       map[string][]bedKappaLedger // uid4 → 该设备 ① 强化腿 15s 窗台账（懒建）
 	census        *adapter.TrackCensus
 	filters       map[string]*belief.Filter       // 每 logicID(tm 出生 string) 一份 S/B 联合滤波（§A.3② 隐维复制）
 	deciders      map[string]*belief.Decider      // 每 logicID 一份持续计时裁决
@@ -91,15 +99,14 @@ type Room struct {
 	escalators    map[string]*RepeatFallEscalator // 每 logicID 一份重复摔残余器（§J；第一次归 firmware，只提前重复摔）
 	nb            int
 	p             adapter.Params
-	lastMarg      belief.Vector  // 末帧房间代表 track 的 S 边缘（MarginalS 读出）
-	realStreak    map[string]int // 每 logicID 连续在场真人帧数（步4 hand-off：confirmed=streak≥K，抗噪声 churn）
+	lastMarg      belief.Vector   // 末帧房间代表 track 的 S 边缘（MarginalS 读出）
+	realStreak    map[string]int  // 每 logicID 连续在场真人帧数（步4 hand-off：confirmed=streak≥K，抗噪声 churn）
 	prevConfirmed map[string]bool // 上 tick 已确认真人(streak≥K)的 logicID 集（算 lost）
 	// F1 独居连续计时（跨 tick，与 realStreak 同层）：真人占用==1 连续起点 ms（0=当前非独居）。
 	//   占用判据 = PReal≥0.5 ∧ S∉{Empty,Left}（含 blind 续存的 faller，filter 后的 MarginalS），
 	//   **非** census.Nr() present-only——否则独居者摔进 blind 时占用掉 0 误清零计时（lost-fall FN）。
 	aloneStreakStartMs int64
 	notSoloFrames      int // 连续占用≠1 帧数（重置抗抖动柱②：≥arrivalConfirmFrames 才清 alone-streak）
-	kappaLedger        []bedKappaLedger // ① 强化腿 per-bed 15s 窗（同向共跳）
 }
 
 // NewRoom 建单房引擎。geom = 床几何（adapter.BedGeoms 从 layout 派生）；nb = 床数。
@@ -108,8 +115,11 @@ func NewRoom(geom []belief.BedGeom, nb int) *Room {
 	return &Room{
 		model:         belief.DefaultModel(),
 		js:            belief.NewJointSpace(nb),
-		cp:            belief.NewCoupling(geom),
-		em:            belief.NewEmission(geom),
+		defGeom:       geom,
+		geoms:         map[string][]belief.BedGeom{},
+		cps:           map[string]*belief.Coupling{},
+		ems:           map[string]*belief.Emission{},
+		ledgers:       map[string][]bedKappaLedger{},
 		census:        adapter.NewTrackCensus(adapter.DefaultTrackCensusParams()),
 		filters:       map[string]*belief.Filter{},
 		deciders:      map[string]*belief.Decider{},
@@ -119,8 +129,41 @@ func NewRoom(geom []belief.BedGeom, nb int) *Room {
 		p:             adapter.DefaultParams(),
 		realStreak:    map[string]int{},
 		prevConfirmed: map[string]bool{},
-		kappaLedger:   make([]bedKappaLedger, nb),
 	}
+}
+
+// SetDeviceGeom bootstrap 注入某雷达设备(uid_last4)的 per-bed 几何（covers 从 MM：画了该床=1 否则 0）。
+// 未注入的设备/合成 track 走 defGeom（covers=1=改造前行为）。须在任何 Tick 前调用。
+func (r *Room) SetDeviceGeom(uid4 string, geom []belief.BedGeom) { r.geoms[uid4] = geom }
+
+// devKey logicID → uid_last4（makeLogicID 前缀，per-device 床耦合键）。
+func devKey(logicID string) string {
+	if len(logicID) >= 4 {
+		return logicID[:4]
+	}
+	return logicID
+}
+
+// geomOf uid4 对应几何，无注入→defGeom。
+func (r *Room) geomOf(uid4 string) []belief.BedGeom {
+	if g := r.geoms[uid4]; g != nil {
+		return g
+	}
+	return r.defGeom
+}
+
+// byDev 取/懒建该设备的 Coupling+Emission（κ 冷启自 geomOf 的 covers·onbed）。
+func (r *Room) byDev(uid4 string) (*belief.Coupling, *belief.Emission) {
+	if cp := r.cps[uid4]; cp != nil {
+		return cp, r.ems[uid4]
+	}
+	g := r.geomOf(uid4)
+	cp := belief.NewCoupling(g)
+	em := belief.NewEmission(g)
+	r.cps[uid4] = cp
+	r.ems[uid4] = em
+	r.ledgers[uid4] = make([]bedKappaLedger, r.nb)
+	return cp, em
 }
 
 // bedKappaLedger ① 强化腿 per-bed 15s deferred 窗：检测 sleepad/radar 床事件同向共跳。
@@ -138,39 +181,49 @@ const kappaWindowMs = 15000 // ① 强化窗 K（case1/2 的 15s）
 // radarInBed ① 的 radar 半：FwAreaID==床。**不 gate Online**（钉① lost 边界）——lost-coasting track 的
 // FwAreaID 是 M×N 冻结末值；radar 半冻结、sleepad 半实时把关：人真离床→sleepad LeftBed→agree/matched=F
 // →κ 衰减，冻结 N 不会错误维持。evicted track 不在 fi.Tracks，自然不计。
-func radarInBed(fi adapter.FrameInput, j int) bool {
+func deviceRadarInBed(uid4 string, fi adapter.FrameInput, j int) bool {
 	if j >= len(fi.BedAreaIDs) || fi.BedAreaIDs[j] == 0 {
 		return false
 	}
 	for _, t := range fi.Tracks {
-		if t.FwAreaID == fi.BedAreaIDs[j] {
+		if devKey(t.LogicID) == uid4 && t.FwAreaID == fi.BedAreaIDs[j] {
 			return true
 		}
 	}
 	return false
 }
 
-// maintainKappa ① 维持腿（per-frame 弱 γ）：持续共态 agree=sIn∧rIn → 熟睡持续在床托住 κ 抗衰减。
-func (r *Room) maintainKappa(fi adapter.FrameInput) {
+// maintainKappaDev ① 维持腿（per-frame 弱 γ）：持续共态 agree=sIn∧rIn → 熟睡持续在床托住 κ 抗衰减。
+//
+//	per-device：radar 半只看本设备 track；covers≤0 的床（本设备没画）跳过—κ 恒 0 不动（D523 解耦）。
+func (r *Room) maintainKappaDev(uid4 string, cp *belief.Coupling, geom []belief.BedGeom, fi adapter.FrameInput) {
 	live := make([]bool, r.nb)
 	agree := make([]bool, r.nb)
 	for j := 0; j < r.nb; j++ {
+		if j >= len(geom) || geom[j].Covers <= 0 {
+			continue
+		}
 		sOn := j < len(fi.Sleepads) && fi.Sleepads[j].Present
 		sIn := sOn && fi.Sleepads[j].Reading == belief.BedInBed
-		rIn := radarInBed(fi, j)
+		rIn := deviceRadarInBed(uid4, fi, j)
 		live[j] = sOn && (sIn || rIn) // both-vacant→冻结；sleepad 离线→不动非衰减
 		agree[j] = sIn && rIn         // 持续共占→维持抬；真离床 sIn=F→agree=F→弱衰减
 	}
-	r.cp.MaintainKappa(agree, live)
+	cp.MaintainKappa(agree, live)
 }
 
-// eventKappa ① 强化腿（15s deferred 窗，强 γ）：同向共跳→强抬（时间绑同人）。钉②：只"sleepad 在床
+// eventKappaDev ① 强化腿（15s deferred 窗，强 γ）：同向共跳→强抬（时间绑同人）。钉②：只"sleepad 在床
 // ∧ radar 持续别床"才强降；"sleepad 跳入 + radar 持续在床(agree)"→不强更新，交维持腿托（不误判矛盾）。
-func (r *Room) eventKappa(fi adapter.FrameInput) {
+//
+//	per-device：本设备 track + 本设备台账；covers≤0 床跳过（D523 不参与）。
+func (r *Room) eventKappaDev(uid4 string, cp *belief.Coupling, geom []belief.BedGeom, ledger []bedKappaLedger, fi adapter.FrameInput) {
 	matched := make([]bool, r.nb)
 	live := make([]bool, r.nb)
 	for j := 0; j < r.nb; j++ {
-		L := &r.kappaLedger[j]
+		if j >= len(geom) || geom[j].Covers <= 0 {
+			continue
+		}
+		L := &ledger[j]
 		cur, sOn := belief.BedNoReport, false
 		if j < len(fi.Sleepads) {
 			cur, sOn = fi.Sleepads[j].Reading, fi.Sleepads[j].Present
@@ -184,7 +237,7 @@ func (r *Room) eventKappa(fi adapter.FrameInput) {
 			}
 		}
 		L.sleepadPrev = cur
-		rNow := radarInBed(fi, j)
+		rNow := deviceRadarInBed(uid4, fi, j)
 		rDir := 0
 		if rNow != L.radarPrev {
 			if rNow {
@@ -214,12 +267,30 @@ func (r *Room) eventKappa(fi adapter.FrameInput) {
 			*L = bedKappaLedger{sleepadPrev: cur, radarPrev: rNow}
 		}
 	}
-	r.cp.UpdateKappa(matched, live)
+	cp.UpdateKappa(matched, live)
+}
+
+// updateKappa 每帧驱动所有在场设备的 κ 两腿（维持+强化）。本帧有 track 的设备各自更新（仿 filters 懒建）；
+//
+//	按 devKey 去重，covers≤0 床在两腿内跳过。
+func (r *Room) updateKappa(fi adapter.FrameInput) {
+	seen := map[string]bool{}
+	for _, t := range fi.Tracks {
+		uid4 := devKey(t.LogicID)
+		if seen[uid4] {
+			continue
+		}
+		seen[uid4] = true
+		cp, _ := r.byDev(uid4)
+		geom := r.geomOf(uid4)
+		r.maintainKappaDev(uid4, cp, geom, fi)
+		r.eventKappaDev(uid4, cp, geom, r.ledgers[uid4], fi)
+	}
 }
 
 // applyLeftBedOpen ③：把 LeftBed→SOpenFloor/SBlindRest 的 S 轴满幅似然注入 logPhi（按 a_j 归属）。
-func (r *Room) applyLeftBedOpen(logPhi belief.JointVector, obs belief.Observation, gxy []float64, present bool) {
-	lb := r.cp.LeftBedOpenLogS(obs, gxy, present)
+func (r *Room) applyLeftBedOpen(cp *belief.Coupling, logPhi belief.JointVector, obs belief.Observation, gxy []float64, present bool) {
+	lb := cp.LeftBedOpenLogS(obs, gxy, present)
 	for s := range lb {
 		if lb[s] != 0 {
 			r.js.AddLogToS(logPhi, belief.State(s), lb[s])
@@ -233,13 +304,13 @@ type trackResult struct {
 	lam      float64
 	eligible bool // 参与房间 OR 的资格：有共存源时须真人(PReal≥0.5 排 ghost)；无共存源=孤轨→永发(§61)
 	f        *belief.Filter
+	cp       *belief.Coupling // 该 track 所属设备的耦合（probe κ 快照用代表 track 自己的设备）
 }
 
 // Tick 一帧推进。rhoXroom（neighbor，单房=0）。每条 track 各跑一份滤波，房间 OR 聚合真人 fall。
 func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	r.census.Update(fi.NowMs, fi.Tracks, fi.RadarPos, fi.Walls, fi.Entrances)
-	r.maintainKappa(fi) // ① 维持腿（per-frame 弱 γ，熟睡托）
-	r.eventKappa(fi)    // ① 强化腿（15s 窗 强 γ，同向共跳建立）
+	r.updateKappa(fi) // ① κ 两腿 per-device（维持 per-frame 弱 γ + 强化 15s 窗 强 γ，同向共跳）
 	online := adapter.Online(fi)
 	nr := r.census.Nr()
 	// 独居连续分钟用**上 tick 末**的 streak 状态（占用 streak 在本 tick 末更新，同 realStreak:208）→ 1 帧滞后，
@@ -257,12 +328,10 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	}
 
 	curReal := map[string]float64{} // 本 tick 在场真人(PReal≥0.5) logicID→PReal（算 lost/gained）
-	var dropIDs []string
-	var droppedTrackIDs []int // 本帧状态驱动 drop 的 firmware track_id（回传 tm evict，停 re-feed churn）
-	var firedTrackIDs []int   // 本帧 fall fire 的 firmware track_id（回传 tm 复位 still-box）
-	var firedLogicIDs []string // 本帧 fall fire 的 logicID（就地复位 belief）
-	realOccupancy := 0  // F1 本 tick 真人占用数（PReal≥0.5 ∧ S∉{E,L}）→ 末更 alone-streak
-	lostExited := false // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）→ Unit timer cancel
+	var dropIDs []string            // 本帧状态驱动 drop 的 LogicID（dropTrack + 回传 tm evict，停 re-feed churn）
+	var firedLogicIDs []string      // 本帧 fall fire 的 LogicID（就地复位 belief + 回传 tm 复位 still-box）
+	realOccupancy := 0              // F1 本 tick 真人占用数（PReal≥0.5 ∧ S∉{E,L}）→ 末更 alone-streak
+	lostExited := false             // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）→ Unit timer cancel
 	for _, ts := range tracks {
 		if ts.Present && ts.PReal >= 0.5 {
 			curReal[ts.LogicID] = ts.PReal
@@ -279,15 +348,17 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 			r.filters[ts.LogicID], r.deciders[ts.LogicID], r.floorGuards[ts.LogicID], r.escalators[ts.LogicID] = f, dec, fg, esc
 		}
 
+		cp, em := r.byDev(devKey(ts.LogicID)) // per-(设备×床) 耦合+发射：covers 从 MM（D523 covers=0 跟床解耦）
+
 		var logPsi, logPhi belief.JointVector
 		var obs belief.Observation
 		exitL := 0.0 // 离房对数几率（per-track）：present=0；消失态由 ExitLogOdds 算，floor 撤销(②)复用
 		if ts.Present {
 			obs = adapter.BuildObservation(ts.Obs.RadarTrack, fi.Sleepads, fi.Beds, fi.BedAreaIDs, r.p)
 			gxy := adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p)
-			logPsi = r.cp.LogPsi(r.js, gxy)
-			logPhi = r.em.LogPhi(r.js, obs)
-			r.applyLeftBedOpen(logPhi, obs, gxy, true) // ③ 在场 → SOpenFloor
+			logPsi = cp.LogPsi(r.js, gxy)
+			logPhi = em.LogPhi(r.js, obs)
+			r.applyLeftBedOpen(cp, logPhi, obs, gxy, true) // ③ 在场 → SOpenFloor
 		} else {
 			// 消失态：雷达轴中性（RadarOnline=false），**接触轴(sleepad)仍应用**——在床 InBed→SBed
 			//   保护睡眠者；LeftBed→B vac→Ψ 放行 SFallen。belief **自然演化**（无人工 ramp，已作废）：
@@ -298,12 +369,12 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 				Online: false, StillSec: ts.Obs.RadarTrack.StillSec,
 				AreaType: ts.Obs.RadarTrack.AreaType, RoomType: ts.Obs.RadarTrack.RoomType,
 			}, fi.Sleepads, fi.Beds, fi.BedAreaIDs, r.p)
-			logPhi = r.em.LogPhi(r.js, obs)
-			r.applyLeftBedOpen(logPhi, obs, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p), false) // ③ lost → SBlindRest（gxy 用冻结末位）
-			// 离房证据按 track_id 注入 SLeft 对数似然（ExitRoom 硬 + trend+np 软，源在 track_manager）：
+			logPhi = em.LogPhi(r.js, obs)
+			r.applyLeftBedOpen(cp, logPhi, obs, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p), false) // ③ lost → SBlindRest（gxy 用冻结末位）
+			// 离房证据按 LogicID 注入 SLeft 对数似然（ExitRoom 硬 + trend+np 软，源在 track_manager）：
 			//   抬 SLeft → 压 pF（不 fire）+ 够强自然 absorbed-drop。≥flip 阈 → Unit timer cancel（lostExited）。
 			if fi.ExitLogOdds != nil {
-				exitL = fi.ExitLogOdds(ts.Obs.TrackID, fi.NowMs)
+				exitL = fi.ExitLogOdds(ts.LogicID, fi.NowMs)
 				if exitL > 0 {
 					r.js.AddLogToS(logPhi, belief.SLeft, exitL)
 					if exitL >= exitFlipLogOdds {
@@ -371,25 +442,29 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 			d.Fire = false
 		}
 		// fall fire 后该 track 推断 episode 结束（fired ⇒ 非 absorbed-drop，互斥）：记下供下方 belief 就地复位
-		//   + track_id 回传 tm 复位 still-box，从 0 热机重判（不动 census 身份/realness、不动 repeat 前科）。
+		//   + LogicID 回传 tm 复位 still-box，从 0 热机重判（不动 census 身份/realness、不动 repeat 前科）。
 		if d.Fire {
-			firedTrackIDs = append(firedTrackIDs, ts.Obs.TrackID)
 			firedLogicIDs = append(firedLogicIDs, ts.LogicID)
 		}
 		// 资格恒真：realness 绝不按 PR 把 fall 排出 room OR。任一 track（含 blind 续存）的摔都进房间 OR——
 		//   ghost fall 可能是真人摔的镜像，宁报不漏。realness 的影响只在 N_r（→ C_FN 折扣，帮 fire）。
 		eligible := true
-		results = append(results, trackResult{d: d, pF: pF, lam: lam, eligible: eligible, f: f})
+		results = append(results, trackResult{d: d, pF: pF, lam: lam, eligible: eligible, f: f, cp: cp})
+		devGeom := r.geomOf(devKey(ts.LogicID))
+		covers := make([]float64, len(devGeom))
+		for i := range devGeom {
+			covers[i] = devGeom[i].Covers
+		}
 		forensic = append(forensic, TrackForensic{LogicID: ts.LogicID, Present: ts.Present, PReal: ts.PReal,
 			PMirror: ts.PMirror, IsReflection: ts.IsReflection, PFallen: pF, Fire: d.Fire, Band: d.Band,
 			X: ts.Obs.X, Y: ts.Obs.Y, Sep: ts.Sep, WallMargin: ts.WallMargin, Rho: ts.Rho, LaterBorn: ts.LaterBorn,
-			DoorD: ts.DoorD, RepeatR: repeatR, SelfRecovered: selfRecovered, StillSec: ts.Obs.RadarTrack.StillSec})
+			DoorD: ts.DoorD, RepeatR: repeatR, SelfRecovered: selfRecovered, StillSec: ts.Obs.RadarTrack.StillSec,
+			SMarg: append([]float64(nil), mS[:]...), Covers: covers})
 
 		// drop（状态驱动）：消失 track 吸收到 {Left,Empty}（handoff 经 GateBlindRow 整流 / 离房证据注入抬 SLeft）
 		//   → 离场确认 → drop（非 TTL，cancel 非 fire）。离房趋势已折进 SLeft 后验，不再单列 bool 门。
 		if !ts.Present && mS[belief.SLeft]+mS[belief.SEmpty] >= absorbedThresh {
-			dropIDs = append(dropIDs, ts.LogicID)
-			droppedTrackIDs = append(droppedTrackIDs, ts.Obs.TrackID) // 回传 tm evict：停 12s coast re-feed
+			dropIDs = append(dropIDs, ts.LogicID) // dropTrack(census) + 回传 tm evict：停 12s coast re-feed
 		}
 	}
 	for _, id := range dropIDs {
@@ -450,8 +525,8 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		r.filters[id] = belief.NewFilter(r.model, r.nb)
 		r.deciders[id] = belief.NewDecider()
 	}
-	fr.FiredTrackIDs = firedTrackIDs
-	fr.DroppedTrackIDs = droppedTrackIDs
+	fr.FiredLogicIDs = firedLogicIDs
+	fr.DroppedLogicIDs = dropIDs
 	return fr
 }
 
@@ -491,7 +566,7 @@ func (r *Room) aggregate(results []trackResult, nr int, nowMs int64) Frame {
 	dec.PeopleCount = nr
 	r.lastMarg = rep.f.Space().MarginalS(rep.f.Alpha())
 	return Frame{
-		Probe:    belief.Snapshot(rep.f.Space(), rep.f, r.cp, dec, rep.lam, nowMs),
+		Probe:    belief.Snapshot(rep.f.Space(), rep.f, rep.cp, dec, rep.lam, nowMs),
 		Decision: dec,
 	}
 }

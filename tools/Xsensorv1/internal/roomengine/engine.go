@@ -199,9 +199,9 @@ type Engine struct {
 
 	// OnRoomFrame seam：每帧 ProcessFrame + SnapshotTrackStatuses 之后触发，交上层 DBN（engine.Room）裁决。
 	// nil = 不裁决（纯馈送，无下游）。Engine 不 import belief/adapter/engine 包，靠回调解耦。
-	// 返回 (fired, dropped) 的 firmware track_id：fired → 复位 still-box（belief 已就地复位）；
+	// 返回 (fired, dropped) 的 LogicID：fired → 复位 still-box（belief 已就地复位）；
 	//   dropped（确认离场/空）→ evict track_manager，停 12s coast re-feed（防 census 重发新 logicID = churn）。
-	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(trackID int, atMs int64) float64) (fired, dropped []int)
+	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string)
 }
 
 // RuntimeConfig 与 owlBack/tools/Xsensorv1/internal/config::RoomEngineConfig 一一对应；
@@ -682,21 +682,21 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 
 	if e.OnRoomFrame != nil {
 		var bed card.BedState
-		var exitLogOdds func(trackID int, atMs int64) float64
+		var exitLogOdds func(logicID string, atMs int64) float64
 		tm := e.rooms[roomID]
 		if tm != nil {
 			bed = tm.BedOccupancyState(nowMs) // room 级权威 bed 读数（sleepad+radar 床事件融合）→ B 轴
-			// 离房 SLeft 对数几率（ExitRoom 硬 + trend+np 软），按 track_id 反查：事件无坐标走不了 census 关联，
+			// 离房 SLeft 对数几率（ExitRoom 硬 + trend+np 软），按 LogicID 反查：事件无坐标走不了 census 关联，
 			//   且丢轨 12s 驱逐后 base 空——闭包持 tm（recentRadarEvents/lostExitInfo 按 age 淘汰，不随 track drop）。
 			exitLogOdds = tm.ExitLogOdds
 		}
 		fired, dropped := e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds)
 		if tm != nil {
-			for _, tid := range fired {
-				tm.ResetStillBox(tid) // fall fire → still-box 从 0 热机（belief 已在 DBN 侧就地复位）
+			for _, lid := range fired {
+				tm.ResetStillBox(lid) // fall fire → still-box 从 0 热机（belief 已在 DBN 侧就地复位）
 			}
-			for _, tid := range dropped {
-				tm.EvictTrack(tid) // 确认离场/空 → 立即删 track，停 12s coast 期 re-feed（防 census churn）
+			for _, lid := range dropped {
+				tm.EvictTrack(lid) // 确认离场/空 → 立即删 track，停 12s coast 期 re-feed（防 census churn）
 			}
 		}
 	}

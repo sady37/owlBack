@@ -8,10 +8,10 @@ package belief
 type BedReading int
 
 const (
-	BedNoReport    BedReading = iota // 离线/无报：零信息
-	BedInBed                         // InBed 翻转（接触/事件）
-	BedLeftBed                       // sleepad 接触 LeftBed：果断清床占用（接触确定）
-	BedLeftBedRadar                  // radar 几何 LeftBed：弱清（radar 在床稳定性<50%，可能是 track 漂移误报离床）
+	BedNoReport     BedReading = iota // 离线/无报：零信息
+	BedInBed                          // InBed 翻转（接触/事件）
+	BedLeftBed                        // sleepad 接触 LeftBed：果断清床占用（接触确定）
+	BedLeftBedRadar                   // radar 几何 LeftBed：弱清（radar 在床稳定性<50%，可能是 track 漂移误报离床）
 )
 
 // Observation 一帧的原始观测。Sleepad 长 = numBeds（逐床接触读数）。
@@ -21,13 +21,16 @@ type Observation struct {
 
 	// 雷达轴 → S。RadarOnline=false → 雷达全轴 ℓ≡1（离线=中性）。
 	RadarOnline  bool
-	PoseLying    bool    // pose=Lying（二义：AtBed ∨ Fallen，刻意不分）→ boost SBed+SFallen
-	PoseWalking  bool    // pose∈{Walking,Running}（逐帧）→ 压 SFallen（运动⊥倒地静止）+ 抬 SOpenFloor
-	PoseStanding bool    // pose=Standing（软站，z 未知不硬压）→ 只抬 SOpenFloor（治 Empty，不压 SFallen）
-	PoseSit      bool    // pose=Sitting（仅椅/沙发，刻意不含坐地/床坐起=摔二义）→ 抬 SSit（弱排斥，不压 SFallen）
-	Z            int     // 雷达本帧高度(canvas cm)：z≥80=站立身高，与"躺地"互斥 → 压 SFallen + 抬 SOpenFloor
-	StillSec     float64 // still-box raw 总时长（连续静止秒）：喂 FloorGuard 纯计时器（不再含直立折扣）。emission 不消费
-	NearBed      bool    // HR/RR 空间邻域门控（§5 用 nearBed 非 enterBed，门控 Online）
+	PoseLying    bool // pose=Lying（二义：AtBed ∨ Fallen，刻意不分）→ boost SBed+SFallen
+	PoseWalking  bool // pose∈{Walking,Running}（逐帧）→ 压 SFallen（运动⊥倒地静止）+ 抬 SOpenFloor
+	PoseStanding bool // pose=Standing（软站，z 未知不硬压）→ 只抬 SOpenFloor（治 Empty，不压 SFallen）
+	PoseSit      bool // pose=Sitting（仅椅/沙发，刻意不含坐地/床坐起=摔二义）→ 抬 SSit（弱排斥，不压 SFallen）
+	// 固件已分类的跌倒（per-frame，非二义）→ 强 boost SFallen，经 confirm 窗/N_r/floor 照常裁决（不绕 belief）。
+	PoseFallen      bool    // pose=5 确认跌倒（固件最高置信跌倒证据）→ 强抬 SFallen，不抬 SBed
+	PoseSuspectFall bool    // pose=2 疑似跌倒（弱）→ 弱抬 SFallen，证据不足靠累积/floor 兜底
+	Z               int     // 雷达本帧高度(canvas cm)：z≥80=站立身高，与"躺地"互斥 → 压 SFallen + 抬 SOpenFloor
+	StillSec        float64 // still-box raw 总时长（连续静止秒）：喂 FloorGuard 纯计时器（不再含直立折扣）。emission 不消费
+	NearBed         bool    // HR/RR 空间邻域门控（§5 用 nearBed 非 enterBed，门控 Online）
 	// NearBedMask 逐床几何邻近（XY 在该床 NearBedMargin 内）。不门控 Online——present 用当前 XY，
 	// lost 用冻结坐标。FloorGuard 用它把"接触 InBed 豁免"收窄到**本 track 所在床**，避免同房他人
 	// 在床误豁免地板上的摔者。长 numBeds，与 Sleepad 同索引。

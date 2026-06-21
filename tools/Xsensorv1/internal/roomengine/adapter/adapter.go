@@ -38,9 +38,9 @@ type RadarTrack struct {
 
 // SleepadFrame 单床 sleepad raw 量（§32 二态：设备在线 OR 没有，不建模中途掉线）。
 type SleepadFrame struct {
-	Present     bool              // 房间有此 sleepad（config-static）→ ρ=1（K^obs）。false=radar-only 床（ρ=0）。
-	Reading     belief.BedReading // InBed / LeftBed / NoReport(unknown，首报前；§30 unknown=后验不确定)
-	VitalPresent bool             // sleepad 接触 vital(InBed + HR/RR fresh within TTL)→ 活体在垫,抬 SBed
+	Present      bool              // 房间有此 sleepad（config-static）→ ρ=1（K^obs）。false=radar-only 床（ρ=0）。
+	Reading      belief.BedReading // InBed / LeftBed / NoReport(unknown，首报前；§30 unknown=后验不确定)
+	VitalPresent bool              // sleepad 接触 vital(InBed + HR/RR fresh within TTL)→ 活体在垫,抬 SBed
 }
 
 // Census 风险因子（risk_evaluator 同源）。
@@ -65,9 +65,9 @@ type FrameInput struct {
 	// track.FwAreaID 命中 → 该床 N=1（在床），驱动 emission SBed boost（替代旧 cell area 判定）。
 	BedAreaIDs []int
 	Covers     []float64
-	Onbed    []float64
-	Overlap  []float64
-	Census   Census
+	Onbed      []float64
+	Overlap    []float64
+	Census     Census
 	// RadarLess 无雷达 layout（sleepad-only 房）：无姿态轴 → 物理上测不了 fall。合成 bed-track 只带 B 轴占用，
 	// 其 pose=Lying 是占用载体非真姿态 → 硬闸 Decision.Fire=false，杜绝离床转 lost 时 SFallen 爬出的假 Fall。
 	RadarLess bool
@@ -76,10 +76,11 @@ type FrameInput struct {
 	RadarPos Point
 	// §9.3① enter 区（门，areaType=4）矩形：出生地距门 D 软发射（无门→D=-1 跳过近门似然）。
 	Entrances []Rect
-	// ExitLogOdds 按 track_id 算这条丢轨人"离房"的 SLeft 对数几率（ExitRoom 硬 + trend+np 软；事件无坐标
-	//   走不了 census 关联，丢轨后 base 也空，故按号反查）。喂 blind track 的 logPhi[SLeft]：够强 → 自然
-	//   absorbed-drop + 压低 pF 不 fire；≥ExitFlipLogOdds → Unit D/UD timer cancel。nil=无源→0（保守不抑制）。
-	ExitLogOdds func(trackID int, atMs int64) float64
+	// ExitLogOdds 按 LogicID 算这条丢轨人"离房"的 SLeft 对数几率（ExitRoom 硬 + trend+np 软；事件无坐标
+	//   走不了 census 关联，丢轨后 base 也空，故按身份反查；tm 内用 设备+firmware track_id 还原匹配 ExitRoom）。
+	//   喂 blind track 的 logPhi[SLeft]：够强 → 自然 absorbed-drop + 压低 pF 不 fire；≥ExitFlipLogOdds →
+	//   Unit D/UD timer cancel。nil=无源→0（保守不抑制）。
+	ExitLogOdds func(logicID string, atMs int64) float64
 }
 
 // Params 派生层参数（form-anchor，标定留 oracle）。
@@ -204,25 +205,27 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, bedAre
 	}
 	nb := nearBed(t, beds, p)
 	return belief.Observation{
-		Sleepad:      sl,
-		RadarOnline:  t.Online,
-		PoseLying:    t.Online && t.Pose == p.PoseLying,
-		PoseWalking:  t.Online && (t.Pose == observation.PoseWalking || t.Pose == observation.PoseRunning),
-		PoseStanding: t.Online && t.Pose == observation.PoseStanding,
-		PoseSit:      t.Online && t.Pose == observation.PoseSitting,
-		Z:            t.Z,
-		StillSec:     t.StillSec,
-		NearBed:      nb,
-		NearBedMask:  nearBedMask(t, beds, p),
+		Sleepad:         sl,
+		RadarOnline:     t.Online,
+		PoseLying:       t.Online && t.Pose == p.PoseLying,
+		PoseWalking:     t.Online && (t.Pose == observation.PoseWalking || t.Pose == observation.PoseRunning),
+		PoseStanding:    t.Online && t.Pose == observation.PoseStanding,
+		PoseSit:         t.Online && t.Pose == observation.PoseSitting,
+		PoseFallen:      t.Online && t.Pose == observation.PoseFallen,
+		PoseSuspectFall: t.Online && t.Pose == observation.PoseSuspectedFall,
+		Z:               t.Z,
+		StillSec:        t.StillSec,
+		NearBed:         nb,
+		NearBedMask:     nearBedMask(t, beds, p),
 		// HRRRObserved 仅当雷达**真返** HR/RR（铁律 [[radar_hr_rr_bed_enter_gated]]：radar enter-gate，
 		// 近床但无 vital = 结构性未测 = 零信息，**非「观测到 absent」**；否则 §D 会在合法在床期误否决 AtBed）。
 		HRRRObserved:        t.HR > 0 || t.RR > 0,
 		HRRRPresent:         t.HR > 0 || t.RR > 0,
 		VitalSourceOnline:   vitalSrc,
 		SleepadVitalPresent: sleepadVital,
-		AreaType:          t.AreaType,
-		RoomType:          t.RoomType,
-		RadarBedHitMask:   bedHitMask(t, bedAreaIDs),
+		AreaType:            t.AreaType,
+		RoomType:            t.RoomType,
+		RadarBedHitMask:     bedHitMask(t, bedAreaIDs),
 	}
 }
 

@@ -20,6 +20,10 @@ type emissionParams struct {
 	lLeft      float64 // ℓ_sj(LeftBed|vac)=L_left≫1（sleepad 接触 LeftBed：果断清，残留~0.02）
 	lLeftRadar float64 // radar 几何 LeftBed：弱清（<50% 可信，残留~0.10），lLeftRadar<lLeft
 	lPose float64 // ℓ_pose(lying|AtBed)=ℓ_pose(lying|F)>1（二义，刻意）
+	// 固件已分类跌倒（pose=5/2）→ SFallen。confirmed≫suspect（非对称）；form-anchor（铁律 fall_data_is_artificial_test
+	// 单 case 不刻精确量级，只定可判侧：confirmed 决定性压过 area redirect，suspect 弱到要靠累积/floor 兜底）。
+	lFall        float64 // ℓ(pose=5 confirmed|F)：强 boost SFallen
+	lFallSuspect float64 // ℓ(pose=2 suspect|F)：弱 boost SFallen
 	lHR   float64 // L_hr：present|AtBed 倍数（absent|AtBed=1/L_hr）
 	lArea float64 // area_type 正向压制倍数（bed/sit/toilet→抬对应静止态）。area 误学(如假 Sit)的真摔
 	//                  由 FloorGuard 非累加总时长兜底（still 不进 emission，避免前向滤波累积），故 lArea 仅作 redirect 偏置
@@ -52,7 +56,7 @@ const (
 
 func defaultEmissionParams() emissionParams {
 	return emissionParams{
-		lIn: 20, lLeft: 60, lLeftRadar: 8, lPose: 3, lHR: 5,
+		lIn: 20, lLeft: 60, lLeftRadar: 8, lPose: 3, lFall: 10, lFallSuspect: 3, lHR: 5,
 		lArea:   2,
 		supWalk: 0.5, supStand: 0.5,
 		redOpen: 2, redSit: 2,
@@ -103,13 +107,24 @@ func NewEmission(geom []BedGeom) *Emission {
 	return &Emission{p: defaultEmissionParams(), geom: geom}
 }
 
+// couplesAnyBed 本设备 covers(MM) 是否盖到任一床。否(D523 没画床)→sleepad 接触 vital 不灌进本 track SBed。
+func (e *Emission) couplesAnyBed() bool {
+	for _, g := range e.geom {
+		if g.Covers > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // LogPhi 一帧发射 → log 域 JointVector。
 func (e *Emission) LogPhi(js *JointSpace, o Observation) JointVector {
 	radarS := e.radarLogS(o)     // [numStates]：雷达轴对 S 的 log 似然
 	contactB := e.contactLogB(o) // [numBeds][numBedStates]：接触轴对各 B^j 的 log 似然
 	// sleepad 接触 vital(InBed+HR/RR fresh)→ 活体在垫,抬 SBed。独立于 radar online/NearBed(接触权威；
 	// cd2b radar 不返 vital,这是唯一 vital 印证腿)。lHR 复用(与 radar HRRR 同力度)。
-	if o.SleepadVitalPresent {
+	//   门控 covers(MM)：本设备没盖任何床(D523 covers=0)→sleepad vital 不灌进此 track 的 SBed(per-device 解耦)。
+	if o.SleepadVitalPresent && e.couplesAnyBed() {
 		radarS[SBed] += math.Log(e.p.lHR)
 	}
 	out := js.NewJointVector()
@@ -160,6 +175,15 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 	// pose lying（二义）：boost AtBed 与 F（不分）。
 	if o.PoseLying {
 		addLogLk(&logS, Vector{SBed: e.p.lPose, SFallen: e.p.lPose}, w, SBed, SFallen)
+	}
+
+	// pose 确认/疑似跌倒（固件已分类，per-frame）：抬 SFallen（不抬 SBed，非二义）。confirmed 决定性
+	// 压过 area=active→SOpenFloor redirect；suspect 弱到靠累积/floor 兜底。经 confirm 窗/N_r/floor 照常裁决。
+	if o.PoseFallen {
+		addLogLk(&logS, Vector{SFallen: e.p.lFall}, w, SFallen)
+	}
+	if o.PoseSuspectFall {
+		addLogLk(&logS, Vector{SFallen: e.p.lFallSuspect}, w, SFallen)
 	}
 
 	// 床（N×M）：firmware area_id 命中床 areaId（N=1）才抬 SBed，权重 = 该床 covers（M，§F per-bed 不取 max）。
