@@ -1,629 +1,629 @@
 # case-cd2b-0604-16141631 — 卧室(CD2B) 每 tick(当前 build:857 coast + EvictTrack purge + LeftBed latch + κ 压 SBed + 统一 logicID)
 
-replay@8x;HEAD 含统一 logicID(census 引用 tm 出生身份,非自发 int)。lid=tm 出生身份(uidlast4+track_id+mmssms)。床占用=sleepad 接触权威+firmware baseline 床区;LeftBed κ 直接压 SBed(sleepad 果断/radar 弱);tFloor/redirect 仍 cell。
-事件标注:sleepad 事件按 tick ts 精确落行;radar Enter/Exit(不自带 xray tick)按 ±1.5s 就近落到相邻 track tick。
+lid=tm 出生唯一身份(uidlast4+track_id+mmssms,census 引用非自发 int)。still=still-box 总时长秒(FloorGuard 计时器输入;radar 直立位置漂>50cm box 会判不出 still)。
+床占用=sleepad 接触权威+firmware baseline 床区;LeftBed κ 直接压 SBed;事件:sleepad 精确落 tick / radar Enter-Exit ±1.5s 就近。
 
 ```
-time     dev.tid  lid           pose  z    bed      event              top        SFall SBed  SOpen SBliR SEmpt SLeft
-16:14:02 CD2B.0   CD2B01402343  stand 86   NoReport EnterRoom(rdr)     Empty      0.00  0.02  0.26  0.00  0.69  0.03
-16:14:02 CD2B.0   CD2B01402343  stand 84   NoReport stand              OpenFloor  0.00  0.02  0.52  0.00  0.41  0.01
-16:14:03 CD2B.0   CD2B01402343  walk  98   NoReport walk               OpenFloor  0.00  0.03  0.55  0.00  0.28  0.03
-16:14:04 CD2B.0   CD2B01402343  walk  112  NoReport walk               OpenFloor  0.00  0.04  0.57  0.01  0.20  0.03
-16:14:05 CD2B.0   CD2B01402343  walk  121  NoReport walk               OpenFloor  0.00  0.05  0.58  0.01  0.15  0.03
-16:14:06 CD2B.0   CD2B01402343  walk  118  NoReport walk               OpenFloor  0.00  0.05  0.59  0.01  0.11  0.03
-16:14:07 CD2B.0   CD2B01402343  walk  122  NoReport walk               OpenFloor  0.00  0.05  0.60  0.02  0.09  0.03
-16:14:08 CD2B.0   CD2B01402343  walk  122  NoReport walk               OpenFloor  0.00  0.05  0.61  0.02  0.08  0.03
-16:14:08 CD2B.0   CD2B01402343  walk  103  NoReport walk               OpenFloor  0.00  0.05  0.61  0.02  0.07  0.03
-16:14:09 CD2B.0   CD2B01402343  walk  83   NoReport walk               OpenFloor  0.00  0.05  0.61  0.02  0.06  0.03
-16:14:10 CD2B.0   CD2B01402343  walk  0    NoReport walk               OpenFloor  0.00  0.05  0.61  0.02  0.06  0.03
-16:14:11 CD2B.0   CD2B01402343  walk  0    NoReport walk               OpenFloor  0.00  0.05  0.61  0.02  0.06  0.03
-16:14:12 CD2B.0   CD2B01402343  walk  0    NoReport walk               OpenFloor  0.00  0.05  0.61  0.02  0.06  0.03
-16:14:13 CD2B.0   CD2B01402343  stand 0    NoReport stand              OpenFloor  0.00  0.05  0.61  0.02  0.05  0.03
-16:14:14 CD2B.0   CD2B01402343  stand 0    NoReport stand              OpenFloor  0.01  0.05  0.61  0.02  0.05  0.03
-16:14:15 CD2B.0   CD2B01402343  stand 0    NoReport ExitRoom(rdr)      OpenFloor  0.01  0.05  0.61  0.02  0.05  0.03
-16:14:16 CD2B.88  CD2B01402343  -     0    NoReport -                  OpenFloor  0.01  0.05  0.61  0.02  0.05  0.03
-16:14:17 CD2B.88  CD2B01402343  -     0    NoReport -                  Left       0.00  0.00  0.00  0.00  0.00  0.99
-16:14:18 CD2B.88  -             -     0    NoReport -                  Empty      0.00  0.00  0.00  0.00  0.00  0.00
-16:14:42 CD2B.88  -             -     0    NoReport -                  Empty      0.00  0.00  0.00  0.00  0.00  0.00
-16:15:14 CD2B.88  -             -     0    NoReport -                  Empty      0.00  0.00  0.00  0.00  0.00  0.00
-16:15:14 CD2B.88  -             -     0    NoReport -                  Empty      0.00  0.00  0.00  0.00  0.00  0.00
-16:15:28 CD2B.0   CD2B01528036  stand 85   NoReport EnterRoom(rdr)     Empty      0.00  0.03  0.15  0.00  0.79  0.04
-16:15:28 CD2B.0   CD2B01528036  stand 94   NoReport stand              Empty      0.00  0.03  0.25  0.00  0.66  0.01
-16:15:29 CD2B.0   CD2B01528036  walk  87   NoReport walk               Empty      0.00  0.03  0.35  0.01  0.52  0.02
-16:15:30 CD2B.0   CD2B01528036  walk  92   NoReport walk               OpenFloor  0.00  0.03  0.43  0.01  0.39  0.02
-16:15:31 CD2B.0   CD2B01528036  walk  100  NoReport walk               OpenFloor  0.00  0.03  0.49  0.01  0.29  0.02
-16:15:32 CD2B.0   CD2B01528036  walk  71   NoReport walk               OpenFloor  0.00  0.04  0.53  0.01  0.21  0.03
-16:15:33 CD2B.0   CD2B01528036  walk  74   NoReport walk               OpenFloor  0.00  0.04  0.56  0.01  0.16  0.03
-16:15:34 CD2B.0   CD2B01528036  walk  0    NoReport walk               OpenFloor  0.00  0.05  0.58  0.02  0.12  0.03
-16:15:35 CD2B.0   CD2B01528036  walk  119  NoReport walk               OpenFloor  0.00  0.05  0.59  0.02  0.10  0.03
-16:15:36 CD2B.0   CD2B01528036  walk  0    NoReport walk               OpenFloor  0.00  0.05  0.60  0.02  0.08  0.03
-16:15:36 CD2B.0   CD2B01528036  walk  91   NoReport walk               OpenFloor  0.00  0.05  0.61  0.02  0.07  0.03
-16:15:37 CD2B.0   CD2B01528036  walk  90   NoReport walk               OpenFloor  0.00  0.05  0.61  0.02  0.06  0.03
-16:15:38 CD2B.0   CD2B01528036  walk  80   NoReport walk               OpenFloor  0.00  0.04  0.62  0.02  0.06  0.03
-16:15:39 CD2B.0   CD2B01528036  walk  91   NoReport walk               OpenFloor  0.00  0.03  0.63  0.02  0.06  0.03
-16:15:40 CD2B.0   CD2B01528036  walk  73   NoReport walk               OpenFloor  0.00  0.03  0.63  0.02  0.06  0.03
-16:15:41 CD2B.0   CD2B01528036  walk  75   NoReport walk               OpenFloor  0.00  0.03  0.63  0.02  0.06  0.03
-16:15:42 CD2B.0   CD2B01528036  walk  81   NoReport walk               OpenFloor  0.00  0.03  0.63  0.02  0.06  0.03
-16:15:43 CD2B.0   CD2B01528036  sit   0    InBed    InBed(rdr)         OpenFloor  0.00  0.13  0.38  0.02  0.07  0.04
-16:15:44 CD2B.0   CD2B01528036  sit   0    InBed    sit                OpenFloor  0.00  0.20  0.24  0.03  0.08  0.03
-16:15:45 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0.00  0.26  0.16  0.04  0.07  0.02
-16:15:46 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0.00  0.31  0.12  0.05  0.06  0.02
-16:15:47 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0.00  0.34  0.10  0.06  0.04  0.02
-16:15:48 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0.00  0.36  0.09  0.06  0.03  0.01
-16:15:49 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0.00  0.38  0.08  0.06  0.03  0.01
-16:15:50 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0.00  0.38  0.08  0.06  0.02  0.01
-16:15:51 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0.00  0.39  0.08  0.06  0.02  0.01
-16:15:52 CD2B.0   CD2B01528036  stand 66   InBed    stand              Bed        0.00  0.45  0.17  0.07  0.02  0.02
-16:15:53 CD2B.0   CD2B01528036  stand 70   InBed    stand              Bed        0.00  0.49  0.23  0.07  0.02  0.02
-16:15:54 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.51  0.25  0.07  0.02  0.02
-16:15:55 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.52  0.27  0.07  0.02  0.02
-16:15:56 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:15:57 CD2B.0   CD2B01528036  walk  73   InBed    walk               Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:15:58 CD2B.0   CD2B01528036  walk  72   InBed    walk               Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:15:59 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:16:00 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:16:01 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:16:02 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:16:03 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:16:04 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:16:05 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:16:06 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:16:07 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:16:08 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:16:08 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:16:09 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:16:10 CD2B.0   CD2B01528036  stand 63   InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:16:11 CD2B.0   CD2B01528036  lying 71   InBed    lying              Bed        0.00  0.83  0.07  0.03  0.01  0.01
-16:16:12 CD2B.0   CD2B01528036  lying 69   InBed    lying              Bed        0.00  0.92  0.03  0.03  0.00  0.00
-16:16:13 CD2B.0   CD2B01528036  lying 61   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:14 CD2B.0   CD2B01528036  lying 69   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:15 CD2B.0   CD2B01528036  lying 67   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:16 CD2B.0   CD2B01528036  lying 70   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:17 CD2B.0   CD2B01528036  lying 65   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:18 CD2B.0   CD2B01528036  lying 65   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:19 CD2B.0   CD2B01528036  lying 71   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:20 CD2B.0   CD2B01528036  lying 68   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:21 CD2B.0   CD2B01528036  lying 73   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:22 CD2B.0   CD2B01528036  lying 76   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:24 CD2B.0   CD2B01528036  lying 71   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:25 CD2B.0   CD2B01528036  lying 69   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:26 CD2B.0   CD2B01528036  lying 71   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:27 CD2B.0   CD2B01528036  lying 0    InBed    InBed(pad)         Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:27 CD2B.0   CD2B01528036  lying 0    InBed    InBed(pad)         Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:32 CD2B.0   CD2B01528036  lying 77   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:33 CD2B.0   CD2B01528036  lying 72   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:34 CD2B.0   CD2B01528036  lying 79   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:35 CD2B.0   CD2B01528036  stand 100  InBed    stand              Bed        0.00  0.83  0.09  0.06  0.00  0.01
-16:16:36 CD2B.0   CD2B01528036  stand 76   InBed    stand              Bed        0.00  0.75  0.13  0.08  0.00  0.01
-16:16:37 CD2B.0   CD2B01528036  stand 81   InBed    stand              Bed        0.00  0.70  0.16  0.08  0.01  0.01
-16:16:38 CD2B.0   CD2B01528036  stand 99   InBed    stand              Bed        0.00  0.66  0.19  0.08  0.01  0.01
-16:16:39 CD2B.0   CD2B01528036  stand 81   InBed    stand              Bed        0.00  0.64  0.21  0.08  0.01  0.01
-16:16:40 CD2B.0   CD2B01528036  lying 64   InBed    lying              Bed        0.00  0.87  0.05  0.04  0.01  0.01
-16:16:41 CD2B.0   CD2B01528036  lying 83   InBed    lying              Bed        0.00  0.91  0.04  0.03  0.00  0.00
-16:16:42 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.94  0.02  0.02  0.00  0.00
-16:16:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:44 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:45 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:46 CD2B.0   CD2B01528036  lying 65   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:47 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:48 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:49 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:50 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:51 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:52 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:53 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:54 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:55 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:56 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:57 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:58 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:16:59 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:00 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:01 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:02 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:03 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:07 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:07 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:08 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:09 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:10 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:11 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:12 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:13 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:14 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:15 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:16 CD2B.0   CD2B01528036  lying 70   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:17 CD2B.0   CD2B01528036  lying 68   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:18 CD2B.0   CD2B01528036  lying 64   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:19 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:20 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:21 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:22 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:24 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:25 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:26 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:32 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:33 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:34 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:35 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:37 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:38 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:40 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:41 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:42 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:44 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:45 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:46 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:47 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:48 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:49 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:50 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:51 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:52 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:53 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:54 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:55 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:56 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:57 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:58 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:17:59 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:00 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:01 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:02 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:03 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:06 CD2B.0   CD2B01528036  lying 64   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:07 CD2B.0   CD2B01528036  lying 66   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:08 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:09 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:10 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:11 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:12 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:13 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:14 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:15 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:16 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:17 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:18 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:19 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:20 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:21 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:22 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:24 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:25 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:26 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:32 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:33 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:34 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:35 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:37 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:38 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:40 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:41 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:42 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:44 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:45 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:46 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:47 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:48 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:49 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:50 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:51 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:52 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:53 CD2B.0   CD2B01528036  lying 70   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:54 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:55 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:56 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:57 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:58 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:18:59 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:00 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:01 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:02 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:03 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:07 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:08 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:09 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:10 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:11 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:12 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:13 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:14 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:15 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:16 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:17 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:18 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:19 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:20 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:21 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:22 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:24 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:25 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:26 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:32 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:33 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:34 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:35 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:37 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:38 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:40 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:41 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:42 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:44 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:45 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:46 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:47 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:48 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:49 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:50 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:51 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:52 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:53 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:54 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:55 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:56 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:57 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:58 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:19:59 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:00 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:01 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:02 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:03 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:07 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:08 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:09 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:10 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:11 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:12 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:13 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:14 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:15 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:16 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:17 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:18 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:19 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:20 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:21 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:22 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:24 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:25 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:26 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:32 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:33 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:34 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:35 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:37 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:38 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:40 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:41 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:42 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:44 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:45 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:46 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:47 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:48 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:49 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:50 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:51 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:52 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:53 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:54 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:55 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:56 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:57 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:58 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:20:59 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:00 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:01 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:02 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:03 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:07 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:08 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:09 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:10 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:11 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:12 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:13 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:14 CD2B.0   CD2B01528036  lying 70   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:15 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:16 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:17 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:18 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:19 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:20 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:21 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:22 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:24 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:25 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:26 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:32 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:33 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:34 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:35 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:37 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:38 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:40 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:41 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:42 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:44 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:45 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:46 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:47 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:48 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:49 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:50 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:51 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:52 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:53 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:54 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:55 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:56 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:57 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:58 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:21:59 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:00 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:01 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:02 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:03 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:07 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:08 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:09 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:10 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:11 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:12 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:13 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:14 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:15 CD2B.0   CD2B01528036  lying 71   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:16 CD2B.0   CD2B01528036  lying 77   InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:17 CD2B.0   CD2B01528036  lying 96   InBed    lying              Bed        0.00  0.94  0.03  0.02  0.00  0.00
-16:22:18 CD2B.0   CD2B01528036  lying 85   InBed    lying              Bed        0.00  0.93  0.04  0.02  0.00  0.00
-16:22:19 CD2B.0   CD2B01528036  lying 100  InBed    lying              Bed        0.00  0.93  0.04  0.02  0.00  0.00
-16:22:20 CD2B.0   CD2B01528036  lying 114  InBed    lying              Bed        0.00  0.93  0.04  0.02  0.00  0.00
-16:22:21 CD2B.0   CD2B01528036  lying 105  InBed    lying              Bed        0.00  0.93  0.04  0.02  0.00  0.00
-16:22:22 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:24 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:25 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:26 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:32 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:33 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:34 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:35 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:37 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:38 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:40 CD2B.0   CD2B01528036  lying 93   InBed    lying              Bed        0.00  0.94  0.03  0.02  0.00  0.00
-16:22:41 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:22:42 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.83  0.09  0.06  0.00  0.01
-16:22:43 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.75  0.13  0.08  0.00  0.01
-16:22:44 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.70  0.16  0.08  0.01  0.01
-16:22:45 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.66  0.19  0.08  0.01  0.01
-16:22:46 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.64  0.21  0.08  0.01  0.01
-16:22:47 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.61  0.22  0.08  0.01  0.01
-16:22:48 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.60  0.23  0.08  0.01  0.01
-16:22:49 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.58  0.24  0.07  0.01  0.01
-16:22:50 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.57  0.25  0.07  0.02  0.02
-16:22:51 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.57  0.26  0.07  0.02  0.02
-16:22:52 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.56  0.26  0.07  0.02  0.02
-16:22:53 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.55  0.27  0.07  0.02  0.02
-16:22:54 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.55  0.27  0.07  0.02  0.02
-16:22:55 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.55  0.27  0.07  0.02  0.02
-16:22:56 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.54  0.27  0.07  0.02  0.02
-16:22:57 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.54  0.27  0.07  0.02  0.02
-16:22:58 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.54  0.28  0.07  0.02  0.02
-16:22:59 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.54  0.28  0.07  0.02  0.02
-16:23:00 CD2B.0   CD2B01528036  stand 102  InBed    stand              Bed        0.00  0.54  0.28  0.07  0.02  0.02
-16:23:01 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.54  0.28  0.07  0.02  0.02
-16:23:02 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:03 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:04 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:04 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:05 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:06 CD2B.0   CD2B01528036  stand 125  InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:07 CD2B.0   CD2B01528036  stand 114  InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:08 CD2B.0   CD2B01528036  stand 71   InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:09 CD2B.0   CD2B01528036  stand 96   InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:10 CD2B.0   CD2B01528036  stand 113  InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:11 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:12 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:13 CD2B.0   CD2B01528036  stand 98   InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:14 CD2B.0   CD2B01528036  stand 100  InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:15 CD2B.0   CD2B01528036  stand 87   InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:16 CD2B.0   CD2B01528036  stand 77   InBed    stand              Bed        0.00  0.53  0.28  0.07  0.02  0.02
-16:23:17 CD2B.0   CD2B01528036  lying 54   InBed    lying              Bed        0.00  0.83  0.07  0.03  0.01  0.01
-16:23:18 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.92  0.03  0.03  0.00  0.00
-16:23:19 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:23:20 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:23:20 CD2B.0   CD2B01528036  lying 0    InBed    LeftBed(pad)       Bed        0.00  0.95  0.02  0.02  0.00  0.00
-16:23:20 CD2B.0   CD2B01528036  lying 0    LeftBed  LeftBed(pad)       OpenFloor  0.00  0.17  0.76  0.05  0.00  0.01
-16:23:20 CD2B.0   CD2B01528036  lying 0    LeftBed  LeftBed(pad)       OpenFloor  0.00  0.00  0.97  0.00  0.00  0.00
-16:23:21 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:22 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:23 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:24 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:25 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:26 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:27 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:28 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:29 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:30 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:31 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:32 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:33 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:34 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:35 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:36 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:37 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:38 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:39 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:40 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:41 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:41 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:42 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:44 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:44 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:45 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:47 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:23:48 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:23:49 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:23:50 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:23:51 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:23:52 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:23:53 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:23:53 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:23:54 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:23:55 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:23:56 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:23:57 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:23:58 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:23:59 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:24:00 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  0.01  0.00  0.69  0.00  0.01  0.06
-16:24:01 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  0.01  0.00  0.51  0.01  0.06  0.06
-16:24:13 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  0.02  0.00  0.39  0.02  0.11  0.05
-16:24:13 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  0.02  0.00  0.32  0.03  0.14  0.04
-16:24:45 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  0.03  0.00  0.27  0.03  0.17  0.03
-16:25:17 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.03  0.00  0.24  0.04  0.19  0.03
-16:25:17 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.03  0.00  0.22  0.05  0.20  0.03
-16:25:49 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.04  0.00  0.21  0.05  0.21  0.02
-16:26:20 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.04  0.00  0.20  0.06  0.22  0.02
-16:26:20 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.05  0.00  0.20  0.06  0.22  0.02
-16:26:52 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.05  0.00  0.19  0.06  0.23  0.02
-16:27:24 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.05  0.00  0.19  0.06  0.23  0.02
-16:27:24 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.06  0.00  0.19  0.06  0.23  0.02
-16:27:55 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.06  0.00  0.18  0.07  0.24  0.02
-16:28:27 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.07  0.00  0.18  0.07  0.24  0.02
-16:28:28 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.07  0.00  0.18  0.07  0.24  0.02
-16:28:59 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.07  0.00  0.18  0.07  0.24  0.02
-16:29:31 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.08  0.00  0.18  0.07  0.24  0.02
-16:29:31 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  0.08  0.00  0.18  0.07  0.25  0.02
-16:29:44 CD2B.0   CD2B01528036  stand 55   LeftBed  stand              OpenFloor  0.01  0.00  0.86  0.01  0.04  0.00
-16:29:45 CD2B.0   CD2B01528036  stand 68   LeftBed  stand              OpenFloor  0.00  0.00  0.98  0.00  0.00  0.00
-16:29:46 CD2B.0   CD2B01528036  stand 72   LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:29:47 CD2B.0   CD2B01528036  stand 85   LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:29:48 CD2B.0   CD2B01528036  stand 69   LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:29:49 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:29:50 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:29:51 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:29:52 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:29:53 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:29:54 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.82  0.00  0.00  0.04
-16:29:55 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.01  0.00  0.74  0.00  0.02  0.04
-16:29:56 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.01  0.00  0.70  0.01  0.04  0.04
-16:29:57 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.95  0.00  0.01  0.01
-16:29:58 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:29:59 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:00 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:00 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:01 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:02 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:02 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:03 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:04 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:05 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:06 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:07 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:08 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:09 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:10 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:11 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:12 CD2B.0   CD2B01528036  stand 80   LeftBed  stand              OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:13 CD2B.0   CD2B01528036  stand 94   LeftBed  stand              OpenFloor  0.00  0.00  0.99  0.00  0.00  0.00
-16:30:14 CD2B.0   CD2B01528036  walk  104  LeftBed  walk               OpenFloor  0.00  0.00  0.97  0.00  0.00  0.01
-16:30:15 CD2B.0   CD2B01528036  walk  102  LeftBed  walk               OpenFloor  0.00  0.00  0.82  0.00  0.00  0.04
-16:30:16 CD2B.0   CD2B01528036  walk  85   LeftBed  walk               OpenFloor  0.00  0.00  0.74  0.00  0.02  0.04
-16:30:17 CD2B.0   CD2B01528036  walk  0    LeftBed  walk               OpenFloor  0.00  0.00  0.70  0.01  0.04  0.04
-16:30:18 CD2B.0   CD2B01528036  walk  0    LeftBed  walk               OpenFloor  0.00  0.00  0.68  0.01  0.04  0.04
-16:30:19 CD2B.0   CD2B01528036  walk  0    LeftBed  walk               OpenFloor  0.00  0.00  0.67  0.01  0.05  0.04
-16:30:20 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.00  0.00  0.66  0.01  0.05  0.03
-16:30:21 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0.01  0.00  0.66  0.01  0.05  0.03
-16:30:22 CD2B.0   CD2B01528036  stand 0    LeftBed  ExitRoom(rdr)      OpenFloor  0.01  0.00  0.65  0.01  0.06  0.03
-16:30:23 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  0.01  0.00  0.65  0.01  0.06  0.03
-16:30:24 CD2B.88  CD2B01528036  -     0    LeftBed  -                  Left       0.00  0.00  0.00  0.00  0.00  0.99
-16:30:25 CD2B.88  -             -     0    LeftBed  -                  Empty      0.00  0.00  0.00  0.00  0.00  0.00
-16:30:34 CD2B.88  -             -     0    LeftBed  -                  Empty      0.00  0.00  0.00  0.00  0.00  0.00
-16:31:06 CD2B.88  -             -     0    LeftBed  -                  Empty      0.00  0.00  0.00  0.00  0.00  0.00
-16:31:06 CD2B.88  -             -     0    LeftBed  -                  Empty      0.00  0.00  0.00  0.00  0.00  0.00
-16:31:38 CD2B.88  -             -     0    LeftBed  -                  Empty      0.00  0.00  0.00  0.00  0.00  0.00
+time     dev.tid  lid           pose  z    bed      event              top        still SFall SBed  SOpen SBliR SEmpt SLeft
+16:14:02 CD2B.0   CD2B01402343  stand 86   NoReport EnterRoom(rdr)     Empty      0     0.00  0.02  0.26  0.00  0.69  0.03
+16:14:02 CD2B.0   CD2B01402343  stand 84   NoReport stand              OpenFloor  0     0.00  0.02  0.52  0.00  0.41  0.01
+16:14:03 CD2B.0   CD2B01402343  walk  98   NoReport walk               OpenFloor  0     0.00  0.03  0.55  0.00  0.28  0.03
+16:14:04 CD2B.0   CD2B01402343  walk  112  NoReport walk               OpenFloor  0     0.00  0.04  0.57  0.01  0.20  0.03
+16:14:05 CD2B.0   CD2B01402343  walk  121  NoReport walk               OpenFloor  0     0.00  0.05  0.58  0.01  0.15  0.03
+16:14:06 CD2B.0   CD2B01402343  walk  118  NoReport walk               OpenFloor  0     0.00  0.05  0.59  0.01  0.11  0.03
+16:14:07 CD2B.0   CD2B01402343  walk  122  NoReport walk               OpenFloor  0     0.00  0.05  0.60  0.02  0.09  0.03
+16:14:08 CD2B.0   CD2B01402343  walk  122  NoReport walk               OpenFloor  0     0.00  0.05  0.61  0.02  0.08  0.03
+16:14:08 CD2B.0   CD2B01402343  walk  103  NoReport walk               OpenFloor  0     0.00  0.05  0.61  0.02  0.07  0.03
+16:14:09 CD2B.0   CD2B01402343  walk  83   NoReport walk               OpenFloor  0     0.00  0.05  0.61  0.02  0.06  0.03
+16:14:10 CD2B.0   CD2B01402343  walk  0    NoReport walk               OpenFloor  0     0.00  0.05  0.61  0.02  0.06  0.03
+16:14:11 CD2B.0   CD2B01402343  walk  0    NoReport walk               OpenFloor  0     0.00  0.05  0.61  0.02  0.06  0.03
+16:14:12 CD2B.0   CD2B01402343  walk  0    NoReport walk               OpenFloor  0     0.00  0.05  0.61  0.02  0.06  0.03
+16:14:13 CD2B.0   CD2B01402343  stand 0    NoReport stand              OpenFloor  0     0.00  0.05  0.61  0.02  0.05  0.03
+16:14:14 CD2B.0   CD2B01402343  stand 0    NoReport stand              OpenFloor  0     0.01  0.05  0.61  0.02  0.05  0.03
+16:14:15 CD2B.0   CD2B01402343  stand 0    NoReport ExitRoom(rdr)      OpenFloor  0     0.01  0.05  0.61  0.02  0.05  0.03
+16:14:16 CD2B.88  CD2B01402343  -     0    NoReport -                  OpenFloor  0     0.01  0.05  0.61  0.02  0.05  0.03
+16:14:17 CD2B.88  CD2B01402343  -     0    NoReport -                  Left       0     0.00  0.00  0.00  0.00  0.00  0.99
+16:14:18 CD2B.88  -             -     0    NoReport -                  Empty      0     0.00  0.00  0.00  0.00  0.00  0.00
+16:14:42 CD2B.88  -             -     0    NoReport -                  Empty      0     0.00  0.00  0.00  0.00  0.00  0.00
+16:15:14 CD2B.88  -             -     0    NoReport -                  Empty      0     0.00  0.00  0.00  0.00  0.00  0.00
+16:15:14 CD2B.88  -             -     0    NoReport -                  Empty      0     0.00  0.00  0.00  0.00  0.00  0.00
+16:15:28 CD2B.0   CD2B01528036  stand 85   NoReport EnterRoom(rdr)     Empty      0     0.00  0.03  0.15  0.00  0.79  0.04
+16:15:28 CD2B.0   CD2B01528036  stand 94   NoReport stand              Empty      0     0.00  0.03  0.25  0.00  0.66  0.01
+16:15:29 CD2B.0   CD2B01528036  walk  87   NoReport walk               Empty      0     0.00  0.03  0.35  0.01  0.52  0.02
+16:15:30 CD2B.0   CD2B01528036  walk  92   NoReport walk               OpenFloor  0     0.00  0.03  0.43  0.01  0.39  0.02
+16:15:31 CD2B.0   CD2B01528036  walk  100  NoReport walk               OpenFloor  0     0.00  0.03  0.49  0.01  0.29  0.02
+16:15:32 CD2B.0   CD2B01528036  walk  71   NoReport walk               OpenFloor  0     0.00  0.04  0.53  0.01  0.21  0.03
+16:15:33 CD2B.0   CD2B01528036  walk  74   NoReport walk               OpenFloor  0     0.00  0.04  0.56  0.01  0.16  0.03
+16:15:34 CD2B.0   CD2B01528036  walk  0    NoReport walk               OpenFloor  0     0.00  0.05  0.58  0.02  0.12  0.03
+16:15:35 CD2B.0   CD2B01528036  walk  119  NoReport walk               OpenFloor  0     0.00  0.05  0.59  0.02  0.10  0.03
+16:15:36 CD2B.0   CD2B01528036  walk  0    NoReport walk               OpenFloor  0     0.00  0.05  0.60  0.02  0.08  0.03
+16:15:36 CD2B.0   CD2B01528036  walk  91   NoReport walk               OpenFloor  0     0.00  0.05  0.61  0.02  0.07  0.03
+16:15:37 CD2B.0   CD2B01528036  walk  90   NoReport walk               OpenFloor  0     0.00  0.05  0.61  0.02  0.06  0.03
+16:15:38 CD2B.0   CD2B01528036  walk  80   NoReport walk               OpenFloor  0     0.00  0.04  0.62  0.02  0.06  0.03
+16:15:39 CD2B.0   CD2B01528036  walk  91   NoReport walk               OpenFloor  0     0.00  0.03  0.63  0.02  0.06  0.03
+16:15:40 CD2B.0   CD2B01528036  walk  73   NoReport walk               OpenFloor  0     0.00  0.03  0.63  0.02  0.06  0.03
+16:15:41 CD2B.0   CD2B01528036  walk  75   NoReport walk               OpenFloor  0     0.00  0.03  0.63  0.02  0.06  0.03
+16:15:42 CD2B.0   CD2B01528036  walk  81   NoReport walk               OpenFloor  0     0.00  0.03  0.63  0.02  0.06  0.03
+16:15:43 CD2B.0   CD2B01528036  sit   0    InBed    InBed(rdr)         OpenFloor  0     0.00  0.13  0.38  0.02  0.07  0.04
+16:15:44 CD2B.0   CD2B01528036  sit   0    InBed    sit                OpenFloor  0     0.00  0.20  0.24  0.03  0.08  0.03
+16:15:45 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0     0.00  0.26  0.16  0.04  0.07  0.02
+16:15:46 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0     0.00  0.31  0.12  0.05  0.06  0.02
+16:15:47 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0     0.00  0.34  0.10  0.06  0.04  0.02
+16:15:48 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0     0.00  0.36  0.09  0.06  0.03  0.01
+16:15:49 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0     0.00  0.38  0.08  0.06  0.03  0.01
+16:15:50 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0     0.00  0.38  0.08  0.06  0.02  0.01
+16:15:51 CD2B.0   CD2B01528036  sit   0    InBed    sit                Sit        0     0.00  0.39  0.08  0.06  0.02  0.01
+16:15:52 CD2B.0   CD2B01528036  stand 66   InBed    stand              Bed        0     0.00  0.45  0.17  0.07  0.02  0.02
+16:15:53 CD2B.0   CD2B01528036  stand 70   InBed    stand              Bed        0     0.00  0.49  0.23  0.07  0.02  0.02
+16:15:54 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.51  0.25  0.07  0.02  0.02
+16:15:55 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.52  0.27  0.07  0.02  0.02
+16:15:56 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:15:57 CD2B.0   CD2B01528036  walk  73   InBed    walk               Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:15:58 CD2B.0   CD2B01528036  walk  72   InBed    walk               Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:15:59 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:16:00 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:16:01 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:16:02 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:16:03 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:16:04 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:16:05 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:16:06 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:16:07 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:16:08 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:16:08 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:16:09 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:16:10 CD2B.0   CD2B01528036  stand 63   InBed    stand              Bed        0     0.00  0.53  0.28  0.07  0.02  0.02
+16:16:11 CD2B.0   CD2B01528036  lying 71   InBed    lying              Bed        0     0.00  0.83  0.07  0.03  0.01  0.01
+16:16:12 CD2B.0   CD2B01528036  lying 69   InBed    lying              Bed        0     0.00  0.92  0.03  0.03  0.00  0.00
+16:16:13 CD2B.0   CD2B01528036  lying 61   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:14 CD2B.0   CD2B01528036  lying 69   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:15 CD2B.0   CD2B01528036  lying 67   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:16 CD2B.0   CD2B01528036  lying 70   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:17 CD2B.0   CD2B01528036  lying 65   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:18 CD2B.0   CD2B01528036  lying 65   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:19 CD2B.0   CD2B01528036  lying 71   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:20 CD2B.0   CD2B01528036  lying 68   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:21 CD2B.0   CD2B01528036  lying 73   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:22 CD2B.0   CD2B01528036  lying 76   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:24 CD2B.0   CD2B01528036  lying 71   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:25 CD2B.0   CD2B01528036  lying 69   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:26 CD2B.0   CD2B01528036  lying 71   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:27 CD2B.0   CD2B01528036  lying 0    InBed    InBed(pad)         Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:27 CD2B.0   CD2B01528036  lying 0    InBed    InBed(pad)         Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:32 CD2B.0   CD2B01528036  lying 77   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:33 CD2B.0   CD2B01528036  lying 72   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:34 CD2B.0   CD2B01528036  lying 79   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:35 CD2B.0   CD2B01528036  stand 100  InBed    stand              Bed        0     0.00  0.83  0.09  0.06  0.00  0.01
+16:16:36 CD2B.0   CD2B01528036  stand 76   InBed    stand              Bed        0     0.00  0.75  0.13  0.08  0.00  0.01
+16:16:37 CD2B.0   CD2B01528036  stand 81   InBed    stand              Bed        0     0.00  0.70  0.16  0.08  0.01  0.01
+16:16:38 CD2B.0   CD2B01528036  stand 99   InBed    stand              Bed        0     0.00  0.66  0.19  0.08  0.01  0.01
+16:16:39 CD2B.0   CD2B01528036  stand 81   InBed    stand              Bed        0     0.00  0.64  0.21  0.08  0.01  0.01
+16:16:40 CD2B.0   CD2B01528036  lying 64   InBed    lying              Bed        0     0.00  0.87  0.05  0.04  0.01  0.01
+16:16:41 CD2B.0   CD2B01528036  lying 83   InBed    lying              Bed        0     0.00  0.91  0.04  0.03  0.00  0.00
+16:16:42 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.94  0.02  0.02  0.00  0.00
+16:16:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:44 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:45 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:46 CD2B.0   CD2B01528036  lying 65   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:47 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:48 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:49 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:50 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:51 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:52 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:53 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:54 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:55 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:56 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:57 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:58 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:16:59 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:00 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:01 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:02 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:03 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:07 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:07 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:08 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:09 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:10 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:11 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:12 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:13 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:14 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:15 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:16 CD2B.0   CD2B01528036  lying 70   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:17 CD2B.0   CD2B01528036  lying 68   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:18 CD2B.0   CD2B01528036  lying 64   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:19 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:20 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:21 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:22 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:24 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:25 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:26 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:32 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:33 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:34 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:35 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:37 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:38 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:40 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:41 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:42 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:17:44 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        28    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:45 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        29    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:46 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        30    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:47 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        31    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:48 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        32    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:49 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        33    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:50 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        34    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:51 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        35    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:52 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        36    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:53 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        37    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:54 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        38    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:55 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        39    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:56 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        40    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:57 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        41    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:58 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        42    0.00  0.95  0.02  0.02  0.00  0.00
+16:17:59 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        43    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:00 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        44    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:01 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        45    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:02 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        46    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:03 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        47    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        48    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        49    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        50    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:06 CD2B.0   CD2B01528036  lying 64   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:07 CD2B.0   CD2B01528036  lying 66   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:08 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:09 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:10 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:11 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:12 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:13 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:14 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:15 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:16 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:17 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:18 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:19 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:20 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:21 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:22 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:24 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:25 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:26 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:32 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:33 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:34 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:35 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        28    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        29    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:37 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        30    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:38 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        31    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        32    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:40 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        33    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:41 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        34    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:42 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        35    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        36    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:44 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        37    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:45 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        38    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:46 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        39    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:47 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        40    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:48 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        41    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:49 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        42    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:50 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        43    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:51 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        44    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:52 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        45    0.00  0.95  0.02  0.02  0.00  0.00
+16:18:53 CD2B.0   CD2B01528036  lying 70   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:54 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:55 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:56 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:57 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:58 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:18:59 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:00 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:01 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:02 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:03 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:07 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:08 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:09 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:10 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:11 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:12 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:13 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:14 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:15 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:16 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:17 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:18 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:19 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:20 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:21 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        27    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:22 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        28    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        29    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:24 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        30    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:25 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        31    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:26 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        32    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        33    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        34    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        35    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        36    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        37    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:32 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        38    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:33 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        39    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:34 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        40    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:35 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        41    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        42    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:37 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        43    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:38 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        44    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        45    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        46    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:40 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        47    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:41 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        48    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:42 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        49    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        50    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:44 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        51    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:45 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        52    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:46 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        53    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:47 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        54    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:48 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        55    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:49 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        56    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:50 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        57    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:51 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        58    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:52 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        59    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:53 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        60    0.00  0.95  0.02  0.02  0.00  0.00
+16:19:54 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:55 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:56 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:57 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:58 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:19:59 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:00 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:01 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:02 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:03 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:07 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:08 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:09 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:10 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:11 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:12 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:13 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:14 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:15 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:16 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:17 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:18 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:19 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:20 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:21 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:22 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        27    0.00  0.95  0.02  0.02  0.00  0.00
+16:20:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        28    0.00  0.95  0.02  0.02  0.00  0.00
+16:20:24 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        29    0.00  0.95  0.02  0.02  0.00  0.00
+16:20:25 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        30    0.00  0.95  0.02  0.02  0.00  0.00
+16:20:26 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        31    0.00  0.95  0.02  0.02  0.00  0.00
+16:20:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        32    0.00  0.95  0.02  0.02  0.00  0.00
+16:20:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        33    0.00  0.95  0.02  0.02  0.00  0.00
+16:20:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        34    0.00  0.95  0.02  0.02  0.00  0.00
+16:20:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        35    0.00  0.95  0.02  0.02  0.00  0.00
+16:20:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        36    0.00  0.95  0.02  0.02  0.00  0.00
+16:20:32 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        37    0.00  0.95  0.02  0.02  0.00  0.00
+16:20:33 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        38    0.00  0.95  0.02  0.02  0.00  0.00
+16:20:34 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:35 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:37 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:38 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:40 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:41 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:42 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:44 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:45 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:46 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:47 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:48 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:49 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:50 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:51 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:52 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:53 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:54 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:55 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:56 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:57 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:58 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:20:59 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:00 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:01 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:02 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:03 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        27    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:07 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        28    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:08 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        29    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:09 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        30    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:10 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        31    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:11 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        32    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:12 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        33    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:13 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        34    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:14 CD2B.0   CD2B01528036  lying 70   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:15 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:16 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:17 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:18 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:19 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:20 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:21 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:22 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:24 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:25 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:26 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:32 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:33 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:34 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:35 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:37 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:38 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:40 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:41 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:42 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:21:43 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        28    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:44 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        29    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:45 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        30    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:46 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        31    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:47 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        32    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:48 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        33    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:49 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        34    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:50 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        35    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:51 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        36    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:52 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        37    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:53 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        38    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:54 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        39    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:55 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        40    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:56 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        41    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:57 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        42    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:58 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        43    0.00  0.95  0.02  0.02  0.00  0.00
+16:21:59 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        44    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:00 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        45    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:01 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        46    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:02 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        47    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:03 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        48    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        49    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:04 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        49    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:05 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        50    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:06 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        51    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:07 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        52    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:08 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        53    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:09 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        54    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:10 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        55    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:11 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        56    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:12 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        57    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:13 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        58    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:14 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        59    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:15 CD2B.0   CD2B01528036  lying 71   InBed    lying              Bed        60    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:16 CD2B.0   CD2B01528036  lying 77   InBed    lying              Bed        61    0.00  0.95  0.02  0.02  0.00  0.00
+16:22:17 CD2B.0   CD2B01528036  lying 96   InBed    lying              Bed        62    0.00  0.94  0.03  0.02  0.00  0.00
+16:22:18 CD2B.0   CD2B01528036  lying 85   InBed    lying              Bed        0     0.00  0.93  0.04  0.02  0.00  0.00
+16:22:19 CD2B.0   CD2B01528036  lying 100  InBed    lying              Bed        0     0.00  0.93  0.04  0.02  0.00  0.00
+16:22:20 CD2B.0   CD2B01528036  lying 114  InBed    lying              Bed        0     0.00  0.93  0.04  0.02  0.00  0.00
+16:22:21 CD2B.0   CD2B01528036  lying 105  InBed    lying              Bed        0     0.00  0.93  0.04  0.02  0.00  0.00
+16:22:22 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:23 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:24 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:25 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:26 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:27 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:28 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:29 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:30 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:31 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:32 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:33 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:34 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:35 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:36 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:37 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:38 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:39 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:40 CD2B.0   CD2B01528036  lying 93   InBed    lying              Bed        0     0.00  0.94  0.03  0.02  0.00  0.00
+16:22:41 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:22:42 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.83  0.09  0.06  0.00  0.01
+16:22:43 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.75  0.13  0.08  0.00  0.01
+16:22:44 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        0     0.00  0.70  0.16  0.08  0.01  0.01
+16:22:45 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        28    0.00  0.66  0.19  0.08  0.01  0.01
+16:22:46 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        29    0.00  0.64  0.21  0.08  0.01  0.01
+16:22:47 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        30    0.00  0.61  0.22  0.08  0.01  0.01
+16:22:48 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        31    0.00  0.60  0.23  0.08  0.01  0.01
+16:22:49 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        32    0.00  0.58  0.24  0.07  0.01  0.01
+16:22:50 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        33    0.00  0.57  0.25  0.07  0.02  0.02
+16:22:51 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        34    0.00  0.57  0.26  0.07  0.02  0.02
+16:22:52 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        35    0.00  0.56  0.26  0.07  0.02  0.02
+16:22:53 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        36    0.00  0.55  0.27  0.07  0.02  0.02
+16:22:54 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        37    0.00  0.55  0.27  0.07  0.02  0.02
+16:22:55 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        38    0.00  0.55  0.27  0.07  0.02  0.02
+16:22:56 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        39    0.00  0.54  0.27  0.07  0.02  0.02
+16:22:57 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        40    0.00  0.54  0.27  0.07  0.02  0.02
+16:22:58 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        41    0.00  0.54  0.28  0.07  0.02  0.02
+16:22:59 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        42    0.00  0.54  0.28  0.07  0.02  0.02
+16:23:00 CD2B.0   CD2B01528036  stand 102  InBed    stand              Bed        43    0.00  0.54  0.28  0.07  0.02  0.02
+16:23:01 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        44    0.00  0.54  0.28  0.07  0.02  0.02
+16:23:02 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        45    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:03 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        46    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:04 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        47    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:04 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        47    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:05 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        48    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:06 CD2B.0   CD2B01528036  stand 125  InBed    stand              Bed        49    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:07 CD2B.0   CD2B01528036  stand 114  InBed    stand              Bed        50    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:08 CD2B.0   CD2B01528036  stand 71   InBed    stand              Bed        51    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:09 CD2B.0   CD2B01528036  stand 96   InBed    stand              Bed        52    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:10 CD2B.0   CD2B01528036  stand 113  InBed    stand              Bed        53    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:11 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        54    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:12 CD2B.0   CD2B01528036  stand 0    InBed    stand              Bed        55    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:13 CD2B.0   CD2B01528036  stand 98   InBed    stand              Bed        56    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:14 CD2B.0   CD2B01528036  stand 100  InBed    stand              Bed        57    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:15 CD2B.0   CD2B01528036  stand 87   InBed    stand              Bed        58    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:16 CD2B.0   CD2B01528036  stand 77   InBed    stand              Bed        59    0.00  0.53  0.28  0.07  0.02  0.02
+16:23:17 CD2B.0   CD2B01528036  lying 54   InBed    lying              Bed        0     0.00  0.83  0.07  0.03  0.01  0.01
+16:23:18 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.92  0.03  0.03  0.00  0.00
+16:23:19 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:23:20 CD2B.0   CD2B01528036  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:23:20 CD2B.0   CD2B01528036  lying 0    InBed    LeftBed(pad)       Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
+16:23:20 CD2B.0   CD2B01528036  lying 0    LeftBed  LeftBed(pad)       OpenFloor  0     0.00  0.17  0.76  0.05  0.00  0.01
+16:23:20 CD2B.0   CD2B01528036  lying 0    LeftBed  LeftBed(pad)       OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.00
+16:23:21 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:22 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:23 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:24 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:25 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:26 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:27 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:28 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:29 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:30 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:31 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:32 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:33 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:34 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:35 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:36 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:37 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:38 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:39 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:40 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:41 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:41 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:42 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:44 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:44 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:23:45 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  28    0.00  0.00  0.98  0.00  0.00  0.00
+16:23:47 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  29    0.00  0.00  0.98  0.00  0.00  0.00
+16:23:48 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  30    0.00  0.00  0.97  0.00  0.00  0.01
+16:23:49 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  31    0.00  0.00  0.97  0.00  0.00  0.01
+16:23:50 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  32    0.00  0.00  0.97  0.00  0.00  0.01
+16:23:51 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  33    0.00  0.00  0.97  0.00  0.00  0.01
+16:23:52 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  34    0.00  0.00  0.97  0.00  0.00  0.01
+16:23:53 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  35    0.00  0.00  0.97  0.00  0.00  0.01
+16:23:53 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  36    0.00  0.00  0.97  0.00  0.00  0.01
+16:23:54 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  37    0.00  0.00  0.97  0.00  0.00  0.01
+16:23:55 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  38    0.00  0.00  0.97  0.00  0.00  0.01
+16:23:56 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  39    0.00  0.00  0.97  0.00  0.00  0.01
+16:23:57 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  40    0.00  0.00  0.97  0.00  0.00  0.01
+16:23:58 CD2B.0   CD2B01528036  lying 0    LeftBed  lying              OpenFloor  41    0.00  0.00  0.97  0.00  0.00  0.01
+16:23:59 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  42    0.00  0.00  0.97  0.00  0.00  0.01
+16:24:00 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  43    0.01  0.00  0.69  0.00  0.01  0.06
+16:24:01 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  44    0.01  0.00  0.51  0.01  0.06  0.06
+16:24:13 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  56    0.02  0.00  0.39  0.02  0.11  0.05
+16:24:13 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  56    0.02  0.00  0.32  0.03  0.14  0.04
+16:24:45 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  88    0.03  0.00  0.27  0.03  0.17  0.03
+16:25:17 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  119   0.03  0.00  0.24  0.04  0.19  0.03
+16:25:17 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  120   0.03  0.00  0.22  0.05  0.20  0.03
+16:25:49 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  151   0.04  0.00  0.21  0.05  0.21  0.02
+16:26:20 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  183   0.04  0.00  0.20  0.06  0.22  0.02
+16:26:20 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  183   0.05  0.00  0.20  0.06  0.22  0.02
+16:26:52 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  215   0.05  0.00  0.19  0.06  0.23  0.02
+16:27:24 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  246   0.05  0.00  0.19  0.06  0.23  0.02
+16:27:24 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  247   0.06  0.00  0.19  0.06  0.23  0.02
+16:27:55 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  278   0.06  0.00  0.18  0.07  0.24  0.02
+16:28:27 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  310   0.07  0.00  0.18  0.07  0.24  0.02
+16:28:28 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  310   0.07  0.00  0.18  0.07  0.24  0.02
+16:28:59 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  342   0.07  0.00  0.18  0.07  0.24  0.02
+16:29:31 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  373   0.08  0.00  0.18  0.07  0.24  0.02
+16:29:31 CD2B.88  CD2B01528036  -     0    LeftBed  -                  BlindOpen  374   0.08  0.00  0.18  0.07  0.25  0.02
+16:29:44 CD2B.0   CD2B01528036  stand 55   LeftBed  stand              OpenFloor  0     0.01  0.00  0.86  0.01  0.04  0.00
+16:29:45 CD2B.0   CD2B01528036  stand 68   LeftBed  stand              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
+16:29:46 CD2B.0   CD2B01528036  stand 72   LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:29:47 CD2B.0   CD2B01528036  stand 85   LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:29:48 CD2B.0   CD2B01528036  stand 69   LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:29:49 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:29:50 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:29:51 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:29:52 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:29:53 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:29:54 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.82  0.00  0.00  0.04
+16:29:55 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.00  0.74  0.00  0.02  0.04
+16:29:56 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.00  0.70  0.01  0.04  0.04
+16:29:57 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.95  0.00  0.01  0.01
+16:29:58 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:29:59 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:00 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:00 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:01 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:02 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:02 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:03 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:04 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:05 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:06 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:07 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:08 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:09 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:10 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:11 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:12 CD2B.0   CD2B01528036  stand 80   LeftBed  stand              OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:13 CD2B.0   CD2B01528036  stand 94   LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
+16:30:14 CD2B.0   CD2B01528036  walk  104  LeftBed  walk               OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
+16:30:15 CD2B.0   CD2B01528036  walk  102  LeftBed  walk               OpenFloor  0     0.00  0.00  0.82  0.00  0.00  0.04
+16:30:16 CD2B.0   CD2B01528036  walk  85   LeftBed  walk               OpenFloor  0     0.00  0.00  0.74  0.00  0.02  0.04
+16:30:17 CD2B.0   CD2B01528036  walk  0    LeftBed  walk               OpenFloor  0     0.00  0.00  0.70  0.01  0.04  0.04
+16:30:18 CD2B.0   CD2B01528036  walk  0    LeftBed  walk               OpenFloor  0     0.00  0.00  0.68  0.01  0.04  0.04
+16:30:19 CD2B.0   CD2B01528036  walk  0    LeftBed  walk               OpenFloor  0     0.00  0.00  0.67  0.01  0.05  0.04
+16:30:20 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.66  0.01  0.05  0.03
+16:30:21 CD2B.0   CD2B01528036  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.00  0.66  0.01  0.05  0.03
+16:30:22 CD2B.0   CD2B01528036  stand 0    LeftBed  ExitRoom(rdr)      OpenFloor  0     0.01  0.00  0.65  0.01  0.06  0.03
+16:30:23 CD2B.88  CD2B01528036  -     0    LeftBed  -                  OpenFloor  0     0.01  0.00  0.65  0.01  0.06  0.03
+16:30:24 CD2B.88  CD2B01528036  -     0    LeftBed  -                  Left       0     0.00  0.00  0.00  0.00  0.00  0.99
+16:30:25 CD2B.88  -             -     0    LeftBed  -                  Empty      0     0.00  0.00  0.00  0.00  0.00  0.00
+16:30:34 CD2B.88  -             -     0    LeftBed  -                  Empty      0     0.00  0.00  0.00  0.00  0.00  0.00
+16:31:06 CD2B.88  -             -     0    LeftBed  -                  Empty      0     0.00  0.00  0.00  0.00  0.00  0.00
+16:31:06 CD2B.88  -             -     0    LeftBed  -                  Empty      0     0.00  0.00  0.00  0.00  0.00  0.00
+16:31:38 CD2B.88  -             -     0    LeftBed  -                  Empty      0     0.00  0.00  0.00  0.00  0.00  0.00
 ```

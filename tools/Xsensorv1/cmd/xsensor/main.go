@@ -240,7 +240,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			"fire": t.Fire, "band": t.Band,
 			"x": t.X, "y": t.Y, "sep": t.Sep, "wall_margin": t.WallMargin, "rho": t.Rho, "later": t.LaterBorn,
 			"door_d": t.DoorD, "track_confidence": int(t.PReal*100 + 0.5),
-			"repeat_r": t.RepeatR, "self_recovered": t.SelfRecovered,
+			"repeat_r": t.RepeatR, "self_recovered": t.SelfRecovered, "still_sec": t.StillSec,
 		})
 	}
 	walls := make([][4]int, 0, len(g.walls))
