@@ -47,7 +47,11 @@ func NewUnit(rooms map[string]*Room, residentCount int, pub belief.UnitPublicnes
 		residentCount = 1
 	}
 	np := belief.DefaultNeighborParams()
-	np.HandoffWindowMs = belief.HandoffWindowFor(pub) // 规则④：public 45s / share 60s / private 90s
+	np.HandoffWindowMs = belief.HandoffWindowFor(pub) // 规则④：public 45s / share 60s / private 90s（可调 form-anchor）
+	// radar τpeak 由公共度窗派生（base 3s × window/90）：私有 3s / 共享 2s / 公共 1.5s。
+	//   保 radar "穿堂秒级" 峰，公共越窄→峰越快→有效窗(≈3×τpeak ~7-13s)越紧（规则④真生效；
+	//   原 τpeak 固定 3s 时核 13s 就衰减没了，45/60/90 硬窗成摆设、公共度白调）。sleepad 慢核(60s/150s)不受此影响。
+	np.TauPeakMs = 3000.0 * float64(np.HandoffWindowMs) / 90000.0
 	return &Unit{
 		rooms:         rooms,
 		np:            np,
