@@ -63,7 +63,6 @@ func main() {
 		roomUnit: map[string]string{},
 		roomType: map[string]int{},
 		roomTZ:   map[string]*time.Location{},
-		unitPub:  map[string]belief.UnitPublicness{},
 		mm:       map[string]*roomengine.RoomMM{},
 		logger:   logger,
 	}
@@ -141,7 +140,6 @@ type dbnRouter struct {
 	roomUnit map[string]string                // roomID → unitKey
 	roomType map[string]int                   // roomID → card.RoomType（1=Bathroom）→ UD timer deadline
 	roomTZ   map[string]*time.Location        // roomID → 时区（IsNightTime 算 risktime，缩短 floor tFloor）
-	unitPub  map[string]belief.UnitPublicness // unitKey(suiteID) → 公共度（units.unit_type，定找人窗 W）
 	mm       map[string]*roomengine.RoomMM    // roomID → 房级静态 MM（samebed prior 权威，吸纳读）；nil=无床/无设备
 	eng      *roomengine.Engine               // 回注 radar 折叠减量给 P1 占用人数（RealPeopleInRoom，cutover 后服务 zoneengine）
 	logger   *zap.Logger

@@ -41,17 +41,14 @@ type Unit struct {
 	roomTickMs  map[string]int64 // roomID → 末 tick 时戳（新鲜度）
 }
 
-// NewUnit 建多房编排器。residentCount = unit 住户数（η 用）；pub = unit 公共度（规则④ 定找人窗 W）。
-func NewUnit(rooms map[string]*Room, residentCount int, pub belief.UnitPublicness) *Unit {
+// NewUnit 建多房编排器。residentCount = unit 住户数（η 用）。
+//   radar hand-off 核（τpeak=15s/W=90s）不随公共度缩放（DefaultNeighborParams 固定）：elder-care 套房无陌生人、
+//   多住户已 hard-gate、单住户无巧合 → 宽窗零 FN 更优，公共度收紧无意义（详 neighbor.go 注释）。
+func NewUnit(rooms map[string]*Room, residentCount int) *Unit {
 	if residentCount < 1 {
 		residentCount = 1
 	}
 	np := belief.DefaultNeighborParams()
-	np.HandoffWindowMs = belief.HandoffWindowFor(pub) // 规则④：public 45s / share 60s / private 90s（可调 form-anchor）
-	// radar τpeak 由公共度窗派生（base 3s × window/90）：私有 3s / 共享 2s / 公共 1.5s。
-	//   保 radar "穿堂秒级" 峰，公共越窄→峰越快→有效窗(≈3×τpeak ~7-13s)越紧（规则④真生效；
-	//   原 τpeak 固定 3s 时核 13s 就衰减没了，45/60/90 硬窗成摆设、公共度白调）。sleepad 慢核(60s/150s)不受此影响。
-	np.TauPeakMs = 3000.0 * float64(np.HandoffWindowMs) / 90000.0
 	return &Unit{
 		rooms:         rooms,
 		np:            np,

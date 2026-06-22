@@ -86,8 +86,8 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB, rdb *r
 		unitRooms[unitKey][roomID] = router.rooms[roomID]
 	}
 	for unitKey, rooms := range unitRooms {
-		// residentCount=1（单住户测试；多住户后续）；pub = 该 unit 公共度 → 找人窗 W（规则④）。
-		router.units[unitKey] = engine.NewUnit(rooms, 1, router.unitPub[unitKey])
+		// residentCount=1（单住户测试；多住户后续）。hand-off 核不随公共度（见 neighbor.go）。
+		router.units[unitKey] = engine.NewUnit(rooms, 1)
 	}
 	logger.Info("xsensor: units built", zap.Int("units", len(router.units)), zap.Int("rooms", len(router.rooms)))
 
@@ -172,8 +172,7 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 		               OR ru.spatial_prefix <<= r.room_id
 		               OR ru.spatial_prefix = r.room_id)
 		        ORDER BY masklen(ru.spatial_prefix) DESC
-		        LIMIT 1)                                              AS resident_id,
-		       COALESCE(u.unit_type, 1)                              AS unit_type
+		        LIMIT 1)                                              AS resident_id
 		FROM rooms r
 		LEFT JOIN units u ON u.unit_id >>= r.room_id
 	`)
@@ -261,16 +260,15 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 	count := 0
 	for rows.Next() {
 		var roomID, roomName, suiteID, tenantID string
-		var roomType, unitType int
+		var roomType int
 		var isPublicBathroom bool
 		var residentIDOpt sql.NullString
 		var timezone string
 		if err := rows.Scan(&roomID, &roomName, &roomType, &isPublicBathroom,
-			&suiteID, &timezone, &tenantID, &residentIDOpt, &unitType); err != nil {
+			&suiteID, &timezone, &tenantID, &residentIDOpt); err != nil {
 			logger.Warn("scan rooms row", zap.Error(err))
 			continue
 		}
-		router.unitPub[suiteID] = belief.UnitPublicness(unitType) // 规则④ 找人窗 W（同 suite 各房同值）
 		residentID := ""
 		if residentIDOpt.Valid {
 			residentID = residentIDOpt.String

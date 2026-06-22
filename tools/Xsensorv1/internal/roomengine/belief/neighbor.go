@@ -36,7 +36,10 @@ type NeighborParams struct {
 }
 
 func DefaultNeighborParams() NeighborParams {
-	return NeighborParams{HandoffWindowMs: 60_000, JitterMs: 5_000, TauPeakMs: 3_000, OffsetMs: 250, TauJMs: 2_000, Beta: 0.7,
+	// radar τpeak=15s（老人套房跨房慢走典型 5-45s 的峰，非"秒级穿堂"；不随公共度缩放——
+	//   公共度收紧防的是陌生人偶合，但 elder-care 套房无陌生人、多住户已 hard-gate，单住户无巧合→宽窗零 FN 更优）。
+	//   W=90s 硬窗 ≫ 有效窗(~45s)不裁核。
+	return NeighborParams{HandoffWindowMs: 90_000, JitterMs: 5_000, TauPeakMs: 15_000, OffsetMs: 250, TauJMs: 2_000, Beta: 0.7,
 		SleepadTauPeakMs: 60_000, SleepadWindowMs: 150_000}
 }
 
@@ -97,29 +100,6 @@ func GateBlindRow(row [numStates]float64, rho float64) [numStates]float64 {
 	row[SFallen] -= moved
 	row[SLeft] += moved
 	return row
-}
-
-// UnitPublicness §38 规则④ unit 公共度（值同 v2 units.unit_type，DB 整数直转）。
-type UnitPublicness int
-
-const (
-	UnitPrivate UnitPublicness = 1 // single：私有 suite（单住户）→ 找人窗最长（同住户巧合少，老人走得慢需久等）
-	UnitShared  UnitPublicness = 2 // share：共享单元 → 中
-	UnitPublic  UnitPublicness = 3 // public：Facility 公共区 → 窗最短（陌生人流大，收紧防偶合误判 hand-off）
-)
-
-// HandoffWindowFor 规则④：找人窗 W 按 unit 公共度 3 档（form-anchor 45/60/90s，留 oracle）。
-//   越公共 → 窗越短（陌生人偶合越多 → 收紧才不把巧合误判成 hand-off 而误抑制真摔）。
-//   未知/缺省 → 私有 90s（residential 单住户为主场景；该档巧合少，久窗低风险）。
-func HandoffWindowFor(pub UnitPublicness) int64 {
-	switch pub {
-	case UnitPublic:
-		return 45_000
-	case UnitShared:
-		return 60_000
-	default: // UnitPrivate / 未知
-		return 90_000
-	}
 }
 
 // DelayWindowFor 规则⑤：D（延迟裁决窗）随覆盖差放长，**锚静止消失门限 + 余量**（同一物理时钟，用户裁定）。
