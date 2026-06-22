@@ -242,3 +242,20 @@ A 复审 B 的"`GateBlindRow` rho×非-Left→SLeft 向量手术"，提更干净
 - **FN-safety = 结构 + 门控双层**：注入 `logit(0.786)≈1.3` 是中等强度——对二义（SFallen log-odds≈−1.8）赢、对真摔（≈2.2）输 = **部分结构性自保**；**但 latch 闸仍必须**（防中等注入跨多 tick 累积压垮中等 SFallen）。
 - **门控（焊死前提）**：① **confirmed-fall latch**——SFallen 到过 confirm(pFire 0.85) **或** 见过 firmware pose=fall → per-track latch，**绝不注入 SLeft**，只解析纯二义低-SFallen lost；② 注入**封顶** ≤`logit(0.9)`（纵深防御，latch 是硬底）；③ **单住户 only**（多住户 hard-gate，同 §7.7①）；④ **present 免疫**；⑤ rho≥阈 + band-pass 低端（太快上不了床不算接力）。
 - **状态**：proposal-only，待 A 复审 + 拍实现时机；执行序仍在慢核落地 + forensic + false-fire 实证之后，**不与慢核捆绑**。
+
+#### ①-follow-up 收敛 v2（注入核形状定稿，2026-06-22；**取代上面 `logit(rho)`/band-pass 部分**）
+
+排查 hand-off 后 fire 路径（按规则 #3 走 engine.go 实际机制）+ 两点关键发现，把注入核从"带通 logit(rho)"收敛成**矩形窗恒定注入**：
+
+- **发现1：fire 真路径 = floor 兜底，闸是 exitL 不是 rho**。lost track（`!ts.Present`）两条 fire：`engine.go:398` lost-fire（pF≥0.85，d523 pF=0.14 不发）+ `engine.go:413` **floor 兜底**（`fg.Step()&&exitL<flip→fire`，StillSec 爬到 tFloor=720s 必发）。floor 闸**只看 `exitL`（ExitRoom 离房证据），完全不看 `rhoXroom`**。而 d523 没过门 → exitL=0 → **rho=0.786 识别对了却进不了 floor 闸 → 假报**。**注入点精确锁定 = `engine.go:371`**（`exitL += handoffL`，复用 `AddLogToS(SLeft)`→`:460` absorbed-drop 同一条链）。
+- **发现2：Δ 是固定到达延迟、注入恒定不衰减**。`unit.go:138` `ArrivalDeltaMs = g.tMs − lostMs`（gain−loss，**不随时间增长**），gain 在窗内留 `keepMs`（`:157`，=max(W_radar,W_slpd)=150s）。→ **handoffL 每 tick 恒定**直到 purge 或 gain 被剪。**推论：全窗只要 `logit>0` 就能 purge**（弱只是慢几 tick，150s 窗内必成、远早于 tFloor 720s）——比"够强"宽松得多。
+- **核形状定稿 = 矩形窗（平、不衰减）**，**废 gammaPeak1/带通/三角/GateBlindRow** 整套 timing-shaping：
+  ```
+  handoffL(Δ) = L_const   Δ ∈ [Δ_lo≈3s, W]      ← 满强度恒定
+              = 0         otherwise              ← 低端瞬移门 / 高端超窗截断
+     L_const = logit(0.9) = 2.197（purge ~3 tick）;  W = 90s(radar) / 150s(sleepad)
+  ```
+  - **为何平不衰减**：timing-shaping（带通/三角高端衰减）本质在判"**是不是同一个人**"——越晚越疑巧合。**但单住户只有一人，80s 与 15s 重现的同人确定性完全一样 → 衰减是折损满分证据，逻辑错**（同 §7.6⑥ 拿掉公共度的同一道理：单住户场景 timing 连续折损置信度无意义）。只保两条**硬边界**：低端 Δ<3s 拒瞬移（两房不可能秒移）、高端 Δ>W 截断（超最大合理步行、任何房没现身 → **当可能摔进盲区，不抑制 = FN-safe**）。中间全满强度。
+- **FN-safety = 结构性，不靠 kernel 衰减**：① **单住户 override**——room-B 现身 = 那人在 B 没摔在 A（单人不可能同时摔在 A 又躺在 B），哪怕 A 的 SFallen 在涨，满强度 purge 也对；② **confirmed-fall latch**——A 的 SFallen 到过 0.85（已确认/已 fire）→ 不注入；若"摔后起身走去 B"=recovery 走 [[§J self_recovered]] 记录再撤、不静默抹；③ **高端 W 截断**= 真正"摔进盲区"的兜底口；④ **多住户 hard-gate**（巧合风险只在多住户，直接关，不靠弱抑制）。
+- **附带**：注入接管解析后 GateBlindRow（旧转移腿、只搬 rho×Fallen-seed≈0.005 不够用）冗余 → 退役；hand-off 收成**一条核：矩形注入**，radar/sleepad 只差 W。
+- **状态**：仍 proposal-only，待 A 复审拍实现。A 审点 = 矩形满强度注入（替代连续衰减）在"单住户 override + latch + W 截断"下是否 FN-safe。
