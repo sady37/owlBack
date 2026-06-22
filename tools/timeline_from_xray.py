@@ -32,6 +32,7 @@ for line in open(log_path):
     sd = d.get('s_dist', {})
     # target(tid,pose,z,stillbox,x,y) ↔ dbn(lid,still_sec,x,y) 按 (x,y) 关联
     dbn_by_xy = {(t['x'], t['y']): t for t in d.get('dbn', [])}
+    dbn_by_lid = {t['lid']: t for t in d.get('dbn', [])}  # per-track 信念(每条轨自己的 s_marg/p_real)
     tidlid, stills = {}, []
     for t in d.get('target', []):
         dd = dbn_by_xy.get((t['x'], t['y']))
@@ -41,7 +42,7 @@ for line in open(log_path):
     ticks.append({'ts': d['ts'], 'bed': d.get('bed_reading','NoReport'),
                   'top': d.get('top_s','?'), 'sdist': sd,
                   'still': max(stills) if stills else 0, 'fire': d.get('fire', False),
-                  'tidlid': tidlid})
+                  'tidlid': tidlid, 'dbn_by_lid': dbn_by_lid})
 ticks.sort(key=lambda r: r['ts'])
 tick_ts = [r['ts'] for r in ticks]
 
@@ -82,16 +83,30 @@ for r in win:
 rows.sort(key=lambda x: (x[0], x[1]))
 
 # ── 3) 渲染 ────────────────────────────────────────────────────────────────
+# s_marg 9 态序: [Empty0 Bed1 Sit2 OpenFloor3 Bath4 Fallen5 BlindRest6 BlindOpen7 Left8]
+SM = {'SFall':5, 'SBed':1, 'SOpen':3, 'SBliR':6, 'SEmpt':0, 'SLeft':8}
+ROOMKEY = {'SFall':'Fallen', 'SBed':'Bed', 'SOpen':'OpenFloor', 'SBliR':'BlindRest', 'SEmpt':'Empty', 'SLeft':'Left'}
+
+def belief_cols(b, lid):
+    """该行信念: 有 lid 且本 tick 该轨在 dbn 里 → 用 per-track s_marg(src=trk);否则回退房级(src=room)。
+    返回 (src, preal, {SFall..SLeft})。"""
+    dd = b['dbn_by_lid'].get(lid) if lid and lid != '-' else None
+    if dd is not None:
+        sm = dd['s_marg']
+        return 'trk', dd.get('p_real', 0.0), {k: sm[i] for k, i in SM.items()}
+    sd = b['sdist']
+    return 'room', None, {k: sd.get(ROOMKEY[k], 0) for k in SM}
+
 hdr = (f"{'time':8} {'dev.tid':8} {'lid':13} {'pose':7} {'z':4} {'bed':8} "
-       f"{'event':18} {'top':10} {'still':5} {'SFall':5} {'SBed':5} {'SOpen':5} "
+       f"{'event':18} {'src':4} {'pR':4} {'top':10} {'still':5} {'SFall':5} {'SBed':5} {'SOpen':5} "
        f"{'SBliR':5} {'SEmpt':5} {'SLeft':5}")
 out = []
 fall_ts = [r['timestamp'] for r in win if r['category']=='Fall']
 out.append(f"# {case_dir.split('/')[-1]} — 卧室(09E7+D523 双雷达同房) 每 tick belief 时间线")
 out.append("")
-out.append("dev.tid=uid后4.track_id(雷达 raw track 帧,**两台雷达都出行**)。lid=引擎采用的 base track 出生身份")
-out.append("(无 lid=该雷达的 track 未被房信念采用)。belief 列(top/SFall..SLeft)=房级 DBN 最近 tick,与具体雷达行无关。")
-out.append("**FN 关键**:09E7 看得到 FALL(pose=5/Fall 事件),但房信念只跑 D523 base(D523 只报 stand/walk)→ SFall≈0 不 fire。")
+out.append("dev.tid=uid后4.track_id(雷达 raw track 帧,**两台雷达都出行**)。lid=引擎采用的 base track 出生身份。")
+out.append("**belief 列现为 per-track**:src=trk → 该 lid 自己的 s_marg(pR=该轨 p_real);src=room → 该行无 lid,回退房级 s_dist。")
+out.append("于是「摔的那条轨自己的 SFall 是否起来」一眼可见(对照 top=房级裁决态)。")
 out.append("")
 out.append("```")
 out.append(hdr)
@@ -99,12 +114,13 @@ for row in rows:
     ts, prio, dev, tid, lid, pose, z, _bed, event = row
     b = belief_at(ts)
     if b is None: continue
-    sd = b['sdist']
+    src, preal, sm = belief_cols(b, lid)
+    pr = f"{preal:.2f}" if preal is not None else '-'
     devtid = f"{dev}.{tid}"
     line = (f"{hhmmss(ts):8} {devtid:8} {lid:13} {pose:7} {z:<4} {b['bed']:8} "
-            f"{event:18} {b['top']:10} {b['still']:<5} "
-            f"{sd.get('Fallen',0):.2f}  {sd.get('Bed',0):.2f}  {sd.get('OpenFloor',0):.2f}  "
-            f"{sd.get('BlindRest',0):.2f}  {sd.get('Empty',0):.2f}  {sd.get('Left',0):.2f}")
+            f"{event:18} {src:4} {pr:4} {b['top']:10} {b['still']:<5} "
+            f"{sm['SFall']:.2f}  {sm['SBed']:.2f}  {sm['SOpen']:.2f}  "
+            f"{sm['SBliR']:.2f}  {sm['SEmpt']:.2f}  {sm['SLeft']:.2f}")
     out.append(line)
 out.append("```")
 out.append("")

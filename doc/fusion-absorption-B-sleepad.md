@@ -394,3 +394,29 @@ bootstrap 加查 DB beds 表拿 bed `/96` prefix（mirror SpatialCache bed 装�
 
 **附带架构 flag（非 B 切片2 问题，但挡所有 replay）**：startup 对 declare-area 是 **fatal-on-first-failure**——replay 只喂一个 unit，bootstrap 却注册全 DB 房，任一设备活体不可达就全盘起不来。建议（另议）：declare-area 失败**降级回 canvas 几何**（非 fatal）或 **bootstrap 按重放 unit 收窄**，否则替代 wisefido-sensor 后线上单设备失联=全 sensor 宕。
 - 闸：`go vet && go build` 绿。
+
+---
+
+## 15. A→B 决策 + 切片2 端到端验证通过（radar 会话，2026-06-21）
+
+B 把 declare-area 阻塞甩给 A 拍（"碰共享 bootstrap，需 A 点头"）。**A 拍 (a) 并已自行实现 + 跑通 09e7。B 不用动 bootstrap.go。**
+
+**决策 = (a) 非 fatal 跳房 + 响亮 LOG（A 已落码 `bootstrap.go` `registerAllRooms`）**：
+- 单房任一 radar declare-area 拉不到 → `logger.Error`（标该房本周期无监控=FN 缺口）+ `continue` 跳过该房，**不 fatal 整引擎**。一台离线设备不再拖垮全 sensor。
+- ⚠️ **FN-safety（no-silent-caps）**：跳房 = 该房整周期无 fall 监控 = 静默缺口 → Error 级响亮 LOG。**止血非终态**——生产终态须 retry/backoff 或 canvas-fallback（房仍受监控、几何退化），不能让设备 boot 瞬时不可达=整房失监。
+- 实测 declare-area 在**抖动**（curl：cd2b 时好时坏、09e7 反向），(a) 是这种抖动的兜底。
+
+**09e7 端到端验证 = 通过（真 case，494 帧）**：
+| 项 | 结果 |
+|---|---|
+| **fire 零回归** | fire=0（首摔 DBN 让位 firmware；no-fire 正常） |
+| **P1 = Nr+uncovered** | `(n_r=1, real_people=2)`×71 帧 = uncovered sleepad +1，修缺陷① |
+| **P2 不受污染** | rescuable 由 census 独立算，未被 P1 注入扰动 |
+| **吸纳** | absorbed×352（samebed=1 在床被覆盖不双算） |
+| **de-absorption（V5/V6 实测被 09e7 覆盖了）** | radar 离床+垫仍 InBed×127：fresh→保人+1×121 / stale→防幽灵不计×6 |
+| **no-silent-caps** | `de_absorption` LOG×127 |
+| build/vet | 双绿（含 A rescuable WIP） |
+
+**结论：切片2（lid + 吸纳 + P1 + de-absorption）端到端验证通过，FN-safe 红线全守（fire 路径未碰）。**
+
+**附（track 状态分析，非融合问题）**：本 case fire=0 状态根因 = 双雷达几何 FN——D523 干净真锚但 covers=0 把摔读成 Empty 且持续主导聚合；抓摔的 09E7 短轨（pf 0.999）p_real 0.50 临界+反射重 → 房代表态 Empty↔Fallen 闪烁、PF≥0.85 仅 12 散帧撑不到阈。属 [[two_radar_fn_firmware_areas_via_qinglan]] 结构性 FN，与本融合切片无关。
