@@ -94,6 +94,11 @@ roomengine:
     winner_eval_sec:     86400   # 每 24h 重新评估 winner ParamSet
     confidence_floor:    60      # promoteCell 起跑置信度（刚过阈值）
     confidence_full:     95      # promoteCell 上限置信度（饱和）
+  risk_time:                     # 风险时段(夜间)：缩短 floor 时长兜底阈(μ+0.5σ vs 白天 μ+1.5σ)；老人作息 22:00 起算
+    night_start_h: 22
+    night_start_m: 0
+    night_end_h:   6
+    night_end_m:   30
   paramsets:                     # 三组并行参数（Engine 自选 winner）
     - {name: conservative, alpha: 0.01, beta: 0.2, flip_th: 10}
     - {name: balanced,     alpha: 0.02, beta: 0.5, flip_th: 20}
