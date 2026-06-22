@@ -178,3 +178,22 @@ B 方案整体与吸纳模型一致、FN-safe 论据扎实。三条 **must-answe
 - **吸纳**：N（radar 在床）= **MN 已落地**（c7e8ebe FwAreaID），不取 belief S=Bed。sleepad InBed 且 ¬(∃ 在场 radar samebed≥阈∧N-in-bed) → uncovered；de-absorb 靠 fresh（per-frame，不进 MM）。
 - **belief 分层**：似然层 per-frame 无记忆；30s 耦合记忆搬出 belief κ 进 MM（option a），belief 读当帧快照。**切片2 staging**：本轮只建 MM + 吸纳读它（fire 零回归天然成立）；belief κ/AreaBed/BedOccupancy 改读 MM = 紧接 follow-up。
 - **验证**：09e7 真 case（单床立即吸纳、radar 站+垫→uncovered=1、fire 零回归）；de-absorb V5/V6 取真 case 或 LOG 未覆盖（no-silent-caps）。
+
+### 7.6 B→A：sleepad 慢 hand-off 核 + 跨房接力 + 几处 case 发现（2026-06-22；**🔴 需 A 审 FN-safety**）
+
+由 case `d523-0622-13341336` 机制排查触发（按规则 #3 查机制非 fire）。9e7 掉线、单 D523+sleepad；人走桌后被 D523 跟丢（13:35:06 lost，**无 ExitRoom**），**72s 后**在 GuestRoom sleepad InBed（=人走去隔壁上床）。
+
+**① sleepad 慢 hand-off 核（核心改动，碰 neighbor 层）**
+- **病**：原 neighbor band-pass 核 `τpeak=3s`（"邻房秒级穿堂"标定），有效窗 ≈3×τpeak≈**13s**（W=90s 只是硬截断，核早衰减到 0）。"走去另一房+躺上床"=72s → `wDir(72s)≈0` → 跨房接力**漏判**。forensic 铁证：`lostAt` 设了、GuestRoom `GainedReal=1`，**纯栽在 wDir≈0**。
+- **改**（用户拍 sleepad 120–150s）：hand-off 核**按源分两套**——radar 穿堂 `τpeak=3s/W=90s`（不变）；**sleepad InBed 接力 `τpeak=60s/W=150s`**。gain 按 `lid=="sleepad-bed"` 标 `slow` → `wDir` 用慢核；`pruneGains` 用大窗（150s，防 sleepad gain 被 90s 先剪）。
+- **验**：`rho_xroom(72s)` 0 → **0.786**，正确识别接力（GateBlindRow 把 Blind→Fallen 整流入 Left = "人去隔壁，非本房摔"）。
+- **🔴 A 审点（FN-safety）**：慢核把 hand-off 的**抑制窗从 ~13s 拉到 ~150s**——rho>0 抑制 lost-fall。窗越长，"巧合"（**另一人上床被误当丢的人接力 → 抑制真摔**）风险越大。缓解三条：①`GainedReal`=守恒重现（须确认真人在兄弟房现身，非裸"有人"）②`η(residentCount)` 多住户弱抑制③band-pass 低端压"太快上不了床"。**但 150s 窗的多住户误抑制是漏报红线，请 A 把关**。
+- **scope**（碰共享文件，A 邻接；均属 lost-fall/neighbor 层，**不碰** `census.Nr()`/belief 裁决/fire 写入）：`belief/neighbor.go`（双核）、`engine/unit.go`（gain 标 slow/rhoFor/prune）、`engine/engine.go`（gain 来源标记 + `Frame.GainedFromSleepad`）。
+
+**② hand-off forensic（补观测性）**：xray 加 `lost_real/gained_real/pending_lost_ms/sibling_gains`。这条机制（全方案 FN 风险最高）**原全无日志**，违规则 #3「机制不可观测就没法验」。
+
+**③ per-radar skip-room 容错（治"一台离线全房瞎"）**：bootstrap declare-area 拉不到原按**房**跳→9e7 掉线整房 100 被跳→在线 D523+sleepad 全不监控（摔倒分析根本没发生）。改按**台**跳：只丢失败台床区，房用其余在线雷达/sleepad 照常注册。
+
+**④ 🔴 未修 bug（slice-2 吸纳引入）**：radarLess 房（sleepad-only）`real_people=2` 而实只 1 人——合成 `sleepad-bed` track 进 Nr（1）+ 吸纳把同垫算 uncovered（+1）=**双算**。待修：radarLess InBed 垫视为被合成 track 吸纳、不计 uncovered。
+
+**⑤ 工具（不碰引擎）**：`timeline_from_xray.py` X-ray 补全——不滤 tid=88、加 np/sleepad 逐帧/alarm、**每秒不漏**（无帧补 held）、加原始 stream 子表。固化进脚本，所有 case 自动带。

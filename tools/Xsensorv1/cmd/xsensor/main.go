@@ -318,6 +318,10 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Bool("fire", fr.Decision.Fire), zap.Float64("lambda", fr.Probe.Lambda),
 		zap.String("top_s", sName(int(top))), zap.Float64("top_p", tp),
 		zap.Float64("rho_xroom", rho),
+		zap.Bool("lost_real", fr.LostReal),         // 本帧 confirmed 真人 track 消失 = hand-off 源候选（lostAt 将被设）
+		zap.Float64("gained_real", fr.GainedReal),  // 本帧新现真人后验 = hand-off 宿候选（守恒重现）
+		zap.Int64("pending_lost_ms", u.PendingLostMs(roomID)), // 本房待解析 lost 时戳（>0=已注册,rhoFor 在找接力）
+		zap.Int("sibling_gains", u.SiblingGainCount()),        // unit 内当前窗口跨房 gain 数（0=无人在别房现身）
 		zap.Bool("unit_has_track", unitHasTrack), zap.Bool("has_neighbor", hasNeighbor),
 		zap.Bool("lost_exited", fr.LostExited),
 		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("bed_present", g.sleepadPresent),

@@ -25,6 +25,7 @@ type gainEvent struct {
 	roomID string
 	tMs    int64
 	pReal  float64
+	slow   bool // 现身=sleepad InBed（走+躺慢接力）→ rho 用 sleepad 慢核（峰 60s/窗 150s）
 }
 
 // Unit 一个居住单元的多房编排器。
@@ -72,7 +73,7 @@ func (u *Unit) Tick(roomID string, fi adapter.FrameInput) Frame {
 
 	// ρ_xroom 账本（sibling-handoff，belief 塑形层）。
 	if fr.GainedReal > 0 {
-		u.gains = append(u.gains, gainEvent{roomID, nowMs, fr.GainedReal})
+		u.gains = append(u.gains, gainEvent{roomID, nowMs, fr.GainedReal, fr.GainedFromSleepad})
 		delete(u.lostAt, roomID) // 本房又现真人 = 丢的人回来了/新人到 → 清本房待解析
 	}
 	if fr.LostReal {
@@ -108,6 +109,12 @@ func (u *Unit) unitHasTrack(nowMs int64) bool {
 // LastRho 末次喂房 roomID 的 ρ_xroom（forensic / 测试）。
 func (u *Unit) LastRho(roomID string) float64 { return u.lastRho[roomID] }
 
+// PendingLostMs 本房待 hand-off 解析的丢轨时戳（0=无待解析 lost；>0=已注册 lost，rhoFor 在跑找接力）。forensic。
+func (u *Unit) PendingLostMs(roomID string) int64 { return u.lostAt[roomID] }
+
+// SiblingGainCount unit 内当前窗口存活的跨房新现真人 gain 数（hand-off 宿候选；0=无人在别房现身）。forensic。
+func (u *Unit) SiblingGainCount() int { return len(u.gains) }
+
 // UnitState forensic（unit 是否有在场 track / 是否有 neighbor）。
 func (u *Unit) UnitState(nowMs int64) (unitHasTrack, hasNeighbor bool) {
 	return u.unitHasTrack(nowMs), len(u.rooms) > 1
@@ -130,16 +137,23 @@ func (u *Unit) rhoFor(roomID string, nowMs int64) float64 {
 			ArrivalDeltaMs: g.tMs - lostMs, // >0 = 先丢后现（有向，§A 区别 ghost 对称）
 			CAttr:          u.cAttr,
 			GainedReal:     g.pReal,
+			Slow:           g.slow, // sleepad InBed 现身 → 慢核（走+躺 ~60s）
 		})
 	}
 	return belief.RhoXroom(u.np, u.residentCount, sibs)
 }
 
 // pruneGains 丢弃超 hand-off 窗的旧 gain（stale 证不了此刻在哪，[[partial_monitoring_fall_suppression_law]]）。
+//   保留窗取 radar/sleepad 两核较大者（sleepad 慢核窗 150s > radar W）：sleepad gain 须存活到慢核窗满，
+//   否则被 radar 窗（90s）先剪掉 → 慢接力还没解析就丢账。per-gain 是否真在窗内由 wDir 各自判。
 func (u *Unit) pruneGains(nowMs int64) {
+	keepMs := u.np.HandoffWindowMs
+	if u.np.SleepadWindowMs > keepMs {
+		keepMs = u.np.SleepadWindowMs
+	}
 	kept := u.gains[:0]
 	for _, g := range u.gains {
-		if nowMs-g.tMs <= u.np.HandoffWindowMs {
+		if nowMs-g.tMs <= keepMs {
 			kept = append(kept, g)
 		}
 	}

@@ -44,6 +44,7 @@ type Frame struct {
 	LostReal   bool    // 本帧一条真人 track 消失（上帧在场真人、本帧不在）= hand-off 源候选
 	LostExited bool    // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）= Unit D/UD timer cancel（人走了无人会摔）
 	GainedReal float64 // 本帧新现真人 track 的去 ghost 后验（0=无）= hand-off 宿候选（守恒重现）
+	GainedFromSleepad bool // 该 gain 来自 sleepad-only 房合成 track（走+躺慢接力）→ rho 用 sleepad 慢核
 	// forensic（全切片观测，不参与裁决）：
 	PresentCount int             // 本帧在场 track 数（§61 共存源/消费门控判据）
 	Tracks       []TrackForensic // 每 track 内部量（realness/ghost/消费门控/per-track 裁决）
@@ -485,10 +486,12 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	for id := range curReal {
 		newStreak[id] = r.realStreak[id] + 1 // 连续在场真人 → 累计；断了 → 不在 newStreak（归零）
 	}
-	var gained float64 // 本 tick 刚跨过确认阈（streak==K）的真人 = 确认新现（守恒重现落点）
+	var gained float64    // 本 tick 刚跨过确认阈（streak==K）的真人 = 确认新现（守恒重现落点）
+	var gainedSleepad bool // 该 gain 来自 sleepad-only 房合成 track（lid=="sleepad-bed"）= 慢核接力（走+躺,~60s）
 	for id, pr := range curReal {
 		if newStreak[id] == arrivalConfirmFrames && pr > gained {
 			gained = pr
+			gainedSleepad = id == "sleepad-bed" // 与 main.go onRoomFrame 合成 bed-track 的 lid 同源
 		}
 	}
 	lost := false // 上 tick 已确认真人、本 tick 不在场真人 = 确认离场（hand-off 源）
@@ -509,7 +512,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	//   含同房本人起身/他人到场/兄弟房现人）——Room 不再单独撤同房 blind faller（旧 abort-2 随 ramp 退役）。
 
 	fr := r.aggregate(results, nr, fi.NowMs)
-	fr.LostReal, fr.GainedReal = lost, gained
+	fr.LostReal, fr.GainedReal, fr.GainedFromSleepad = lost, gained, gainedSleepad
 	fr.LostExited = lostExited
 	fr.PresentCount, fr.Tracks = presentCount, forensic
 	fr.FuseSync = r.census.FuseForensic() // forensic：双雷达运动同步对状态

@@ -72,14 +72,55 @@ for r in win:
         for t in (r['data_value'] or []):
             if not isinstance(t, dict) or 'track_id' not in t: continue
             tid = t['track_id']
-            if tid in PLACEHOLDER_TIDS: continue
+            if tid in PLACEHOLDER_TIDS:
+                # 不滤:firmware 无目标/心跳帧(88/11)也出行(标 no-target),否则 lost coast 整段在报告里消失。
+                rows.append([ts, 1, u4, tid, '-', '88', '-', None, 'no-target(88)'])
+                continue
             rows.append([ts, 1, u4, tid, dev_tid_lid.get((u4, tid), '-'),
                          pose_name(t.get('pose',0)), t.get('position_z',0), None,
                          pose_name(t.get('pose',0))])
     elif cat in EVT_RDR and dtype == 'Radar':
         rows.append([ts, 0, u4, 'E', '-', '-', 0, None, f'{cat}(rdr)'])
+    elif cat == 'number_people' and dtype == 'Radar':
+        for t in (r['data_value'] or []):
+            npv = t.get('number_people', t.get('count', '?'))
+            rows.append([ts, 0, u4, 'E', '-', '-', 0, None, f'np={npv}' + ('  ★0' if npv == 0 else '')])
     elif cat in ('InBed','LeftBed') and dtype == 'Sleepad':
         rows.append([ts, 0, u4, 'E', '-', '-', 0, None, f'{cat}(pad)'])
+
+# sleepad monitor 逐帧(window_sleepad.json;脚本原只读 window.json → sleepad 流完全不可见)：
+#   bed_status/HR/RR/body_move 出行,与 radar/belief 同时间轴交织(看 InBed 接力 vs 本房 lost)。
+try:
+    sp = json.load(open(f'{case_dir}/window_sleepad.json'))
+except (FileNotFoundError, json.JSONDecodeError):
+    sp = []
+for r in sp:
+    if r.get('category') != 'track': continue
+    u4 = r['device_uid'][-4:].upper()
+    if allow is not None and u4 not in allow: continue
+    for t in (r['data_value'] or []):
+        bs = t.get('bed_status')
+        bedlab = 'InBed' if bs == 0 else ('LeftBed' if bs == 1 else f'bs{bs}')
+        ev = f'pad {bedlab} HR={t.get("heart_rate")} RR={t.get("respiratory_rate")} mv={t.get("body_move")} turn={t.get("turn_over")}'
+        rows.append([r['timestamp'], 1, u4, t.get('track_id'), '-', 'pad', '-', None, ev])
+
+# alarm.json（设备直发告警 + evidence；X 光第三块 monitor/event/alarm 齐）：出行。
+try:
+    alarms = json.load(open(f'{case_dir}/alarm.json'))
+except (FileNotFoundError, json.JSONDecodeError):
+    alarms = []
+for r in alarms:
+    u4 = r.get('device_uid', '????')[-4:].upper()
+    if allow is not None and u4 not in allow: continue
+    rows.append([r['timestamp'], 0, u4, 'A', '-', '-', 0, None, f"{r.get('category','alarm')}(ALARM)"])
+
+# 不漏任何一秒：覆盖秒之外,每秒补一行 held(no frame),belief 取最近 tick(冻结态)。lost 期固件无帧的空档也成行。
+if ticks:
+    secs = [int(r[0] // 1000) for r in rows] + [ticks[0]['ts'] // 1000, ticks[-1]['ts'] // 1000]
+    covered = {int(r[0] // 1000) for r in rows}
+    for s in range(int(min(secs)), int(max(secs)) + 1):
+        if s not in covered:
+            rows.append([s * 1000, 9, '-', '-', '-', '-', '-', None, '(no frame, held)'])
 
 rows.sort(key=lambda x: (x[0], x[1]))
 
@@ -125,6 +166,35 @@ for row in rows:
             f"{sm['SFall']:.2f}  {sm['SBed']:.2f}  {sm['SOpen']:.2f}  "
             f"{sm['SBliR']:.2f}  {sm['SEmpt']:.2f}  {sm['SLeft']:.2f}")
     out.append(line)
+out.append("```")
+
+# ── 原始 stream 子表（每雷达逐帧 raw track;x/y/Δ 对照上方 belief 的 stillbox;tid=88 标 no-target）──
+out.append("")
+out.append("## 原始 stream（每雷达逐帧 raw track；x/y/Δ 对照上方 belief 的 stillbox）")
+out.append("```")
+out.append(f"{'time':12} {'dev.tid':9} {'pose':6} {'area':4} {'x':6} {'y':6} {'z':5} {'conf':4} {'Δcm':5}")
+def hmsms(ms): return datetime.datetime.fromtimestamp(ms/1000, TZ).strftime('%H:%M:%S.%f')[:-3]
+raw_by_dev = {}
+for r in win:
+    if r['category'] != 'track' or meta.get(r['device_uid'],'?') != 'Radar': continue
+    u4 = r['device_uid'][-4:].upper()
+    if allow is not None and u4 not in allow: continue
+    raw_by_dev.setdefault(u4, []).append((r['timestamp'], r.get('data_value') or []))
+for u4 in sorted(raw_by_dev):
+    last = None
+    for ts, dv in sorted(raw_by_dev[u4], key=lambda z: z[0]):
+        d = dv[0] if dv else None
+        tid = d.get('track_id') if d else 88
+        if not d or tid in PLACEHOLDER_TIDS:
+            out.append(f"{hmsms(ts):12} {u4+'.'+str(tid):9} {'88':6} {'-':4} {'-':6} {'-':6} {'-':5} {'-':4} {'-':5}")
+            continue
+        x, y = d.get('position_x'), d.get('position_y')
+        dd = str(int(((x-last[0])**2+(y-last[1])**2)**0.5)) if last and isinstance(x,int) else ''
+        if isinstance(x,int): last = (x,y)
+        out.append(f"{hmsms(ts):12} {u4+'.'+str(tid):9} {pose_name(d.get('pose',0)):6} "
+                   f"{str(d.get('area_id')):4} {str(x):6} {str(y):6} {str(d.get('position_z')):5} "
+                   f"{str(d.get('track_confidence')):4} {dd:5}")
+    out.append("")
 out.append("```")
 out.append("")
 fired = sum(1 for t in ticks if t['fire'])
