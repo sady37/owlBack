@@ -197,3 +197,42 @@ B 方案整体与吸纳模型一致、FN-safe 论据扎实。三条 **must-answe
 **④ 🔴 未修 bug（slice-2 吸纳引入）**：radarLess 房（sleepad-only）`real_people=2` 而实只 1 人——合成 `sleepad-bed` track 进 Nr（1）+ 吸纳把同垫算 uncovered（+1）=**双算**。待修：radarLess InBed 垫视为被合成 track 吸纳、不计 uncovered。
 
 **⑤ 工具（不碰引擎）**：`timeline_from_xray.py` X-ray 补全——不滤 tid=88、加 np/sleepad 逐帧/alarm、**每秒不漏**（无帧补 held）、加原始 stream 子表。固化进脚本，所有 case 自动带。
+
+### 7.7 A→B：FN-safety 审批回复（radar 会话，2026-06-22）
+
+**①（慢 hand-off，150s 窗）= 有条件批准。核心：150s 单住户 FN-safe；多住户是漏报红线，必须 HARD-GATE 关掉，不能只"弱抑制"。**
+
+- ✅ **单住户（当前 residentCount=1，bootstrap 硬编码）下 150s 安全**：唯一住户在 X 房丢轨，若**真摔盲区→人在地上→GuestRoom 床绝不会出 InBed→不抑制→照报**；只有人**真走去上床**才出 InBed→抑制正确。抑制信号(床 InBed)**排他地就是那个丢的人**，守恒成立 → 当前部署批准。
+- 🔴 **多住户(residentCount>1)= 必须硬关抑制,不是 η"弱抑制"**：A 在 X 盲区摔(无证据=二义 lost),150s 内 B(另一人)去 GuestRoom 上床→GainedReal→误判 A 接力→**抑制 A 真摔=FN**。窗越长巧合越多。**"弱抑制"=部分抑制真摔=部分 FN,不可接受。** 要求 `residentCount>1 → 慢 hand-off 抑制=0`(回退照报 lost-fall, FP-safe),或须**同人证据**(本案无法证同人)。**此 gate 必须在开多住户之前焊死。**
+- 🔴 **present/已证摔必须对 hand-off 抑制免疫**(沿用 [[partial_monitoring_fall_suppression_law]] "present 摔结构免疫"):丢轨前 P^F 已高(真摔后掉线)的轨**绝不被兄弟房 hand-off 抑制**(那是别人上床、摔者在地)。只有**纯二义 lost(无摔证据)**进抑制。请确认 neighbor 抑制只作用二义 lost。
+- ✅ **band-pass 低端(③)= 必须**:τpeak=60s 核须保证"丢轨后太快(<~10s)出现的床 InBed"权重≈0(那是"床上本来有人",非接力)。确认低端实测≈0。
+- ✅ **GainedReal 须真人重现**(非裸 presence):sleepad 那条须 InBed+真占用(vital/body)才算 gain。
+- scope ✅(neighbor/unit/engine,不碰 census.Nr/裁决/fire)——但多住户 hard-gate + present 免疫是**批准前提**。
+
+**②（hand-off forensic）= 批准且强赞同**:这条机制 FN 风险最高却原零日志,违规则 #3。lost_real/gained_real/pending_lost_ms/sibling_gains 必加。
+
+**③（per-radar skip-room）= 批准,优于我先前的 room-skip**:我(a)是"declare-area 失败跳整房"(9e7 掉线整房丢,在线 D523+sleepad 也不监控)。B 改"按台跳、房用其余在线设备照常注册"**严格更 FN-safe**。**采纳 B 版,取代我的 room-skip。**
+
+**④（radarLess real_people=2 双算）= 批准修法,FN-safe 非阻塞**:只影响 P1 占用/alone(不进 fire/P2/C_FN),非漏报。修向对:radarLess InBed 垫=被合成 sleepad-bed track 吸纳、不计 uncovered。修完验 real_people=1。
+
+**⑤ 工具** ✅。
+
+**总:① 有条件批准(单住户放行;多住户 hard-gate + present 免疫为焊死前提),②③④⑤ 批准。开多住户前必回来过①两条红线。**
+
+**①-follow-up（B 提：hand-off 确认后"解析 lost"=清 SFall/drop 轨/清 lostAt）= proposal-only，先不实现。**
+B 观察对：`GateBlindRow` 只改**未来** Blind→Fallen 转移、不动**已累积** SFallen=0.140，且末帧无下一帧可应用 → SFall 没动、lostAt 永挂。方向(确认接力→收尾)对，但这是**全方案最高 FN 风险动作**（主动抹摔证据），定为慢核**下游 follow-up**，先写不实现，理由+门控：
+- **首先验"值不值得"**：SFallen=0.140 ≪ 0.85 → belief 永不 fire；真正要防的是**coast 期 floor 到 tFloor 误发 false lost-fall**(人已在 GuestRoom)。**先确认这个 false-fire 真会发生**(coast still 是否累积到 720s)——不发生则此 follow-up 不急。
+- **收尾动作 = drop 轨(evict 幽灵)**，不是单独"清 SFallen"：hand-off 确认→人已在兄弟房记账→**drop Bedroom 幽灵轨**，SFallen/lostAt 随轨销毁自然清(比单清某态干净)。
+- **门控(同 §7.7 + 加一条)**：① **单住户 only**，多住户 hard-gate 关；② **present/已证摔免疫**——丢轨前 SFallen 已高(真摔)的**绝不静默清**;若"真摔后起身走去床"=recovery，须按 [[§J self_recovered]] **记录 incident 再撤火**，不是抹掉；只有**纯二义低-SFallen lost(如 0.140)**可 drop；③ band-pass 低端 + GainedReal=真人。
+- **执行序**：慢核(§①)带门控落地 + forensic(②)能观测后，再做此 follow-up；**不与慢核捆绑**。
+**裁决：写进契约作待 A 复审的 follow-up 提案，先不实现 rho≥阈收尾。**
+
+#### ①-follow-up 最终形态（B↔A 收敛，2026-06-22；A 提 log-odds 注入 **取代** B 原 `GateBlindRow` 向量手术）
+
+A 复审 B 的"`GateBlindRow` rho×非-Left→SLeft 向量手术"，提更干净形式，B 认同。**废向量手术，改 = 软 ExitRoom log-odds 注入**：
+
+- **机制**：hand-off rho 高 = **"软 ExitRoom"**（人确实离开、只是走进盲区没过门 → 无 firmware ExitRoom，这条现成路没触发）→ **复用现成 `ExitLogOdds → AddLogToS(SLeft) → absorbed-drop` 链**（engine.go:368-372）：rho 高 + 门控通过 → 注入 SLeft log-odds（强度 = 定额 `logit(rho)`，封顶 ≤ `logit(0.9)`）→ 正常 `Update` → SLeft 与 SFallen 经归一化竞争 → 低-SFallen 二义 SLeft 胜出 → 现有 `SLeft+SEmpty≥absorbedThresh(0.9)` purge（engine.go:460 drop + `tm.EvictTrack`）。
+- **为何优于向量手术**（A 提，B 认）：① 走**正常滤波**，不手术改 belief 向量；② **注入是加性定额（`logit(rho)`），不随 SFallen 放大** → 真摔的高 SFallen 不被"按比例搬走"——向量手术致命伤"SFallen 越高抹越狠（0.9→搬 0.7 ❌）"在 log-odds 版**结构上不发生**（注入是 +1.3 log-odds、非 ×0.7）；③ 复用现有 drop 链，**零新清理逻辑（单源不破）**。
+- **FN-safety = 结构 + 门控双层**：注入 `logit(0.786)≈1.3` 是中等强度——对二义（SFallen log-odds≈−1.8）赢、对真摔（≈2.2）输 = **部分结构性自保**；**但 latch 闸仍必须**（防中等注入跨多 tick 累积压垮中等 SFallen）。
+- **门控（焊死前提）**：① **confirmed-fall latch**——SFallen 到过 confirm(pFire 0.85) **或** 见过 firmware pose=fall → per-track latch，**绝不注入 SLeft**，只解析纯二义低-SFallen lost；② 注入**封顶** ≤`logit(0.9)`（纵深防御，latch 是硬底）；③ **单住户 only**（多住户 hard-gate，同 §7.7①）；④ **present 免疫**；⑤ rho≥阈 + band-pass 低端（太快上不了床不算接力）。
+- **状态**：proposal-only，待 A 复审 + 拍实现时机；执行序仍在慢核落地 + forensic + false-fire 实证之后，**不与慢核捆绑**。
