@@ -259,3 +259,22 @@ A 复审 B 的"`GateBlindRow` rho×非-Left→SLeft 向量手术"，提更干净
 - **FN-safety = 结构性，不靠 kernel 衰减**：① **单住户 override**——room-B 现身 = 那人在 B 没摔在 A（单人不可能同时摔在 A 又躺在 B），哪怕 A 的 SFallen 在涨，满强度 purge 也对；② **confirmed-fall latch**——A 的 SFallen 到过 0.85（已确认/已 fire）→ 不注入；若"摔后起身走去 B"=recovery 走 [[§J self_recovered]] 记录再撤、不静默抹；③ **高端 W 截断**= 真正"摔进盲区"的兜底口；④ **多住户 hard-gate**（巧合风险只在多住户，直接关，不靠弱抑制）。
 - **附带**：注入接管解析后 GateBlindRow（旧转移腿、只搬 rho×Fallen-seed≈0.005 不够用）冗余 → 退役；hand-off 收成**一条核：矩形注入**，radar/sleepad 只差 W。
 - **状态**：仍 proposal-only，待 A 复审拍实现。A 审点 = 矩形满强度注入（替代连续衰减）在"单住户 override + latch + W 截断"下是否 FN-safe。
+
+#### A 审 v2：批准矩形核 + 一个承重关系变化（radar 会话，2026-06-22）
+
+**裁决：矩形满强度注入在四道门控下 FN-safe = 是，批准实现**（条件见下）。但 v2 把机制从"瞬时压制"换成"durable purge"，门控的承重关系随之变化——这是本审的核心。
+
+**A 验过的机制（消我上轮一个错判）**：读 `joint.go:122` `AddLogToS` = "log 域 += → exp 域 ×，**似然比注入**"——每 tick ×exp(delta) 抬 SLeft，Step update **归一化把其余所有态（含 Bed/Bath/Open 占用态）一起压下**。我上轮担心"发射搬不动卡 Blind 的主体、占用态困住质量"是**错的**（漏了 update 归一化逐 tick ÷Z 抽干占用态），实证 real ExitRoom→SLeft 0.98→drop 即此机制。**发射腿单独能 purge，矩形注入成立，GateBlindRow 可退役。收回上轮瓶颈论。**
+
+**同意废衰减**：三角/带通高端衰减只挡"晚到的 ghost-gain"（早到 ghost 落峰区照样满强度）= 弱的部分备份；单住户里 80s 与 15s 同人确定性 Δ-无关，衰减=折损满分证据。矩形更诚实。
+
+**🔴 机制换了 → 两道门从"冗余/有时序保护"升级为"承重红线"**：
+旧机制（rho 只窗内压 floor、floor 720s 才发）有**时序保护**——gain 在 150s 被剪、floor 720s 才发、中间 rho 早归 0，所以即使没 hard-gate，floor 照发不漏（**我据此在 §7.7① 之外曾收回多住户 hard-gate 的阻塞**）。但**矩形是窗内 durable purge（轨 15–150s 内被 drop）→ 时序保护消失**（轨提前永久消失，等不到 720s）。于是：
+
+1. **多住户 hard-gate = 真承重（撤回我上轮"可不靠它"的口径）**。多住户：人1 摔 A（二义 lost）+ 人2 进 B（真 gain）→ 不 hard-gate → 注入 drop 掉 A 轨 → 人1 摔**永不发=FN**。`[rc==1]` 必须真硬门，**不可退化 η 弱化、不可再靠时序**。
+
+2. **GainedReal 去-ghost = 二义-lost 的唯一判别器（衰减备份没了）**。矩形对二义 lost 全强度快 purge、belief 侧无自救（lost SFallen 不自爬、floor 被 drop 提前掐）→ "这个 gain 是不是真人"全压 GainedReal。要求 **GainedReal ≥ 阈（非 >0）**；**sleepad 这条强制 vital-gate**（InBed + 活 HR/RR）——别处一个活心跳是 ghost 仿不出的铁证，补上衰减拿掉后的判别洞，使全强度平注入 bulletproof。
+
+3. **latch-first**：`fallLatched`（SFallen 到过 0.85 / 见 pose=fall）每 tick 在注入**最前**判，封顶 2.197 是第二道、latch 是硬底（全强度连续累计照样能抽干真摔）。
+
+**批准条件（焊死）**：① `[rc==1]` 真 hard-gate（承重，不可松）；② GainedReal≥阈 + sleepad vital-gate；③ latch-first；④ **上实现前用 replay 验「多住户 + 二义lost + ghost-gain」三料场景确认不漏**（规则#3，这是新承重门，必须真 case 过，不靠推理）。四条满足即可实现。
