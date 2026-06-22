@@ -538,6 +538,12 @@ episode 结束烘进残余：$R \leftarrow R_{\text{prior}}+\text{credit}$，并
 - **333b 4x 实测**（逐帧 R 轨迹）：第 1 段疑似摔(~15s) → $R:0\to0.244$（第一次 $R_{\text{prior}}=0$ **不报**，记 self_recovered）；间隔衰减 $0.244\to0.242$；第 2 段(~28s) $R_{\text{prior}}=0.242>0$ 进提前判、峰值 $0.703<1$ **不报**（没攒够），$R\to0.703$ 记 self_recovered。**fire=0**（333b 两段都不够久，正确不误报）。反推：若第 2 段 ≥45s 则 $0.242+45/60\ge1$ → ~45s 提前报（早于 firmware 60s）。
 - **零回归**：escalator 只"加"火不"减"火，单次 fall $R_{\text{prior}}=0$ 永不触发 → cd2b 等单次 case 结构安全（escalator 不改既有 belief/floor/lost 火路）。
 
+**真实跌倒时长文献核对（2026-06-22）——阈值 1.0 维持，不为"秒起"测试调低**：
+- 真摔倒地时长 = **平均 14min（范围 2–59min）**；frail 老人 26 例真摔**无一能自起**、**50%+ 摔后起不来**（[PMC3850536](https://pmc.ncbi.nlm.nih.gov/articles/PMC3850536/) / [PMC2590903](https://pmc.ncbi.nlm.nih.gov/articles/PMC2590903/) / [PMC7905119](https://pmc.ncbi.nlm.nih.gov/articles/PMC7905119/)）。
+- → **每次真摔 ≥2min ≫ throu 60s → credit 60s 内即封顶 1.0**：第 1 次交 firmware（≥60s firmware 本就报）；第 2 次 $R_{\text{prior}}≈0.5$–$0.9$ → **约 15–30s 提前报**。**阈 1.0 已能兜"刚摔又摔",无需调低。**
+- **不调低的理由**：现实中"秒起"的是绊一下/快速坐下（stumble/sit）= **非跌倒** → 调低 1.0 会把它们误报（FP 暴涨，老人日均坐站数十次）。0621/333b/测试里"摔后秒起(11–14s)"→credit 仅 ~0.18 凑不够 = **人为测试不真实，非 bug**。文献"反复跌倒"=6 月内 >2 次（跨天/周），非几分钟内连摔。
+- ⚠️ **验证 §J 须用"摔后躺 ≥30–60s 再起再摔"的真节奏 case**，不能用"秒起"测试（credit 凑不够 = 测试假象）。
+
 ---
 
 ### §K 直立证据「压/抬」分治 + 身份离场 evict — 2026-06-19 变更思路（A/C 互核；commit 7a1ec6a / def5940 / 748f4c3 / bdb9764）
@@ -569,3 +575,29 @@ episode 结束烘进残余：$R \leftarrow R_{\text{prior}}+\text{credit}$，并
 **贯穿主线（一句话）**：**分到具体对象**（具体 track / 具体床 / 具体态）→ **分不清用概率**（Ψ mixture / 压取 min）→ **腾出质量要有去处**（抬 SOpenFloor 不漏 Empty）→ **FN 默认**（软证据只抬不压、摔倒永不 evict、床分不清照报）。
 
 **验证 + 待验**：cabb-0616（无床退出负样本）全绿——churn `lid 145+→2`、幽灵 FP 消、幸存站立 `top Empty→OpenFloor`（SOpen 0.61 / SEmpty 0.04）、SFall `0.20→0.01`、`fire 0`。🔴 **带床真摔（cd2b / 9e7）未 replay**：四关待过——① z≥80 误压真摔 FN（emission 压，从未过 FN 关）② 抬-redirect / 软站 / sit→SSit 带床场景 ③ floor 多床二义 ④ EvictTrack 带床+离场。全部 `sup*/red*` 是 form-anchor 留 oracle（[[fall_data_is_artificial_test]]）。
+
+---
+
+### §L risktime 纯时间轴 — 只缩短 floor tFloor，退出 C_FN（2026-06-22，用户定 + **已落地**）
+
+**原则（用户拍）**：risktime（夜间）**只动"决策层的耐心/等多久兜底"，不动证据（$P^F$）、不进报警阈（C_FN）**。同一 risktime 不能既降阈又缩时间（双重计风险 → 过敏 FP）。语义自洽：夜间真正变的是"没人巡视、躺久没人发现"=**时间问题**，不是"这一下算不算摔"=证据问题。
+
+**职责切分（按驱动因子分）**：
+
+| 轴 | 管什么 | 驱动因子 | 动什么 |
+|---|---|---|---|
+| **C_FN → pFire** | 报不报（证据够+值不值得报） | 可救援性：people / alone / disabled + $P^F$ | 阈值高低 |
+| **tFloor**（§I floor 兜底） | 等多久才兜底（静止多久判摔） | **risktime（夜间）** | 时间长短 |
+
+**实现**：
+- `tFloorFor(area, room, isRiskTime) = μ + k·σ`：白天 $k=1.5$ / 夜间 $k=0.5$（$μ,σ$ 不变=物理，只动风险容忍 $k$；**只缩短不延长** = FN-safe）。default 区：白天 720s / 夜间 560s。
+- `Observation.IsRiskTime` ← `IsNightTime(nowMs, 房时区)`（main.go 算 + bootstrap 填 `roomTZ`；xray `risktime` 字段）。
+- **退出 C_FN**：删 `RiskContext.Night` + `decideParams.nightMult`（原 `Census.Night` 从没填 = risktime 在 DBN 本来就死；现真算并喂 floor）。
+- floor 即时兜底（`fg.Step` 够阈直接 `d.Fire=true`，不走 tHold）→ 夜间缩短立即生效。
+- **天然不误吵睡觉**：floor 在 bed/deny 区不发，只对 floor/open/unknown 区生效 → 夜间缩短只作用"躺地/床边"。
+
+**配置（care 政策，用户定）**：`risk_time` 夜间窗 = **21:30–7:00**（覆盖默认 23:30；老人 21–22 点入睡 + 起夜跌倒高危，23:30 太晚漏前半夜）。
+
+**验证（09e7-0621，真 case）**：床边摔躺 11min，夜间口径 tFloor 720→**560s** → **22:26:44 floor 兜底报出**（人 22:29 起身，提前 2.5min）；白天（旧 23:30 配）零回归（risktime=false，与改前一致）；grep 确认 fire 判据无 risktime（只在 floor + forensic）。
+
+**落点**：`belief/floor.go`（tFloorFor+k）、`belief/observation.go`（IsRiskTime）、`belief/decide.go`（删 Night/nightMult）、`adapter/adapter.go`（BuildObservation 传 night / 删 RiskContext.Night）、`engine/engine.go`（3 处传 night）、`cmd/xsensor/main.go`（IsNightTime+roomTZ+log）、`cmd/xsensor/bootstrap.go`（填 roomTZ）、`wisefido-sensor/config.yaml`（risk_time）。commits c63e46b / 0d6ddda / d32c48d。
