@@ -294,22 +294,17 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 		// 让 TrackManager.fwIsBed（membership）与 DBN bedHitMask（per-bed）同源。
 		var fwBeds []int
 		if hasLayout {
-			skipRoom := false
+			// per-radar 容错（治"一台离线全房瞎"）：某台 declare-area 拉不到 → **只丢这台的床区贡献**，
+			//   **不跳整房**——同房其余在线雷达 + sleepad 照常注册监控（多雷达房=一台坏不该拖垮在线的那台）。
+			//   ⚠️ 失败台无床区 → 它的 N(MN) 不命中 → 它单独不抬 SBed；房整体仍进 DBN 跑 fall。终态须 retry/canvas-fallback。
 			for _, uid := range radarUIDsByRoom[roomID] {
 				ids, ferr := dac.bedAreaIDs(ctx, uid)
 				if ferr != nil {
-					// declare-area 拉不到（设备离线/活体读超时）→ 跳过该房注册，**不 fatal 整引擎**：
-					//   一台离线设备不该拖垮整 sensor。⚠️ 跳过 = 该房本周期无 fall 监控 = 静默缺口 →
-					//   Error 级响亮 LOG（no-silent-caps）。终态应 retry/canvas-fallback，而非整房失监。
-					logger.Error("declare_area 拉取失败 → 跳过该房注册（该房本周期无监控=FN 缺口；终态须 retry/canvas-fallback）",
+					logger.Error("declare_area 拉取失败 → 跳过该雷达床区（**不跳整房**；该台 N 不命中，房用其余在线雷达+sleepad 监控；终态须 retry/canvas-fallback）",
 						zap.String("room", roomID), zap.String("radar", uid), zap.Error(ferr))
-					skipRoom = true
-					break
+					continue // 仅跳过本台，继续收其余雷达床区
 				}
 				fwBeds = append(fwBeds, ids...)
-			}
-			if skipRoom {
-				continue // 跳过本房，继续注册其余房（registerAllRooms 不再因单设备离线整体 fatal）
 			}
 			cfg.BedAreaIDs = fwBeds
 			if len(fwBeds) == 0 {

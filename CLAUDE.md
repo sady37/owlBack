@@ -109,3 +109,15 @@
 
 **Why**：分错流 = 要么 event_log 爆掉瞬态状态（90d retention 浪费）、要么真业务事件丢失审计、要么 consumer 重做维护工作 drift。流分配是架构层第一刀，砍错很难回头。
 
+---
+
+## 规则 #3 — replay/真 case 验证的重点 = 运行机制，**与 fire 无关**
+
+跑 replay / 真 case 排查时，**验证对象是"机制有没有按设计执行"**，不是"这一帧报没报警（fire）"。
+
+- **看机制**：lost / exit / hand-off / blind-faller hold / drop / 占用聚合 / 跨雷达对账 / SLeft 注入 / lostAt 登记 / rhoFor 解析 …… 这些状态转移与判据**有没有正确触发、按正确顺序走、得出正确中间结论**。
+- **不看 fire**：某条轨 belief 到没到 0.85、floor StillSec 够不够阈、这次报没报——**是结果不是机制**。fire 阈值/曲线全靠人为测试数据（铁律 [[fall_data_is_artificial_test]]，禁标定），所以 fire 与否**证明不了对错**；机制是否正确才是 replay 能验、也该验的。
+- **判据**：发现"0.23 < 0.85 所以不报"这类时，停下——那是 fire 层，问的应是"机制把它 hold 成 blind-faller 了吗 / lost 登记了吗 / hand-off 查了吗 / 跨雷达对账了吗"。机制对、fire 不对 = 留 oracle 调阈；机制错 = 真 bug 要修。
+
+**Why**：人为测试数据下 fire 阈无法标定（规则隐含铁律），盯 fire 会把"阈值没调"误当 bug、把"机制断裂"漏过。机制是结构正确性（可证伪），fire 是标定产物（数据不足证伪）——replay 的价值在前者。
+
