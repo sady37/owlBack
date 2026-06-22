@@ -601,3 +601,25 @@ episode 结束烘进残余：$R \leftarrow R_{\text{prior}}+\text{credit}$，并
 **验证（09e7-0621，真 case）**：床边摔躺 11min，夜间口径 tFloor 720→**560s** → **22:26:44 floor 兜底报出**（人 22:29 起身，提前 2.5min）；白天（旧 23:30 配）零回归（risktime=false，与改前一致）；grep 确认 fire 判据无 risktime（只在 floor + forensic）。
 
 **落点**：`belief/floor.go`（tFloorFor+k）、`belief/observation.go`（IsRiskTime）、`belief/decide.go`（删 Night/nightMult）、`adapter/adapter.go`（BuildObservation 传 night / 删 RiskContext.Night）、`engine/engine.go`（3 处传 night）、`cmd/xsensor/main.go`（IsNightTime+roomTZ+log）、`cmd/xsensor/bootstrap.go`（填 roomTZ）、`wisefido-sensor/config.yaml`（risk_time）。commits c63e46b / 0d6ddda / d32c48d。
+
+---
+
+### §M 老人步速规范 + 速度类参数标定核对（2026-06-22 文献）
+
+**老人惯常（室内/community-dwelling）步速**：均值 **~1.2 m/s**（Rotterdam）；室内 ~1.11 m/s（均龄 69）；跌倒风险临界 **< 0.85–0.88 m/s**；衰弱/高危（>80 岁）**< 0.6–0.8 m/s**；71 岁起下降最明显。
+→ **室内走 ≈ 80–120 cm/s，衰弱 < 85，极衰弱 < 60**（[Rotterdam](https://www.sciencedirect.com/science/article/pii/S0531556521004289) / [室内步速 PMC6840929](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6840929/) / [gait-speed norms](https://geriatrictoolkit.missouri.edu/gaitspeed/Gait-Speed-norms.doc)）。
+
+**对照系统速度类参数**：
+
+| 参数 | 现值 | 用途 | vs 老人步速 |
+|---|---|---|---|
+| `move_speed_cms` | 20 cm/s | Kalman 兜底判 Move（pose 不准时） | 远低于惯常 80–120 → 保守(救慢走老人),OK |
+| `AssocCm` | 250 cm | 帧间最大关联位移 | 1Hz 下够宽（120cm/s 走 120cm/帧），OK |
+| `fuseMoveThreshCm` | 40 cm | 融合"有意义移动"窗 | 80–120 cm/s 轻松超 → OK |
+| 速度合理性 | >150 cm/s 减分 | track score | =1.5 m/s，正常老人不会触发，OK |
+| **`birthMaxRealisticCm`** | **150 cm** | **ghost 出生地：出生位距门 ≤此 ∧ 近期 EnterRoom→真人；>此→偏 ghost** | **🔴 偏紧** |
+
+**🔴 `birthMaxRealisticCm=150` 标定问题**：隐含"门→首帧检测"可达半径 = 步速 × 滞后。注释假设"1 秒走入"=1.5 m/s；但 firmware track 周期 ~2.5s → 实效仅 **0.6 m/s**。**老人 1.0 m/s × 2.5s = 250cm > 150** → 真人在门外 150cm+ 处首检会被判"物理不可能"偏 ghost。
+- **合理值应 ≈ 最大步速 × 实际 EnterRoom→birth 滞后**（1.2 m/s × 2.5s ≈ **300cm**）。
+- **影响面 = 仅出生 Real/ghost 评分 → N_r 人数**（不门控 fire，realness 绝不否决摔，[[realness_never_vetoes_fall]]）→ **FN-safe**，但**人数会偏低**（真人误判 ghost 漏数）。待真实数据 + 实测 track 周期确认后调（留 oracle）。
+- 用处:`track_manager.go:1585`（出生配对加分）/ `:2013`（出生宽限跳过）。全仓无其它 0.6 m/s / 60 cm/s 速度假设。
