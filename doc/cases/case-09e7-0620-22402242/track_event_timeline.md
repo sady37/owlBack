@@ -5,387 +5,384 @@ dev.tid=uid后4.track_id(雷达 raw track 帧,**两台雷达都出行**)。lid=�
 于是「摔的那条轨自己的 SFall 是否起来」一眼可见(对照 top=房级裁决态)。
 
 ```
-time     dev.tid  lid           pose    z    bed      event              src  pR   top        still SFall SBed  SOpen SBliR SEmpt SLeft
-22:40:00 D523.0   D52304000956  stand   0    NoReport stand              trk  0.50 Empty      0     0.00  0.03  0.08  0.00  0.85  0.04
-22:40:01 D523.0   D52304000956  stand   0    NoReport stand              trk  0.51 Empty      1     0.00  0.04  0.10  0.00  0.82  0.01
-22:40:02 D523.0   D52304000956  stand   0    NoReport stand              trk  0.52 Empty      2     0.00  0.04  0.11  0.01  0.76  0.01
-22:40:03 D523.0   D52304000956  stand   0    NoReport stand              trk  0.53 Empty      3     0.00  0.05  0.12  0.01  0.71  0.01
-22:40:04 D523.0   D52304000956  stand   0    NoReport stand              trk  0.54 Empty      4     0.00  0.05  0.13  0.02  0.66  0.01
-22:40:05 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      5     0.00  0.06  0.14  0.03  0.62  0.01
-22:40:06 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      5     0.01  0.06  0.14  0.04  0.58  0.01
-22:40:07 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      6     0.01  0.07  0.14  0.04  0.54  0.01
-22:40:08 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      7     0.01  0.07  0.15  0.05  0.51  0.02
-22:40:09 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      8     0.01  0.07  0.15  0.06  0.49  0.02
-22:40:10 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      9     0.01  0.08  0.15  0.06  0.46  0.02
-22:40:11 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      10    0.01  0.08  0.15  0.07  0.44  0.02
-22:40:12 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      11    0.02  0.08  0.15  0.07  0.42  0.02
-22:40:13 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      12    0.02  0.08  0.15  0.08  0.40  0.02
-22:40:14 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      13    0.02  0.09  0.15  0.08  0.38  0.02
-22:40:15 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      14    0.02  0.09  0.15  0.09  0.36  0.02
-22:40:16 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      15    0.03  0.09  0.15  0.09  0.35  0.02
-22:40:17 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      16    0.03  0.09  0.15  0.10  0.34  0.02
-22:40:18 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      17    0.03  0.09  0.15  0.10  0.33  0.02
-22:40:19 D523.0   D52304000956  stand   83   NoReport stand              trk  1.00 Empty      18    0.03  0.10  0.15  0.10  0.31  0.02
-22:40:20 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      19    0.03  0.10  0.16  0.10  0.30  0.02
-22:40:21 D523.0   D52304000956  stand   52   NoReport stand              trk  1.00 Empty      20    0.04  0.10  0.16  0.11  0.30  0.02
-22:40:22 D523.0   D52304000956  stand   59   NoReport stand              trk  1.00 Empty      21    0.04  0.10  0.15  0.11  0.29  0.02
-22:40:23 D523.0   D52304000956  stand   106  NoReport stand              trk  1.00 Empty      22    0.04  0.10  0.15  0.11  0.28  0.02
-22:40:24 D523.0   D52304000956  stand   101  NoReport stand              trk  1.00 Empty      0     0.04  0.10  0.15  0.11  0.27  0.02
-22:40:25 D523.0   D52304000956  stand   93   NoReport stand              trk  1.00 Empty      0     0.05  0.10  0.15  0.12  0.25  0.02
-22:40:26 D523.0   D52304000956  walk    97   NoReport walk               trk  1.00 Empty      0     0.05  0.10  0.15  0.12  0.25  0.02
-22:40:27 D523.0   D52304000956  walk    85   NoReport walk               trk  1.00 Empty      0     0.06  0.10  0.15  0.12  0.25  0.02
-22:40:28 D523.0   D52304000956  walk    85   NoReport walk               trk  1.00 Empty      0     0.06  0.10  0.15  0.12  0.24  0.02
-22:40:29 09E7.E   -             -       0    NoReport EnterRoom(rdr)     room -    Empty      0     0.06  0.10  0.15  0.12  0.24  0.02
-22:40:29 09E7.0   09E704029063  stand   79   NoReport stand              trk  0.92 Empty      0     0.00  0.03  0.15  0.00  0.79  0.04
-22:40:29 09E7.0   09E704029063  stand   100  NoReport stand              trk  0.92 Empty      0     0.00  0.03  0.25  0.00  0.66  0.01
-22:40:29 D523.0   D52304000956  walk    104  NoReport walk               trk  1.00 Empty      0     0.07  0.10  0.15  0.12  0.23  0.02
-22:40:30 09E7.0   09E704029063  stand   81   NoReport stand              trk  0.97 Empty      1     0.00  0.05  0.48  0.01  0.28  0.02
-22:40:30 D523.0   D52304000956  walk    102  NoReport walk               trk  1.00 Empty      1     0.07  0.10  0.15  0.13  0.22  0.02
-22:40:31 09E7.0   09E704029063  stand   0    NoReport stand              trk  0.99 Empty      2     0.00  0.05  0.56  0.02  0.15  0.03
-22:40:31 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      2     0.08  0.11  0.15  0.13  0.22  0.02
-22:40:32 09E7.0   09E704029063  stand   109  NoReport stand              trk  1.00 Empty      3     0.00  0.05  0.59  0.02  0.10  0.03
-22:40:32 D523.0   D52304000956  stand   124  NoReport stand              trk  1.00 Empty      3     0.08  0.11  0.15  0.13  0.21  0.02
-22:40:33 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Empty      0     0.00  0.05  0.60  0.02  0.07  0.03
-22:40:33 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      0     0.09  0.11  0.15  0.13  0.21  0.02
-22:40:34 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Empty      0     0.01  0.05  0.61  0.02  0.06  0.03
-22:40:34 D523.0   D52304000956  stand   126  NoReport stand              trk  1.00 Empty      0     0.09  0.10  0.15  0.13  0.21  0.02
-22:40:35 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Empty      0     0.01  0.05  0.61  0.02  0.06  0.03
-22:40:35 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      0     0.09  0.10  0.15  0.13  0.20  0.02
-22:40:36 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Empty      0     0.01  0.05  0.61  0.02  0.05  0.03
-22:40:36 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      0     0.10  0.10  0.15  0.13  0.20  0.02
-22:40:37 09E7.0   09E704029063  stand   90   NoReport stand              trk  1.00 Empty      0     0.00  0.05  0.61  0.02  0.05  0.03
-22:40:37 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      0     0.10  0.10  0.15  0.13  0.20  0.02
-22:40:38 09E7.0   09E704029063  stand   64   NoReport stand              trk  1.00 Empty      0     0.01  0.05  0.61  0.02  0.05  0.03
-22:40:38 D523.0   D52304000956  stand   111  NoReport stand              trk  1.00 Empty      0     0.10  0.10  0.15  0.13  0.20  0.02
-22:40:39 09E7.0   09E704029063  stand   64   NoReport stand              trk  1.00 Empty      0     0.01  0.05  0.61  0.02  0.05  0.03
-22:40:39 D523.0   D52304000956  stand   94   NoReport stand              trk  1.00 Empty      0     0.11  0.10  0.15  0.13  0.20  0.02
-22:40:40 09E7.0   09E704029063  walk    66   NoReport walk               trk  1.00 Empty      0     0.00  0.05  0.61  0.02  0.05  0.03
-22:40:40 D523.0   D52304000956  walk    104  NoReport walk               trk  1.00 Empty      0     0.11  0.10  0.15  0.13  0.19  0.02
-22:40:41 09E7.0   09E704029063  walk    53   NoReport walk               trk  1.00 Empty      0     0.00  0.04  0.63  0.02  0.05  0.03
-22:40:41 D523.0   D52304000956  walk    70   NoReport walk               trk  1.00 Empty      0     0.12  0.10  0.15  0.13  0.19  0.02
-22:40:42 09E7.0   09E704029063  walk    49   NoReport walk               trk  1.00 Empty      0     0.00  0.03  0.63  0.02  0.06  0.03
-22:40:42 D523.0   D52304000956  walk    0    NoReport walk               trk  1.00 Empty      0     0.12  0.10  0.15  0.13  0.19  0.02
-22:40:43 09E7.0   09E704029063  lying   44   NoReport lying              trk  1.00 Empty      0     0.01  0.12  0.42  0.02  0.07  0.04
-22:40:43 D523.0   D52304000956  walk    0    NoReport walk               trk  1.00 Empty      0     0.12  0.10  0.15  0.13  0.19  0.02
-22:40:44 09E7.0   09E704029063  lying   54   NoReport lying              trk  1.00 Empty      0     0.06  0.43  0.16  0.04  0.07  0.02
-22:40:44 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      0     0.13  0.10  0.14  0.13  0.19  0.02
-22:40:45 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      0     0.01  0.90  0.03  0.03  0.01  0.00
-22:40:45 09E7.E   -             -       0    InBed    InBed(rdr)         room -    Empty      0     0.13  0.10  0.14  0.13  0.19  0.02
-22:40:45 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      0     0.13  0.10  0.14  0.13  0.19  0.02
-22:40:46 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      0     0.00  0.95  0.02  0.02  0.00  0.00
-22:40:46 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      0     0.13  0.10  0.14  0.12  0.19  0.02
-22:40:47 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      0     0.00  0.95  0.02  0.02  0.00  0.00
-22:40:47 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      0     0.14  0.10  0.14  0.12  0.19  0.02
-22:40:48 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      0     0.00  0.95  0.02  0.02  0.00  0.00
-22:40:48 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      0     0.14  0.10  0.14  0.12  0.19  0.02
-22:40:49 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      0     0.00  0.95  0.02  0.02  0.00  0.00
-22:40:49 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      0     0.14  0.10  0.14  0.12  0.18  0.02
-22:40:50 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      0     0.00  0.95  0.02  0.02  0.00  0.00
-22:40:50 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      0     0.14  0.10  0.14  0.12  0.18  0.02
-22:40:51 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      0     0.00  0.95  0.02  0.02  0.00  0.00
-22:40:51 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      0     0.15  0.10  0.14  0.12  0.18  0.02
-22:40:52 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      0     0.00  0.99  0.00  0.00  0.00  0.00
-22:40:52 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      0     0.15  0.10  0.14  0.12  0.18  0.02
-22:40:53 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      0     0.00  0.99  0.00  0.00  0.00  0.00
-22:40:53 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      0     0.15  0.10  0.14  0.12  0.18  0.02
-22:40:54 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      0     0.00  0.99  0.00  0.00  0.00  0.00
-22:40:54 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      0     0.15  0.10  0.14  0.12  0.18  0.02
-22:40:54 0978.E   -             -       0    InBed    InBed(pad)         room -    Empty      0     0.16  0.10  0.14  0.12  0.18  0.02
-22:40:54 0978.E   -             -       0    InBed    InBed(pad)         room -    Empty      0     0.16  0.10  0.14  0.12  0.18  0.02
-22:40:55 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      0     0.00  0.99  0.00  0.00  0.00  0.00
-22:40:55 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      13    0.16  0.10  0.14  0.12  0.18  0.02
-22:40:56 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      14    0.00  0.99  0.00  0.00  0.00  0.00
-22:40:56 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      14    0.16  0.10  0.14  0.12  0.18  0.02
-22:40:57 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      15    0.00  0.99  0.00  0.00  0.00  0.00
-22:40:57 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      15    0.16  0.10  0.14  0.12  0.18  0.02
-22:40:58 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      16    0.00  0.99  0.00  0.00  0.00  0.00
-22:40:58 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      16    0.17  0.10  0.14  0.12  0.18  0.02
-22:40:59 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      17    0.00  0.99  0.00  0.00  0.00  0.00
-22:40:59 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      17    0.17  0.10  0.14  0.12  0.18  0.02
-22:41:00 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      18    0.00  0.99  0.00  0.00  0.00  0.00
-22:41:00 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      18    0.17  0.10  0.14  0.12  0.18  0.02
-22:41:01 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      19    0.00  0.99  0.00  0.00  0.00  0.00
-22:41:01 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      19    0.17  0.10  0.14  0.12  0.18  0.02
-22:41:02 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      20    0.00  0.99  0.00  0.00  0.00  0.00
-22:41:02 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      20    0.17  0.10  0.14  0.12  0.18  0.02
-22:41:03 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      21    0.00  0.99  0.00  0.00  0.00  0.00
-22:41:03 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     21    0.18  0.10  0.14  0.12  0.18  0.02
-22:41:04 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Fallen     22    0.00  0.99  0.00  0.00  0.00  0.00
-22:41:04 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     22    0.18  0.10  0.14  0.12  0.17  0.02
-22:41:05 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Fallen     23    0.00  0.99  0.00  0.00  0.00  0.00
-22:41:05 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     23    0.18  0.10  0.14  0.12  0.17  0.02
-22:41:06 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Fallen     24    0.00  0.99  0.00  0.00  0.00  0.00
-22:41:06 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     24    0.18  0.10  0.14  0.12  0.17  0.02
-22:41:07 09E7.0   09E704029063  lying   53   InBed    lying              trk  1.00 Fallen     25    0.00  0.99  0.00  0.00  0.00  0.00
-22:41:07 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     25    0.18  0.10  0.14  0.12  0.17  0.02
-22:41:08 09E7.0   09E704029063  lying   46   InBed    lying              trk  1.00 Fallen     26    0.00  0.99  0.00  0.00  0.00  0.00
-22:41:08 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     26    0.19  0.09  0.14  0.12  0.17  0.02
-22:41:09 09E7.0   09E704029063  lying   44   InBed    lying              trk  1.00 Fallen     27    0.00  0.99  0.00  0.00  0.00  0.00
-22:41:09 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     27    0.19  0.09  0.14  0.12  0.17  0.02
-22:41:10 09E7.0   09E704029063  lying   43   InBed    lying              trk  1.00 Fallen     28    0.00  0.99  0.00  0.00  0.00  0.00
-22:41:10 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     28    0.19  0.09  0.14  0.12  0.17  0.02
-22:41:11 09E7.0   09E704029063  lying   38   InBed    lying              trk  1.00 Fallen     29    0.00  0.99  0.00  0.00  0.00  0.00
-22:41:11 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     29    0.19  0.09  0.14  0.12  0.17  0.02
-22:41:12 09E7.0   09E704029063  walk    26   InBed    walk               trk  1.00 Fallen     30    0.00  0.85  0.08  0.06  0.00  0.01
-22:41:12 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     0     0.19  0.09  0.14  0.12  0.17  0.02
-22:41:13 09E7.0   09E704029063  walk    19   InBed    walk               trk  1.00 Fallen     0     0.00  0.71  0.16  0.08  0.01  0.01
-22:41:13 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     0     0.19  0.09  0.13  0.12  0.17  0.02
-22:41:14 09E7.0   09E704029063  sit     11   InBed    sit                trk  1.00 Fallen     0     0.00  0.70  0.11  0.09  0.01  0.01
-22:41:14 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     0     0.19  0.09  0.13  0.11  0.17  0.02
-22:41:15 09E7.0   09E704029063  sit     14   InBed    sit                trk  1.00 Fallen     0     0.00  0.71  0.07  0.09  0.01  0.01
-22:41:15 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     0     0.20  0.09  0.13  0.11  0.17  0.02
-22:41:16 09E7.E   -             -       0    InBed    Walking(rdr)       room -    Fallen     0     0.20  0.09  0.13  0.11  0.17  0.02
-22:41:16 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     0     0.00  0.73  0.07  0.10  0.01  0.01
-22:41:16 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     0     0.20  0.09  0.13  0.11  0.17  0.02
-22:41:17 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     0     0.00  0.76  0.06  0.10  0.01  0.01
-22:41:17 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     0     0.20  0.09  0.13  0.11  0.17  0.02
-22:41:18 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     0     0.00  0.77  0.06  0.10  0.01  0.01
-22:41:18 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     0     0.20  0.09  0.13  0.11  0.17  0.02
-22:41:19 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     0     0.00  0.77  0.06  0.10  0.01  0.01
-22:41:19 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     0     0.20  0.09  0.13  0.11  0.17  0.02
-22:41:20 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     0     0.00  0.95  0.02  0.02  0.00  0.00
-22:41:20 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     0     0.20  0.09  0.13  0.11  0.17  0.02
-22:41:21 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     0     0.00  0.97  0.01  0.01  0.00  0.00
-22:41:21 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     14    0.20  0.09  0.13  0.11  0.17  0.02
-22:41:22 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     14    0.00  0.97  0.01  0.01  0.00  0.00
-22:41:22 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     15    0.21  0.09  0.13  0.11  0.17  0.02
-22:41:23 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     15    0.00  0.97  0.01  0.01  0.00  0.00
-22:41:23 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     15    0.21  0.09  0.13  0.11  0.17  0.02
-22:41:24 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     16    0.00  0.97  0.01  0.01  0.00  0.00
-22:41:24 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     16    0.21  0.09  0.13  0.11  0.17  0.02
-22:41:25 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     17    0.00  0.97  0.01  0.01  0.00  0.00
-22:41:25 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     17    0.21  0.09  0.13  0.11  0.17  0.02
-22:41:26 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     18    0.00  0.97  0.01  0.01  0.00  0.00
-22:41:26 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     18    0.21  0.09  0.13  0.11  0.17  0.02
-22:41:27 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     19    0.00  0.97  0.01  0.01  0.00  0.00
-22:41:27 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     19    0.21  0.09  0.13  0.11  0.17  0.02
-22:41:28 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     20    0.00  0.97  0.01  0.01  0.00  0.00
-22:41:28 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     20    0.21  0.09  0.13  0.11  0.17  0.02
-22:41:29 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     21    0.00  0.97  0.01  0.01  0.00  0.00
-22:41:29 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     21    0.21  0.09  0.13  0.11  0.17  0.02
-22:41:30 09E7.0   09E704029063  susfall 23   InBed    susfall            trk  1.00 Fallen     22    0.00  0.97  0.01  0.01  0.00  0.00
-22:41:30 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     22    0.21  0.09  0.13  0.11  0.17  0.02
-22:41:31 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     18    0.00  0.97  0.01  0.01  0.00  0.00
-22:41:31 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     18    0.21  0.09  0.13  0.11  0.17  0.02
-22:41:32 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     19    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:32 09E7.1   09E714132147  stand   83   InBed    stand              trk  0.50 Fallen     19    0.00  0.12  0.13  0.00  0.71  0.03
-22:41:32 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     19    0.22  0.09  0.13  0.11  0.17  0.02
-22:41:32 09E7.1   09E714132147  stand   84   InBed    stand              trk  0.15 Fallen     20    0.00  0.86  0.07  0.01  0.05  0.00
-22:41:32 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     20    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:33 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     20    0.22  0.09  0.13  0.11  0.17  0.02
-22:41:33 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.05 Fallen     21    0.00  0.97  0.02  0.01  0.00  0.00
-22:41:33 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     21    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:34 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     21    0.22  0.09  0.13  0.11  0.17  0.02
-22:41:34 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.03 Fallen     22    0.00  0.97  0.02  0.01  0.00  0.00
-22:41:34 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     22    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:35 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     22    0.22  0.09  0.13  0.11  0.17  0.02
-22:41:35 09E7.0   09E704029063  susfall 23   InBed    susfall            trk  1.00 Fallen     23    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:35 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     23    0.00  0.97  0.02  0.01  0.00  0.00
-22:41:36 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     23    0.22  0.09  0.13  0.11  0.17  0.02
-22:41:36 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     24    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:36 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     24    0.00  0.97  0.02  0.01  0.00  0.00
-22:41:37 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     24    0.22  0.09  0.13  0.11  0.16  0.02
-22:41:37 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     25    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:37 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     25    0.00  0.97  0.02  0.01  0.00  0.00
-22:41:38 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     25    0.22  0.09  0.13  0.11  0.16  0.02
-22:41:38 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     26    0.00  0.97  0.02  0.01  0.00  0.00
-22:41:38 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     26    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:39 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     26    0.22  0.09  0.13  0.11  0.16  0.02
-22:41:39 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     27    0.00  0.97  0.02  0.01  0.00  0.00
-22:41:39 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     27    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:40 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     27    0.22  0.09  0.13  0.11  0.16  0.02
-22:41:41 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     28    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:41 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     28    0.00  0.97  0.02  0.01  0.00  0.00
-22:41:41 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     28    0.22  0.09  0.13  0.11  0.16  0.02
-22:41:41 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     29    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:41 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     29    0.00  0.97  0.02  0.01  0.00  0.00
-22:41:42 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     29    0.22  0.09  0.13  0.11  0.16  0.02
-22:41:43 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     30    0.00  0.97  0.02  0.01  0.00  0.00
-22:41:43 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     30    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:43 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     30    0.22  0.09  0.13  0.11  0.16  0.02
-22:41:43 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     31    0.00  0.97  0.02  0.01  0.00  0.00
-22:41:43 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     31    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:44 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     31    0.22  0.09  0.13  0.11  0.16  0.02
-22:41:44 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     32    0.00  0.97  0.02  0.01  0.00  0.00
-22:41:44 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     32    0.00  1.00  0.00  0.00  0.00  0.00
-22:41:45 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     32    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:45 0978.E   -             -       0    LeftBed  LeftBed(pad)       room -    Fallen     33    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:45 09E7.E   -             -       0    LeftBed  Fall(rdr)          room -    Fallen     33    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:45 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     33    0.00  0.00  1.00  0.00  0.00  0.00
-22:41:45 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     33    0.00  0.00  0.80  0.08  0.01  0.02
-22:41:46 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     33    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:46 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     34    0.00  0.00  1.00  0.00  0.00  0.00
-22:41:46 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     34    0.00  0.00  0.82  0.02  0.02  0.02
-22:41:47 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     34    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:47 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     35    0.00  0.00  0.82  0.01  0.02  0.02
-22:41:47 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     35    0.00  0.00  1.00  0.00  0.00  0.00
-22:41:48 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     35    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:48 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     36    0.00  0.00  0.99  0.00  0.00  0.00
-22:41:48 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     36    0.00  0.00  0.83  0.00  0.02  0.02
-22:41:49 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     36    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:49 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     37    0.00  0.00  0.99  0.00  0.00  0.00
-22:41:49 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     37    0.00  0.00  0.83  0.00  0.02  0.02
-22:41:50 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     37    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:50 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     38    0.00  0.00  0.83  0.00  0.02  0.02
-22:41:50 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     38    0.00  0.00  0.99  0.00  0.00  0.00
-22:41:51 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     38    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:51 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     39    0.01  0.00  0.99  0.00  0.00  0.00
-22:41:51 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     39    0.00  0.00  0.83  0.00  0.02  0.02
-22:41:52 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     39    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:52 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     40    0.01  0.00  0.99  0.00  0.00  0.00
-22:41:52 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     40    0.00  0.00  0.83  0.00  0.02  0.02
-22:41:53 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     40    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:53 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     41    0.00  0.00  0.83  0.00  0.02  0.02
-22:41:53 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     41    0.01  0.00  0.99  0.00  0.00  0.00
-22:41:54 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     41    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:54 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     42    0.01  0.00  0.99  0.00  0.00  0.00
-22:41:54 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     42    0.00  0.00  0.83  0.00  0.02  0.02
-22:41:55 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     42    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:55 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     43    0.01  0.00  0.99  0.00  0.00  0.00
-22:41:55 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     43    0.00  0.00  0.83  0.00  0.02  0.02
-22:41:56 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     43    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:56 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     44    0.00  0.00  0.83  0.00  0.02  0.02
-22:41:56 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     44    0.01  0.00  0.99  0.00  0.00  0.00
-22:41:57 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     44    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:57 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     45    0.01  0.00  0.99  0.00  0.00  0.00
-22:41:57 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     45    0.00  0.00  0.82  0.00  0.02  0.02
-22:41:58 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     45    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:58 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     46    0.01  0.00  0.99  0.00  0.00  0.00
-22:41:58 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     46    0.00  0.00  0.82  0.00  0.02  0.02
-22:41:58 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     46    0.23  0.09  0.13  0.11  0.16  0.02
-22:41:59 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     47    0.00  0.00  0.82  0.00  0.02  0.02
-22:41:59 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     47    0.01  0.00  0.99  0.00  0.00  0.00
-22:41:59 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     47    0.23  0.09  0.13  0.11  0.16  0.02
-22:42:00 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     48    0.01  0.00  0.99  0.00  0.00  0.00
-22:42:00 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     48    0.00  0.00  0.82  0.00  0.02  0.02
-22:42:00 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     48    0.23  0.09  0.13  0.11  0.16  0.02
-22:42:01 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     49    0.01  0.00  0.99  0.00  0.00  0.00
-22:42:01 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     49    0.00  0.00  0.82  0.00  0.02  0.02
-22:42:01 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     49    0.23  0.09  0.13  0.11  0.16  0.02
-22:42:02 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     50    0.00  0.00  0.82  0.00  0.02  0.02
-22:42:02 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     50    0.01  0.00  0.99  0.00  0.00  0.00
-22:42:02 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     50    0.23  0.09  0.13  0.11  0.16  0.02
-22:42:03 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     51    0.00  0.00  0.82  0.00  0.02  0.02
-22:42:03 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     51    0.01  0.00  0.98  0.00  0.00  0.00
-22:42:03 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     51    0.23  0.09  0.13  0.11  0.16  0.02
-22:42:04 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     52    0.02  0.00  0.98  0.00  0.00  0.00
-22:42:04 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     52    0.00  0.00  0.82  0.00  0.02  0.02
-22:42:04 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     52    0.23  0.09  0.13  0.11  0.16  0.02
-22:42:05 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     53    0.02  0.00  0.98  0.00  0.00  0.00
-22:42:05 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     53    0.00  0.01  0.82  0.00  0.02  0.02
-22:42:05 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     53    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:06 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     54    0.03  0.00  0.97  0.00  0.00  0.00
-22:42:06 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     54    0.00  0.01  0.80  0.01  0.03  0.02
-22:42:07 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     35    0.00  0.01  0.82  0.00  0.02  0.02
-22:42:07 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     35    0.03  0.00  0.97  0.00  0.00  0.00
-22:42:08 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     36    0.00  0.01  0.82  0.00  0.02  0.02
-22:42:08 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     36    0.03  0.00  0.96  0.00  0.00  0.00
-22:42:09 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     37    0.04  0.00  0.96  0.00  0.00  0.00
-22:42:09 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     37    0.00  0.01  0.82  0.00  0.02  0.02
-22:42:10 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     38    0.00  0.01  0.85  0.00  0.01  0.02
-22:42:10 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     38    0.04  0.00  0.96  0.00  0.00  0.00
-22:42:11 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     39    0.00  0.01  0.85  0.00  0.01  0.02
-22:42:11 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     39    0.04  0.00  0.96  0.00  0.00  0.00
-22:42:12 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     40    0.00  0.01  0.86  0.00  0.01  0.02
-22:42:12 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     40    0.04  0.00  0.95  0.00  0.00  0.00
-22:42:13 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     41    0.05  0.00  0.95  0.00  0.00  0.00
-22:42:13 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     41    0.00  0.01  0.86  0.00  0.01  0.02
-22:42:14 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     42    0.05  0.00  0.95  0.00  0.00  0.00
-22:42:14 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     42    0.00  0.01  0.86  0.00  0.01  0.02
-22:42:15 09E7.0   09E704029063  FALL    21   LeftBed  FALL               trk  1.00 Fallen     43    0.06  0.00  0.94  0.00  0.00  0.00
-22:42:15 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     43    0.00  0.01  0.86  0.00  0.01  0.02
-22:42:16 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     44    0.00  0.02  0.85  0.00  0.01  0.02
-22:42:16 09E7.0   09E704029063  FALL    22   LeftBed  FALL               trk  1.00 Fallen     44    0.06  0.00  0.93  0.00  0.00  0.00
-22:42:17 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     45    0.00  0.02  0.85  0.00  0.01  0.02
-22:42:17 09E7.0   09E704029063  FALL    24   LeftBed  FALL               trk  1.00 Fallen     45    0.07  0.00  0.92  0.00  0.00  0.00
-22:42:18 09E7.E   -             -       0    LeftBed  Fall(rdr)          room -    Fallen     45    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:18 09E7.0   09E704029063  susfall 53   LeftBed  susfall            trk  1.00 Fallen     46    0.02  0.00  0.98  0.00  0.00  0.00
-22:42:18 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     46    0.00  0.02  0.85  0.00  0.01  0.02
-22:42:18 09E7.0   09E704029063  sit     60   LeftBed  sit                trk  1.00 Fallen     46    0.00  0.01  0.98  0.00  0.00  0.00
-22:42:18 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     46    0.00  0.02  0.85  0.00  0.01  0.02
-22:42:18 D523.0   D52304000956  stand   68   LeftBed  stand              trk  1.00 Fallen     46    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:19 09E7.0   09E704029063  walk    73   LeftBed  walk               trk  1.00 Fallen     47    0.00  0.00  0.99  0.00  0.00  0.00
-22:42:19 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     47    0.00  0.03  0.81  0.00  0.02  0.02
-22:42:19 D523.0   D52304000956  stand   72   LeftBed  stand              trk  1.00 Fallen     47    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:20 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     48    0.00  0.03  0.80  0.01  0.02  0.02
-22:42:20 09E7.0   09E704029063  walk    72   LeftBed  walk               trk  1.00 Fallen     48    0.00  0.01  0.97  0.00  0.00  0.00
-22:42:20 D523.0   D52304000956  stand   104  LeftBed  stand              trk  1.00 Fallen     48    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:21 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     49    0.00  0.04  0.79  0.01  0.02  0.02
-22:42:21 09E7.0   09E704029063  walk    40   LeftBed  walk               trk  1.00 Fallen     49    0.00  0.17  0.71  0.00  0.01  0.02
-22:42:21 D523.0   D52304000956  walk    93   LeftBed  walk               trk  1.00 Fallen     49    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:22 09E7.0   09E704029063  walk    41   LeftBed  walk               trk  1.00 Fallen     50    0.00  0.25  0.68  0.01  0.01  0.01
-22:42:22 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     50    0.00  0.04  0.79  0.01  0.02  0.02
-22:42:22 09E7.E   -             -       0    LeftBed  LeftBed(rdr)       room -    Fallen     50    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:22 D523.0   D52304000956  walk    81   NoReport walk               trk  1.00 Fallen     50    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:23 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     51    0.00  0.19  0.67  0.01  0.02  0.02
-22:42:23 09E7.0   09E704029063  walk    55   NoReport walk               trk  1.00 Fallen     51    0.00  0.41  0.54  0.01  0.00  0.01
-22:42:23 D523.0   D52304000956  walk    75   NoReport walk               trk  1.00 Fallen     51    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:24 09E7.0   09E704029063  walk    0    NoReport walk               trk  1.00 Fallen     52    0.00  0.38  0.53  0.01  0.00  0.01
-22:42:24 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     52    0.00  0.34  0.54  0.01  0.01  0.01
-22:42:24 D523.0   D52304000956  walk    96   NoReport walk               trk  1.00 Fallen     52    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:25 09E7.0   09E704029063  walk    0    NoReport walk               trk  1.00 Fallen     53    0.00  0.50  0.41  0.02  0.01  0.01
-22:42:25 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     53    0.00  0.47  0.42  0.02  0.01  0.01
-22:42:25 D523.0   D52304000956  walk    81   NoReport walk               trk  1.00 Fallen     53    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:26 09E7.0   09E704029063  walk    0    NoReport walk               trk  1.00 Fallen     54    0.00  0.30  0.66  0.01  0.00  0.00
-22:42:26 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     54    0.00  0.57  0.34  0.02  0.01  0.01
-22:42:26 D523.0   D52304000956  walk    54   NoReport walk               trk  1.00 Fallen     54    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:27 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     55    0.00  0.11  0.86  0.00  0.00  0.01
-22:42:27 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     55    0.00  0.63  0.29  0.03  0.01  0.01
-22:42:27 D523.0   D52304000956  walk    64   NoReport walk               trk  1.00 Fallen     55    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:28 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     56    0.00  0.67  0.26  0.03  0.01  0.01
-22:42:28 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     56    0.00  0.06  0.91  0.00  0.00  0.01
-22:42:28 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     56    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:29 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     57    0.00  0.05  0.92  0.00  0.00  0.01
-22:42:29 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     57    0.00  0.69  0.23  0.03  0.01  0.01
-22:42:29 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     57    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:30 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     58    0.00  0.70  0.23  0.03  0.00  0.01
-22:42:30 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     58    0.00  0.04  0.92  0.00  0.00  0.01
-22:42:30 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     58    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:31 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     59    0.00  0.71  0.22  0.03  0.00  0.01
-22:42:31 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     59    0.00  0.04  0.92  0.00  0.00  0.01
-22:42:31 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     59    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:32 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     60    0.00  0.71  0.22  0.03  0.00  0.01
-22:42:32 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     60    0.00  0.04  0.92  0.00  0.00  0.01
-22:42:32 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     60    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:33 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     61    0.00  0.04  0.92  0.00  0.00  0.01
-22:42:33 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     61    0.00  0.71  0.22  0.03  0.00  0.01
-22:42:33 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     61    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:34 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     62    0.00  0.04  0.92  0.00  0.00  0.01
-22:42:34 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     62    0.00  0.72  0.22  0.03  0.00  0.01
-22:42:34 09E7.E   -             -       0    NoReport ExitRoom(rdr)      room -    Fallen     62    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:34 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     62    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:35 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     63    0.00  0.65  0.21  0.06  0.01  0.01
-22:42:35 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     63    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:36 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     64    0.00  0.63  0.22  0.07  0.01  0.01
-22:42:36 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     64    0.24  0.09  0.13  0.11  0.16  0.02
-22:42:37 09E7.1   09E714132147  stand   0    NoReport stand              trk  1.00 Fallen     65    0.00  0.62  0.22  0.07  0.01  0.01
-22:42:37 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     65    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:38 09E7.1   09E714132147  stand   0    NoReport stand              trk  1.00 Fallen     66    0.00  0.62  0.22  0.07  0.01  0.01
-22:42:38 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     66    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:39 09E7.1   09E714132147  stand   0    NoReport stand              trk  1.00 Fallen     67    0.00  0.62  0.22  0.07  0.01  0.01
-22:42:39 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     67    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:40 09E7.1   09E714132147  stand   0    NoReport stand              trk  1.00 Fallen     68    0.00  0.61  0.23  0.07  0.01  0.01
-22:42:40 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     68    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:41 09E7.1   09E714132147  stand   0    NoReport stand              trk  1.00 Fallen     69    0.00  0.61  0.23  0.07  0.01  0.01
-22:42:41 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     69    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:42 09E7.1   09E714132147  stand   0    NoReport stand              trk  1.00 Fallen     70    0.00  0.61  0.23  0.07  0.01  0.01
-22:42:42 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     70    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:43 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     17    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:44 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     18    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:45 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     19    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:46 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     20    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:47 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     21    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:48 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     22    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:49 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     23    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:50 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     24    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:51 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     25    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:52 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     26    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:53 D523.0   D52304000956  stand   43   NoReport stand              trk  1.00 Fallen     27    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:54 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     28    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:55 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     29    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:56 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     30    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:57 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     31    0.24  0.09  0.13  0.11  0.16  0.01
-22:42:58 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     32    0.24  0.09  0.13  0.11  0.16  0.01
+time     dev.tid  lid           pose    z    bed      event              src  pR   top        nr  still SFall SBed  SOpen SBliR SEmpt SLeft
+22:40:00 D523.0   D52304000956  stand   0    NoReport stand              trk  0.50 Empty      1   0     0.00  0.03  0.08  0.00  0.85  0.04
+22:40:01 D523.0   D52304000956  stand   0    NoReport stand              trk  0.51 Empty      1   1     0.00  0.04  0.10  0.00  0.82  0.01
+22:40:02 D523.0   D52304000956  stand   0    NoReport stand              trk  0.52 Empty      1   2     0.00  0.04  0.11  0.01  0.76  0.01
+22:40:03 D523.0   D52304000956  stand   0    NoReport stand              trk  0.53 Empty      1   3     0.00  0.05  0.12  0.01  0.71  0.01
+22:40:04 D523.0   D52304000956  stand   0    NoReport stand              trk  0.54 Empty      1   4     0.00  0.05  0.13  0.02  0.66  0.01
+22:40:05 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   5     0.00  0.06  0.14  0.03  0.62  0.01
+22:40:06 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   5     0.01  0.06  0.14  0.04  0.58  0.01
+22:40:07 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   6     0.01  0.07  0.14  0.04  0.54  0.01
+22:40:08 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   7     0.01  0.07  0.15  0.05  0.51  0.02
+22:40:09 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   8     0.01  0.07  0.15  0.06  0.49  0.02
+22:40:10 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   9     0.01  0.08  0.15  0.06  0.46  0.02
+22:40:11 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   10    0.01  0.08  0.15  0.07  0.44  0.02
+22:40:12 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   11    0.02  0.08  0.15  0.07  0.42  0.02
+22:40:13 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   12    0.02  0.08  0.15  0.08  0.40  0.02
+22:40:14 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   13    0.02  0.09  0.15  0.08  0.38  0.02
+22:40:15 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   14    0.02  0.09  0.15  0.09  0.36  0.02
+22:40:16 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   15    0.03  0.09  0.15  0.09  0.35  0.02
+22:40:17 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   16    0.03  0.09  0.15  0.10  0.34  0.02
+22:40:18 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   17    0.03  0.09  0.15  0.10  0.33  0.02
+22:40:19 D523.0   D52304000956  stand   83   NoReport stand              trk  1.00 Empty      1   18    0.03  0.10  0.15  0.10  0.31  0.02
+22:40:20 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   19    0.03  0.10  0.16  0.10  0.30  0.02
+22:40:21 D523.0   D52304000956  stand   52   NoReport stand              trk  1.00 Empty      1   20    0.04  0.10  0.16  0.11  0.30  0.02
+22:40:22 D523.0   D52304000956  stand   59   NoReport stand              trk  1.00 Empty      1   21    0.04  0.10  0.15  0.11  0.29  0.02
+22:40:23 D523.0   D52304000956  stand   106  NoReport stand              trk  1.00 Empty      1   22    0.04  0.10  0.15  0.11  0.28  0.02
+22:40:24 D523.0   D52304000956  stand   101  NoReport stand              trk  1.00 Empty      1   0     0.04  0.10  0.15  0.11  0.27  0.02
+22:40:25 D523.0   D52304000956  stand   93   NoReport stand              trk  1.00 Empty      1   0     0.05  0.10  0.15  0.12  0.25  0.02
+22:40:26 D523.0   D52304000956  walk    97   NoReport walk               trk  1.00 Empty      1   0     0.05  0.10  0.15  0.12  0.25  0.02
+22:40:27 D523.0   D52304000956  walk    85   NoReport walk               trk  1.00 Empty      1   0     0.06  0.10  0.15  0.12  0.25  0.02
+22:40:28 D523.0   D52304000956  walk    85   NoReport walk               trk  1.00 Empty      1   0     0.06  0.10  0.15  0.12  0.24  0.02
+22:40:29 09E7.E   -             -       0    NoReport EnterRoom(rdr)     room -    Empty      1   0     0.06  0.10  0.15  0.12  0.24  0.02
+22:40:29 09E7.0   09E704029063  stand   79   NoReport stand              trk  0.92 Empty      2   0     0.00  0.03  0.15  0.00  0.79  0.04
+22:40:29 09E7.0   09E704029063  stand   100  NoReport stand              trk  0.92 Empty      2   0     0.00  0.03  0.25  0.00  0.66  0.01
+22:40:29 D523.0   D52304000956  walk    104  NoReport walk               trk  1.00 Empty      2   0     0.07  0.10  0.15  0.12  0.23  0.02
+22:40:30 09E7.0   09E704029063  stand   81   NoReport stand              trk  0.97 Empty      2   1     0.00  0.05  0.48  0.01  0.28  0.02
+22:40:30 D523.0   D52304000956  walk    102  NoReport walk               trk  1.00 Empty      2   1     0.07  0.10  0.15  0.13  0.22  0.02
+22:40:31 09E7.0   09E704029063  stand   0    NoReport stand              trk  0.99 Empty      2   2     0.00  0.05  0.56  0.02  0.15  0.03
+22:40:31 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      2   2     0.08  0.11  0.15  0.13  0.22  0.02
+22:40:32 09E7.0   09E704029063  stand   109  NoReport stand              trk  1.00 Empty      2   3     0.00  0.05  0.59  0.02  0.10  0.03
+22:40:32 D523.0   D52304000956  stand   124  NoReport stand              trk  1.00 Empty      2   3     0.08  0.11  0.15  0.13  0.21  0.02
+22:40:33 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Empty      2   0     0.00  0.05  0.60  0.02  0.07  0.03
+22:40:33 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      2   0     0.09  0.11  0.15  0.13  0.21  0.02
+22:40:34 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Empty      2   0     0.01  0.05  0.61  0.02  0.06  0.03
+22:40:34 D523.0   D52304000956  stand   126  NoReport stand              trk  1.00 Empty      1   0     0.09  0.10  0.15  0.13  0.21  0.02
+22:40:35 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.01  0.05  0.61  0.02  0.06  0.03
+22:40:35 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.09  0.10  0.15  0.13  0.20  0.02
+22:40:36 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.01  0.05  0.61  0.02  0.05  0.03
+22:40:36 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.10  0.10  0.15  0.13  0.20  0.02
+22:40:37 09E7.0   09E704029063  stand   90   NoReport stand              trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
+22:40:37 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.10  0.10  0.15  0.13  0.20  0.02
+22:40:38 09E7.0   09E704029063  stand   64   NoReport stand              trk  1.00 Empty      1   0     0.01  0.05  0.61  0.02  0.05  0.03
+22:40:38 D523.0   D52304000956  stand   111  NoReport stand              trk  1.00 Empty      1   0     0.10  0.10  0.15  0.13  0.20  0.02
+22:40:39 09E7.0   09E704029063  stand   64   NoReport stand              trk  1.00 Empty      1   0     0.01  0.05  0.61  0.02  0.05  0.03
+22:40:39 D523.0   D52304000956  stand   94   NoReport stand              trk  1.00 Empty      1   0     0.11  0.10  0.15  0.13  0.20  0.02
+22:40:40 09E7.0   09E704029063  walk    66   NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
+22:40:40 D523.0   D52304000956  walk    104  NoReport walk               trk  1.00 Empty      1   0     0.11  0.10  0.15  0.13  0.19  0.02
+22:40:41 09E7.0   09E704029063  walk    53   NoReport walk               trk  1.00 Empty      1   0     0.00  0.04  0.63  0.02  0.05  0.03
+22:40:41 D523.0   D52304000956  walk    70   NoReport walk               trk  1.00 Empty      1   0     0.12  0.10  0.15  0.13  0.19  0.02
+22:40:42 09E7.0   09E704029063  walk    49   NoReport walk               trk  1.00 Empty      1   0     0.00  0.03  0.63  0.02  0.06  0.03
+22:40:42 D523.0   D52304000956  walk    0    NoReport walk               trk  1.00 Empty      1   0     0.12  0.10  0.15  0.13  0.19  0.02
+22:40:43 09E7.0   09E704029063  lying   44   NoReport lying              trk  1.00 Empty      1   0     0.01  0.12  0.42  0.02  0.07  0.04
+22:40:43 D523.0   D52304000956  walk    0    NoReport walk               trk  1.00 Empty      1   0     0.12  0.10  0.15  0.13  0.19  0.02
+22:40:44 09E7.0   09E704029063  lying   54   NoReport lying              trk  1.00 Empty      1   0     0.06  0.43  0.16  0.04  0.07  0.02
+22:40:44 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.13  0.10  0.14  0.13  0.19  0.02
+22:40:45 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   0     0.01  0.90  0.03  0.03  0.01  0.00
+22:40:45 09E7.E   -             -       0    InBed    InBed(rdr)         room -    Empty      1   0     0.13  0.10  0.14  0.13  0.19  0.02
+22:40:45 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   0     0.13  0.10  0.14  0.13  0.19  0.02
+22:40:46 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   0     0.00  0.95  0.02  0.02  0.00  0.00
+22:40:46 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   0     0.13  0.10  0.14  0.12  0.19  0.02
+22:40:47 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   0     0.00  0.95  0.02  0.02  0.00  0.00
+22:40:47 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   0     0.14  0.10  0.14  0.12  0.19  0.02
+22:40:48 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   0     0.00  0.95  0.02  0.02  0.00  0.00
+22:40:48 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   0     0.14  0.10  0.14  0.12  0.19  0.02
+22:40:49 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   0     0.00  0.95  0.02  0.02  0.00  0.00
+22:40:49 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   0     0.14  0.10  0.14  0.12  0.18  0.02
+22:40:50 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   0     0.00  0.95  0.02  0.02  0.00  0.00
+22:40:50 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   0     0.14  0.10  0.14  0.12  0.18  0.02
+22:40:51 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   0     0.00  0.95  0.02  0.02  0.00  0.00
+22:40:51 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   0     0.15  0.10  0.14  0.12  0.18  0.02
+22:40:52 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   0     0.00  0.99  0.00  0.00  0.00  0.00
+22:40:52 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   0     0.15  0.10  0.14  0.12  0.18  0.02
+22:40:53 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   0     0.00  0.99  0.00  0.00  0.00  0.00
+22:40:53 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   0     0.15  0.10  0.14  0.12  0.18  0.02
+22:40:54 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   0     0.00  0.99  0.00  0.00  0.00  0.00
+22:40:54 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   0     0.15  0.10  0.14  0.12  0.18  0.02
+22:40:55 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   0     0.00  0.99  0.00  0.00  0.00  0.00
+22:40:55 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   13    0.16  0.10  0.14  0.12  0.18  0.02
+22:40:56 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   14    0.00  0.99  0.00  0.00  0.00  0.00
+22:40:56 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   14    0.16  0.10  0.14  0.12  0.18  0.02
+22:40:57 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   15    0.00  0.99  0.00  0.00  0.00  0.00
+22:40:57 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   15    0.16  0.10  0.14  0.12  0.18  0.02
+22:40:58 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   16    0.00  0.99  0.00  0.00  0.00  0.00
+22:40:58 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   16    0.17  0.10  0.14  0.12  0.18  0.02
+22:40:59 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   17    0.00  0.99  0.00  0.00  0.00  0.00
+22:40:59 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   17    0.17  0.10  0.14  0.12  0.18  0.02
+22:41:00 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   18    0.00  0.99  0.00  0.00  0.00  0.00
+22:41:00 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   18    0.17  0.10  0.14  0.12  0.18  0.02
+22:41:01 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   19    0.00  0.99  0.00  0.00  0.00  0.00
+22:41:01 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   19    0.17  0.10  0.14  0.12  0.18  0.02
+22:41:02 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   20    0.00  0.99  0.00  0.00  0.00  0.00
+22:41:02 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   20    0.17  0.10  0.14  0.12  0.18  0.02
+22:41:03 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   21    0.00  0.99  0.00  0.00  0.00  0.00
+22:41:03 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   21    0.18  0.10  0.14  0.12  0.18  0.02
+22:41:04 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Fallen     1   22    0.00  0.99  0.00  0.00  0.00  0.00
+22:41:04 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   22    0.18  0.10  0.14  0.12  0.17  0.02
+22:41:05 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Fallen     1   23    0.00  0.99  0.00  0.00  0.00  0.00
+22:41:05 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   23    0.18  0.10  0.14  0.12  0.17  0.02
+22:41:06 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Fallen     1   24    0.00  0.99  0.00  0.00  0.00  0.00
+22:41:06 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   24    0.18  0.10  0.14  0.12  0.17  0.02
+22:41:07 09E7.0   09E704029063  lying   53   InBed    lying              trk  1.00 Fallen     1   25    0.00  0.99  0.00  0.00  0.00  0.00
+22:41:07 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   25    0.18  0.10  0.14  0.12  0.17  0.02
+22:41:08 09E7.0   09E704029063  lying   46   InBed    lying              trk  1.00 Fallen     1   26    0.00  0.99  0.00  0.00  0.00  0.00
+22:41:08 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   26    0.19  0.09  0.14  0.12  0.17  0.02
+22:41:09 09E7.0   09E704029063  lying   44   InBed    lying              trk  1.00 Fallen     1   27    0.00  0.99  0.00  0.00  0.00  0.00
+22:41:09 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   27    0.19  0.09  0.14  0.12  0.17  0.02
+22:41:10 09E7.0   09E704029063  lying   43   InBed    lying              trk  1.00 Fallen     1   28    0.00  0.99  0.00  0.00  0.00  0.00
+22:41:10 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   28    0.19  0.09  0.14  0.12  0.17  0.02
+22:41:11 09E7.0   09E704029063  lying   38   InBed    lying              trk  1.00 Fallen     1   29    0.00  0.99  0.00  0.00  0.00  0.00
+22:41:11 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   29    0.19  0.09  0.14  0.12  0.17  0.02
+22:41:12 09E7.0   09E704029063  walk    26   InBed    walk               trk  1.00 Fallen     1   30    0.00  0.85  0.08  0.06  0.00  0.01
+22:41:12 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.19  0.09  0.14  0.12  0.17  0.02
+22:41:13 09E7.0   09E704029063  walk    19   InBed    walk               trk  1.00 Fallen     1   0     0.00  0.71  0.16  0.08  0.01  0.01
+22:41:13 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.19  0.09  0.13  0.12  0.17  0.02
+22:41:14 09E7.0   09E704029063  sit     11   InBed    sit                trk  1.00 Fallen     1   0     0.00  0.70  0.11  0.09  0.01  0.01
+22:41:14 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.19  0.09  0.13  0.11  0.17  0.02
+22:41:15 09E7.0   09E704029063  sit     14   InBed    sit                trk  1.00 Fallen     1   0     0.00  0.71  0.07  0.09  0.01  0.01
+22:41:15 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
+22:41:16 09E7.E   -             -       0    InBed    Walking(rdr)       room -    Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
+22:41:16 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   0     0.00  0.73  0.07  0.10  0.01  0.01
+22:41:16 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
+22:41:17 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   0     0.00  0.76  0.06  0.10  0.01  0.01
+22:41:17 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
+22:41:18 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   0     0.00  0.77  0.06  0.10  0.01  0.01
+22:41:18 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
+22:41:19 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   0     0.00  0.77  0.06  0.10  0.01  0.01
+22:41:19 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
+22:41:20 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   0     0.00  0.95  0.02  0.02  0.00  0.00
+22:41:20 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
+22:41:21 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   0     0.00  0.97  0.01  0.01  0.00  0.00
+22:41:21 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   14    0.20  0.09  0.13  0.11  0.17  0.02
+22:41:22 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   14    0.00  0.97  0.01  0.01  0.00  0.00
+22:41:22 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   15    0.21  0.09  0.13  0.11  0.17  0.02
+22:41:23 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   15    0.00  0.97  0.01  0.01  0.00  0.00
+22:41:23 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   15    0.21  0.09  0.13  0.11  0.17  0.02
+22:41:24 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   16    0.00  0.97  0.01  0.01  0.00  0.00
+22:41:24 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   16    0.21  0.09  0.13  0.11  0.17  0.02
+22:41:25 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   17    0.00  0.97  0.01  0.01  0.00  0.00
+22:41:25 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   17    0.21  0.09  0.13  0.11  0.17  0.02
+22:41:26 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   18    0.00  0.97  0.01  0.01  0.00  0.00
+22:41:26 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   18    0.21  0.09  0.13  0.11  0.17  0.02
+22:41:27 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   19    0.00  0.97  0.01  0.01  0.00  0.00
+22:41:27 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   19    0.21  0.09  0.13  0.11  0.17  0.02
+22:41:28 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   20    0.00  0.97  0.01  0.01  0.00  0.00
+22:41:28 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   20    0.21  0.09  0.13  0.11  0.17  0.02
+22:41:29 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   21    0.00  0.97  0.01  0.01  0.00  0.00
+22:41:29 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   21    0.21  0.09  0.13  0.11  0.17  0.02
+22:41:30 09E7.0   09E704029063  susfall 23   InBed    susfall            trk  1.00 Fallen     1   22    0.00  0.97  0.01  0.01  0.00  0.00
+22:41:30 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   22    0.21  0.09  0.13  0.11  0.17  0.02
+22:41:31 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   18    0.00  0.97  0.01  0.01  0.00  0.00
+22:41:31 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   18    0.21  0.09  0.13  0.11  0.17  0.02
+22:41:32 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     2   19    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:32 09E7.1   09E714132147  stand   83   InBed    stand              trk  0.50 Fallen     2   19    0.00  0.12  0.13  0.00  0.71  0.03
+22:41:32 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   19    0.22  0.09  0.13  0.11  0.17  0.02
+22:41:32 09E7.1   09E714132147  stand   84   InBed    stand              trk  0.15 Fallen     1   20    0.00  0.86  0.07  0.01  0.05  0.00
+22:41:32 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   20    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:33 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   20    0.22  0.09  0.13  0.11  0.17  0.02
+22:41:33 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.05 Fallen     1   21    0.00  0.97  0.02  0.01  0.00  0.00
+22:41:33 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   21    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:34 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   21    0.22  0.09  0.13  0.11  0.17  0.02
+22:41:34 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.03 Fallen     1   22    0.00  0.97  0.02  0.01  0.00  0.00
+22:41:34 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   22    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:35 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   22    0.22  0.09  0.13  0.11  0.17  0.02
+22:41:35 09E7.0   09E704029063  susfall 23   InBed    susfall            trk  1.00 Fallen     1   23    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:35 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     1   23    0.00  0.97  0.02  0.01  0.00  0.00
+22:41:36 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   23    0.22  0.09  0.13  0.11  0.17  0.02
+22:41:36 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   24    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:36 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     1   24    0.00  0.97  0.02  0.01  0.00  0.00
+22:41:37 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   24    0.22  0.09  0.13  0.11  0.16  0.02
+22:41:37 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   25    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:37 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     1   25    0.00  0.97  0.02  0.01  0.00  0.00
+22:41:38 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   25    0.22  0.09  0.13  0.11  0.16  0.02
+22:41:38 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     1   26    0.00  0.97  0.02  0.01  0.00  0.00
+22:41:38 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   26    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:39 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   26    0.22  0.09  0.13  0.11  0.16  0.02
+22:41:39 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     1   27    0.00  0.97  0.02  0.01  0.00  0.00
+22:41:39 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   27    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:40 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   27    0.22  0.09  0.13  0.11  0.16  0.02
+22:41:41 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   28    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:41 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     1   28    0.00  0.97  0.02  0.01  0.00  0.00
+22:41:41 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   28    0.22  0.09  0.13  0.11  0.16  0.02
+22:41:41 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   29    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:41 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     1   29    0.00  0.97  0.02  0.01  0.00  0.00
+22:41:42 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   29    0.22  0.09  0.13  0.11  0.16  0.02
+22:41:43 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     1   30    0.00  0.97  0.02  0.01  0.00  0.00
+22:41:43 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   30    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:43 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   30    0.22  0.09  0.13  0.11  0.16  0.02
+22:41:43 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     1   31    0.00  0.97  0.02  0.01  0.00  0.00
+22:41:43 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   31    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:44 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   31    0.22  0.09  0.13  0.11  0.16  0.02
+22:41:44 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     1   32    0.00  0.97  0.02  0.01  0.00  0.00
+22:41:44 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   32    0.00  1.00  0.00  0.00  0.00  0.00
+22:41:45 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   32    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:45 09E7.E   -             -       0    LeftBed  Fall(rdr)          room -    Fallen     1   33    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:45 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   33    0.00  0.00  1.00  0.00  0.00  0.00
+22:41:45 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   33    0.00  0.00  0.80  0.08  0.01  0.02
+22:41:46 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   33    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:46 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   34    0.00  0.00  1.00  0.00  0.00  0.00
+22:41:46 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   34    0.00  0.00  0.82  0.02  0.02  0.02
+22:41:47 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   34    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:47 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   35    0.00  0.00  0.82  0.01  0.02  0.02
+22:41:47 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   35    0.00  0.00  1.00  0.00  0.00  0.00
+22:41:48 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   35    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:48 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   36    0.00  0.00  0.99  0.00  0.00  0.00
+22:41:48 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   36    0.00  0.00  0.83  0.00  0.02  0.02
+22:41:49 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   36    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:49 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   37    0.00  0.00  0.99  0.00  0.00  0.00
+22:41:49 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   37    0.00  0.00  0.83  0.00  0.02  0.02
+22:41:50 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   37    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:50 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   38    0.00  0.00  0.83  0.00  0.02  0.02
+22:41:50 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   38    0.00  0.00  0.99  0.00  0.00  0.00
+22:41:51 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   38    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:51 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   39    0.01  0.00  0.99  0.00  0.00  0.00
+22:41:51 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   39    0.00  0.00  0.83  0.00  0.02  0.02
+22:41:52 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   39    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:52 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   40    0.01  0.00  0.99  0.00  0.00  0.00
+22:41:52 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   40    0.00  0.00  0.83  0.00  0.02  0.02
+22:41:53 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   40    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:53 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   41    0.00  0.00  0.83  0.00  0.02  0.02
+22:41:53 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   41    0.01  0.00  0.99  0.00  0.00  0.00
+22:41:54 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   41    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:54 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   42    0.01  0.00  0.99  0.00  0.00  0.00
+22:41:54 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   42    0.00  0.00  0.83  0.00  0.02  0.02
+22:41:55 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   42    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:55 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   43    0.01  0.00  0.99  0.00  0.00  0.00
+22:41:55 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   43    0.00  0.00  0.83  0.00  0.02  0.02
+22:41:56 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   43    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:56 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   44    0.00  0.00  0.83  0.00  0.02  0.02
+22:41:56 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   44    0.01  0.00  0.99  0.00  0.00  0.00
+22:41:57 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   44    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:57 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   45    0.01  0.00  0.99  0.00  0.00  0.00
+22:41:57 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   45    0.00  0.00  0.82  0.00  0.02  0.02
+22:41:58 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   45    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:58 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   46    0.01  0.00  0.99  0.00  0.00  0.00
+22:41:58 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   46    0.00  0.00  0.82  0.00  0.02  0.02
+22:41:58 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   46    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:59 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   47    0.00  0.00  0.82  0.00  0.02  0.02
+22:41:59 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   47    0.01  0.00  0.99  0.00  0.00  0.00
+22:41:59 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   47    0.23  0.09  0.13  0.11  0.16  0.02
+22:42:00 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   48    0.01  0.00  0.99  0.00  0.00  0.00
+22:42:00 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   48    0.00  0.00  0.82  0.00  0.02  0.02
+22:42:00 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   48    0.23  0.09  0.13  0.11  0.16  0.02
+22:42:01 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   49    0.01  0.00  0.99  0.00  0.00  0.00
+22:42:01 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   49    0.00  0.00  0.82  0.00  0.02  0.02
+22:42:01 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   49    0.23  0.09  0.13  0.11  0.16  0.02
+22:42:02 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   50    0.00  0.00  0.82  0.00  0.02  0.02
+22:42:02 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   50    0.01  0.00  0.99  0.00  0.00  0.00
+22:42:02 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   50    0.23  0.09  0.13  0.11  0.16  0.02
+22:42:03 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   51    0.00  0.00  0.82  0.00  0.02  0.02
+22:42:03 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   51    0.01  0.00  0.98  0.00  0.00  0.00
+22:42:03 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   51    0.23  0.09  0.13  0.11  0.16  0.02
+22:42:04 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   52    0.02  0.00  0.98  0.00  0.00  0.00
+22:42:04 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   52    0.00  0.00  0.82  0.00  0.02  0.02
+22:42:04 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   52    0.23  0.09  0.13  0.11  0.16  0.02
+22:42:05 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   53    0.02  0.00  0.98  0.00  0.00  0.00
+22:42:05 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   53    0.00  0.01  0.82  0.00  0.02  0.02
+22:42:05 D523.0   D52304000956  stand   0    LeftBed  stand              trk  1.00 Fallen     1   53    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:06 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   54    0.03  0.00  0.97  0.00  0.00  0.00
+22:42:06 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   54    0.00  0.01  0.80  0.01  0.03  0.02
+22:42:07 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   35    0.00  0.01  0.82  0.00  0.02  0.02
+22:42:07 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   35    0.03  0.00  0.97  0.00  0.00  0.00
+22:42:08 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   36    0.00  0.01  0.82  0.00  0.02  0.02
+22:42:08 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   36    0.03  0.00  0.96  0.00  0.00  0.00
+22:42:09 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   37    0.04  0.00  0.96  0.00  0.00  0.00
+22:42:09 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   37    0.00  0.01  0.82  0.00  0.02  0.02
+22:42:10 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   38    0.00  0.01  0.85  0.00  0.01  0.02
+22:42:10 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   38    0.04  0.00  0.96  0.00  0.00  0.00
+22:42:11 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   39    0.00  0.01  0.85  0.00  0.01  0.02
+22:42:11 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   39    0.04  0.00  0.96  0.00  0.00  0.00
+22:42:12 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   40    0.00  0.01  0.86  0.00  0.01  0.02
+22:42:12 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   40    0.04  0.00  0.95  0.00  0.00  0.00
+22:42:13 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   41    0.05  0.00  0.95  0.00  0.00  0.00
+22:42:13 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   41    0.00  0.01  0.86  0.00  0.01  0.02
+22:42:14 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   42    0.05  0.00  0.95  0.00  0.00  0.00
+22:42:14 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   42    0.00  0.01  0.86  0.00  0.01  0.02
+22:42:15 09E7.0   09E704029063  FALL    21   LeftBed  FALL               trk  1.00 Fallen     1   43    0.06  0.00  0.94  0.00  0.00  0.00
+22:42:15 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   43    0.00  0.01  0.86  0.00  0.01  0.02
+22:42:16 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   44    0.00  0.02  0.85  0.00  0.01  0.02
+22:42:16 09E7.0   09E704029063  FALL    22   LeftBed  FALL               trk  1.00 Fallen     1   44    0.06  0.00  0.93  0.00  0.00  0.00
+22:42:17 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   45    0.00  0.02  0.85  0.00  0.01  0.02
+22:42:17 09E7.0   09E704029063  FALL    24   LeftBed  FALL               trk  1.00 Fallen     1   45    0.07  0.00  0.92  0.00  0.00  0.00
+22:42:18 09E7.E   -             -       0    LeftBed  Fall(rdr)          room -    Fallen     1   45    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:18 09E7.0   09E704029063  susfall 53   LeftBed  susfall            trk  1.00 Fallen     1   46    0.02  0.00  0.98  0.00  0.00  0.00
+22:42:18 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   46    0.00  0.02  0.85  0.00  0.01  0.02
+22:42:18 09E7.0   09E704029063  sit     60   LeftBed  sit                trk  1.00 Fallen     1   46    0.00  0.01  0.98  0.00  0.00  0.00
+22:42:18 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   46    0.00  0.02  0.85  0.00  0.01  0.02
+22:42:18 D523.0   D52304000956  stand   68   LeftBed  stand              trk  1.00 Fallen     2   46    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:19 09E7.0   09E704029063  walk    73   LeftBed  walk               trk  1.00 Fallen     2   47    0.00  0.00  0.99  0.00  0.00  0.00
+22:42:19 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     2   47    0.00  0.03  0.81  0.00  0.02  0.02
+22:42:19 D523.0   D52304000956  stand   72   LeftBed  stand              trk  1.00 Fallen     2   47    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:20 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   48    0.00  0.03  0.80  0.01  0.02  0.02
+22:42:20 09E7.0   09E704029063  walk    72   LeftBed  walk               trk  1.00 Fallen     1   48    0.00  0.01  0.97  0.00  0.00  0.00
+22:42:20 D523.0   D52304000956  stand   104  LeftBed  stand              trk  1.00 Fallen     1   48    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:21 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   49    0.00  0.04  0.79  0.01  0.02  0.02
+22:42:21 09E7.0   09E704029063  walk    40   LeftBed  walk               trk  1.00 Fallen     1   49    0.00  0.17  0.71  0.00  0.01  0.02
+22:42:21 D523.0   D52304000956  walk    93   LeftBed  walk               trk  1.00 Fallen     1   49    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:22 09E7.0   09E704029063  walk    41   LeftBed  walk               trk  1.00 Fallen     1   50    0.00  0.25  0.68  0.01  0.01  0.01
+22:42:22 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   50    0.00  0.04  0.79  0.01  0.02  0.02
+22:42:22 09E7.E   -             -       0    LeftBed  LeftBed(rdr)       room -    Fallen     1   50    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:22 D523.0   D52304000956  walk    81   NoReport walk               trk  1.00 Fallen     1   50    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:23 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   51    0.00  0.19  0.67  0.01  0.02  0.02
+22:42:23 09E7.0   09E704029063  walk    55   NoReport walk               trk  1.00 Fallen     1   51    0.00  0.41  0.54  0.01  0.00  0.01
+22:42:23 D523.0   D52304000956  walk    75   NoReport walk               trk  1.00 Fallen     1   51    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:24 09E7.0   09E704029063  walk    0    NoReport walk               trk  1.00 Fallen     1   52    0.00  0.38  0.53  0.01  0.00  0.01
+22:42:24 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   52    0.00  0.34  0.54  0.01  0.01  0.01
+22:42:24 D523.0   D52304000956  walk    96   NoReport walk               trk  1.00 Fallen     1   52    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:25 09E7.0   09E704029063  walk    0    NoReport walk               trk  1.00 Fallen     1   53    0.00  0.50  0.41  0.02  0.01  0.01
+22:42:25 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   53    0.00  0.47  0.42  0.02  0.01  0.01
+22:42:25 D523.0   D52304000956  walk    81   NoReport walk               trk  1.00 Fallen     1   53    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:26 09E7.0   09E704029063  walk    0    NoReport walk               trk  1.00 Fallen     1   54    0.00  0.30  0.66  0.01  0.00  0.00
+22:42:26 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   54    0.00  0.57  0.34  0.02  0.01  0.01
+22:42:26 D523.0   D52304000956  walk    54   NoReport walk               trk  1.00 Fallen     1   54    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:27 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     1   55    0.00  0.11  0.86  0.00  0.00  0.01
+22:42:27 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   55    0.00  0.63  0.29  0.03  0.01  0.01
+22:42:27 D523.0   D52304000956  walk    64   NoReport walk               trk  1.00 Fallen     1   55    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:28 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   56    0.00  0.67  0.26  0.03  0.01  0.01
+22:42:28 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     1   56    0.00  0.06  0.91  0.00  0.00  0.01
+22:42:28 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   56    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:29 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     1   57    0.00  0.05  0.92  0.00  0.00  0.01
+22:42:29 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   57    0.00  0.69  0.23  0.03  0.01  0.01
+22:42:29 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   57    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:30 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   58    0.00  0.70  0.23  0.03  0.00  0.01
+22:42:30 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     1   58    0.00  0.04  0.92  0.00  0.00  0.01
+22:42:30 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   58    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:31 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   59    0.00  0.71  0.22  0.03  0.00  0.01
+22:42:31 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     1   59    0.00  0.04  0.92  0.00  0.00  0.01
+22:42:31 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   59    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:32 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   60    0.00  0.71  0.22  0.03  0.00  0.01
+22:42:32 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     1   60    0.00  0.04  0.92  0.00  0.00  0.01
+22:42:32 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   60    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:33 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     1   61    0.00  0.04  0.92  0.00  0.00  0.01
+22:42:33 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   61    0.00  0.71  0.22  0.03  0.00  0.01
+22:42:33 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   61    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:34 09E7.0   09E704029063  stand   0    NoReport stand              trk  1.00 Fallen     1   62    0.00  0.04  0.92  0.00  0.00  0.01
+22:42:34 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   62    0.00  0.72  0.22  0.03  0.00  0.01
+22:42:34 09E7.E   -             -       0    NoReport ExitRoom(rdr)      room -    Fallen     1   62    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:34 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   62    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:35 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   63    0.00  0.65  0.21  0.06  0.01  0.01
+22:42:35 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   63    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:36 09E7.1   09E714132147  stand   0    NoReport stand              trk  0.02 Fallen     1   64    0.00  0.63  0.22  0.07  0.01  0.01
+22:42:36 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     2   64    0.24  0.09  0.13  0.11  0.16  0.02
+22:42:37 09E7.1   09E714132147  stand   0    NoReport stand              trk  1.00 Fallen     2   65    0.00  0.62  0.22  0.07  0.01  0.01
+22:42:37 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     2   65    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:38 09E7.1   09E714132147  stand   0    NoReport stand              trk  1.00 Fallen     2   66    0.00  0.62  0.22  0.07  0.01  0.01
+22:42:38 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     2   66    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:39 09E7.1   09E714132147  stand   0    NoReport stand              trk  1.00 Fallen     2   67    0.00  0.62  0.22  0.07  0.01  0.01
+22:42:39 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     2   67    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:40 09E7.1   09E714132147  stand   0    NoReport stand              trk  1.00 Fallen     2   68    0.00  0.61  0.23  0.07  0.01  0.01
+22:42:40 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     2   68    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:41 09E7.1   09E714132147  stand   0    NoReport stand              trk  1.00 Fallen     2   69    0.00  0.61  0.23  0.07  0.01  0.01
+22:42:41 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     2   69    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:42 09E7.1   09E714132147  stand   0    NoReport stand              trk  1.00 Fallen     2   70    0.00  0.61  0.23  0.07  0.01  0.01
+22:42:42 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     2   70    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:43 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   17    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:44 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   18    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:45 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   19    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:46 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   20    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:47 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   21    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:48 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   22    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:49 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   23    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:50 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   24    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:51 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   25    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:52 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   26    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:53 D523.0   D52304000956  stand   43   NoReport stand              trk  1.00 Fallen     1   27    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:54 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   28    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:55 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   29    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:56 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   30    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:57 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   31    0.24  0.09  0.13  0.11  0.16  0.01
+22:42:58 D523.0   D52304000956  stand   0    NoReport stand              trk  1.00 Fallen     1   32    0.24  0.09  0.13  0.11  0.16  0.01
 ```
 
 **汇总**: xray tick 388 | fire 0 | Fall 事件 2 (22:41:45, 22:42:18) | 结论 = FN(看到 Fall 但 fire=0)

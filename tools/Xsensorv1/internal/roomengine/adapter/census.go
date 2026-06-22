@@ -261,6 +261,23 @@ func (c *TrackCensus) noteMultiPerson() {
 	}
 }
 
+// FuseStatus 跨雷达同人融合一对 track 的运动同步证据（forensic：同步检查可见化，不参与裁决）。
+type FuseStatus struct {
+	A, B  string  // 配对 logicID（跨设备）
+	Agree float64 // 运动幅值同步 EMA [0,1]（≥fuseAgreeThresh 锁同人）
+	Moves int     // 累计有效移动帧（证据量，≥fuseMinMoves 才允许判）
+	Same  bool    // 已锁定判同人 → Nr 折叠
+}
+
+// FuseForensic 当前所有跨雷达同人候选对的运动同步状态（每 tick xray 可见：两雷达 track 同步检查到多少）。
+func (c *TrackCensus) FuseForensic() []FuseStatus {
+	out := make([]FuseStatus, 0, len(c.fuseLinks))
+	for _, l := range c.fuseLinks {
+		out = append(out, FuseStatus{A: l.a, B: l.b, Agree: l.agree, Moves: l.moves, Same: l.same})
+	}
+	return out
+}
+
 // fuseCandidate 触发/退出门：**恰 2 台 radar，每台仅 1 个在场真人 track**——唯一有风险场景
 // （屋内仅1人却被2雷达各报1轨数成2人）。返回该对 (a,b) 与 ok。
 //

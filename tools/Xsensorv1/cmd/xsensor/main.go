@@ -107,6 +107,16 @@ func openDeps(cfg *config.Config) (*sql.DB, *redis.Client, error) {
 // poseLying observation.PoseLying = 6（sleepad-only 房合成 bed-track 的姿态）。
 const poseLying = 6
 
+// fwBed 固件 area_id 是否命中床区（N；与 roomengine.RadarBedStates 同判据，forensic 用）。0/255=哨兵不算。
+func fwBed(areaID int, bedAreaIDs []int) bool {
+	for _, id := range bedAreaIDs {
+		if id != 0 && id != 255 && areaID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // roomGeom 一房的 config-static 几何（RegisterRoom 时从 RoomConfig 派生，OnRoomFrame 构造 FrameInput 用）。
 type roomGeom struct {
 	beds           []adapter.Rect
@@ -258,6 +268,8 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			"tid": b.TrackID, "present": b.Present, "pose": b.Pose,
 			"x": b.X, "y": b.Y, "z": b.Z, "stillbox": b.StillBoxSec,
 			"area": int(b.CellAreaType), "verdict": int(b.Verdict),
+			"fw_area": b.FwAreaID, "fw_bed": fwBed(b.FwAreaID, g.bedAreaIDs), // 固件 area_id + 是否命中床区(N,抬 SBed 那条腿)
+			"vital": b.SleepadVitalPresent,                                  // 该轨 sleepad 接触 vital(InBed+HR/RR fresh)→ couplesAnyBed 时抬 SBed
 		})
 	}
 	dbn := make([]map[string]interface{}, 0, len(fr.Tracks))
@@ -280,6 +292,12 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			"pad_uncovered": p.Uncovered, "pad_radar_left_bed": p.RadarLeftBed,
 		})
 	}
+	fuse := make([]map[string]interface{}, 0, len(fr.FuseSync))
+	for _, f := range fr.FuseSync {
+		fuse = append(fuse, map[string]interface{}{
+			"a": f.A, "b": f.B, "agree": f.Agree, "moves": f.Moves, "same": f.Same, // 双雷达同人运动同步检查
+		})
+	}
 	walls := make([][4]int, 0, len(g.walls))
 	for _, w := range g.walls {
 		walls = append(walls, [4]int{w.X1, w.Y1, w.X2, w.Y2})
@@ -297,7 +315,9 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Bool("unit_has_track", unitHasTrack), zap.Bool("has_neighbor", hasNeighbor),
 		zap.Bool("lost_exited", fr.LostExited),
 		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("bed_present", g.sleepadPresent),
+		zap.Bool("vital_present", vitalPresent), // 房级 sleepad 接触 vital(HR/RR fresh)→ covers=1 设备抬 SBed
 		zap.Any("s_dist", sDist), zap.Any("target", raw), zap.Any("dbn", dbn), zap.Any("pad", pad),
+		zap.Any("fuse", fuse), // 双雷达同人运动同步对(agree/same/moves)
 		zap.Any("walls", walls), zap.Int("radar_x", g.radarPos.X), zap.Int("radar_y", g.radarPos.Y))
 
 	return fr.FiredLogicIDs, fr.DroppedLogicIDs // fired→复位 still-box；dropped(确认离场/空)→evict track,停 coast re-feed

@@ -42,6 +42,7 @@ for line in open(log_path):
     ticks.append({'ts': d['ts'], 'bed': d.get('bed_reading','NoReport'),
                   'top': d.get('top_s','?'), 'sdist': sd,
                   'still': max(stills) if stills else 0, 'fire': d.get('fire', False),
+                  'n_r': d.get('n_r'),  # 房内真人数(census 折叠后；2 雷达 1 人 → 1)
                   'tidlid': tidlid, 'dbn_by_lid': dbn_by_lid})
 ticks.sort(key=lambda r: r['ts'])
 tick_ts = [r['ts'] for r in ticks]
@@ -98,7 +99,7 @@ def belief_cols(b, lid):
     return 'room', None, {k: sd.get(ROOMKEY[k], 0) for k in SM}
 
 hdr = (f"{'time':8} {'dev.tid':8} {'lid':13} {'pose':7} {'z':4} {'bed':8} "
-       f"{'event':18} {'src':4} {'pR':4} {'top':10} {'still':5} {'SFall':5} {'SBed':5} {'SOpen':5} "
+       f"{'event':18} {'src':4} {'pR':4} {'top':10} {'nr':3} {'still':5} {'SFall':5} {'SBed':5} {'SOpen':5} "
        f"{'SBliR':5} {'SEmpt':5} {'SLeft':5}")
 out = []
 fall_ts = [r['timestamp'] for r in win if r['category']=='Fall']
@@ -117,8 +118,10 @@ for row in rows:
     src, preal, sm = belief_cols(b, lid)
     pr = f"{preal:.2f}" if preal is not None else '-'
     devtid = f"{dev}.{tid}"
+    nr = b.get('n_r')
+    nrs = str(nr) if nr is not None else '-'
     line = (f"{hhmmss(ts):8} {devtid:8} {lid:13} {pose:7} {z:<4} {b['bed']:8} "
-            f"{event:18} {src:4} {pr:4} {b['top']:10} {b['still']:<5} "
+            f"{event:18} {src:4} {pr:4} {b['top']:10} {nrs:3} {b['still']:<5} "
             f"{sm['SFall']:.2f}  {sm['SBed']:.2f}  {sm['SOpen']:.2f}  "
             f"{sm['SBliR']:.2f}  {sm['SEmpt']:.2f}  {sm['SLeft']:.2f}")
     out.append(line)

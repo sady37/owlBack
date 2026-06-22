@@ -47,6 +47,7 @@ type Frame struct {
 	// forensic（全切片观测，不参与裁决）：
 	PresentCount int             // 本帧在场 track 数（§61 共存源/消费门控判据）
 	Tracks       []TrackForensic // 每 track 内部量（realness/ghost/消费门控/per-track 裁决）
+	FuseSync     []adapter.FuseStatus // forensic：跨雷达同人运动同步对（agree/same/moves，可见双雷达同步检查）
 	// FiredLogicIDs 本帧 fall fire 的 LogicID：回传 track_manager 复位 still-box（跨层 StillSec 在 tm），
 	//   与本帧已就地复位的 belief 配套——fall fire = 该 track 推断 episode 结束 → 从 0 热机重判。
 	FiredLogicIDs []string
@@ -511,6 +512,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	fr.LostReal, fr.GainedReal = lost, gained
 	fr.LostExited = lostExited
 	fr.PresentCount, fr.Tracks = presentCount, forensic
+	fr.FuseSync = r.census.FuseForensic() // forensic：双雷达运动同步对状态
 	// 可救援数（forensic，不门控 fire）：每 track 的 S 峰值是否 SBed（共用 belief.ArgmaxIsBed），
 	//   躺床者不计 → census 折叠（A 范围 RescuableCount，同人对两端都不在床才减）。doc/cfn-rescuable-design.md。
 	inBed := make(map[string]bool, len(forensic))
