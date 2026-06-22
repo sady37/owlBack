@@ -617,9 +617,9 @@ episode 结束烘进残余：$R \leftarrow R_{\text{prior}}+\text{credit}$，并
 | `AssocCm` | 250 cm | 帧间最大关联位移 | 1Hz 下够宽（120cm/s 走 120cm/帧），OK |
 | `fuseMoveThreshCm` | 40 cm | 融合"有意义移动"窗 | 80–120 cm/s 轻松超 → OK |
 | 速度合理性 | >150 cm/s 减分 | track score | =1.5 m/s，正常老人不会触发，OK |
-| **`birthMaxRealisticCm`** | **150 cm** | **ghost 出生地：出生位距门 ≤此 ∧ 近期 EnterRoom→真人；>此→偏 ghost** | **🔴 偏紧** |
+| **`birthMaxRealisticCm`** | **150 cm** | **ghost 出生地：出生位距门 ≤此 ∧ 近期 EnterRoom→真人；>此→偏 ghost** | ✅ 足够 |
 
-**🔴 `birthMaxRealisticCm=150` 标定问题**：隐含"门→首帧检测"可达半径 = 步速 × 滞后。注释假设"1 秒走入"=1.5 m/s；但 firmware track 周期 ~2.5s → 实效仅 **0.6 m/s**。**老人 1.0 m/s × 2.5s = 250cm > 150** → 真人在门外 150cm+ 处首检会被判"物理不可能"偏 ghost。
-- **合理值应 ≈ 最大步速 × 实际 EnterRoom→birth 滞后**（1.2 m/s × 2.5s ≈ **300cm**）。
-- **影响面 = 仅出生 Real/ghost 评分 → N_r 人数**（不门控 fire，realness 绝不否决摔，[[realness_never_vetoes_fall]]）→ **FN-safe**，但**人数会偏低**（真人误判 ghost 漏数）。待真实数据 + 实测 track 周期确认后调（留 oracle）。
-- 用处:`track_manager.go:1585`（出生配对加分）/ `:2013`（出生宽限跳过）。全仓无其它 0.6 m/s / 60 cm/s 速度假设。
+**`birthMaxRealisticCm=150` 标定（核对：足够）**：监控/track 上报 **1Hz** → 门→首帧检测滞后 ≤1s → 正常老人 1 秒最多走 **~120cm**（1.2 m/s）。放宽到 **150cm = 1.25× 余量**（对 1.2 m/s）；对跌倒高危步速 **0.88 m/s → 150/88 ≈ 1.7×** 余量。**足够扫到一次正常人 + 留裕量，不偏紧。**
+- （早前一版误把它当 2.5s track 周期算成 0.6 m/s 判"偏紧"——错；实际 1Hz，150 充分。）
+- 用处：`track_manager.go:1585`（出生配对加分）/ `:2013`（出生宽限跳过）。全仓无其它 0.6 m/s / 60 cm/s 速度假设。
+- 影响面仅出生 Real/ghost 评分 → N_r 人数（不门控 fire，realness 绝不否决摔，[[realness_never_vetoes_fall]]）= FN-safe。
