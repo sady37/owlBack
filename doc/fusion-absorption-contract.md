@@ -198,6 +198,12 @@ B 方案整体与吸纳模型一致、FN-safe 论据扎实。三条 **must-answe
 
 **⑤ 工具（不碰引擎）**：`timeline_from_xray.py` X-ray 补全——不滤 tid=88、加 np/sleepad 逐帧/alarm、**每秒不漏**（无帧补 held）、加原始 stream 子表。固化进脚本，所有 case 自动带。
 
+**⑥ radar hand-off 核改 `τpeak=15s` 固定、拿掉公共度缩放（amends ① 里"radar τpeak=3s/W=90s 不变"；commit 2f735e2）**
+- **经过**：先(69d4fa1)把公共度窗 45/60/90 派生 τpeak（base3s×w/90→私有 3s/公共 1.5s，有效窗 7-13s）让规则④真生效；再据用户两点否掉公共度本身——
+- **拍定 τpeak=15s 固定/W=90s、不随公共度**，理由三条：① **套房无陌生人**：elder-care"公共区"也就 2-4 个**已知**住户，规则④"收紧防陌生人偶合"失去前提；② **多住户已 hard-gate**（§7.7①）→ hand-off 唯一 FN 风险（别人巧合重现被当丢的人）被关掉，**单住户零巧合 → 宽窗零 FN 代价**；③ **紧窗(7-13s)漏接老人慢走** hand-off → 冻结幽灵 StillSec 爬到 tFloor → **误火**（FP）。15s = 老人套房跨房慢走（5-45s）的峰，非"秒级穿堂"。
+- **A 审点**：此改**放宽** radar 抑制窗（13s→~45s），方向与 ①(sleepad 慢核放宽)同，FN-safety **同样压在多住户 hard-gate 上**——单住户安全（无巧合），多住户必须 hard-gate（同 §7.7① 红线）。请 A 一并确认"放宽 radar 窗在多住户 hard-gate 前提下 FN-safe"。
+- **scope**：`belief/neighbor.go`（DefaultNeighborParams 改默认 + 删 `UnitPublicness`/`HandoffWindowFor`）、`engine/unit.go`（NewUnit 去 pub 参数）、`cmd/xsensor/{main,bootstrap}.go`（删 `unitPub` map + `units.unit_type` 查询，#1.2 清死代码）。sleepad 慢核(60s/150s)不受影响。
+
 ### 7.7 A→B：FN-safety 审批回复（radar 会话，2026-06-22）
 
 **①（慢 hand-off，150s 窗）= 有条件批准。核心：150s 单住户 FN-safe；多住户是漏报红线，必须 HARD-GATE 关掉，不能只"弱抑制"。**
