@@ -32,8 +32,8 @@ func DefaultTrackCensusParams() TrackCensusParams {
 // TrackObs 一帧一条 raw track（§57 步2 全量：纯雷达量）——既数 N_r 又驱动 per-track 滤波。
 // 桶二（§69）：IsReflection 由 census 本层几何算（出生位 + 墙 + 雷达坐标），不再外部标注透传。
 type TrackObs struct {
-	RadarTrack // Online/Pose/X,Y,Z/HR,RR/StillSec（X,Y 经嵌入提升供 census 速度/realness 几何）
-	LogicID string // tm 出生锚定的唯一逻辑身份（nearestAliveTrack 最小作功距离继承+EnterRoom 门）；census 不再按位置重造 int logicID，直接引用此
+	RadarTrack        // Online/Pose/X,Y,Z/HR,RR/StillSec（X,Y 经嵌入提升供 census 速度/realness 几何）
+	LogicID    string // tm 出生锚定的唯一逻辑身份（nearestAliveTrack 最小作功距离继承+EnterRoom 门）；census 不再按位置重造 int logicID，直接引用此
 }
 
 type censusTrack struct {
@@ -51,21 +51,72 @@ type censusTrack struct {
 	lastTick       int64    // 最近匹配 tick
 	lastMs         int64    // 最近匹配时戳（算 cm/s 速度，帧间隔非恒 1s）
 	lastObs        TrackObs // 最近一帧全量 obs（喂 engine per-track 滤波发射；消失态持住末帧）
+	pathAccum      float64  // 跨设备融合：窗口内累计移动路程(指数衰减)；多雷达帧交错→比窗口路程不比单帧位移
+	pathMs         int64    // pathAccum 末次更新时戳
+}
+
+// recentPath 把累计路程衰减到 nowMs（读时统一时基，因各雷达帧交错更新时刻不同）。
+func (t *censusTrack) recentPath(nowMs int64) float64 {
+	if t.pathMs == 0 {
+		return 0
+	}
+	return t.pathAccum * math.Exp(-float64(nowMs-t.pathMs)/fusePathTauMs)
+}
+
+// 跨设备同人融合（同 Room 不同 radar 看同一人 → N_r 只数 1；契约 doc/fusion-absorption-contract.md）。
+// **唯一影响 N_r**：不动 track 集/belief/realness/fire。同房=同一 census(MM room⊃device 前缀派生)；
+// 同人=5s 窗内每 tick 移动幅值同步(frame-invariant，免坐标对齐)。同设备(DevKey 同)是镜像由 realness 管，不在此。
+const (
+	fusePathTauMs    = 2500 // 累计路程指数衰减时间常数 ms（≈5s 窗的"近期移动"度量）
+	fuseMoveThreshCm = 40   // 窗口路程 ≥ 此才算"有意义移动"（都静止=不喂证据，保持已锁定判定）
+	fuseEMA          = 0.3  // 窗口路程同步 EMA 权
+	fuseMinMoves     = 5    // 累计有效移动帧 ≥ 此才允许判同人（多帧抗单帧巧合）
+	fuseAgreeThresh  = 0.6  // 同步 EMA ≥ 此 → 锁定同人
+	fuseStaleMs      = 3000 // 链双方久未同帧 → GC（人离场=释放；一台退化不解锁，仍同一人）
+	fuseExitHystTick = 3    // 多人证据持续 ≥此 tick 才退出折叠（B §7.2 解合并防抖；滤 realness 单帧 ghost 闪）
+)
+
+// fuseLink 跨设备一对 track 的同人证据（运动幅值同步 EMA + 锁定态）。
+type fuseLink struct {
+	a, b   string  // 配对 logicID（a<b 固定序）
+	agree  float64 // 运动幅值同步 EMA [0,1]
+	moves  int     // 累计有效移动帧（证据量）
+	same   bool    // 锁定：判同人 → Nr 折叠
+	lastMs int64   // 末次更新（GC 陈旧）
 }
 
 // TrackCensus 房内多 track 集：最小作功 logicID + 每 track realness + N_r。
 type TrackCensus struct {
-	p      TrackCensusParams
-	tracks map[string]*censusTrack // 键=tm 出生 LogicID（唯一身份；census 不再自发 int 号）
-	tick   int64
+	p               TrackCensusParams
+	tracks          map[string]*censusTrack // 键=tm 出生 LogicID（唯一身份；census 不再自发 int 号）
+	fuseLinks       map[string]*fuseLink    // 跨设备同人链（键=ordered logicID 对）；仅折叠 N_r
+	multiPersonStrk int                     // 连续多人(任一雷达≥2真人)tick 数；≥fuseExitHystTick 才退折叠(解合并防抖)
+	multiPersonLogd bool                    // no-silent-caps：多人退出已 LOG(转换沿一次)
+	tick            int64
 }
 
 // NewTrackCensus 建空 census。
 func NewTrackCensus(p TrackCensusParams) *TrackCensus {
-	return &TrackCensus{p: p, tracks: map[string]*censusTrack{}}
+	return &TrackCensus{p: p, tracks: map[string]*censusTrack{}, fuseLinks: map[string]*fuseLink{}}
 }
 
-// Update 一帧推进：① 最小作功距离关联 raw→logicID；② track 数==2 算 co-existence ρ；
+// fusePairKey 两 logicID 的固定序键。
+func fusePairKey(a, b string) string {
+	if b < a {
+		a, b = b, a
+	}
+	return a + "\x00" + b
+}
+
+// DevKey logicID → uid_last4（makeLogicID 前缀，per-device 键：床耦合 + mirror 同设备配对单源）。
+func DevKey(logicID string) string {
+	if len(logicID) >= 4 {
+		return logicID[:4]
+	}
+	return logicID
+}
+
+// Update 一帧推进：① 最小作功距离关联 raw→logicID；② 同设备 2 track 算 co-existence ρ；
 // ③ 各 track 译软证据喂 RealnessTrack 前向滤波（§9）。速度按 cm/s（位移/dt，帧间隔非恒 1s）。
 func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, entrances []Rect) {
 	c.tick++
@@ -81,23 +132,40 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 	}
 
 	// 帧间速度（cm/s）→ co-existence ρ。出生/同帧（dt≤0）= 无速度基准 → 0。
+	// disp = 单帧位移幅值（cm），喂跨设备同人融合（frame-invariant）。
 	speeds := make([]float64, len(obs))
+	disp := make([]float64, len(obs))
 	for i, o := range obs {
 		t := c.tracks[ids[i]]
+		disp[i] = math.Hypot(float64(o.X-t.x), float64(o.Y-t.y))
 		if dt := float64(nowMs-t.lastMs) / 1000.0; dt > 0 {
-			speeds[i] = math.Hypot(float64(o.X-t.x), float64(o.Y-t.y)) / dt
+			speeds[i] = disp[i] / dt
 		}
 	}
-	rho, coexist := 0.0, 0.0
-	laterID := ""
-	if len(obs) == 2 { // §G六：mirror co-existence 仅 track 数==2（1=永发 / 3+=不处理 → coexist 0）
-		rho = speedSync(speeds[0], speeds[1])
-		coexist = 1
-		a, b := c.tracks[ids[0]], c.tracks[ids[1]] // §9.1 后到者破同步对称（同时生→无后到→都不归同步）
+	// mirror co-existence 仅在【同一设备】恰好 2 track 之间（§G六 + 多雷达订正）：反射 ghost 是单台雷达
+	// FOV 内多径，**跨雷达两条 track 是对同一人的冗余探测，绝不互为镜像**（09e7 case：09E7 摔轨被 D523
+	// 当镜像源压成 ghost）。按 devKey(uid_last4) 分组，仅 size==2 的设备组算 ρ/coexist/laterBorn；
+	// 1=永发 / 3+=不处理 → coexist 0。
+	coexistOf := make([]float64, len(obs))
+	rhoOf := make([]float64, len(obs))
+	laterOf := make([]bool, len(obs))
+	byDev := map[string][]int{}
+	for i := range ids {
+		byDev[DevKey(ids[i])] = append(byDev[DevKey(ids[i])], i)
+	}
+	for _, grp := range byDev {
+		if len(grp) != 2 {
+			continue
+		}
+		p, q := grp[0], grp[1]
+		rho := speedSync(speeds[p], speeds[q])
+		coexistOf[p], coexistOf[q] = 1, 1
+		rhoOf[p], rhoOf[q] = rho, rho
+		a, b := c.tracks[ids[p]], c.tracks[ids[q]] // §9.1 后到者破同步对称（同时生→无后到→都不归同步）
 		if a.birthMs > b.birthMs {
-			laterID = ids[0]
+			laterOf[p] = true
 		} else if b.birthMs > a.birthMs {
-			laterID = ids[1]
+			laterOf[q] = true
 		}
 	}
 
@@ -108,7 +176,7 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 			// 仅 coexist>0=track==2 才算**（成本：ghost 仅 track==2；孤轨 mEv=Coexist×(…)=0,跳过 reflectSep 结果中性）。
 			sep := 0.0
 			wallMargin := 0.0
-			if coexist > 0 {
+			if coexistOf[i] > 0 {
 				sep = reflectSep(o.X, o.Y, radar, walls, c.p.ReflSepCm) // 桶二：墙外反射裕度 cm（0=墙内/非反射）
 				if sep > 0 {
 					if wallMargin = sep / float64(c.p.WallScaleCm); wallMargin > 1 {
@@ -117,16 +185,16 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 				}
 			}
 			t.isRefl = sep > 0
-			later := ids[i] == laterID
+			later := laterOf[i]
 			t.rt.Update(belief.RealnessObs{
 				Displaced:  math.Hypot(float64(o.X-t.birthX), float64(o.Y-t.birthY)) > float64(c.p.MoveCm),
-				CoexistRho: rho,
+				CoexistRho: rhoOf[i],
 				LaterBorn:  later,
 				WallMargin: wallMargin,
-				Coexist:    coexist,
+				Coexist:    coexistOf[i],
 				DtMs:       nowMs - t.lastMs,
 			})
-			t.fSep, t.fWallMargin, t.fRho, t.fLater = sep, wallMargin, rho, later // forensic
+			t.fSep, t.fWallMargin, t.fRho, t.fLater = sep, wallMargin, rhoOf[i], later // forensic
 		} else {
 			// 窗后：判定冻结，**不算 reflectSep**（省算力，最贵的穿墙求交）。仅守孤轨永 Real override：
 			//   配对源离开 → Coexist==0 → 立即纠回 Real，防冻结成 Mirror 的轨变孤轨后 N_r 算 0。
@@ -148,15 +216,107 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 					zap.Int("birth_x", t.birthX), zap.Int("birth_y", t.birthY),
 					zap.Float64("door_d", t.doorD))
 			}
-			if coexist == 0 {
+			if coexistOf[i] == 0 {
 				t.rt.ForceReal()
 			}
 			t.isRefl, t.fSep, t.fWallMargin, t.fRho = false, 0, 0, 0 // forensic 标冻结（不再喂几何）
 		}
+		if t.pathMs > 0 {
+			t.pathAccum *= math.Exp(-float64(nowMs-t.pathMs) / fusePathTauMs)
+		}
+		t.pathAccum += disp[i]
+		t.pathMs = nowMs
 		t.x, t.y, t.lastTick, t.lastMs, t.lastObs = o.X, o.Y, c.tick, nowMs, o
+	}
+
+	c.updateFuse(nowMs)
+	c.noteMultiPerson()
+}
+
+// noteMultiPerson 维护"多人证据"连续 tick 数（解合并 hysteresis）+ no-silent-caps LOG。
+// 单雷达见 ≥2 真人 = 本融合机制不覆盖的真多人；持续 fuseExitHystTick 才认（滤 realness 单帧 ghost 闪），
+// 并在转换沿 LOG 一次（B §7.2：机制不覆盖不静默）。
+func (c *TrackCensus) noteMultiPerson() {
+	dev := map[string]int{}
+	multi := false
+	for id, t := range c.tracks {
+		if t.lastTick == c.tick && t.lastObs.Online && t.rt.PReal() >= 0.5 {
+			dev[DevKey(id)]++
+			if dev[DevKey(id)] >= 2 {
+				multi = true
+			}
+		}
+	}
+	if multi {
+		c.multiPersonStrk++
+		if c.multiPersonStrk == fuseExitHystTick && !c.multiPersonLogd {
+			zap.L().Info("fusion_exit_multiperson",
+				zap.Int64("tick", c.tick),
+				zap.Int("hysteresis_ticks", fuseExitHystTick))
+			c.multiPersonLogd = true
+		}
+	} else {
+		c.multiPersonStrk = 0
+		c.multiPersonLogd = false
 	}
 }
 
+// fuseCandidate 触发/退出门：**恰 2 台 radar，每台仅 1 个在场真人 track**——唯一有风险场景
+// （屋内仅1人却被2雷达各报1轨数成2人）。返回该对 (a,b) 与 ok。
+//
+//	退出（ok=false）：在场真人 ≠2 / 同设备（镜像，realness 管）/ 任一设备 ≥2 真人（确有多人）。
+//	≥2人无独处风险→过数无害，不折叠也不算同步（省算）。按真人(PReal≥0.5)计数：1真人+1ghost 仍 1 人。
+func (c *TrackCensus) fuseCandidate() (a, b string, ok bool) {
+	var ids []string
+	for id, t := range c.tracks {
+		if t.lastTick == c.tick && t.lastObs.Online && t.rt.PReal() >= 0.5 {
+			ids = append(ids, id)
+			if len(ids) > 2 {
+				return "", "", false // >2 真人 → 确有多人，退出
+			}
+		}
+	}
+	if len(ids) != 2 || DevKey(ids[0]) == DevKey(ids[1]) {
+		return "", "", false
+	}
+	return ids[0], ids[1], true
+}
+
+// updateFuse 触发配置下累计那对 track 的**窗口路程**同步证据，锁定同人（仅供 Nr 折叠）。
+//
+//	多雷达帧交错：任一帧只有一台 fresh、另一台 coasted(单帧位移=0)，故比**5s 窗累计路程**(recentPath)
+//	而非单帧位移——同一人被两台看到，各自帧里积出的路程相近。
+//	都静止(max 路程<thresh)不喂证据 → 保持已锁定(人躺床两台都不动)。
+//	**锁定后不解锁**(一台退化/摔后冻轨 ≠ 两个人)——释放只靠 GC(退出触发配置 staleMs)。under-count FN-safe。
+func (c *TrackCensus) updateFuse(nowMs int64) {
+	a, b, ok := c.fuseCandidate()
+	if ok {
+		key := fusePairKey(a, b)
+		link := c.fuseLinks[key]
+		if link == nil {
+			link = &fuseLink{a: a, b: b}
+			if b < a {
+				link.a, link.b = b, a
+			}
+			c.fuseLinks[key] = link
+		}
+		mvA, mvB := c.tracks[a].recentPath(nowMs), c.tracks[b].recentPath(nowMs)
+		if mx := math.Max(mvA, mvB); mx >= fuseMoveThreshCm { // 有意义移动才喂同步证据
+			ag := 1 - math.Abs(mvA-mvB)/mx
+			link.agree = (1-fuseEMA)*link.agree + fuseEMA*ag
+			link.moves++
+			if link.moves >= fuseMinMoves && link.agree >= fuseAgreeThresh {
+				link.same = true
+			}
+		}
+		link.lastMs = nowMs
+	}
+	for k, l := range c.fuseLinks {
+		if nowMs-l.lastMs > fuseStaleMs {
+			delete(c.fuseLinks, k)
+		}
+	}
+}
 
 // Nr 房内真人数 = 本 tick 在场且 PReal≥0.5 的 track 数（realness 后验软阈；排 Mirror ghost）。
 //
@@ -166,11 +326,61 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 //	（belief 自持非 staleness 补丁，呼应 §32 删 TTL）。单 faller 续存已由 belief 自持、且其计不计入
 //	N_r 不改自身上报（≤1 人不折扣 / ≥55% 必报）。故本片只数在场，不在 census 层补续存窗。
 func (c *TrackCensus) Nr() int {
-	n := 0
-	for _, t := range c.tracks {
-		// lastObs.Online=false = 续算/lost track（① 时长外推，非真实观测）→ 不计人数（stillbox 续算与人数解耦）
+	// lastObs.Online=false = 续算/lost track（① 时长外推，非真实观测）→ 不计人数（stillbox 续算与人数解耦）
+	present := make(map[string]struct{}, len(c.tracks))
+	for id, t := range c.tracks {
 		if t.lastTick == c.tick && t.lastObs.Online && t.rt.PReal() >= 0.5 {
-			n++
+			present[id] = struct{}{}
+		}
+	}
+	n := len(present)
+	// 折叠 latched 同人对（两端都在场真人）→ 数减 1，不动 track/belief/fire。link.same 只在"恰2雷达各1真人"
+	// 配置下由 updateFuse 锁定，故 same 对必是干净的 2雷达1人。多人证据**持续** ≥hysteresis 才退出折叠
+	// （滤 realness 单帧 ghost 闪，B §7.2 解合并防抖）。2雷达1人 → 至多一对。
+	if c.multiPersonStrk < fuseExitHystTick {
+		for _, l := range c.fuseLinks {
+			if !l.same {
+				continue
+			}
+			if _, ok := present[l.a]; !ok {
+				continue
+			}
+			if _, ok := present[l.b]; !ok {
+				continue
+			}
+			n--
+			break
+		}
+	}
+	return n
+}
+
+// RescuableCount 可救援数 = 在场真人(present ∧ PReal≥0.5) 中**不在床**者，应用同人折叠（与 Nr 同口径）。
+//
+//	inBed[id] 由 engine 按每 track belief S 边缘峰值是否 SBed 判定后传入（census 不依赖 belief 包，
+//	只数计数）。躺床/睡着救不了摔倒者 → 不计入"能救人的人"。少算救援者 → C_FN↑ → 更激进 fire =
+//	严格 FN-safe。**仅 forensic**（当前 C_FN 不门控 fire，见 belief/decide.go 文件头；doc/cfn-rescuable-design.md）。
+func (c *TrackCensus) RescuableCount(inBed map[string]bool) int {
+	present := make(map[string]struct{}, len(c.tracks))
+	for id, t := range c.tracks {
+		if t.lastTick == c.tick && t.lastObs.Online && t.rt.PReal() >= 0.5 && !inBed[id] {
+			present[id] = struct{}{}
+		}
+	}
+	n := len(present)
+	if c.multiPersonStrk < fuseExitHystTick {
+		for _, l := range c.fuseLinks {
+			if !l.same {
+				continue
+			}
+			if _, ok := present[l.a]; !ok {
+				continue
+			}
+			if _, ok := present[l.b]; !ok {
+				continue
+			}
+			n--
+			break
 		}
 	}
 	return n

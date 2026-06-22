@@ -71,16 +71,17 @@ func (p decideParams) cFN(rc RiskContext) float64 {
 
 // Decision 一帧裁决结果 + forensic（probe/sdl）。
 type Decision struct {
-	Fire         bool    // 持续 ≥ T_hold 后的最终触发
-	InstFire     bool    // 本帧瞬时判据满足（未含持续）
-	Band         string  // 落在哪档：report(≥55) / no(≤45) / tie(45-55可判) / indeterminate(高度不可判)
-	PFallen      float64 // P^F_t
-	PeopleCount  int     // N_r（人数单源 = TrackCensus.Nr()，已排 ghost；forensic + 拍法 A 守门校验）
-	CFN          float64 // C_FN(risk)（仅 tie 档参与）
-	Margin       float64 // P^F − 报阈（诊断：>0 越确定该报）
-	Lambda       float64 // Λ_t 似然比
-	Identifiable bool    // Λ_t > 阈 = 可判（§26 起 **参与裁决**：高度不可判默认不报）
-	FireSinceMs  int64   // 瞬时条件起始（持续计时；0=未武装）
+	Fire           bool    // 持续 ≥ T_hold 后的最终触发
+	InstFire       bool    // 本帧瞬时判据满足（未含持续）
+	Band           string  // 落在哪档：report(≥55) / no(≤45) / tie(45-55可判) / indeterminate(高度不可判)
+	PFallen        float64 // P^F_t
+	PeopleCount    int     // N_r（人数单源 = TrackCensus.Nr()，已排 ghost；forensic + 拍法 A 守门校验）
+	RescuableCount int     // 可救援数 = present-real ∧ S≠Bed（folded）；forensic，当前不门控 fire（doc/cfn-rescuable-design.md）
+	CFN            float64 // C_FN(risk)（仅 tie 档参与）
+	Margin         float64 // P^F − 报阈（诊断：>0 越确定该报）
+	Lambda         float64 // Λ_t 似然比
+	Identifiable   bool    // Λ_t > 阈 = 可判（§26 起 **参与裁决**：高度不可判默认不报）
+	FireSinceMs    int64   // 瞬时条件起始（持续计时；0=未武装）
 }
 
 // fire 单阈（form-anchor，留 oracle）。状态转移：SFallen 后验达阈即报，不受 P^F 区间限制。
@@ -128,6 +129,22 @@ func (d *Decider) Step(nowMs int64, pFallen, lambda float64, rc RiskContext) Dec
 		Identifiable: identifiable,
 		FireSinceMs:  d.fireSinceMs,
 	}
+}
+
+// ArgmaxIsBed 本 track 的 S 9 态边缘后验峰值是否落在 SBed（=躺床）。
+//
+//	可救援数（doc/cfn-rescuable-design.md）与 sleepad 吸纳的"radar 在床"判定**共用此判据**（单源，防两套 drift）。
+func ArgmaxIsBed(sMarg []float64) bool {
+	if len(sMarg) == 0 {
+		return false
+	}
+	best, bi := sMarg[0], 0
+	for i, v := range sMarg {
+		if v > best {
+			best, bi = v, i
+		}
+	}
+	return State(bi) == SBed
 }
 
 // ComputeLambda 似然比 Λ_t = Σ_bmask ΨΦ(F,bmask) / Σ_bmask ΨΦ(AtBed,bmask)。

@@ -136,14 +136,6 @@ func NewRoom(geom []belief.BedGeom, nb int) *Room {
 // 未注入的设备/合成 track 走 defGeom（covers=1=改造前行为）。须在任何 Tick 前调用。
 func (r *Room) SetDeviceGeom(uid4 string, geom []belief.BedGeom) { r.geoms[uid4] = geom }
 
-// devKey logicID → uid_last4（makeLogicID 前缀，per-device 床耦合键）。
-func devKey(logicID string) string {
-	if len(logicID) >= 4 {
-		return logicID[:4]
-	}
-	return logicID
-}
-
 // geomOf uid4 对应几何，无注入→defGeom。
 func (r *Room) geomOf(uid4 string) []belief.BedGeom {
 	if g := r.geoms[uid4]; g != nil {
@@ -186,7 +178,7 @@ func deviceRadarInBed(uid4 string, fi adapter.FrameInput, j int) bool {
 		return false
 	}
 	for _, t := range fi.Tracks {
-		if devKey(t.LogicID) == uid4 && t.FwAreaID == fi.BedAreaIDs[j] {
+		if adapter.DevKey(t.LogicID) == uid4 && t.FwAreaID == fi.BedAreaIDs[j] {
 			return true
 		}
 	}
@@ -276,7 +268,7 @@ func (r *Room) eventKappaDev(uid4 string, cp *belief.Coupling, geom []belief.Bed
 func (r *Room) updateKappa(fi adapter.FrameInput) {
 	seen := map[string]bool{}
 	for _, t := range fi.Tracks {
-		uid4 := devKey(t.LogicID)
+		uid4 := adapter.DevKey(t.LogicID)
 		if seen[uid4] {
 			continue
 		}
@@ -348,7 +340,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 			r.filters[ts.LogicID], r.deciders[ts.LogicID], r.floorGuards[ts.LogicID], r.escalators[ts.LogicID] = f, dec, fg, esc
 		}
 
-		cp, em := r.byDev(devKey(ts.LogicID)) // per-(设备×床) 耦合+发射：covers 从 MM（D523 covers=0 跟床解耦）
+		cp, em := r.byDev(adapter.DevKey(ts.LogicID)) // per-(设备×床) 耦合+发射：covers 从 MM（D523 covers=0 跟床解耦）
 
 		var logPsi, logPhi belief.JointVector
 		var obs belief.Observation
@@ -450,7 +442,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		//   ghost fall 可能是真人摔的镜像，宁报不漏。realness 的影响只在 N_r（→ C_FN 折扣，帮 fire）。
 		eligible := true
 		results = append(results, trackResult{d: d, pF: pF, lam: lam, eligible: eligible, f: f, cp: cp})
-		devGeom := r.geomOf(devKey(ts.LogicID))
+		devGeom := r.geomOf(adapter.DevKey(ts.LogicID))
 		covers := make([]float64, len(devGeom))
 		for i := range devGeom {
 			covers[i] = devGeom[i].Covers
@@ -519,6 +511,15 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	fr.LostReal, fr.GainedReal = lost, gained
 	fr.LostExited = lostExited
 	fr.PresentCount, fr.Tracks = presentCount, forensic
+	// 可救援数（forensic，不门控 fire）：每 track 的 S 峰值是否 SBed（共用 belief.ArgmaxIsBed），
+	//   躺床者不计 → census 折叠（A 范围 RescuableCount，同人对两端都不在床才减）。doc/cfn-rescuable-design.md。
+	inBed := make(map[string]bool, len(forensic))
+	for _, tf := range forensic {
+		if belief.ArgmaxIsBed(tf.SMarg) {
+			inBed[tf.LogicID] = true
+		}
+	}
+	fr.Decision.RescuableCount = r.census.RescuableCount(inBed)
 	// belief 就地复位（置于 aggregate 后：本帧 forensic 仍显发火态，下帧起从 prior 热机）。
 	//   只复位 filter(S/B 信念)+decider(发火计时)；census/escalator(repeat 前科)保留。
 	for _, id := range firedLogicIDs {

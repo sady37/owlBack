@@ -133,9 +133,10 @@ var DefaultParamSets = [3]ParamSet{
 // ========================================================================
 
 type Engine struct {
-	mu           sync.RWMutex
-	rooms        map[string]*TrackManager         // roomID → TrackManager
-	grids        map[string]*RoomGrid             // roomID → Grid
+	mu            sync.RWMutex
+	rooms         map[string]*TrackManager         // roomID → TrackManager
+	radarPeople   map[string]int                   // roomID → census 折叠后 radar 真人数（belief 层经 SetRoomRadarPeople 注入）；RealPeopleInRoom 优先用，未注入回退 NonGhostTrackCount
+	grids         map[string]*RoomGrid             // roomID → Grid
 	deviceMounts map[string]radarutils.RadarMount // deviceAddr(/128) → 该 radar 安装参数（坐标转换用）；多雷达房每台一份
 	deviceRoom   map[string]string                // deviceAddr → roomID (sensor 唯一物理寻址)
 	deviceBeds   map[string][]radarutils.Rect     // deviceAddr(/128) → 该设备**自己 canvas** 的 bed 矩形（MM covers 只用本台 layout，不跨系借别台床）
@@ -224,6 +225,7 @@ type RuntimeConfig struct {
 func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 	return &Engine{
 		rooms:               make(map[string]*TrackManager),
+		radarPeople:         make(map[string]int),
 		grids:               make(map[string]*RoomGrid),
 		deviceMounts:        make(map[string]radarutils.RadarMount),
 		deviceRoom:          make(map[string]string),
@@ -338,6 +340,48 @@ func (e *Engine) RealPeopleInRoom(roomID string) int {
 	}
 	e.mu.RLock()
 	var tm *TrackManager
+	matchedKey := roomID
+	if t, ok := e.rooms[roomID]; ok {
+		tm = t
+	} else {
+		for k, t := range e.rooms {
+			if kp, perr := netip.ParsePrefix(k); perr == nil && kp == want {
+				tm = t
+				matchedKey = k
+				break
+			}
+		}
+	}
+	rp, rpOK := e.radarPeople[matchedKey]
+	e.mu.RUnlock()
+	if tm == nil {
+		return -1
+	}
+	// P1 占用人数：cutover 后用 belief 层 census 的折叠真人数（PReal 排 ghost + 同房跨雷达同人折叠，
+	//   2雷达1人→1；DBN 是权威，比 Verdict 版 NonGhostTrackCount 更准——后者会多算镜像 ghost）。
+	//   belief 未注入（未 Tick / 非 cutover）→ 回退 NonGhostTrackCount（向后兼容）。契约 §2 P1。
+	if rpOK {
+		return rp
+	}
+	return tm.NonGhostTrackCount()
+}
+
+// SetRoomRadarPeople belief 层每 tick 注入该房 census 折叠后的 radar 真人数（RealPeopleInRoom P1 用）。
+func (e *Engine) SetRoomRadarPeople(roomID string, n int) {
+	e.mu.Lock()
+	e.radarPeople[roomID] = n
+	e.mu.Unlock()
+}
+
+// SnapshotSleepads 按 roomID 取本房在场 sleepad 占用身份快照（forensic + 后续吸纳；只读身份不进裁决）。
+// roomID netip 归一查找与 RealPeopleInRoom 同（独立内联，不改 A 的占用函数体，规则 #1.3 协调）。
+func (e *Engine) SnapshotSleepads(roomID string, nowMs int64) []SleepadStatus {
+	want, err := netip.ParsePrefix(roomID)
+	if err != nil {
+		return nil
+	}
+	e.mu.RLock()
+	var tm *TrackManager
 	if t, ok := e.rooms[roomID]; ok {
 		tm = t
 	} else {
@@ -350,9 +394,9 @@ func (e *Engine) RealPeopleInRoom(roomID string) int {
 	}
 	e.mu.RUnlock()
 	if tm == nil {
-		return -1
+		return nil
 	}
-	return tm.NonGhostTrackCount()
+	return tm.SnapshotSleepads(nowMs)
 }
 
 // RadarBedReachCount 数本 radar 边界内有几张床——**只用该 radar 自己 canvas 画的床**(e.deviceBeds[addr])，

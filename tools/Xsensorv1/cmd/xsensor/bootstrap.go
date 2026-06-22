@@ -206,6 +206,33 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 	}
 	srows.Close()
 
+	// sleepad 设备 addr（/128，per room）→ 静态 MM ObjSleepad（onbed=sleepad/128∈bed/96 前缀确定绑定）。
+	sleepadAddrsByRoom := map[string][]netip.Addr{}
+	sarows, err := db.QueryContext(ctx, `
+		SELECT r.room_id::text, host(d.device_addr)::text
+		FROM rooms r
+		JOIN devices d                ON r.room_id >>= d.device_addr
+		JOIN device_factory_meta dfm  ON dfm.device_uid = d.device_uid
+		WHERE dfm.device_type::text = 'Sleepad'`)
+	if err != nil {
+		return 0, err
+	}
+	for sarows.Next() {
+		var rid, addr string
+		if sarows.Scan(&rid, &addr) == nil {
+			if a, perr := netip.ParseAddr(addr); perr == nil {
+				sleepadAddrsByRoom[rid] = append(sleepadAddrsByRoom[rid], a)
+			}
+		}
+	}
+	sarows.Close()
+
+	// DB beds /96 prefix（静态 MM onbed/covers 用；mirror SpatialCache bed 装载，唯一 DB 只读归口）。
+	bedsByRoom, err := roomengine.LoadRoomBeds(ctx, db, logger)
+	if err != nil {
+		return 0, err
+	}
+
 	// 每房雷达 device uid（hex）→ 取固件活体 declare_area 算床区 area_id；并存 addr→uid（per-device covers 注入用）。
 	radarUIDsByRoom := map[string][]string{}
 	radarUIDByAddr := map[string]map[string]string{} // roomID → 归一 addr → device_uid（MM per-device geom keying）
@@ -266,12 +293,22 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 		// 让 TrackManager.fwIsBed（membership）与 DBN bedHitMask（per-bed）同源。
 		var fwBeds []int
 		if hasLayout {
+			skipRoom := false
 			for _, uid := range radarUIDsByRoom[roomID] {
 				ids, ferr := dac.bedAreaIDs(ctx, uid)
 				if ferr != nil {
-					return 0, fmt.Errorf("room %s radar %s declare-area: %w", roomID, uid, ferr)
+					// declare-area 拉不到（设备离线/活体读超时）→ 跳过该房注册，**不 fatal 整引擎**：
+					//   一台离线设备不该拖垮整 sensor。⚠️ 跳过 = 该房本周期无 fall 监控 = 静默缺口 →
+					//   Error 级响亮 LOG（no-silent-caps）。终态应 retry/canvas-fallback，而非整房失监。
+					logger.Error("declare_area 拉取失败 → 跳过该房注册（该房本周期无监控=FN 缺口；终态须 retry/canvas-fallback）",
+						zap.String("room", roomID), zap.String("radar", uid), zap.Error(ferr))
+					skipRoom = true
+					break
 				}
 				fwBeds = append(fwBeds, ids...)
+			}
+			if skipRoom {
+				continue // 跳过本房，继续注册其余房（registerAllRooms 不再因单设备离线整体 fatal）
 			}
 			cfg.BedAreaIDs = fwBeds
 			if len(fwBeds) == 0 {
@@ -340,6 +377,20 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 			router.roomType[roomID] = cfg.RoomType // UD timer per-room deadline（Bathroom=1→D=20min，余 UD=90min）
 			// unitKey = suiteID（SQL 已 network() zero 主机位 → 同 /80 房共享；public bathroom=自身/128 独立）。
 			router.roomUnit[roomID] = cfg.SuiteID
+			// 静态 MM（samebed prior 权威，吸纳读）：room/88 + DB beds/96 + radar/sleepad /128，covers=RadarBedReachCount。
+			//   在 RegisterRoom 之后建（RadarBedReachCount 需 deviceBeds 已注入）。prefix 空间算 samebed→化掉床 index（§8.2）。
+			if roomPfx, perr := netip.ParsePrefix(roomID); perr == nil {
+				var radarAddrs []netip.Addr
+				for a := range radarUIDByAddr[roomID] {
+					if pa, e := netip.ParseAddr(a); e == nil {
+						radarAddrs = append(radarAddrs, pa)
+					}
+				}
+				if mm := roomengine.BuildRoomMM(roomPfx, bedsByRoom[roomID], radarAddrs,
+					sleepadAddrsByRoom[roomID], eng.RadarBedReachCount); mm != nil {
+					router.mm[roomID] = mm
+				}
+			}
 		}
 		count++
 	}

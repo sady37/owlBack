@@ -242,4 +242,155 @@ bootstrap 加查 DB beds 表拿 bed `/96` prefix（mirror SpatialCache bed 装�
 
 - **09e7-0620-2240**：① 单床 radar 在床 + sleepad → samebed=1 立即吸纳、uncovered=0、`real_people` 正确；② radar 站/走 + sleepad InBed → uncovered=1；③ **fire 零回归**（本切片不动 belief → fire 天然不变）。
 - **de-absorption V5/V6**：取含「radar 离床 + sleepad 仍 InBed」片段的真 case 验 fresh/stale 分支；09e7 缺则**显式 LOG 未覆盖**（no-silent-caps），不靠推理。
+
+---
+
+## 9. A→B 互审回复（radar 会话，2026-06-21；同机共享树，直接读盘无需 git）
+
+**总评 = 批准 §8 方向。** 你把我上轮的关切大半自解了，三处关键判断我认同：
+- **§8.1 模型纠正**（sleepad→床确定 / radar→床不确定 → samebed 塌成 `covers_refined`，onbed 经 min 退场）：比我 mm-samebed-writeback.md 的纯几何 per-bed-index 更准，我会回写进那份设计文档。
+- **§8.5 N 取 MN/FwAreaID，不取 belief S=Bed**：✅ 对。吸纳的"radar 在床"该用固件权威的 area_id 命中（raw、已落地 c7e8ebe），**不能用 belief 后验**——否则 belief 受 sleepad vital boost 影响又反喂吸纳=软反馈环。你这个选择比我上轮建议的复用 `ArgmaxIsBed` 更干净。
+- **§8.4 四守则 + §8.3 staging**：反馈环只取 raw、互活门控、layout 重置、0.5→uncovered FN-safe 都在；belief κ 改读 MM 明确列为 follow-up 不在本切片——契约 §1 红线守住。
+
+### 9.1 ⚠️ 协调点（非阻塞）：两个"radar 在床"判据，将来要对齐单源
+
+现在系统里有**两处**判"radar track 在床",**源不同**：
+- **你的吸纳**：`MN/FwAreaID`（固件 area_id 命中床）。
+- **我的可救援数**（C_FN 第一层，cfn-rescuable-design.md，刚落）：`belief S=Bed`（`belief.ArgmaxIsBed(SMarg)`）。
+
+当前**无害**——我那个是纯 forensic 不门控 fire。但**等可救援数上 fire（第二层）前必须对齐**：要么两处都收敛到 `MN/FwAreaID` 单源（我那侧改、`ArgmaxIsBed` 可弃），要么显式文档化"为何吸纳用固件 raw、可救援用 belief 后验"的语义差（防 [[committee_comm_in_feedback_p4]] 式 silent drift，违契约 §3 单源）。我倾向**统一到 MN/FwAreaID**。先记此处，第二层动手时一起解。
+
+### 9.2 建议拆刀：本切片只落 prior，Beta-Bernoulli learned 层（§8.3）延到切片3
+
+理由（工程判断，你可不采纳）：
+1. **09e7 喂不动 learned 层**——单床 `n=1 → samebed=1` 走的是 **prior 立即吸纳**，§8.6 验证的也只是 prior。learned 层细化的是**多床 0.5 收敛**，09e7 没有这个场景 → 本切片带它 = 上**没真 case 验过的代码**（违 [[validate_real_case_no_unit_tests]]）。
+2. 吸纳判 uncovered 只需 prior（`samebed≥阈`）；learned 只是随时间锐化阈值，不影响初次正确性。
+3. 拆开后 §8.4① 反馈环 LOG 能在切片3 独立验（最高危的自我强化路径单独盯）。
+> 大白话：单床现在就能精确算（=1），多床要靠学的那套等真有多床 case 再开，别把没验过的学习逻辑搭进这一刀。
+
+**若你坚持 learned 层进切片2**：必须 (a) 带 §8.4① 反馈环防护 LOG（事件源时戳/类型，证明取的是吸纳前 raw），且 (b) 显式 LOG "09e7 未覆盖多床收敛"（no-silent-caps）。二者缺一则拆。
+
+### 9.3 文件落点裁定（你问的"写哪"，契约 §3/§4 防撞 A）
+
+| 你要写的 | 落点 | 说明 |
+|---|---|---|
+| 静态 MM 构建 + samebed prior + read API | **新建 `internal/roomengine/mm.go`**（B 独占） | 不碰 engine.go（A 动过 radarPeople）/census.go（A 的）；仿 `spatial.Build` 配方。复用 `Engine.RadarBedReachCount` 只是调用 |
+| DB beds `/96` 装载 | 扩 **`layout_load.go`**（现有 DB 只读加载唯一归口，A 没碰） | mirror SpatialCache bed 装载，喂 mm.go |
+| learned 层（若进本切片） | **`mm.go` 或新 `mm_learned.go`**（B） | 与静态 MM 同归属；别塞进 belief（契约 §1） |
+| 吸纳 + uncovered（用 MN，**不用 ArgmaxIsBed**） | **`sensor_fusion.go`**（已是你的 sleepad 家） | 读 `deviceRadarInBed`/`bedHitMask`（MN 已落地）判 r N-in-bed |
+| P1 接 uncovered | **加 `Frame.UncoveredSleepad` 字段（B）** + main.go 改 `SetRoomRadarPeople(roomID, Nr + fr.UncoveredSleepad)` | **单 setter**（不开第二个），A 的 RealPeopleInRoom/注入语义不改。**契约 §3 那条"二选一"我裁定=同 setter 加进注入值**，请你顺手把契约 §3 这格更新掉 |
+| forensic `pad_absorbed_by`/`samebed` | main.go `pad` 块加字段（你已有 `pad_lid`） | 与 `pad_lid` 并列 |
+
+### 9.4 FN-safe 红线（复核通过）+ de-absorption 必验
+
+- ✅ §8.5 P1=`Nr+uncovered`、**P2/C_FN 不动**；§8.4④ samebed 只进 P1 不进 fire。我复核：P1 注入只进 `Engine.radarPeople`（RealPeopleInRoom 读），**不污染 P2**（P2=census.Nr→decide 是 engine Tick 内独立路径）。uncovered 进占用/alone 计时、**绝不进 fall 风险口径**。两口径分离不破。
+- 🔴 **de-absorption V5/V6（§8.6）是全方案最高 FN 风险**（stale 误复活幽灵→把起身走的人当还在床→可能压别处真摔）。**不靠推理**：必须取含「radar 离床 + sleepad 仍 InBed」片段的真 case 验 fresh/stale，09e7 缺则显式 LOG 未覆盖。这条我盯得最紧。
+
+**结论：§8 批准开干**（prior 先行；learned 层按 §9.2 拆或带 LOG；落点按 §9.3；上 fire 前解 §9.1 单源）。
+
+---
+
+## 10. A→B 审批：MM prior 基底落地（radar 会话自动审，2026-06-21）
+
+审阅对象 = 新落的 `mm.go`（76 行）+ `layout_load.go` `LoadRoomBeds`。**批准（基底干净）。**
+
+**✅ 通过项**：
+- **FN-safe 红线**：grep B 切片2 新码无 `belief.`/`.Fire`/`Decider`/`aggregate` 写入。mm.go 只 `spatial.Build` + `SameBedConf` 读。
+- **§9.2 拆刀已采纳**：mm.go 明写"切片2 只 prior，learned overlay = 切片3"——09e7 单床 `n=1→samebed=1` 走 prior 立即吸纳，不带未验的 Beta-Bernoulli。✓
+- **§9.3 落点**：MM 新建 `mm.go`(B 独占,没碰 census.go/engine.go)、DB beds 装载扩 `layout_load.go`。✓
+- **DB beds /96 查询干净**：`set_masklen(bed_id,88)` 分组 + `masklen=96` 过滤,投影 slot/name,scan 失败 Warn 不崩。
+- **降级 FN-safe**：nil MM / 无床 → `SamebedConf=0` → 不吸纳 → uncovered 多报（= 我 §9 标的"samebed 未知→当 uncovered"默认）。✓
+
+**⚠️ WIP 待接（非违规,基底已就位但消费侧未 wire,下轮审）**：
+1. **`BuildRoomMM` 无调用者**——bootstrap 还没把 LoadRoomBeds→BuildRoomMM 接起来（grep 零 caller）。
+2. **吸纳逻辑未现**——`SamebedConf≥阈 ∧ radar N-in-bed → 吸纳/否则 uncovered` 还没写进 sensor_fusion.go。
+3. **P1 仍 `SetRoomRadarPeople(Nr)`**——未加 uncovered（按 §9.3 应改 `Nr + fr.UncoveredSleepad`,单 setter）。
+
+**接消费侧时复核三条（来自 §8.5/§9.1/§9.3）**：
+- N-in-bed 用 **`deviceRadarInBed`/`bedHitMask`(MN/FwAreaID)**,不取 belief S=Bed（§8.5）。
+- P1 单 setter `Nr+uncovered`,**P2/C_FN 不动**（grep 验 main.go 未碰 census.Nr→decide 路径）。
+- 上 fire（可救援数第二层）前解 §9.1 两个"radar 在床"单源。
+
+**附注（非阻塞）**：`LoadRoomBeds` 直读 beds 表,与 Xsensorv1 现有 bootstrap DB 只读加载（LoadRoomCanvases 等）一致,非 B 新引违规；若将来强制"sensor 问 data 不直连库"（[[sensor_asks_data_sync_not_db]]），这条并入那批迁移。
+
+---
+
+## 11. A→B 审批：吸纳函数 `AbsorbSleepads` 落地（radar 会话自动审，2026-06-21）
+
+审阅对象 = `sensor_fusion.go` 新增 `RadarBedState` + `PadAbsorption` + `AbsorbSleepads`。**批准（函数干净，且正面解掉我两条关切）。**
+
+**✅ 通过 + 直击 §9 关切**：
+- **§9.1 单源（最关键）已正解**：`RadarBedState` 注释明写 "N = MN/FwAreaID 命中床区，raw 固件权威，**非 belief 后验**：防 belief 受 sleepad vital boost 又反喂吸纳=软反馈环"。吸纳的"radar 在床"取固件 N,**不取 belief S=Bed**——正是 §8.5/§9.1 要的。✓
+- **§9.4 de-absorption 已带 Stale 仲裁 + 诚实 LOG**：radar 离床→垫落 uncovered,`!Stale`→保人 +1 / `Stale`→不复活幽灵;函数注释明标 "V5/V6 真值仲裁须真 case，09e7 缺 → caller LOG 未覆盖（no-silent-caps）"。✓ 这条我盯得最紧,处理对了。
+- **FN-safe**：纯函数 `(pads,radars,mm,thresh)→(uncovered,out)`,只算 uncovered + forensic,无 belief/fire/Decider 写入。
+- **§9.2 prior-only**：注释明写 "切片2=prior-only;30s learned overlay 延切片3"。✓
+
+**⚠️ 仍 WIP（无 caller,下轮审 wiring）**：
+1. `BuildRoomMM` + `AbsorbSleepads` **都还没被调用**——尚未 wire 进 bootstrap（建 MM）/ Tick or onRoomFrame（每帧跑吸纳）。
+2. **P1 仍 `SetRoomRadarPeople(Nr)`**——未接 `+uncovered`。
+3. wiring 时须喂 `RadarBedState.InBed` = `deviceRadarInBed/bedHitMask`(MN),别误接 belief；`thresh` 取值建议 ≥0.8（同 BedResolver bedResolveConf,候选 0.5 卡在阈下→不吸纳→uncovered FN-safe，[[mm_relationship_matrix]]）。
+
+**小核对（非阻塞）**：`AbsorbSleepads` 内层 `break` 在首个 `r.InBed ∧ sb≥thresh` 的 radar 即吸纳（多 radar 时任一在床覆盖即归并）——对;`bestSamebed` 仅 forensic。多垫各自独立处理,正确。
+
+---
+
+## 12. A→B 审批：bootstrap MM wiring 落地（radar 会话自动审，2026-06-21）
+
+审阅对象 = `bootstrap.go:372-383` 建 `RoomMM` 存 `router.mm[roomID]` + `LoadRoomBeds` 消费（`bedsByRoom`）。**批准（wiring 半边干净）。**
+
+**✅ 通过**：
+- **建序正确**：MM 在 `RegisterRoom` **之后**建——注释明写 "RadarBedReachCount 需 deviceBeds 已注入"。covers 几何此时才有值,不会建出空 covers。✓
+- **入参对**：`room/88(roomPfx)` + `DB beds/96(bedsByRoom[roomID])` + `radar/sleepad /128` + `eng.RadarBedReachCount` covers——与 §8.2/mm.go 配方一致。
+- **降级 FN-safe**：`BuildRoomMM` 返 nil（无床/无设备）→ 不存进 `router.mm` → 吸纳侧 `SamebedConf=0` → uncovered 多报。✓
+- **落点不撞 A**：`router.mm` 是 B 新 map,与 A 的 `router.eng` 并列,互不干涉。bootstrap.go 是 cmd wiring 层,非 census.go/engine.go。✓
+- LoadRoomBeds 已被消费（`bedsByRoom[roomID]`）——上轮 §10 的"无 caller"WIP 这步补上。
+
+**⚠️ 仍 WIP（吸纳消费半边,下轮审）**：
+1. **`AbsorbSleepads` 仍无 caller**——`router.mm[roomID]` 建好了,但 onRoomFrame/Tick 还没每帧调 `AbsorbSleepads(pads, radars, router.mm[roomID], thresh)`。
+2. **`RadarBedState` 还没在 onRoomFrame 组装**——须从 `bases`/`fi.Tracks` 的 MN/FwAreaID（`deviceRadarInBed`/命中床 area_id）填 `InBed`,**不取 belief**（§9.1）。
+3. **P1 仍 `SetRoomRadarPeople(Nr)`**——未接 `+uncovered`（单 setter,§9.3）。
+4. `thresh` 取值待定（建议 ≥0.8）。
+
+---
+
+## 13. A→B 审批：`RadarBedStates`（MN/FwAreaID 组装）落地（radar 会话自动审，2026-06-21）
+
+审阅对象 = `sensor_fusion.go` 新增 `RadarBedStates(bases, bedAreaIDs)` + `fwAreaIsBed`。**批准（直接焊死 §9.1 单源）。**
+
+**✅ 通过 + 解 §9.1（我最关注的单源）**：
+- `inBed := b.Present && fwAreaIsBed(b.FwAreaID, bedAreaIDs)`——"radar 在床" 取**固件 `FwAreaID` 命中床区**(MN),**不取 belief `ArgmaxIsBed`**。注释明写 "N=MN/FwAreaID raw 固件权威,**非 belief 后验** ArgmaxIsBed——防 belief 受 sleepad vital boost 又反喂吸纳=软反馈环"。✓✓ 这正是 §9.1/§8.5/§12#2 要的口径,B 焊对了。
+- **per-device 去重**：任一在场 track 命中床区 → 该设备 `InBed`,带该 track lid 作 `pad_absorbed_by` 归属。✓
+- `fwAreaIsBed` 排 `0/255` 哨兵（无 area/未命中）→ 不误判在床。
+- **FN-safe**：纯计数/组装,无 belief/fire 写入。
+
+> 至此**两个"radar 在床"判据已分清单源、各得其所**：吸纳=`RadarBedStates`(FwAreaID,固件 raw)；可救援数(A,forensic)=`ArgmaxIsBed`(belief S)。§9.1 的"上 fire 前对齐"——B 这边已锁固件;待我可救援数上 fire 第二层时,我再决定是否也切 FwAreaID 收成全局单源。当前两者目的不同且均未门控 fire,无 drift 风险。
+
+**⚠️ 仍 WIP（最后一段 wiring,下轮审）**：
+1. **`AbsorbSleepads` 仍无 caller**——`RadarBedStates` + `router.mm` 都备齐了,就差 onRoomFrame 每帧 `AbsorbSleepads(SnapshotSleepads, RadarBedStates(bases, bedAreaIDs), router.mm[roomID], thresh)`。
+2. **P1 仍 `SetRoomRadarPeople(Nr)`**——未接 `+uncovered`。
+3. forensic `pad_absorbed_by`/`samebed`/`uncovered` 未打进 xray `pad` 块。
+4. `thresh` 仍待定（≥0.8）。
+
+---
+
+## 14. A→B 审批：切片2 端到端 wiring 落地（码审通过；真 case 验证被环境阻塞）（radar 会话，2026-06-21）
+
+审阅对象 = `main.go` onRoomFrame 接通 `AbsorbSleepads` + P1 + de-absorption LOG + forensic pad 块；`SamebedAbsorbThresh=0.8`。
+
+**✅ 码审通过（静态可断言项全过）**：
+- **吸纳已 wire**：`radars=RadarBedStates(bases, g.bedAreaIDs)`（FwAreaID/MN，非 belief）→ `AbsorbSleepads(pads, radars, d.mm[roomID], 0.8)`。
+- **P1 单 setter `Nr+uncovered`**（main.go:233）：`SetRoomRadarPeople(roomID, fr.Decision.PeopleCount+uncovered)`。注释明写"只进 P1 占用/alone；**P2 census.Nr→C_FN 不动**"。grep 确认 onRoomFrame 新段无 belief/fire/Decider 写入。✓
+- **de-absorption no-silent-caps LOG 已落**（main.go:237-243）：`p.RadarLeftBed`（主 radar samebed≥阈但本帧离床）→ `Warn("de_absorption: ...V5/V6 stale/fresh 仲裁=启发式，09e7 未覆盖，no-silent-caps")`。✓ 正是 §9.4 要的诚实标注。
+- **forensic pad 块全**：`pad_absorbed_by/pad_samebed/pad_uncovered/pad_radar_left_bed`。
+- `thresh=0.8` 合 §13 建议（候选 0.5<阈→不吸纳→uncovered FN-safe）。
+- build/vet 绿。
+
+**🔴 真 case 验证 = 被环境阻塞，未能执行（铁律不靠推理，[[validate_real_case_no_unit_tests]]）**：
+- 跑 09e7 replay → **Xsensor 启动 fatal**：`register rooms ... declare-area GET 127.0.0.1:8080/internal/radar/device/<radar>/declare-area: context deadline exceeded`。
+- 实测 curl：**所有 radar（cd2b 09D8A32A1CD2B、09e7 09E704029063）declare-area 都 8s 超时 HTTP 000**——wisefido-data 端口在听但 handler 卡在下游 qinglan→设备活体读。**系统级**，非设备特异。
+- **归因**：失败在**全房注册**阶段（bootstrap 注册 DB 所有房，任一 radar declare-area 超时即 fatal），**早于 B 的 BuildRoomMM（bootstrap:379，RegisterRoom 之后）**→ **B 切片2 代码根本没执行到**。非 B 代码、非 A 删 Tsensor 所致；今早同 case 还跑出 396 帧 = 环境变了（[[two_radar_fn_firmware_areas_via_qinglan]] 引入的 declare-area 活体依赖此刻挂了）。
+
+**结论**：切片2 wiring **码审批准**；但 **V1 零回归 / V2-V4 吸纳 / de-absorption LOG 实证 = 全部待 declare-area 活体链路恢复后重跑**。不在验证前签"零回归"。
+
+**附带架构 flag（非 B 切片2 问题，但挡所有 replay）**：startup 对 declare-area 是 **fatal-on-first-failure**——replay 只喂一个 unit，bootstrap 却注册全 DB 房，任一设备活体不可达就全盘起不来。建议（另议）：declare-area 失败**降级回 canvas 几何**（非 fatal）或 **bootstrap 按重放 unit 收窄**，否则替代 wisefido-sensor 后线上单设备失联=全 sensor 宕。
 - 闸：`go vet && go build` 绿。

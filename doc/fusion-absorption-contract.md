@@ -60,7 +60,7 @@ people-count 是**两条独立路径**，radar 折叠对两条都适用，sleepa
 | `adapter.SleepadFrame.LogicID`（新增字段） | **B 加** | A 只读不重定义（规则 #1.3） |
 | `census.go` 函数 | A 改 `Nr()` + 新增"跨设备同人折叠"；B 若加 sleepad-as-source 走**不同函数** | 不改对方函数体 |
 | `engine.TrackForensic` 新字段 | 各加各的，字段名前缀区分（A:`fuse_*` / B:`pad_*`） | 不删对方字段 |
-| `Engine.radarPeople` / `SetRoomRadarPeople`（engine.go，A 加） | **A 加**（P1 注入 census 折叠数） | B 加 uncovered-sleepad **不改 A 的注入值语义**：B 在 belief 层把 sleepad 加进注入值（`SetRoomRadarPeople(roomID, Nr + uncoveredSleepad)`），或开**独立** setter，二选一在此登记后再写 |
+| `Engine.radarPeople` / `SetRoomRadarPeople`（engine.go，A 加） | **A 加**（P1 注入 census 折叠数） | **A 裁定（§9.3）= 同 setter 加进注入值**（不开第二个 setter）：B 在 main.go `onRoomFrame` 改 `SetRoomRadarPeople(roomID, Nr + uncoveredSleepad)`，A 的注入值语义/`RealPeopleInRoom` 读侧不改。uncovered 由 B 的 `sensor_fusion.go` 吸纳算出（读 MN/FwAreaID + mm.go samebed prior） |
 
 **共享结构体改动 = 单独最小 commit 先 push**，让对方 `git pull --rebase --autostash` 平滑接（[[commit_fast_one_chain_pull_first]]）。
 

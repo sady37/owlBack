@@ -3,6 +3,7 @@ package roomengine
 import (
 	"fmt"
 	"math"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -860,6 +861,35 @@ type TrackStatusBase struct {
 	SleepadVitalPresent bool // 任一 sleepad 在床 + HR/RR fresh(TTL 内)→ 活体在垫,喂 belief 抬 SBed
 	// 离房（ExitRoom 硬 + trend+np 软）已改为丢轨时按 track_id 算 SLeft 对数几率（见 ExitLogOdds/lostExitInfo），
 	//   喂 blind track 的 logPhi[SLeft]，不再走 base 级 ExitTrend bool（事件无坐标 + 丢轨 base 空）。
+}
+
+// SnapshotSleepads 返回当前在场 sleepad 的占用身份快照（每设备一份 lid）。
+// 与 SnapshotTrackStatuses 平行：radar 给 track lid，sleepad 给占用 lid（uid_last4+S+bedHex2+track_id）。
+// forensic 暴露 + 后续吸纳路由用；本快照只读身份，不进裁决。
+func (tm *TrackManager) SnapshotSleepads(nowMs int64) []SleepadStatus {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	out := make([]SleepadStatus, 0, len(tm.sleepadStates))
+	for _, obs := range tm.sleepadStates {
+		if obs == nil {
+			continue
+		}
+		// uid_last4 走 hex MAC 反查（与 radar makeLogicID 同源 uidHexFn）；obs.DeviceUID 实为 addr 不可用。
+		uidHex := ""
+		if tm.uidHexFn != nil {
+			uidHex = tm.uidHexFn(obs.DeviceAddr)
+		}
+		addr, _ := netip.ParseAddr(obs.DeviceAddr) // 失败=零 Addr → SamebedConf 返 0 → 不吸纳(uncovered,FN-safe)
+		out = append(out, SleepadStatus{
+			LogicID:    SleepadLogicID(uidHex, obs.DeviceAddr, obs.TrackID),
+			DeviceUID:  uidHex,
+			DeviceAddr: addr,
+			InBed:      obs.InBed,
+			Fresh:      obs.InBed && obs.HasVitalSign() && nowMs-obs.TMs < sleepadVitalTTLMs,
+			Stale:      nowMs-obs.TMs >= sleepadVitalTTLMs, // 垫哑 ≥TTL → 解吸纳防幽灵(§3.3 V6)
+		})
+	}
+	return out
 }
 
 // SnapshotTrackStatuses 返回当前所有 live track 的 Layer 1 原始投影。

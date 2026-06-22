@@ -62,6 +62,7 @@ func main() {
 		roomUnit: map[string]string{},
 		roomType: map[string]int{},
 		unitPub:  map[string]belief.UnitPublicness{},
+		mm:       map[string]*roomengine.RoomMM{},
 		logger:   logger,
 	}
 
@@ -69,7 +70,7 @@ func main() {
 	if err != nil {
 		logger.Fatal("roomengine startup failed", zap.Error(err))
 	}
-	_ = eng
+	router.eng = eng // P1：onRoomFrame 每 tick 回注 radar 折叠减量给 RealPeopleInRoom
 
 	logger.Info("xsensor started — DBN 顶层裁决 over test:*; fire → Xsensor.log")
 
@@ -128,6 +129,8 @@ type dbnRouter struct {
 	roomUnit map[string]string                // roomID → unitKey
 	roomType map[string]int                   // roomID → card.RoomType（1=Bathroom）→ UD timer deadline
 	unitPub  map[string]belief.UnitPublicness // unitKey(suiteID) → 公共度（units.unit_type，定找人窗 W）
+	mm       map[string]*roomengine.RoomMM    // roomID → 房级静态 MM（samebed prior 权威，吸纳读）；nil=无床/无设备
+	eng      *roomengine.Engine               // 回注 radar 折叠减量给 P1 占用人数（RealPeopleInRoom，cutover 后服务 zoneengine）
 	logger   *zap.Logger
 }
 
@@ -216,6 +219,29 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		return nil, nil // room 不属任何 unit（无 layout placeholder）
 	}
 	fr := u.Tick(roomID, fi) // 多房编排：算 ρ_xroom（兄弟房守恒+时间窗）→ Room.Tick（单房无兄弟 ρ=0）
+	// P1 占用人数：把本房 census 折叠后真人数（fr.Decision.PeopleCount=Nr）回注 Engine
+	//   （RealPeopleInRoom 优先用；cutover 后服务 zoneengine total_people）。
+	realPeople := -1
+	var padAbs []roomengine.PadAbsorption
+	if d.eng != nil {
+		pads := d.eng.SnapshotSleepads(roomID, nowMs)           // sleepad 占用身份（addr/InBed/Fresh/Stale）
+		radars := roomengine.RadarBedStates(bases, g.bedAreaIDs) // 每台 radar N-in-bed（MN/FwAreaID，§9.1 raw）
+		var uncovered int
+		uncovered, padAbs = roomengine.AbsorbSleepads(pads, radars, d.mm[roomID], roomengine.SamebedAbsorbThresh)
+		// P1 单 setter（契约 §3 / §9.3 裁定）：Nr 折叠 + uncovered-sleepad（撑占用，修缺陷①漏算）。
+		//   只进 RealPeopleInRoom(P1 占用/alone)；P2 census.Nr→C_FN 不动（睡着的人不进 fall 风险，§9.4）。
+		d.eng.SetRoomRadarPeople(roomID, fr.Decision.PeopleCount+uncovered)
+		realPeople = d.eng.RealPeopleInRoom(roomID)
+		// de-absorption no-silent-caps（§9.4）：主 radar 离床+垫仍 InBed 时 LOG，标明 V5/V6 stale/fresh 仲裁
+		//   在 09e7 **未被真 case 覆盖**（铁律 [[validate_real_case_no_unit_tests]] 不靠推理）。
+		for _, p := range padAbs {
+			if p.RadarLeftBed {
+				d.logger.Warn("de_absorption: 主 radar 离床+sleepad 仍 InBed（V5/V6 stale/fresh 仲裁=启发式，09e7 未覆盖，no-silent-caps）",
+					zap.String("room", roomID), zap.String("pad_lid", p.LogicID),
+					zap.Bool("fresh", p.Fresh), zap.Bool("stale", p.Stale), zap.Bool("counted_uncovered", p.Uncovered))
+			}
+		}
+	}
 	rho := u.LastRho(roomID)
 	unitHasTrack, hasNeighbor := u.UnitState(nowMs)
 
@@ -246,6 +272,14 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			"s_marg": t.SMarg, "covers": t.Covers, // per-track S 边缘 + per-device covers(MM)：看 D523 自身 SBed + covers=0
 		})
 	}
+	pad := make([]map[string]interface{}, 0, len(padAbs))
+	for _, p := range padAbs {
+		pad = append(pad, map[string]interface{}{
+			"pad_lid": p.LogicID, "pad_present": p.InBed, "pad_fresh": p.Fresh, "pad_stale": p.Stale,
+			"pad_absorbed_by": p.AbsorbedBy, "pad_samebed": p.Samebed,
+			"pad_uncovered": p.Uncovered, "pad_radar_left_bed": p.RadarLeftBed,
+		})
+	}
 	walls := make([][4]int, 0, len(g.walls))
 	for _, w := range g.walls {
 		walls = append(walls, [4]int{w.X1, w.Y1, w.X2, w.Y2})
@@ -254,6 +288,8 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.String("room", roomID), zap.Int64("ts", nowMs),
 		zap.Int("n_r", fr.Decision.PeopleCount), zap.Int("present_cnt", fr.PresentCount),
 		zap.Int("raw_tracks", len(bases)),
+		zap.Int("real_people", realPeople),               // P1：折叠后占用人数（cutover 后 → zoneengine total_people）
+		zap.Int("rescuable", fr.Decision.RescuableCount), // 可救援数（present-real ∧ S≠Bed，folded）；forensic，不门控 fire
 		zap.Float64("p_fallen", fr.Probe.PFallen), zap.String("band", fr.Decision.Band),
 		zap.Bool("fire", fr.Decision.Fire), zap.Float64("lambda", fr.Probe.Lambda),
 		zap.String("top_s", sName(int(top))), zap.Float64("top_p", tp),
@@ -261,7 +297,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Bool("unit_has_track", unitHasTrack), zap.Bool("has_neighbor", hasNeighbor),
 		zap.Bool("lost_exited", fr.LostExited),
 		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("bed_present", g.sleepadPresent),
-		zap.Any("s_dist", sDist), zap.Any("target", raw), zap.Any("dbn", dbn),
+		zap.Any("s_dist", sDist), zap.Any("target", raw), zap.Any("dbn", dbn), zap.Any("pad", pad),
 		zap.Any("walls", walls), zap.Int("radar_x", g.radarPos.X), zap.Int("radar_y", g.radarPos.Y))
 
 	return fr.FiredLogicIDs, fr.DroppedLogicIDs // fired→复位 still-box；dropped(确认离场/空)→evict track,停 coast re-feed
