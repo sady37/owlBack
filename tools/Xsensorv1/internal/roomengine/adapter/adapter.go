@@ -190,7 +190,7 @@ func bedHitMask(t RadarTrack, bedAreaIDs []int) []bool {
 
 // BuildObservation raw 帧 → belief.Observation（§5 分轴输入）。per-track（§57 步2）：t 为本 track 的雷达量，
 // sleepads/beds 为房共享床证据（每 track 滤波各自吃自己的雷达 + 共享床）。
-func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, bedAreaIDs []int, p Params) belief.Observation {
+func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, bedAreaIDs []int, p Params, isRiskTime bool) belief.Observation {
 	sl := make([]belief.BedReading, len(sleepads))
 	vitalSrc := false
 	sleepadVital := false
@@ -225,6 +225,7 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, bedAre
 		SleepadVitalPresent: sleepadVital,
 		AreaType:            t.AreaType,
 		RoomType:            t.RoomType,
+		IsRiskTime:          isRiskTime, // risktime 只缩短 floor tFloor(纯时间轴),不进 C_FN
 		RadarBedHitMask:     bedHitMask(t, bedAreaIDs),
 	}
 }
@@ -240,7 +241,6 @@ func BuildRiskContext(fi FrameInput, nr int, aloneMin float64) belief.RiskContex
 	}
 	return belief.RiskContext{
 		AloneContinuousMin: aloneMin,
-		Night:              fi.Census.Night,
 		PeopleCount:        nr,
 		Disabled:           fi.Census.Disabled,
 	}

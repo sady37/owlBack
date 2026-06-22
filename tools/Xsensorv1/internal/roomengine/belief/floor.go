@@ -66,13 +66,18 @@ func (g *FloorGuard) Step(obs Observation) bool {
 	case contactInBed:
 		return false // 真在床
 	}
-	return obs.StillSec >= tFloorFor(obs.AreaType, obs.RoomType)
+	return obs.StillSec >= tFloorFor(obs.AreaType, obs.RoomType, obs.IsRiskTime)
 }
 
-// tFloorFor floor(= §I stillbox 计时器)异常阈 = stillMuSigma(area,room) 的 μ+1.5σ
-// （room×cell 保守合并，跟 emission CDF 同源 §H/§I）：bathroom 未画 toilet 也用 bathsec(18min)，
-// 不再 cell-only 12min 抢先于 CDF 的 18min。
-func tFloorFor(area, roomType int) float64 {
+// tFloorFor floor(= §I stillbox 计时器)异常阈 = stillMuSigma(area,room) 的 μ + k·σ
+// （room×cell 保守合并，跟 emission CDF 同源 §H/§I）：bathroom 未画 toilet 也用 bathsec(18min)。
+// risktime 纯时间轴：μ,σ 不变(物理),只动风险容忍 k——白天 1.5σ(保守防 FP)/夜间 0.5σ(少等早兜底,
+// 无人巡视漏报代价剧增)。只缩短不延长(FN-safe);不进 C_FN(报警阈与时辰无关)。
+func tFloorFor(area, roomType int, isRiskTime bool) float64 {
 	mu, sigma := stillMuSigma(area, roomType)
-	return mu + 1.5*sigma
+	k := 1.5
+	if isRiskTime {
+		k = 0.5
+	}
+	return mu + k*sigma
 }

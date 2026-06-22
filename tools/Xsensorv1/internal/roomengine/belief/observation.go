@@ -49,6 +49,10 @@ type Observation struct {
 	// bathroom 房即使 cell 未画 toilet(落 unknown) 也至少用 bathsec(18min)，避免激进 default(12min) 过早误报。
 	RoomType int
 
+	// IsRiskTime 风险时段(夜间 IsNightTime)：只缩短 floor 时长兜底阈(tFloorFor 的 μ+k·σ 中 k 变小)，
+	// **不进 C_FN/报警阈**——risktime 纯时间轴(管"等多久兜底",不管"报不报";后者由证据+可救援性定)。
+	IsRiskTime bool
+
 	// HR/RR（§5 非对称 + §D 门控）：
 	HRRRObserved      bool // 本 tick 有 vital 通道读数；false=无通道 → 中性
 	HRRRPresent       bool // HR>0 ∨ RR>0

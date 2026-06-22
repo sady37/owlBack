@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"owlBack/tools/Xsensorv1/internal/config"
 	"owlBack/tools/Xsensorv1/internal/roomengine"
@@ -375,6 +376,9 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 			}
 			router.rooms[roomID] = room
 			router.roomType[roomID] = cfg.RoomType // UD timer per-room deadline（Bathroom=1→D=20min，余 UD=90min）
+			if tz, terr := time.LoadLocation(cfg.Timezone); terr == nil {
+				router.roomTZ[roomID] = tz // risktime(IsNightTime)算 floor 阈用；解析失败→nil→IsNightTime 退 UTC
+			}
 			// unitKey = suiteID（SQL 已 network() zero 主机位 → 同 /80 房共享；public bathroom=自身/128 独立）。
 			router.roomUnit[roomID] = cfg.SuiteID
 			// 静态 MM（samebed prior 权威，吸纳读）：room/88 + DB beds/96 + radar/sleepad /128，covers=RadarBedReachCount。

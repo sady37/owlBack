@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"owlBack/tools/Xsensorv1/internal/config"
 	"owlBack/tools/Xsensorv1/internal/roomengine"
@@ -61,6 +62,7 @@ func main() {
 		units:    map[string]*engine.Unit{},
 		roomUnit: map[string]string{},
 		roomType: map[string]int{},
+		roomTZ:   map[string]*time.Location{},
 		unitPub:  map[string]belief.UnitPublicness{},
 		mm:       map[string]*roomengine.RoomMM{},
 		logger:   logger,
@@ -138,6 +140,7 @@ type dbnRouter struct {
 	units    map[string]*engine.Unit          // unitKey(suiteID) → 多房编排器（跨房 hand-off）
 	roomUnit map[string]string                // roomID → unitKey
 	roomType map[string]int                   // roomID → card.RoomType（1=Bathroom）→ UD timer deadline
+	roomTZ   map[string]*time.Location        // roomID → 时区（IsNightTime 算 risktime，缩短 floor tFloor）
 	unitPub  map[string]belief.UnitPublicness // unitKey(suiteID) → 公共度（units.unit_type，定找人窗 W）
 	mm       map[string]*roomengine.RoomMM    // roomID → 房级静态 MM（samebed prior 权威，吸纳读）；nil=无床/无设备
 	eng      *roomengine.Engine               // 回注 radar 折叠减量给 P1 占用人数（RealPeopleInRoom，cutover 后服务 zoneengine）
@@ -211,6 +214,8 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 
 	// covers/onbed/overlap 不再走 per-tick FrameInput（Tick 路径不消费）：真 covers 现 per-(设备×床)，
 	//   bootstrap SetDeviceGeom 一次注入冻结进各设备 Coupling/Emission（MM 床耦合，§K）。
+	// risktime(夜间)：缩短 floor 时长兜底阈(纯时间轴,不进 C_FN)。IsNightTime 用本房时区。
+	isRiskTime := roomengine.IsNightTime(nowMs, d.roomTZ[roomID])
 	fi := adapter.FrameInput{
 		NowMs:       nowMs,
 		Tracks:      tracks,
@@ -222,6 +227,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		RadarPos:    g.radarPos,
 		Entrances:   g.entrances,
 		ExitLogOdds: exitLogOdds,
+		Census:      adapter.Census{Night: isRiskTime},
 	}
 
 	u := d.units[d.roomUnit[roomID]]
@@ -316,6 +322,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Bool("lost_exited", fr.LostExited),
 		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("bed_present", g.sleepadPresent),
 		zap.Bool("vital_present", vitalPresent), // 房级 sleepad 接触 vital(HR/RR fresh)→ covers=1 设备抬 SBed
+		zap.Bool("risktime", isRiskTime), // 夜间风险时段(缩短 floor tFloor;不进 C_FN)
 		zap.Any("s_dist", sDist), zap.Any("target", raw), zap.Any("dbn", dbn), zap.Any("pad", pad),
 		zap.Any("fuse", fuse), // 双雷达同人运动同步对(agree/same/moves)
 		zap.Any("walls", walls), zap.Int("radar_x", g.radarPos.X), zap.Int("radar_y", g.radarPos.Y))

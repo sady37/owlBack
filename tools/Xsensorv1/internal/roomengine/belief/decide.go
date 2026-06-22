@@ -17,7 +17,7 @@ import "math"
 // RiskContext 裁决期风险因子（复用 risk_evaluator 同源因子，§8 连续消费非离散档）。
 type RiskContext struct {
 	AloneContinuousMin float64 // 独居持续分钟（独处→C_FN↑，连续饱和）
-	Night              bool    // 风险时段（21–08，夜间无人巡视→C_FN↑）
+	// risktime(夜间)**不在此**：它只缩短 floor 时长兜底阈(Observation.IsRiskTime→tFloorFor)，不进报警阈 C_FN。
 	PeopleCount        int     // 房内人数（>1 有人代发现→C_FN 折扣，但有下限不归零）
 	Disabled           bool    // 失能（难自救→C_FN↑）
 }
@@ -28,7 +28,6 @@ type decideParams struct {
 	cFNBase     float64 // 漏报代价基线（有人在场时）
 	aloneGain   float64 // 独居持续对 C_FN 的连续增益上限
 	aloneSatMin float64 // 独居增益饱和分钟
-	nightMult   float64 // 夜间倍数
 	disMult     float64 // 失能倍数
 	peopleFloor float64 // 多人折扣下限（不归零：人多仍可能没人注意到摔倒）
 	tHoldMs     int64   // 持续窗（防瞬时噪声，§8 ~90s）
@@ -38,7 +37,7 @@ func defaultDecideParams() decideParams {
 	return decideParams{
 		cFP: 1.0, cFNBase: 2.0,
 		aloneGain: 4.0, aloneSatMin: 30,
-		nightMult: 1.5, disMult: 1.5, peopleFloor: 0.3,
+		disMult: 1.5, peopleFloor: 0.3,
 		tHoldMs: 90_000,
 	}
 }
@@ -52,9 +51,6 @@ func (p decideParams) cFN(rc RiskContext) float64 {
 		alone = 1
 	}
 	c *= 1 + p.aloneGain*alone
-	if rc.Night {
-		c *= p.nightMult
-	}
 	if rc.Disabled {
 		c *= p.disMult
 	}
