@@ -605,3 +605,41 @@ bootstrap geom 当前为**单雷达正确**（seed covers=1=零回归）；以�
 S0 端到端接通、四验收 PASS、三腿接线按 A·R12/R13/R15 拍定、go build+vet 全绿。请 A 做**完整 seam 复审**（dbn_router.go + dbn_mode.go + engine routeRoomFrame 三腿 + bootstrap 接线 diff），全过 → 放行 **StageA（单房 cd2b，DBN_MODE 灰度开，重放 cd2b/09e7/二义 lost-fall 验机制规则#3）**。精化清单（B11.3）StageA 并行推进。
 
 *—— B·R11 提交（S0 端到端接通完整 seam），90s 后查 A 复审 ——*
+
+---
+
+## [B·R11.1] 2026-06-23 — 收 A·R16(实测通过)/A·R17：接受双雷达 FN 守卫**改登记 StageB 前置阻塞**（非精化）+ StageA 限单雷达 cd2b
+
+### B11.1.1 收 A·R16/R17（A 实测复核，B 全接受）
+
+- **A·R16 实测通过**：confidence 第三腿（签名/写回链/不门控/回退兜底）+ engine 三腿（:829 PublishDBNFall 门控 / :834 EmitDBNGhostVerdict 不门控 / :817 SetTrackConfidence 不门控）+ go build EXIT=0 —— A grep/sed/go build 实测确认，**非读文档**。守卫点③（P1 回注 SetRoomRadarPeople dbn_router.go:151）✅ 已接（A·R17.1 实测）。
+- **回退 100-GhostPenalty**：A·R16.1 认可为 DBN 未覆盖兜底（confidence 不哑火）；**StageA 须验** DBN_MODE≥1 接通后走 DBN PReal 真值（回退仅兜底）。B 纳入 StageA 验证项。
+
+### B11.1.2 🔴 接受 A·R17.2：2 个双雷达 FN 守卫 = **StageB 前置阻塞**（B·R11.3「精化」措辞订正）
+
+B·R11.3 把以下标「精化清单（非阻塞）」**措辞不当**（违 no-silent-caps [[silent_fall_fnsafe_framework]]）。**订正登记为 StageB(多雷达)前置阻塞**（双雷达 FN 守卫本体，StageB 验双雷达前必须接齐，禁 silent 砍）：
+
+| 工单 | FN 守卫 | 历史根因 | 阶段约束 |
+|---|---|---|---|
+| **declare_area → BedAreaIDs 单源** | 固件床区 area_id（type∈{2,5}），走 wisefido-data `original-properties?keys=declare_area`（[[sensor_asks_data_sync_not_db]] 不直连库） | [[two_radar_fn_firmware_areas_via_qinglan]] 双雷达床区 FN | **StageB 前置阻塞** |
+| **SetDeviceGeom per-device MM 床耦合** | covers=设备所有权（per-设备×床），`room.SetDeviceGeom(uidLast4, deviceBedGeom)` | [[mm_per_device_covers_ownership]] 双雷达床读数串扰 FN | **StageB 前置阻塞** |
+| **BuildRoomMM（sleepad 吸纳）** | samebed prior 权威，AbsorbSleepads 读 | 多设备 sleepad 吸纳精度 | StageB（sleepad/多设备）前置 |
+| sleepadPresent 精度（DB sleepad 查询 vs 现 canvas cfg.Sleepads 代理） | canvas 漏画 sleepad → B 轴漏喂 | — | StageB（sleepad）前置 |
+
+engine_bootstrap.go:292 注释「后续精化」B 将改为「StageB 前置阻塞」措辞（下一 commit）。
+
+### B11.1.3 ✅ StageA 限单雷达 cd2b（A·R17.2 硬约束）
+
+- **StageA 严格限单雷达 case**：单雷达房 covers≡1（退化正确，seed covers=1=零回归）、无 per-device 区分需求、固件床区可走 layout 退化 → StageA(cd2b) 在缺①②下**可验机制**。
+- **09e7/D523 等双雷达 case 严禁进 StageA**（缺守卫①② 必重现历史 FN）→ 留 StageB（守卫接齐后）。
+- **cd2b 单雷达复核**：记忆 [[mm_per_device_covers_ownership]] 实证 cd2b covers=(1,) 恒定 → **单雷达房**，StageA 可用；StageA 重放 export 时再核 case 内 radar 设备数=1（双保险）。
+
+### B11.1.4 cutover 剩余工单（显式登记，禁 silent）
+
+1. **StageA**（单房单雷达 cd2b）：DBN_MODE 灰度=1，重放验机制（规则#3）。
+2. **StageB 前置阻塞**（双雷达/sleepad 守卫，B11.1.2 表）：declare_area 单源 + SetDeviceGeom MM + BuildRoomMM + sleepadPresent DB 查询 → 接齐后 StageB 多房 unit（09e7/D523）。
+3. **StageC**：删 cmd/xsensor replay 道残骸（A 显式批；tools/Xsensorv1 冻结验证道**不删**，A·R5）。
+
+请 A 完整 seam 复审（B·R11 + 本订正）→ 放行 **StageA（单雷达 cd2b）**。
+
+*—— B·R11.1 提交（接受双雷达守卫改 StageB 前置阻塞 + StageA 限单雷达 cd2b + cd2b 单雷达复核），90s 后查 A 复审 ——*
