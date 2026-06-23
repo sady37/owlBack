@@ -28,9 +28,9 @@ time     dev.tid  lid           pose    z    bed      event              src  pR
 13:34:17 D523.0   D52303400920  stand   0    NoReport stand              trk  1.00 Empty      1   16    0.03  0.09  0.15  0.10  0.34  0.02
 13:34:18 D523.0   D52303400920  stand   0    NoReport stand              trk  1.00 Empty      1   17    0.03  0.09  0.15  0.10  0.33  0.02
 13:34:19 D523.0   D52303400920  stand   0    NoReport stand              trk  1.00 Empty      1   18    0.03  0.10  0.15  0.10  0.31  0.02
-13:34:20 D523.0   D52303400920  stand   113  NoReport stand              trk  1.00 Empty      1   19    0.03  0.10  0.16  0.10  0.30  0.02 xy>50, stillbox break,19->0
+13:34:20 D523.0   D52303400920  stand   113  NoReport stand              trk  1.00 Empty      1   19    0.03  0.10  0.16  0.10  0.30  0.02
 13:34:21 D523.0   D52303400920  stand   105  NoReport stand              trk  1.00 Empty      1   0     0.04  0.10  0.16  0.11  0.30  0.02
-13:34:22 D523.0   D52303400920  stand   129  NoReport stand              trk  1.00 Empty      1   0     0.04  0.10  0.15  0.11  0.29  0.02  Z>=80, weak SFall belief
+13:34:22 D523.0   D52303400920  stand   129  NoReport stand              trk  1.00 Empty      1   0     0.04  0.10  0.15  0.11  0.29  0.02
 13:34:23 D523.0   D52303400920  stand   108  NoReport stand              trk  1.00 Empty      1   0     0.04  0.10  0.15  0.11  0.28  0.02
 13:34:24 D523.0   D52303400920  stand   117  NoReport stand              trk  1.00 Empty      1   0     0.04  0.10  0.15  0.11  0.27  0.02
 13:34:25 D523.0   D52303400920  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.05  0.10  0.15  0.12  0.27  0.02
@@ -76,11 +76,11 @@ time     dev.tid  lid           pose    z    bed      event              src  pR
 13:35:04 D523.0   D52303400920  stand   0    NoReport stand              trk  1.00 Empty      1   39    0.13  0.10  0.14  0.13  0.19  0.02
 13:35:05 D523.0   D52303400920  stand   0    NoReport stand              trk  1.00 Empty      1   40    0.13  0.10  0.14  0.13  0.19  0.02
 13:35:06 D523.E   -             -       0    NoReport np=0  ★0           room -    Empty      1   40    0.13  0.10  0.14  0.13  0.19  0.02
-13:35:06 D523.88  -             88      -    NoReport no-target(88)      room -    Empty      1   41    0.13  0.10  0.14  0.13  0.19  0.02 lost_track
-13:35:07 D523.88  -             88      -    NoReport no-target(88)      room -    Empty      0   0     0.13  0.10  0.14  0.12  0.19  0.02 rho_xroom=0,因为走的太慢，90S
+13:35:06 D523.88  -             88      -    NoReport no-target(88)      room -    Empty      1   41    0.13  0.10  0.14  0.13  0.19  0.02
+13:35:07 D523.88  -             88      -    NoReport no-target(88)      room -    Empty      0   0     0.13  0.10  0.14  0.12  0.19  0.02
 13:35:08 D523.88  -             88      -    NoReport no-target(88)      room -    Empty      0   0     0.13  0.10  0.14  0.12  0.19  0.02
 13:35:09 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.13  0.10  0.14  0.12  0.19  0.02
-13:35:10 D523.88  -             88      -    NoReport no-target(88)      room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02 lost track 
+13:35:10 D523.88  -             88      -    NoReport no-target(88)      room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
 13:35:11 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
 13:35:12 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
 13:35:13 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
@@ -112,7 +112,7 @@ time     dev.tid  lid           pose    z    bed      event              src  pR
 13:35:39 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
 13:35:40 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
 13:35:41 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
-13:35:42 D523.88  -             88      -    NoReport no-target(88)      room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02 lost track ,30s 周期发送
+13:35:42 D523.88  -             88      -    NoReport no-target(88)      room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
 13:35:43 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
 13:35:44 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
 13:35:45 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
@@ -143,11 +143,11 @@ time     dev.tid  lid           pose    z    bed      event              src  pR
 13:36:10 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
 13:36:11 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
 13:36:12 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.19  0.02
-13:36:13 D523.88  -             88      -    NoReport no-target(88)      room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02 lost track ,30s 周期发送, 60+4=64s
+13:36:13 D523.88  -             88      -    NoReport no-target(88)      room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
 13:36:14 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
 13:36:15 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
 13:36:16 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:17 1903.0   -             pad     -    NoReport pad InBed HR=75 RR=None mv=0 turn=0 room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02   * 距D523 lost 72S
+13:36:17 1903.0   -             pad     -    NoReport pad InBed HR=75 RR=None mv=0 turn=0 room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
 13:36:18 1903.0   -             pad     -    NoReport pad InBed HR=75 RR=None mv=0 turn=0 room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
 13:36:19 1903.E   -             -       0    NoReport InBed(pad)         room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
 13:36:19 1903.E   -             -       0    NoReport InBed(pad)         room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
@@ -178,22 +178,22 @@ time     dev.tid  lid           pose    z    bed      event              src  pR
 13:36:43 1903.0   -             pad     -    NoReport pad InBed HR=51 RR=14 mv=0 turn=0 room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
 13:36:44 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
 13:36:45 1903.0   -             pad     -    NoReport pad InBed HR=52 RR=12 mv=0 turn=0 room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:45 D523.88  -             88      -    NoReport no-target(88)      room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:46 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:47 1903.0   -             pad     -    NoReport pad InBed HR=51 RR=12 mv=0 turn=0 room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:48 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:49 1903.0   -             pad     -    NoReport pad InBed HR=54 RR=14 mv=0 turn=0 room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:50 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:51 1903.0   -             pad     -    NoReport pad InBed HR=54 RR=None mv=0 turn=0 room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:52 D5F7.E   -             -       0    NoReport np=0  ★0           room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:52 D5F7.88  -             88      -    NoReport no-target(88)      room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:53 1903.0   -             pad     -    NoReport pad InBed HR=54 RR=14 mv=1 turn=0 room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:54 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:55 1903.0   -             pad     -    NoReport pad InBed HR=None RR=None mv=0 turn=0 room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:56 -.-      -             -       -    NoReport (no frame, held)   room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:57 1903.0   -             pad     -    NoReport pad InBed HR=None RR=None mv=1 turn=0 room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:58 1903.0   -             pad     -    NoReport pad InBed HR=None RR=None mv=0 turn=0 room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
-13:36:59 1903.0   -             pad     -    NoReport pad InBed HR=None RR=None mv=1 turn=0 room -    Empty      0   0     0.14  0.10  0.14  0.12  0.18  0.02
+13:36:45 D523.88  -             88      -    NoReport no-target(88)      room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:46 -.-      -             -       -    NoReport (no frame, held)   room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:47 1903.0   -             pad     -    NoReport pad InBed HR=51 RR=12 mv=0 turn=0 room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:48 -.-      -             -       -    NoReport (no frame, held)   room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:49 1903.0   -             pad     -    NoReport pad InBed HR=54 RR=14 mv=0 turn=0 room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:50 -.-      -             -       -    NoReport (no frame, held)   room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:51 1903.0   -             pad     -    NoReport pad InBed HR=54 RR=None mv=0 turn=0 room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:52 D5F7.E   -             -       0    NoReport np=0  ★0           room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:52 D5F7.88  -             88      -    NoReport no-target(88)      room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:53 1903.0   -             pad     -    NoReport pad InBed HR=54 RR=14 mv=1 turn=0 room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:54 -.-      -             -       -    NoReport (no frame, held)   room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:55 1903.0   -             pad     -    NoReport pad InBed HR=None RR=None mv=0 turn=0 room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:56 -.-      -             -       -    NoReport (no frame, held)   room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:57 1903.0   -             pad     -    NoReport pad InBed HR=None RR=None mv=1 turn=0 room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:58 1903.0   -             pad     -    NoReport pad InBed HR=None RR=None mv=0 turn=0 room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
+13:36:59 1903.0   -             pad     -    NoReport pad InBed HR=None RR=None mv=1 turn=0 room -    Left       0   0     0.10  0.07  0.10  0.09  0.21  0.23
 ```
 
 ## 原始 stream（每雷达逐帧 raw track；x/y/Δ 对照上方 belief 的 stillbox）

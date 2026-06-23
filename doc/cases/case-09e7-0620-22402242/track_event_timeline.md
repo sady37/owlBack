@@ -90,6 +90,8 @@ time     dev.tid  lid           pose    z    bed      event              src  pR
 22:40:53 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   0     0.15  0.10  0.14  0.12  0.18  0.02
 22:40:54 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   0     0.00  0.99  0.00  0.00  0.00  0.00
 22:40:54 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   0     0.15  0.10  0.14  0.12  0.18  0.02
+22:40:54 0978.E   -             -       0    InBed    InBed(pad)         room -    Empty      1   0     0.16  0.10  0.14  0.12  0.18  0.02
+22:40:54 0978.E   -             -       0    InBed    InBed(pad)         room -    Empty      1   0     0.16  0.10  0.14  0.12  0.18  0.02
 22:40:55 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   0     0.00  0.99  0.00  0.00  0.00  0.00
 22:40:55 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Empty      1   13    0.16  0.10  0.14  0.12  0.18  0.02
 22:40:56 09E7.0   09E704029063  lying   0    InBed    lying              trk  1.00 Empty      1   14    0.00  0.99  0.00  0.00  0.00  0.00
@@ -207,6 +209,7 @@ time     dev.tid  lid           pose    z    bed      event              src  pR
 22:41:44 09E7.1   09E714132147  stand   0    InBed    stand              trk  0.02 Fallen     1   32    0.00  0.97  0.02  0.01  0.00  0.00
 22:41:44 09E7.0   09E704029063  susfall 0    InBed    susfall            trk  1.00 Fallen     1   32    0.00  1.00  0.00  0.00  0.00  0.00
 22:41:45 D523.0   D52304000956  stand   0    InBed    stand              trk  1.00 Fallen     1   32    0.23  0.09  0.13  0.11  0.16  0.02
+22:41:45 0978.E   -             -       0    LeftBed  LeftBed(pad)       room -    Fallen     1   33    0.23  0.09  0.13  0.11  0.16  0.02
 22:41:45 09E7.E   -             -       0    LeftBed  Fall(rdr)          room -    Fallen     1   33    0.23  0.09  0.13  0.11  0.16  0.02
 22:41:45 09E7.0   09E704029063  FALL    0    LeftBed  FALL               trk  1.00 Fallen     1   33    0.00  0.00  1.00  0.00  0.00  0.00
 22:41:45 09E7.1   09E714132147  stand   0    LeftBed  stand              trk  0.02 Fallen     1   33    0.00  0.00  0.80  0.08  0.01  0.02

@@ -2,9 +2,11 @@ replay集
 # * case-d5f7-0617-23252357 replay  false stand, lost, 
 # * case-cabb-0616-17441802	replay  hunzi, bathroom lost,ghost,
 # * case-cd2b-0617-23302345-curtain  bedroom 窗帘误报  这个基本无解  replay
-# * case-cd2b-0620-11231131
-# * case-09e7-0620-22402242
+# * case-cd2b-0620-11231131  hand-off
+# * case-09e7-0620-22402242   
+# * case-09e7-6021-22162229   1room2radar,reisktime,fall2,9min fall     **success  同房在床，可能睡，不抑制fire报警
 
+# * case-d523-0622-13341336   D523,椅子后80s lost, 120s 101guest sleepad inbed handoff  **success 
 
 # * case-d5f7-0617-23252357 replay
 case1  bathroom  still+D
@@ -97,3 +99,53 @@ case-cabb-0616-17441802	报了 Fall	不报	Sitting×33 / Walking×17
 10:02:49	0	Standing	71	972	0.398	Fallen	❌
 10:02:51	0	Walking	70	0	0.509	Fallen	❌
 10:02:55	0	Walking	62	0	0.712	Fallen	❌
+
+
+# * case-09e7-6021-22162229
+
+22:16-17   d523*09e7 均可见track, 近60s, n_r 融合成1
+22:17-18   先radar inbed, 有HR/RR
+22:18      fall在床边，仍显示在sit模式，
+22:21       still-box 有动，但不知 break still, 但后续仍是stillbox
+22:28      27-18=9min, risktime , tFloor=8minn吧，应该报警
+22:29      fall_1 不足10s, SFall 保持， 起身， fall_2  数秒， 此时Xsensor SFall应快速增加
+
+
+# *  case-d523-0622-11141121
+11:15 
+D523可见， 9e7可见
+走到L型，
+D523--chair--person,，因椅背是实木+少许空隙，+2层纸箱+1个枕头  只能检出人
+9e7--铁架+2张毯子， 仍能检测人体活动
+11：21 出来
+
+# * case-d523-0622-11571200
+
+11:15 
+D523可见， 9e7可见
+走到L型，
+D523--chair--person,，因椅背是实木+少许空隙，+2层纸箱+1个枕头  
+9e7--铁架+2张毯子， 仍能检测人体活动
+11:58 D523 lost track, FE仍显示
+
+# * case-d523-0622-12381244
+9e7 掉线，同room仅 D523+sleepad
+走进D523, fall，forzen,  sleepad inbed
+
+# * case-d523-0622-13341336
+13:34  go to 桌子后，雷达被挡，frozen
+80s  lost, tid=88
+120s  101GuestRoom sleepad inBed  
+
+导出完成，跨房场景确实捕到了。这个 /80 unit 有 3 个房：
+
+设备	房	角色
+D523（radar）	:100 Bedroom	人走桌后被挡 → frozen → lost(tid=88)
+D5F7（radar）	:300（卫浴）	—
+BM87224601903（sleepad）	:200 GuestRoom	+120s InBed
+（注：你说的"101 GuestRoom"，实际 GuestRoom 是 room :200；导出按 D523 的 /80 unit 抓，GuestRoom 那台 sleepad 1903 在同 unit，已包进来。另一台 Bedroom sleepad 978 本窗口无数据没进。）
+
+这是个跨房 hand-off 测试：人在 Bedroom(100) 被 D523 跟丢（桌后冻结），~120s 后在 GuestRoom(200) sleepad InBed = 人其实走去隔壁睡了。机制看点：
+
+Bedroom 的 lost-fall 二义，能不能被 GuestRoom 的 sleepad InBed 解析成"人去隔壁了"（hand-off 宿）？
+⚠️ 预判：现 hand-off（rhoFor）只认兄弟房 radar GainedReal，sleepad InBed 在别房算不算 hand-off 落点没接 → 大概率 Bedroom lost-fall 留着空兜底、而人其实安全在 GuestRoom 床上 = 跨房 sleepad hand-off 缺口。

@@ -1,415 +1,400 @@
-# case-cd2b-0620-11231131 — 卧室(CD2B) 每 tick(当前 build:857 coast + EvictTrack purge + LeftBed latch + κ 压 SBed + 统一 logicID)
+# case-cd2b-0620-11231131 — 卧室(09E7+D523 双雷达同房) 每 tick belief 时间线
 
-lid=tm 出生唯一身份(uidlast4+track_id+mmssms,census 引用非自发 int)。still=still-box 总时长秒(FloorGuard 计时器输入;radar 直立位置漂>50cm box 会判不出 still)。
-床占用=sleepad 接触权威+firmware baseline 床区;LeftBed κ 直接压 SBed;事件:sleepad 精确落 tick / radar Enter-Exit ±1.5s 就近。
+dev.tid=uid后4.track_id(雷达 raw track 帧,**两台雷达都出行**)。lid=引擎采用的 base track 出生身份。
+**belief 列现为 per-track**:src=trk → 该 lid 自己的 s_marg(pR=该轨 p_real);src=room → 该行无 lid,回退房级 s_dist。
+于是「摔的那条轨自己的 SFall 是否起来」一眼可见(对照 top=房级裁决态)。
 
 ```
-time     dev.tid  lid           pose  z    bed      event              top        still SFall SBed  SOpen SBliR SEmpt SLeft
-11:23:04 CD2B.0   CD2B02304002  stand 116  NoReport EnterRoom(rdr)     Empty      0     0.00  0.03  0.15  0.00  0.79  0.04
-11:23:04 CD2B.0   CD2B02304002  stand 109  NoReport stand              Empty      0     0.00  0.03  0.40  0.00  0.53  0.01
-11:23:05 CD2B.0   CD2B02304002  stand 110  NoReport stand              OpenFloor  1     0.00  0.03  0.63  0.00  0.26  0.01
-11:23:06 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  2     0.00  0.02  0.76  0.00  0.11  0.02
-11:23:07 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.00  0.02  0.82  0.00  0.04  0.02
-11:23:08 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.00  0.02  0.84  0.00  0.02  0.02
-11:23:09 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.00  0.02  0.84  0.00  0.01  0.02
-11:23:10 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.00  0.02  0.85  0.00  0.01  0.02
-11:23:11 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.00  0.02  0.85  0.00  0.01  0.02
-11:23:12 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.00  0.02  0.85  0.00  0.01  0.02
-11:23:13 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.00  0.02  0.85  0.00  0.01  0.02
-11:23:14 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.00  0.02  0.85  0.00  0.01  0.02
-11:23:15 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.00  0.04  0.74  0.00  0.02  0.04
-11:23:16 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.01  0.05  0.68  0.01  0.03  0.04
-11:23:17 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.01  0.05  0.65  0.01  0.04  0.03
-11:23:18 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.01  0.05  0.63  0.01  0.04  0.03
-11:23:19 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.01  0.05  0.62  0.02  0.05  0.03
-11:23:20 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.01  0.05  0.62  0.02  0.05  0.03
-11:23:21 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.01  0.05  0.62  0.02  0.05  0.03
-11:23:22 CD2B.0   CD2B02304002  stand 0    NoReport stand              OpenFloor  0     0.01  0.05  0.61  0.02  0.05  0.03
-11:23:22 CD2B.0   CD2B02304002  stand 0    NoReport ExitRoom(rdr)      OpenFloor  0     0.01  0.05  0.61  0.02  0.05  0.03
-11:23:23 CD2B.88  CD2B02304002  -     0    NoReport -                  OpenFloor  0     0.01  0.05  0.61  0.02  0.05  0.03
-11:23:24 CD2B.88  CD2B02304002  -     0    NoReport -                  Left       0     0.00  0.00  0.00  0.00  0.00  0.99
-11:23:25 CD2B.88  -             -     0    NoReport -                  Empty      0     0.00  0.00  0.00  0.00  0.00  0.00
-11:23:38 CD2B.88  -             -     0    NoReport -                  Empty      0     0.00  0.00  0.00  0.00  0.00  0.00
-11:23:38 CD2B.0   CD2B02338266  stand 77   NoReport stand              Empty      0     0.00  0.02  0.15  0.00  0.79  0.04
-11:23:39 CD2B.0   CD2B02338266  stand 84   NoReport stand              Empty      0     0.00  0.02  0.25  0.00  0.67  0.01
-11:23:40 CD2B.0   CD2B02338266  stand 82   NoReport stand              Empty      1     0.00  0.02  0.35  0.00  0.53  0.02
-11:23:41 CD2B.0   CD2B02338266  stand 75   NoReport stand              OpenFloor  2     0.00  0.03  0.43  0.01  0.40  0.02
-11:23:42 CD2B.0   CD2B02338266  stand 90   NoReport stand              OpenFloor  3     0.00  0.03  0.49  0.01  0.29  0.02
-11:23:43 CD2B.0   CD2B02338266  stand 77   NoReport stand              OpenFloor  4     0.00  0.03  0.54  0.01  0.21  0.03
-11:23:44 CD2B.0   CD2B02338266  walk  72   NoReport walk               OpenFloor  0     0.00  0.03  0.57  0.01  0.16  0.03
-11:23:45 CD2B.0   CD2B02338266  lying 76   InBed    InBed(rdr)         Bed        0     0.00  0.31  0.30  0.02  0.12  0.03
-11:23:46 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.70  0.11  0.02  0.06  0.01
-11:23:47 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.89  0.03  0.02  0.02  0.00
-11:23:48 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.94  0.02  0.02  0.00  0.00
-11:23:49 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:23:50 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:23:51 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:23:52 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:23:53 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:23:54 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:23:55 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:23:56 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:23:56 CD2B.0   CD2B02338266  lying 0    InBed    InBed(pad)         Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:23:56 CD2B.0   CD2B02338266  lying 0    InBed    InBed(pad)         Bed        0     0.00  1.00  0.00  0.00  0.00  0.00
-11:23:56 CD2B.0   CD2B02338266  lying 0    InBed    InBed(pad)         Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:23:57 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:23:58 CD2B.0   CD2B02338266  lying 79   InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:23:59 CD2B.0   CD2B02338266  lying 70   InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:24:00 CD2B.0   CD2B02338266  lying 69   InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:24:01 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.85  0.08  0.06  0.00  0.01
-11:24:02 CD2B.0   CD2B02338266  lying 70   InBed    lying              Bed        0     0.00  0.93  0.03  0.03  0.00  0.00
-11:24:03 CD2B.0   CD2B02338266  lying 71   InBed    lying              Bed        0     0.00  0.95  0.02  0.03  0.00  0.00
-11:24:04 CD2B.0   CD2B02338266  sit   72   InBed    sit                Bed        0     0.00  0.86  0.04  0.07  0.00  0.01
-11:24:05 CD2B.0   CD2B02338266  sit   60   InBed    sit                Bed        0     0.00  0.81  0.05  0.08  0.00  0.01
-11:24:05 CD2B.0   CD2B02338266  walk  72   InBed    walk               Bed        0     0.00  0.68  0.20  0.08  0.01  0.01
-11:24:07 CD2B.0   CD2B02338266  walk  72   InBed    walk               Bed        0     0.00  0.64  0.21  0.08  0.01  0.01
-11:24:08 CD2B.0   CD2B02338266  walk  0    InBed    LeftBed(rdr)       Bed        0     0.00  0.62  0.23  0.08  0.01  0.01
-11:24:08 CD2B.0   CD2B02338266  walk  0    LeftBed  LeftBed(pad)       OpenFloor  0     0.00  0.02  0.58  0.18  0.03  0.04
-11:24:08 CD2B.0   CD2B02338266  walk  0    LeftBed  LeftBed(pad)       OpenFloor  0     0.00  0.00  0.74  0.12  0.02  0.02
-11:24:08 CD2B.0   CD2B02338266  walk  0    LeftBed  LeftBed(pad)       OpenFloor  0     0.00  0.00  0.70  0.07  0.03  0.04
-11:24:09 CD2B.0   CD2B02338266  walk  72   LeftBed  walk               OpenFloor  0     0.00  0.00  0.81  0.03  0.02  0.02
-11:24:10 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.85  0.01  0.01  0.02
-11:24:11 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.86  0.00  0.01  0.02
-11:24:12 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.87  0.00  0.01  0.02
-11:24:13 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.87  0.00  0.01  0.02
-11:24:14 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.00  0.77  0.00  0.02  0.04
-11:24:15 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.00  0.72  0.00  0.03  0.04
-11:24:15 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.00  0.69  0.01  0.04  0.04
-11:24:16 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.00  0.67  0.01  0.05  0.04
-11:24:17 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.00  0.66  0.01  0.05  0.03
-11:24:18 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.00  0.66  0.01  0.05  0.03
-11:24:19 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.00  0.65  0.01  0.06  0.03
-11:24:20 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.00  0.65  0.01  0.06  0.03
-11:24:21 CD2B.0   CD2B02338266  stand 0    LeftBed  ExitRoom(rdr)      OpenFloor  0     0.01  0.00  0.65  0.01  0.06  0.03
-11:24:21 CD2B.0   CD2B02338266  stand 83   LeftBed  stand              OpenFloor  0     0.00  0.00  0.79  0.01  0.03  0.02
-11:24:22 CD2B.0   CD2B02338266  walk  77   LeftBed  walk               OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.00
-11:24:23 CD2B.0   CD2B02338266  walk  62   LeftBed  walk               OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:24:24 CD2B.0   CD2B02338266  walk  65   LeftBed  walk               OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:24:25 CD2B.0   CD2B02338266  walk  0    LeftBed  walk               OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:24:26 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:24:27 CD2B.0   CD2B02338266  sit   0    LeftBed  sit                OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
-11:24:28 CD2B.0   CD2B02338266  sit   0    LeftBed  sit                OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
-11:24:29 CD2B.0   CD2B02338266  sit   0    LeftBed  sit                OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
-11:24:30 CD2B.0   CD2B02338266  sit   63   LeftBed  sit                OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
-11:24:31 CD2B.0   CD2B02338266  lying 66   LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
-11:24:32 CD2B.0   CD2B02338266  lying 68   LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
-11:24:33 CD2B.0   CD2B02338266  lying 68   LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
-11:24:33 CD2B.0   CD2B02338266  lying 67   LeftBed  lying              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
-11:24:34 CD2B.0   CD2B02338266  lying 68   LeftBed  InBed(rdr)         OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
-11:24:35 CD2B.0   CD2B02338266  lying 79   InBed    lying              OpenFloor  0     0.02  0.10  0.62  0.00  0.00  0.06
-11:24:36 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.01  0.58  0.21  0.01  0.02  0.02
-11:24:37 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.86  0.05  0.02  0.01  0.01
-11:24:38 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.93  0.02  0.02  0.00  0.00
-11:24:39 CD2B.0   CD2B02338266  lying 72   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:24:40 CD2B.0   CD2B02338266  stand 62   InBed    stand              Bed        0     0.00  0.83  0.09  0.06  0.00  0.01
-11:24:41 CD2B.0   CD2B02338266  lying 68   InBed    lying              Bed        0     0.00  0.93  0.03  0.03  0.00  0.00
-11:24:42 CD2B.0   CD2B02338266  lying 71   InBed    lying              Bed        0     0.00  0.95  0.02  0.03  0.00  0.00
-11:24:43 CD2B.0   CD2B02338266  lying 66   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:24:44 CD2B.0   CD2B02338266  lying 63   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:24:45 CD2B.0   CD2B02338266  lying 67   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:24:46 CD2B.0   CD2B02338266  lying 67   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:24:47 CD2B.0   CD2B02338266  lying 70   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:24:48 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:24:49 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:24:50 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:24:51 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:24:52 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:24:53 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.83  0.09  0.06  0.00  0.01
-11:24:54 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.75  0.13  0.08  0.00  0.01
-11:24:55 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.70  0.16  0.08  0.01  0.01
-11:24:56 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.66  0.19  0.08  0.01  0.01
-11:24:57 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.64  0.21  0.08  0.01  0.01
-11:24:58 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.61  0.22  0.08  0.01  0.01
-11:24:59 CD2B.0   CD2B02338266  lying 75   InBed    lying              Bed        0     0.00  0.86  0.06  0.04  0.01  0.01
-11:25:00 CD2B.0   CD2B02338266  lying 70   InBed    lying              Bed        0     0.00  0.93  0.02  0.03  0.00  0.00
-11:25:01 CD2B.0   CD2B02338266  lying 68   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:25:02 CD2B.0   CD2B02338266  lying 71   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:25:03 CD2B.0   CD2B02338266  lying 69   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:25:04 CD2B.0   CD2B02338266  lying 69   InBed    lying              Bed        0     0.00  0.95  0.02  0.02  0.00  0.00
-11:25:05 CD2B.0   CD2B02338266  lying 82   InBed    lying              Bed        0     0.00  0.94  0.03  0.02  0.00  0.00
-11:25:06 CD2B.0   CD2B02338266  lying 84   InBed    lying              Bed        0     0.00  0.93  0.04  0.02  0.00  0.00
-11:25:07 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.82  0.10  0.06  0.00  0.01
-11:25:08 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.74  0.14  0.08  0.00  0.01
-11:25:09 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.69  0.17  0.08  0.01  0.01
-11:25:10 CD2B.0   CD2B02338266  stand 76   InBed    stand              Bed        0     0.00  0.91  0.05  0.02  0.00  0.00
-11:25:11 CD2B.0   CD2B02338266  lying 78   InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:12 CD2B.0   CD2B02338266  lying 78   InBed    InBed(pad)+InBed(pad) Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:12 CD2B.0   CD2B02338266  lying 78   InBed    InBed(pad)+InBed(pad) Bed        0     0.00  1.00  0.00  0.00  0.00  0.00
-11:25:12 CD2B.0   CD2B02338266  lying 78   InBed    InBed(pad)+InBed(pad) Bed        0     0.00  1.00  0.00  0.00  0.00  0.00
-11:25:12 CD2B.0   CD2B02338266  lying 70   InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:13 CD2B.0   CD2B02338266  lying 80   InBed    lying              Bed        0     0.00  0.99  0.01  0.00  0.00  0.00
-11:25:14 CD2B.0   CD2B02338266  lying 79   InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:15 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:16 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:17 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:18 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:19 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:20 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:21 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:22 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:23 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:24 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:25 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:26 CD2B.0   CD2B02338266  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:27 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.97  0.02  0.01  0.00  0.00
-11:25:28 CD2B.0   CD2B02338266  lying 69   InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:29 CD2B.0   CD2B02338266  lying 76   InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:25:30 CD2B.0   CD2B02338266  walk  64   InBed    walk               Bed        0     0.00  0.97  0.02  0.01  0.00  0.00
-11:25:31 CD2B.0   CD2B02338266  walk  0    InBed    walk               Bed        0     0.00  0.84  0.09  0.06  0.00  0.01
-11:25:32 CD2B.0   CD2B02338266  walk  0    InBed    walk               Bed        0     0.00  0.76  0.13  0.07  0.00  0.01
-11:25:32 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.70  0.16  0.08  0.01  0.01
-11:25:33 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.66  0.19  0.08  0.01  0.01
-11:25:34 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.64  0.21  0.08  0.01  0.01
-11:25:35 CD2B.0   CD2B02338266  stand 0    InBed    stand              Bed        0     0.00  0.61  0.22  0.08  0.01  0.01
-11:25:36 CD2B.0   CD2B02338266  stand 0    LeftBed  LeftBed(pad)       OpenFloor  0     0.00  0.00  0.97  0.01  0.00  0.00
-11:25:36 CD2B.0   CD2B02338266  stand 0    LeftBed  LeftBed(pad)       OpenFloor  0     0.00  0.00  1.00  0.00  0.00  0.00
-11:25:36 CD2B.0   CD2B02338266  stand 0    LeftBed  LeftBed(pad)       OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:36 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:37 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:38 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:39 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:40 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:41 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:42 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:43 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:44 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:45 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:46 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:47 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:48 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:49 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:50 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:51 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:52 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:53 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:54 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:55 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:56 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.99  0.00  0.00  0.00
-11:25:57 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  27    0.00  0.00  0.99  0.00  0.00  0.00
-11:25:58 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  28    0.00  0.00  0.99  0.00  0.00  0.00
-11:25:59 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  29    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:00 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  30    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:01 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  31    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:02 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  32    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:03 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  33    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:04 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  34    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:05 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  35    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:06 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  36    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:07 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  37    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:08 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  38    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:08 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  39    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:09 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  40    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:10 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  41    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:11 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  42    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:12 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  43    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:13 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  44    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:14 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  45    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:15 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  46    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:16 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  47    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:17 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  48    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:18 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  49    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:19 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  50    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:20 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  51    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:21 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  52    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:22 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  53    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:23 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  54    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:24 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  55    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:25 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  56    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:26 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  57    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:27 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  58    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:28 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  59    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:29 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  60    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:30 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  61    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:31 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  62    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:32 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  62    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:32 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  63    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:33 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  64    0.00  0.00  0.99  0.00  0.00  0.00
-11:26:34 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  65    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:35 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  66    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:36 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  67    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:37 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  68    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:38 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  69    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:39 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  70    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:40 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  71    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:41 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  72    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:42 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  73    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:43 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  74    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:44 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  75    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:45 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  76    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:46 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  77    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:47 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  78    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:48 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  79    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:49 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  80    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:50 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  81    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:51 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  82    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:52 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  83    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:53 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  84    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:54 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  85    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:55 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  86    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:56 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  87    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:57 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  88    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:58 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  89    0.00  0.00  0.98  0.00  0.00  0.00
-11:26:59 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  90    0.00  0.00  0.98  0.00  0.00  0.00
-11:27:00 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  91    0.00  0.00  0.98  0.00  0.00  0.00
-11:27:01 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  92    0.00  0.00  0.98  0.00  0.00  0.00
-11:27:02 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  93    0.00  0.00  0.98  0.00  0.00  0.00
-11:27:03 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  94    0.00  0.00  0.98  0.00  0.00  0.00
-11:27:04 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  95    0.00  0.00  0.98  0.00  0.00  0.00
-11:27:05 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  96    0.00  0.00  0.98  0.00  0.00  0.00
-11:27:06 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  97    0.00  0.00  0.98  0.00  0.00  0.00
-11:27:07 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  98    0.00  0.00  0.98  0.00  0.00  0.00
-11:27:08 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  99    0.00  0.00  0.98  0.00  0.00  0.00
-11:27:09 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  100   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:10 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  101   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:11 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  102   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:12 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  103   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:13 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  104   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:14 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  105   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:15 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  106   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:16 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  107   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:17 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  108   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:18 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  109   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:19 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  110   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:20 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  111   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:21 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  112   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:22 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  113   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:23 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  114   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:24 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  115   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:25 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  116   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:26 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  117   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:27 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  118   0.00  0.00  0.98  0.00  0.00  0.00
-11:27:28 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  119   0.00  0.00  0.97  0.00  0.00  0.00
-11:27:29 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  120   0.00  0.00  0.97  0.00  0.00  0.01
-11:27:30 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  121   0.00  0.00  0.97  0.00  0.00  0.01
-11:27:31 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  122   0.00  0.00  0.97  0.00  0.00  0.01
-11:27:31 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  122   0.00  0.00  0.97  0.00  0.00  0.01
-11:27:32 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  122   0.00  0.00  0.97  0.00  0.00  0.01
-11:27:33 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  123   0.00  0.00  0.97  0.00  0.00  0.01
-11:27:34 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  124   0.00  0.00  0.97  0.00  0.00  0.01
-11:27:35 CD2B.88  CD2B02338266  -     0    LeftBed  -                  OpenFloor  126   0.00  0.00  0.97  0.00  0.00  0.01
-11:27:36 CD2B.88  CD2B02338266  -     0    LeftBed  -                  OpenFloor  127   0.01  0.02  0.68  0.00  0.01  0.06
-11:27:37 CD2B.88  CD2B02338266  -     0    LeftBed  -                  OpenFloor  128   0.01  0.02  0.50  0.01  0.06  0.06
-11:27:57 CD2B.88  CD2B02338266  -     0    LeftBed  -                  OpenFloor  147   0.02  0.01  0.39  0.02  0.11  0.05
-11:28:28 CD2B.88  CD2B02338266  -     0    LeftBed  -                  OpenFloor  179   0.02  0.01  0.31  0.03  0.14  0.04
-11:29:00 CD2B.88  CD2B02338266  -     0    LeftBed  -                  OpenFloor  211   0.02  0.01  0.27  0.04  0.17  0.03
-11:29:00 CD2B.88  CD2B02338266  -     0    LeftBed  -                  BlindOpen  211   0.03  0.01  0.24  0.05  0.18  0.03
-11:29:32 CD2B.88  CD2B02338266  -     0    LeftBed  -                  BlindOpen  243   0.03  0.01  0.22  0.05  0.20  0.03
-11:29:32 CD2B.88  CD2B02338266  -     0    LeftBed  -                  BlindOpen  243   0.04  0.01  0.21  0.06  0.21  0.02
-11:30:04 CD2B.88  CD2B02338266  -     0    LeftBed  -                  BlindOpen  274   0.04  0.01  0.20  0.06  0.21  0.02 *no fire ,tFloor= μ + 1.5σ = 480 + 240 = 720s = 12min
-11:30:12 CD2B.0   CD2B02338266  stand 81   LeftBed  EnterRoom(rdr)     OpenFloor  0     0.01  0.01  0.50  0.04  0.14  0.01
-11:30:13 CD2B.0   CD2B02338266  stand 78   LeftBed  stand              OpenFloor  0     0.01  0.01  0.55  0.03  0.10  0.03
-11:30:14 CD2B.0   CD2B02338266  walk  73   LeftBed  walk               OpenFloor  0     0.01  0.01  0.59  0.02  0.09  0.03
-11:30:15 CD2B.0   CD2B02338266  walk  106  LeftBed  walk               OpenFloor  0     0.00  0.01  0.61  0.02  0.08  0.03
-11:30:16 CD2B.0   CD2B02338266  walk  108  LeftBed  walk               OpenFloor  0     0.00  0.01  0.63  0.02  0.07  0.03
-11:30:17 CD2B.0   CD2B02338266  walk  95   LeftBed  walk               OpenFloor  0     0.00  0.01  0.63  0.02  0.06  0.03
-11:30:18 CD2B.0   CD2B02338266  walk  111  LeftBed  walk               OpenFloor  0     0.00  0.01  0.64  0.01  0.06  0.03
-11:30:19 CD2B.0   CD2B02338266  walk  100  LeftBed  walk               OpenFloor  0     0.00  0.01  0.64  0.01  0.06  0.03
-11:30:20 CD2B.0   CD2B02338266  walk  92   LeftBed  walk               OpenFloor  0     0.00  0.01  0.78  0.01  0.04  0.02
-11:30:21 CD2B.0   CD2B02338266  walk  90   LeftBed  walk               OpenFloor  0     0.00  0.01  0.84  0.00  0.02  0.02
-11:30:22 CD2B.0   CD2B02338266  walk  98   LeftBed  walk               OpenFloor  0     0.00  0.01  0.86  0.00  0.01  0.02
-11:30:23 CD2B.0   CD2B02338266  walk  113  LeftBed  walk               OpenFloor  0     0.00  0.01  0.86  0.00  0.01  0.02
-11:30:24 CD2B.0   CD2B02338266  walk  98   LeftBed  walk               OpenFloor  0     0.00  0.01  0.76  0.00  0.02  0.04
-11:30:24 CD2B.0   CD2B02338266  walk  83   LeftBed  walk               OpenFloor  0     0.00  0.01  0.71  0.01  0.03  0.04
-11:30:25 CD2B.0   CD2B02338266  walk  85   LeftBed  walk               OpenFloor  0     0.00  0.01  0.68  0.01  0.04  0.04
-11:30:26 CD2B.0   CD2B02338266  walk  105  LeftBed  walk               OpenFloor  0     0.00  0.01  0.67  0.01  0.05  0.04
-11:30:27 CD2B.0   CD2B02338266  walk  0    LeftBed  walk               OpenFloor  0     0.00  0.01  0.66  0.01  0.05  0.03
-11:30:28 CD2B.0   CD2B02338266  walk  0    LeftBed  walk               OpenFloor  0     0.00  0.01  0.65  0.01  0.05  0.03
-11:30:29 CD2B.0   CD2B02338266  walk  0    LeftBed  walk               OpenFloor  0     0.00  0.01  0.65  0.01  0.05  0.03
-11:30:29 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.01  0.65  0.01  0.06  0.03
-11:30:30 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.01  0.65  0.01  0.06  0.03
-11:30:31 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.01  0.64  0.01  0.06  0.03
-11:30:32 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.01  0.64  0.01  0.06  0.03
-11:30:33 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.01  0.64  0.01  0.06  0.03
-11:30:34 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.01  0.64  0.01  0.06  0.03
-11:30:35 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.01  0.64  0.01  0.06  0.03
-11:30:36 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.01  0.64  0.01  0.06  0.03
-11:30:37 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.01  0.64  0.01  0.06  0.03
-11:30:38 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.01  0.64  0.01  0.06  0.03
-11:30:39 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.01  0.64  0.01  0.06  0.03
-11:30:40 CD2B.0   CD2B02338266  stand 0    LeftBed  stand              OpenFloor  0     0.01  0.01  0.64  0.01  0.06  0.03
-11:30:40 CD2B.0   CD2B02338266  stand 0    LeftBed  ExitRoom(rdr)      OpenFloor  0     0.01  0.01  0.64  0.01  0.06  0.03
-11:30:41 CD2B.88  CD2B02338266  -     0    LeftBed  -                  OpenFloor  0     0.01  0.01  0.64  0.01  0.06  0.03
-11:30:42 CD2B.88  CD2B02338266  -     0    LeftBed  -                  Left       0     0.00  0.00  0.00  0.00  0.00  0.99
-11:30:43 CD2B.88  -             -     0    LeftBed  -                  Empty      0     0.00  0.00  0.00  0.00  0.00  0.00
-11:31:07 CD2B.88  -             -     0    LeftBed  -                  Empty      0     0.00  0.00  0.00  0.00  0.00  0.00
-11:31:09 CD2B.0   CD2B03109636  stand 98   LeftBed  stand              OpenFloor  0     0.00  0.00  0.58  0.00  0.39  0.02
-11:31:10 CD2B.0   CD2B03109636  stand 96   LeftBed  stand              OpenFloor  0     0.00  0.00  0.92  0.00  0.05  0.01
-11:31:11 CD2B.0   CD2B03109636  stand 112  LeftBed  stand              OpenFloor  1     0.00  0.00  0.97  0.00  0.01  0.01
-11:31:12 CD2B.0   CD2B03109636  stand 110  LeftBed  InBed(rdr)         OpenFloor  0     0.00  0.00  0.97  0.00  0.00  0.01
-11:31:13 CD2B.0   CD2B03109636  stand 108  InBed    stand              OpenFloor  0     0.00  0.05  0.77  0.00  0.00  0.04
-11:31:14 CD2B.0   CD2B03109636  stand 105  InBed    stand              OpenFloor  0     0.00  0.11  0.66  0.01  0.02  0.03
-11:31:15 CD2B.0   CD2B03109636  walk  128  InBed    walk               OpenFloor  0     0.00  0.16  0.59  0.01  0.03  0.03
-11:31:16 CD2B.0   CD2B03109636  walk  146  InBed    walk               OpenFloor  0     0.00  0.20  0.54  0.02  0.03  0.03
-11:31:17 CD2B.0   CD2B03109636  walk  146  InBed    walk               OpenFloor  0     0.00  0.24  0.50  0.03  0.04  0.03
-11:31:18 CD2B.0   CD2B03109636  walk  84   InBed    walk               OpenFloor  0     0.00  0.28  0.47  0.03  0.04  0.03
-11:31:19 CD2B.0   CD2B03109636  lying 68   InBed    lying              Bed        0     0.00  0.91  0.04  0.01  0.01  0.00
-11:31:20 CD2B.0   CD2B03109636  lying 82   InBed    lying              Bed        0     0.00  0.98  0.01  0.00  0.00  0.00
-11:31:21 CD2B.0   CD2B03109636  lying 82   InBed    InBed(pad)         Bed        0     0.00  0.99  0.01  0.00  0.00  0.00
-11:31:21 CD2B.0   CD2B03109636  lying 82   InBed    InBed(pad)         Bed        0     0.00  1.00  0.00  0.00  0.00  0.00
-11:31:21 CD2B.0   CD2B03109636  lying 82   InBed    InBed(pad)         Bed        0     0.00  0.99  0.01  0.00  0.00  0.00
-11:31:21 CD2B.0   CD2B03109636  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:31:22 CD2B.0   CD2B03109636  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:31:23 CD2B.0   CD2B03109636  lying 0    InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:31:24 CD2B.0   CD2B03109636  lying 63   InBed    lying              Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:31:25 CD2B.1   CD2B03109636+CD2B13125567 stand 0    InBed    EnterRoom(rdr)     Bed        0     0.00  0.99  0.00  0.00  0.00  0.00
-11:31:25 CD2B.1   CD2B03109636+CD2B13125567 stand 0    InBed    EnterRoom(rdr)     Bed        0     0.00  1.00  0.00  0.00  0.00  0.00
-11:31:26 CD2B.1   CD2B03109636+CD2B13125567 stand 80   InBed    stand              Empty      0     0.00  0.28  0.27  0.03  0.36  0.02
-11:31:26 CD2B.1   CD2B03109636+CD2B13125567 stand 80   InBed    stand              Bed        0     0.00  0.97  0.01  0.01  0.00  0.00
-11:31:27 CD2B.1   CD2B03109636+CD2B13125567 stand 0    InBed    stand              OpenFloor  0     0.00  0.07  0.75  0.01  0.08  0.02
-11:31:27 CD2B.1   CD2B03109636+CD2B13125567 stand 0    InBed    stand              OpenFloor  0     0.00  0.02  0.92  0.00  0.03  0.01
-11:31:28 CD2B.1   CD2B03109636+CD2B13125567 stand 125  InBed    stand              OpenFloor  0     0.00  0.02  0.87  0.00  0.01  0.02
-11:31:28 CD2B.1   CD2B03109636+CD2B13125567 stand 125  InBed    stand              OpenFloor  0     0.00  0.01  0.93  0.00  0.01  0.01
-11:31:29 CD2B.1   CD2B03109636+CD2B13125567 stand 97   InBed    stand              OpenFloor  0     0.00  0.04  0.78  0.00  0.01  0.04
-11:31:29 CD2B.1   CD2B03109636+CD2B13125567 stand 97   InBed    stand              Bed        0     0.00  0.77  0.18  0.03  0.00  0.01
-11:31:30 CD2B.1   CD2B03109636+CD2B13125567 stand 97   InBed    stand              Bed        0     0.00  0.70  0.19  0.06  0.00  0.01
-11:31:30 CD2B.1   CD2B03109636+CD2B13125567 stand 112  InBed    stand              Bed        0     0.00  0.65  0.21  0.07  0.01  0.01
-11:31:30 CD2B.1   CD2B03109636+CD2B13125567 stand 112  InBed    stand              Bed        0     0.00  0.70  0.22  0.04  0.00  0.01
-11:31:31 CD2B.1   CD2B03109636+CD2B13125567 stand 112  LeftBed  LeftBed(pad)       OpenFloor  0     0.00  0.00  0.80  0.00  0.01  0.04
-11:31:31 CD2B.1   CD2B03109636+CD2B13125567 stand 112  LeftBed  stand              OpenFloor  0     0.00  0.00  0.73  0.00  0.03  0.04
-11:31:31 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.70  0.01  0.04  0.04
-11:31:31 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.82  0.00  0.02  0.02
-11:31:32 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.74  0.00  0.03  0.04
-11:31:32 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.85  0.00  0.01  0.02
-11:31:33 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.76  0.00  0.02  0.04
-11:31:33 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.86  0.00  0.01  0.02
-11:31:34 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.76  0.00  0.02  0.04
-11:31:34 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.87  0.00  0.01  0.02
-11:31:35 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.76  0.00  0.02  0.04
-11:31:35 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.87  0.00  0.01  0.02
-11:31:36 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.76  0.00  0.02  0.04
-11:31:36 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.87  0.00  0.01  0.02
-11:31:37 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.76  0.00  0.02  0.04
-11:31:37 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.87  0.00  0.01  0.02
-11:31:38 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.76  0.00  0.02  0.04
-11:31:38 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.87  0.00  0.01  0.02
-11:31:39 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.76  0.00  0.02  0.04
-11:31:39 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.87  0.00  0.01  0.02
-11:31:39 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  ExitRoom(rdr)      OpenFloor  0     0.00  0.00  0.76  0.00  0.02  0.04
-11:31:39 CD2B.1   CD2B03109636+CD2B13125567 stand 0    LeftBed  ExitRoom(rdr)      OpenFloor  0     0.00  0.00  0.87  0.00  0.01  0.02
-11:31:41 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
-11:31:41 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  0     0.00  0.00  0.98  0.00  0.00  0.00
-11:31:42 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  12    0.00  0.00  0.98  0.00  0.00  0.00
-11:31:43 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  13    0.00  0.00  0.98  0.00  0.00  0.00
-11:31:44 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  14    0.00  0.00  0.98  0.00  0.00  0.00
-11:31:45 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  15    0.00  0.00  0.98  0.00  0.00  0.00
-11:31:46 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  16    0.00  0.00  0.98  0.00  0.00  0.00
-11:31:47 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  17    0.00  0.00  0.98  0.00  0.00  0.00
-11:31:48 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  18    0.00  0.00  0.98  0.00  0.00  0.00
-11:31:49 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  19    0.00  0.00  0.98  0.00  0.00  0.00
-11:31:50 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  20    0.00  0.00  0.98  0.00  0.00  0.00
-11:31:51 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  21    0.00  0.00  0.98  0.00  0.00  0.00
-11:31:52 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  22    0.00  0.00  0.98  0.00  0.00  0.00
-11:31:53 CD2B.0   CD2B03109636  stand 0    LeftBed  stand              OpenFloor  23    0.00  0.00  0.98  0.00  0.00  0.00
-11:31:53 CD2B.1   CD2B03109636+CD2B13153708 stand 82   LeftBed  EnterRoom(rdr)     OpenFloor  24    0.00  0.00  0.98  0.00  0.00  0.00
-11:31:53 CD2B.1   CD2B03109636+CD2B13153708 stand 82   LeftBed  EnterRoom(rdr)     OpenFloor  24    0.00  0.00  1.00  0.00  0.00  0.00
-11:31:54 CD2B.1   CD2B03109636+CD2B13153708 stand 75   LeftBed  stand              Empty      24    0.00  0.00  0.36  0.00  0.56  0.02
-11:31:54 CD2B.1   CD2B03109636+CD2B13153708 stand 75   LeftBed  stand              OpenFloor  24    0.00  0.00  0.53  0.00  0.42  0.01
-11:31:55 CD2B.1   CD2B03109636+CD2B13153708 walk  73   LeftBed  walk               OpenFloor  25    0.00  0.00  0.56  0.00  0.29  0.03
-11:31:55 CD2B.1   CD2B03109636+CD2B13153708 walk  73   LeftBed  walk               OpenFloor  25    0.00  0.00  0.72  0.00  0.19  0.02
-11:31:56 CD2B.1   CD2B03109636+CD2B13153708 walk  89   LeftBed  walk               OpenFloor  26    0.00  0.01  0.68  0.00  0.13  0.03
-11:31:56 CD2B.1   CD2B03109636+CD2B13153708 walk  89   LeftBed  walk               OpenFloor  26    0.00  0.00  0.81  0.00  0.08  0.02
-11:31:57 CD2B.1   CD2B03109636+CD2B13153708 walk  81   LeftBed  walk               OpenFloor  27    0.00  0.01  0.74  0.00  0.06  0.04
-11:31:57 CD2B.1   CD2B03109636+CD2B13153708 walk  81   LeftBed  walk               OpenFloor  27    0.00  0.00  0.85  0.00  0.03  0.02
-11:31:58 CD2B.1   CD2B03109636+CD2B13153708 walk  0    LeftBed  walk               OpenFloor  28    0.00  0.01  0.76  0.00  0.03  0.04
-11:31:58 CD2B.1   CD2B03109636+CD2B13153708 walk  0    LeftBed  walk               OpenFloor  28    0.00  0.00  0.86  0.00  0.02  0.02
+time     dev.tid  lid           pose    z    bed      event              src  pR   top        nr  still SFall SBed  SOpen SBliR SEmpt SLeft
+11:23:04 CD2B.E   -             -       0    NoReport EnterRoom(rdr)     room -    Empty      1   0     0.00  0.03  0.15  0.00  0.79  0.04
+11:23:04 CD2B.0   CD2B03109636  stand   116  NoReport stand              room -    Empty      1   0     0.00  0.03  0.15  0.00  0.79  0.04
+11:23:04 CD2B.0   CD2B03109636  stand   109  NoReport stand              room -    Empty      1   0     0.00  0.03  0.40  0.00  0.53  0.01
+11:23:05 CD2B.0   CD2B03109636  stand   110  NoReport stand              room -    OpenFloor  1   1     0.00  0.03  0.63  0.00  0.26  0.01
+11:23:06 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   2     0.00  0.02  0.76  0.00  0.11  0.02
+11:23:07 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.00  0.02  0.82  0.00  0.04  0.02
+11:23:08 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.00  0.02  0.84  0.00  0.02  0.02
+11:23:09 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.00  0.02  0.84  0.00  0.01  0.02
+11:23:10 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.00  0.02  0.85  0.00  0.01  0.02
+11:23:11 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.00  0.02  0.85  0.00  0.01  0.02
+11:23:12 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.00  0.02  0.85  0.00  0.01  0.02
+11:23:13 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.00  0.02  0.85  0.00  0.01  0.02
+11:23:14 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.00  0.02  0.85  0.00  0.01  0.02
+11:23:15 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.00  0.04  0.74  0.00  0.02  0.04
+11:23:16 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.01  0.05  0.68  0.01  0.03  0.04
+11:23:17 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.01  0.05  0.65  0.01  0.04  0.03
+11:23:18 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.01  0.05  0.63  0.01  0.04  0.03
+11:23:19 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.01  0.05  0.62  0.02  0.05  0.03
+11:23:20 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.01  0.05  0.62  0.02  0.05  0.03
+11:23:21 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.01  0.05  0.62  0.02  0.05  0.03
+11:23:22 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.01  0.05  0.61  0.02  0.05  0.03
+11:23:22 CD2B.0   CD2B03109636  stand   0    NoReport stand              room -    OpenFloor  1   0     0.01  0.05  0.61  0.02  0.05  0.03
+11:23:22 CD2B.E   -             -       0    NoReport ExitRoom(rdr)      room -    OpenFloor  1   0     0.01  0.05  0.61  0.02  0.05  0.03
+11:23:38 CD2B.0   CD2B03109636  stand   77   NoReport stand              room -    Empty      1   0     0.00  0.02  0.15  0.00  0.79  0.04
+11:23:39 CD2B.0   CD2B03109636  stand   84   NoReport stand              room -    Empty      1   0     0.00  0.02  0.25  0.00  0.67  0.01
+11:23:40 CD2B.0   CD2B03109636  stand   82   NoReport stand              room -    Empty      1   1     0.00  0.02  0.35  0.00  0.53  0.02
+11:23:41 CD2B.0   CD2B03109636  stand   75   NoReport stand              room -    OpenFloor  1   2     0.00  0.03  0.43  0.01  0.40  0.02
+11:23:42 CD2B.0   CD2B03109636  stand   90   NoReport stand              room -    OpenFloor  1   3     0.00  0.03  0.49  0.01  0.29  0.02
+11:23:43 CD2B.0   CD2B03109636  stand   77   NoReport stand              room -    OpenFloor  1   4     0.00  0.03  0.54  0.01  0.21  0.03
+11:23:44 CD2B.0   CD2B03109636  walk    72   NoReport walk               room -    OpenFloor  1   0     0.00  0.03  0.57  0.01  0.16  0.03
+11:23:45 CD2B.0   CD2B03109636  lying   76   InBed    lying              room -    Bed        1   0     0.00  0.31  0.30  0.02  0.12  0.03
+11:23:45 CD2B.E   -             -       0    InBed    InBed(rdr)         room -    Bed        1   0     0.00  0.31  0.30  0.02  0.12  0.03
+11:23:46 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.70  0.11  0.02  0.06  0.01
+11:23:47 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.89  0.03  0.02  0.02  0.00
+11:23:48 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.94  0.02  0.02  0.00  0.00
+11:23:49 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:23:50 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:23:51 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:23:52 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:23:53 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:23:54 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:23:55 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:23:56 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:23:56 1641.E   -             -       0    InBed    InBed(pad)         room -    Bed        1   0     0.00  1.00  0.00  0.00  0.00  0.00
+11:23:56 1641.E   -             -       0    InBed    InBed(pad)         room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:23:57 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:23:58 CD2B.0   CD2B03109636  lying   79   InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:23:59 CD2B.0   CD2B03109636  lying   70   InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:24:00 CD2B.0   CD2B03109636  lying   69   InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:24:01 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.85  0.08  0.06  0.00  0.01
+11:24:02 CD2B.0   CD2B03109636  lying   70   InBed    lying              room -    Bed        1   0     0.00  0.93  0.03  0.03  0.00  0.00
+11:24:03 CD2B.0   CD2B03109636  lying   71   InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.03  0.00  0.00
+11:24:04 CD2B.0   CD2B03109636  sit     72   InBed    sit                room -    Bed        1   0     0.00  0.86  0.04  0.07  0.00  0.01
+11:24:05 CD2B.0   CD2B03109636  sit     60   InBed    sit                room -    Bed        1   0     0.00  0.81  0.05  0.08  0.00  0.01
+11:24:05 CD2B.0   CD2B03109636  walk    72   InBed    walk               room -    Bed        1   0     0.00  0.68  0.20  0.08  0.01  0.01
+11:24:07 CD2B.0   CD2B03109636  walk    72   InBed    walk               room -    Bed        1   0     0.00  0.64  0.21  0.08  0.01  0.01
+11:24:08 CD2B.0   CD2B03109636  walk    0    InBed    walk               room -    Bed        1   0     0.00  0.62  0.23  0.08  0.01  0.01
+11:24:08 CD2B.E   -             -       0    InBed    LeftBed(rdr)       room -    Bed        1   0     0.00  0.62  0.23  0.08  0.01  0.01
+11:24:08 1641.E   -             -       0    LeftBed  LeftBed(pad)       room -    OpenFloor  1   0     0.00  0.00  0.74  0.12  0.02  0.02
+11:24:08 1641.E   -             -       0    LeftBed  LeftBed(pad)       room -    OpenFloor  1   0     0.00  0.00  0.70  0.07  0.03  0.04
+11:24:09 CD2B.0   CD2B03109636  walk    72   LeftBed  walk               room -    OpenFloor  1   0     0.00  0.00  0.81  0.03  0.02  0.02
+11:24:10 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.85  0.01  0.01  0.02
+11:24:11 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.86  0.00  0.01  0.02
+11:24:12 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.87  0.00  0.01  0.02
+11:24:13 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.87  0.00  0.01  0.02
+11:24:14 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.00  0.77  0.00  0.02  0.04
+11:24:15 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.00  0.72  0.00  0.03  0.04
+11:24:15 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.00  0.69  0.01  0.04  0.04
+11:24:16 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.00  0.67  0.01  0.05  0.04
+11:24:17 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.00  0.66  0.01  0.05  0.03
+11:24:18 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.00  0.66  0.01  0.05  0.03
+11:24:19 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.00  0.65  0.01  0.06  0.03
+11:24:20 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.00  0.65  0.01  0.06  0.03
+11:24:21 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.00  0.65  0.01  0.06  0.03
+11:24:21 CD2B.E   -             -       0    LeftBed  ExitRoom(rdr)      room -    OpenFloor  1   0     0.01  0.00  0.65  0.01  0.06  0.03
+11:24:21 CD2B.0   CD2B03109636  stand   83   LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.79  0.01  0.03  0.02
+11:24:22 CD2B.0   CD2B03109636  walk    77   LeftBed  walk               room -    OpenFloor  1   0     0.00  0.00  0.97  0.00  0.00  0.00
+11:24:23 CD2B.0   CD2B03109636  walk    62   LeftBed  walk               room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:24:24 CD2B.0   CD2B03109636  walk    65   LeftBed  walk               room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:24:25 CD2B.0   CD2B03109636  walk    0    LeftBed  walk               room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:24:26 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:24:27 CD2B.0   CD2B03109636  sit     0    LeftBed  sit                room -    OpenFloor  1   0     0.00  0.00  0.98  0.00  0.00  0.00
+11:24:28 CD2B.0   CD2B03109636  sit     0    LeftBed  sit                room -    OpenFloor  1   0     0.00  0.00  0.98  0.00  0.00  0.00
+11:24:29 CD2B.0   CD2B03109636  sit     0    LeftBed  sit                room -    OpenFloor  1   0     0.00  0.00  0.98  0.00  0.00  0.00
+11:24:30 CD2B.0   CD2B03109636  sit     63   LeftBed  sit                room -    OpenFloor  1   0     0.00  0.00  0.98  0.00  0.00  0.00
+11:24:31 CD2B.0   CD2B03109636  lying   66   LeftBed  lying              room -    OpenFloor  1   0     0.00  0.00  0.98  0.00  0.00  0.00
+11:24:32 CD2B.0   CD2B03109636  lying   68   LeftBed  lying              room -    OpenFloor  1   0     0.00  0.00  0.98  0.00  0.00  0.00
+11:24:33 CD2B.0   CD2B03109636  lying   67   LeftBed  lying              room -    OpenFloor  1   0     0.00  0.00  0.98  0.00  0.00  0.00
+11:24:34 CD2B.0   CD2B03109636  lying   68   LeftBed  lying              room -    OpenFloor  1   0     0.00  0.00  0.98  0.00  0.00  0.00
+11:24:34 CD2B.E   -             -       0    LeftBed  InBed(rdr)         room -    OpenFloor  1   0     0.00  0.00  0.98  0.00  0.00  0.00
+11:24:35 CD2B.0   CD2B03109636  lying   79   InBed    lying              room -    OpenFloor  1   0     0.02  0.10  0.62  0.00  0.00  0.06
+11:24:36 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.01  0.58  0.21  0.01  0.02  0.02
+11:24:37 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.86  0.05  0.02  0.01  0.01
+11:24:38 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.93  0.02  0.02  0.00  0.00
+11:24:39 CD2B.0   CD2B03109636  lying   72   InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:24:40 CD2B.0   CD2B03109636  stand   62   InBed    stand              room -    Bed        1   0     0.00  0.83  0.09  0.06  0.00  0.01
+11:24:41 CD2B.0   CD2B03109636  lying   68   InBed    lying              room -    Bed        1   0     0.00  0.93  0.03  0.03  0.00  0.00
+11:24:42 CD2B.0   CD2B03109636  lying   71   InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.03  0.00  0.00
+11:24:43 CD2B.0   CD2B03109636  lying   66   InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:24:44 CD2B.0   CD2B03109636  lying   63   InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:24:45 CD2B.0   CD2B03109636  lying   67   InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:24:46 CD2B.0   CD2B03109636  lying   67   InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:24:47 CD2B.0   CD2B03109636  lying   70   InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:24:48 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:24:49 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:24:50 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:24:51 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:24:52 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:24:53 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.83  0.09  0.06  0.00  0.01
+11:24:54 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.75  0.13  0.08  0.00  0.01
+11:24:55 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.70  0.16  0.08  0.01  0.01
+11:24:56 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.66  0.19  0.08  0.01  0.01
+11:24:57 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.64  0.21  0.08  0.01  0.01
+11:24:58 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.61  0.22  0.08  0.01  0.01
+11:24:59 CD2B.0   CD2B03109636  lying   75   InBed    lying              room -    Bed        1   0     0.00  0.86  0.06  0.04  0.01  0.01
+11:25:00 CD2B.0   CD2B03109636  lying   70   InBed    lying              room -    Bed        1   0     0.00  0.93  0.02  0.03  0.00  0.00
+11:25:01 CD2B.0   CD2B03109636  lying   68   InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:25:02 CD2B.0   CD2B03109636  lying   71   InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:25:03 CD2B.0   CD2B03109636  lying   69   InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:25:04 CD2B.0   CD2B03109636  lying   69   InBed    lying              room -    Bed        1   0     0.00  0.95  0.02  0.02  0.00  0.00
+11:25:05 CD2B.0   CD2B03109636  lying   82   InBed    lying              room -    Bed        1   0     0.00  0.94  0.03  0.02  0.00  0.00
+11:25:06 CD2B.0   CD2B03109636  lying   84   InBed    lying              room -    Bed        1   0     0.00  0.93  0.04  0.02  0.00  0.00
+11:25:07 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.82  0.10  0.06  0.00  0.01
+11:25:08 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.74  0.14  0.08  0.00  0.01
+11:25:09 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.69  0.17  0.08  0.01  0.01
+11:25:10 CD2B.0   CD2B03109636  stand   76   InBed    stand              room -    Bed        1   0     0.00  0.91  0.05  0.02  0.00  0.00
+11:25:11 CD2B.0   CD2B03109636  lying   78   InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:12 1641.E   -             -       0    InBed    InBed(pad)         room -    Bed        1   0     0.00  1.00  0.00  0.00  0.00  0.00
+11:25:12 1641.E   -             -       0    InBed    InBed(pad)         room -    Bed        1   0     0.00  1.00  0.00  0.00  0.00  0.00
+11:25:12 CD2B.0   CD2B03109636  lying   70   InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:13 CD2B.0   CD2B03109636  lying   80   InBed    lying              room -    Bed        1   0     0.00  0.99  0.01  0.00  0.00  0.00
+11:25:14 CD2B.0   CD2B03109636  lying   79   InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:15 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:16 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:17 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:18 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:19 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:20 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:21 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:22 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:23 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:24 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:25 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:26 CD2B.0   CD2B03109636  lying   0    InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:27 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.97  0.02  0.01  0.00  0.00
+11:25:28 CD2B.0   CD2B03109636  lying   69   InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:29 CD2B.0   CD2B03109636  lying   76   InBed    lying              room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:25:30 CD2B.0   CD2B03109636  walk    64   InBed    walk               room -    Bed        1   0     0.00  0.97  0.02  0.01  0.00  0.00
+11:25:31 CD2B.0   CD2B03109636  walk    0    InBed    walk               room -    Bed        1   0     0.00  0.84  0.09  0.06  0.00  0.01
+11:25:32 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.70  0.16  0.08  0.01  0.01
+11:25:33 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.66  0.19  0.08  0.01  0.01
+11:25:34 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.64  0.21  0.08  0.01  0.01
+11:25:35 CD2B.0   CD2B03109636  stand   0    InBed    stand              room -    Bed        1   0     0.00  0.61  0.22  0.08  0.01  0.01
+11:25:36 1641.E   -             -       0    LeftBed  LeftBed(pad)       room -    OpenFloor  1   0     0.00  0.00  1.00  0.00  0.00  0.00
+11:25:36 1641.E   -             -       0    LeftBed  LeftBed(pad)       room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:36 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:37 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:38 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:39 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:40 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:41 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:42 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:43 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:44 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:45 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:46 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:47 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:48 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:49 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:50 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:51 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:52 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:53 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:54 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:55 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:56 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.00  0.99  0.00  0.00  0.00
+11:25:57 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   27    0.00  0.00  0.99  0.00  0.00  0.00
+11:25:58 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   28    0.00  0.00  0.99  0.00  0.00  0.00
+11:25:59 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   29    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:00 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   30    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:01 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   31    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:02 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   32    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:03 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   33    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:04 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   34    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:05 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   35    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:06 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   36    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:07 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   37    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:08 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   38    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:08 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   39    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:09 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   40    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:10 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   41    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:11 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   42    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:12 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   43    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:13 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   44    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:14 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   45    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:15 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   46    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:16 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   47    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:17 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   48    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:18 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   49    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:19 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   50    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:20 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   51    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:21 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   52    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:22 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   53    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:23 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   54    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:24 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   55    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:25 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   56    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:26 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   57    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:27 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   58    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:28 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   59    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:29 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   60    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:30 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   61    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:32 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   62    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:32 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   63    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:33 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   64    0.00  0.00  0.99  0.00  0.00  0.00
+11:26:34 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   65    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:35 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   66    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:36 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   67    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:37 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   68    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:38 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   69    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:39 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   70    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:40 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   71    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:41 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   72    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:42 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   73    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:43 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   74    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:44 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   75    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:45 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   76    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:46 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   77    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:47 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   78    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:48 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   79    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:49 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   80    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:50 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   81    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:51 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   82    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:52 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   83    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:53 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   84    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:54 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   85    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:55 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   86    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:56 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   87    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:57 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   88    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:58 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   89    0.00  0.00  0.98  0.00  0.00  0.00
+11:26:59 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   90    0.00  0.00  0.98  0.00  0.00  0.00
+11:27:00 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   91    0.00  0.00  0.98  0.00  0.00  0.00
+11:27:01 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   92    0.00  0.00  0.98  0.00  0.00  0.00
+11:27:02 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   93    0.00  0.00  0.98  0.00  0.00  0.00
+11:27:03 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   94    0.00  0.00  0.98  0.00  0.00  0.00
+11:27:04 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   95    0.00  0.00  0.98  0.00  0.00  0.00
+11:27:05 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   96    0.00  0.00  0.98  0.00  0.00  0.00
+11:27:06 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   97    0.00  0.00  0.98  0.00  0.00  0.00
+11:27:07 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   98    0.00  0.00  0.98  0.00  0.00  0.00
+11:27:08 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   99    0.00  0.00  0.98  0.00  0.00  0.00
+11:27:09 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   100   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:10 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   101   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:11 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   102   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:12 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   103   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:13 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   104   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:14 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   105   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:15 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   106   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:16 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   107   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:17 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   108   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:18 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   109   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:19 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   110   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:20 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   111   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:21 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   112   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:22 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   113   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:23 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   114   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:24 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   115   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:25 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   116   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:26 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   117   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:27 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   118   0.00  0.00  0.98  0.00  0.00  0.00
+11:27:28 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   119   0.00  0.00  0.97  0.00  0.00  0.00
+11:27:29 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   120   0.00  0.00  0.97  0.00  0.00  0.01
+11:27:30 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   121   0.00  0.00  0.97  0.00  0.00  0.01
+11:27:31 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   122   0.00  0.00  0.97  0.00  0.00  0.01
+11:27:32 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   122   0.00  0.00  0.97  0.00  0.00  0.01
+11:27:33 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   123   0.00  0.00  0.97  0.00  0.00  0.01
+11:27:34 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   124   0.00  0.00  0.97  0.00  0.00  0.01
+11:30:12 CD2B.E   -             -       0    LeftBed  EnterRoom(rdr)     room -    BlindOpen  0   0     0.04  0.01  0.20  0.06  0.21  0.02
+11:30:12 CD2B.0   CD2B03109636  stand   81   LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.50  0.04  0.14  0.01
+11:30:13 CD2B.0   CD2B03109636  stand   78   LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.55  0.03  0.10  0.03
+11:30:14 CD2B.0   CD2B03109636  walk    73   LeftBed  walk               room -    OpenFloor  1   0     0.01  0.01  0.59  0.02  0.09  0.03
+11:30:15 CD2B.0   CD2B03109636  walk    106  LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.61  0.02  0.08  0.03
+11:30:16 CD2B.0   CD2B03109636  walk    108  LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.63  0.02  0.07  0.03
+11:30:17 CD2B.0   CD2B03109636  walk    95   LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.63  0.02  0.06  0.03
+11:30:18 CD2B.0   CD2B03109636  walk    111  LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.64  0.01  0.06  0.03
+11:30:19 CD2B.0   CD2B03109636  walk    100  LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.64  0.01  0.06  0.03
+11:30:20 CD2B.0   CD2B03109636  walk    92   LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.78  0.01  0.04  0.02
+11:30:21 CD2B.0   CD2B03109636  walk    90   LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.84  0.00  0.02  0.02
+11:30:22 CD2B.0   CD2B03109636  walk    98   LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.86  0.00  0.01  0.02
+11:30:23 CD2B.0   CD2B03109636  walk    113  LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.86  0.00  0.01  0.02
+11:30:24 CD2B.0   CD2B03109636  walk    98   LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.76  0.00  0.02  0.04
+11:30:24 CD2B.0   CD2B03109636  walk    83   LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.71  0.01  0.03  0.04
+11:30:25 CD2B.0   CD2B03109636  walk    85   LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.68  0.01  0.04  0.04
+11:30:26 CD2B.0   CD2B03109636  walk    105  LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.67  0.01  0.05  0.04
+11:30:27 CD2B.0   CD2B03109636  walk    0    LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.66  0.01  0.05  0.03
+11:30:28 CD2B.0   CD2B03109636  walk    0    LeftBed  walk               room -    OpenFloor  1   0     0.00  0.01  0.65  0.01  0.05  0.03
+11:30:29 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.00  0.01  0.65  0.01  0.06  0.03
+11:30:30 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.65  0.01  0.06  0.03
+11:30:31 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.64  0.01  0.06  0.03
+11:30:32 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.64  0.01  0.06  0.03
+11:30:33 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.64  0.01  0.06  0.03
+11:30:34 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.64  0.01  0.06  0.03
+11:30:35 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.64  0.01  0.06  0.03
+11:30:36 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.64  0.01  0.06  0.03
+11:30:37 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.64  0.01  0.06  0.03
+11:30:38 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.64  0.01  0.06  0.03
+11:30:39 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.64  0.01  0.06  0.03
+11:30:40 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.64  0.01  0.06  0.03
+11:30:40 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              room -    OpenFloor  1   0     0.01  0.01  0.64  0.01  0.06  0.03
+11:30:40 CD2B.E   -             -       0    LeftBed  ExitRoom(rdr)      room -    OpenFloor  1   0     0.01  0.01  0.64  0.01  0.06  0.03
+11:31:09 CD2B.0   CD2B03109636  stand   98   LeftBed  stand              trk  0.50 OpenFloor  1   0     0.00  0.00  0.58  0.00  0.39  0.02
+11:31:10 CD2B.0   CD2B03109636  stand   96   LeftBed  stand              trk  0.51 OpenFloor  1   0     0.00  0.00  0.92  0.00  0.05  0.01
+11:31:11 CD2B.0   CD2B03109636  stand   112  LeftBed  stand              trk  0.52 OpenFloor  1   1     0.00  0.00  0.97  0.00  0.01  0.01
+11:31:12 CD2B.0   CD2B03109636  stand   110  LeftBed  stand              trk  0.90 OpenFloor  1   0     0.00  0.00  0.97  0.00  0.00  0.01
+11:31:12 CD2B.E   -             -       0    LeftBed  InBed(rdr)         room -    OpenFloor  1   0     0.00  0.00  0.97  0.00  0.00  0.01
+11:31:13 CD2B.0   CD2B03109636  stand   108  InBed    stand              trk  0.98 OpenFloor  1   0     0.00  0.05  0.77  0.00  0.00  0.04
+11:31:14 CD2B.0   CD2B03109636  stand   105  InBed    stand              trk  1.00 OpenFloor  1   0     0.00  0.11  0.66  0.01  0.02  0.03
+11:31:15 CD2B.0   CD2B03109636  walk    128  InBed    walk               trk  1.00 OpenFloor  1   0     0.00  0.16  0.59  0.01  0.03  0.03
+11:31:16 CD2B.0   CD2B03109636  walk    146  InBed    walk               trk  1.00 OpenFloor  1   0     0.00  0.20  0.54  0.02  0.03  0.03
+11:31:17 CD2B.0   CD2B03109636  walk    146  InBed    walk               trk  1.00 OpenFloor  1   0     0.00  0.24  0.50  0.03  0.04  0.03
+11:31:18 CD2B.0   CD2B03109636  walk    84   InBed    walk               trk  1.00 OpenFloor  1   0     0.00  0.28  0.47  0.03  0.04  0.03
+11:31:19 CD2B.0   CD2B03109636  lying   68   InBed    lying              trk  1.00 Bed        1   0     0.00  0.91  0.04  0.01  0.01  0.00
+11:31:20 CD2B.0   CD2B03109636  lying   82   InBed    lying              trk  1.00 Bed        1   0     0.00  0.98  0.01  0.00  0.00  0.00
+11:31:21 1641.E   -             -       0    InBed    InBed(pad)         room -    Bed        1   0     0.00  1.00  0.00  0.00  0.00  0.00
+11:31:21 1641.E   -             -       0    InBed    InBed(pad)         room -    Bed        1   0     0.00  0.99  0.01  0.00  0.00  0.00
+11:31:21 CD2B.0   CD2B03109636  lying   0    InBed    lying              trk  1.00 Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:31:22 CD2B.0   CD2B03109636  lying   0    InBed    lying              trk  1.00 Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:31:23 CD2B.0   CD2B03109636  lying   0    InBed    lying              trk  1.00 Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:31:24 CD2B.0   CD2B03109636  lying   63   InBed    lying              trk  1.00 Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:31:25 CD2B.E   -             -       0    InBed    EnterRoom(rdr)     room -    Bed        1   0     0.00  0.99  0.00  0.00  0.00  0.00
+11:31:25 CD2B.1   CD2B13153708  stand   0    InBed    stand              room -    Bed        2   0     0.00  1.00  0.00  0.00  0.00  0.00
+11:31:25 CD2B.0   CD2B03109636  lying   70   InBed    lying              trk  1.00 Bed        2   0     0.00  1.00  0.00  0.00  0.00  0.00
+11:31:26 CD2B.1   CD2B13153708  stand   80   InBed    stand              room -    Bed        1   0     0.00  0.97  0.01  0.01  0.00  0.00
+11:31:26 CD2B.0   CD2B03109636  stand   0    InBed    stand              trk  1.00 Bed        1   0     0.00  0.97  0.01  0.01  0.00  0.00
+11:31:27 CD2B.1   CD2B13153708  stand   0    InBed    stand              room -    OpenFloor  1   1     0.00  0.02  0.92  0.00  0.03  0.01
+11:31:27 CD2B.0   CD2B03109636  stand   84   InBed    stand              trk  1.00 OpenFloor  1   1     0.00  0.87  0.09  0.03  0.00  0.00
+11:31:28 CD2B.1   CD2B13153708  stand   125  InBed    stand              room -    OpenFloor  2   2     0.00  0.01  0.93  0.00  0.01  0.01
+11:31:28 CD2B.0   CD2B03109636  stand   0    InBed    stand              trk  1.00 OpenFloor  2   2     0.00  0.81  0.14  0.03  0.00  0.00
+11:31:29 CD2B.0   CD2B03109636  stand   0    InBed    stand              trk  1.00 Bed        2   3     0.00  0.77  0.18  0.03  0.00  0.01
+11:31:29 CD2B.1   CD2B13153708  stand   97   InBed    stand              room -    Bed        2   3     0.00  0.77  0.18  0.03  0.00  0.01
+11:31:30 CD2B.1   CD2B13153708  stand   112  InBed    stand              room -    Bed        2   0     0.00  0.70  0.22  0.04  0.00  0.01
+11:31:30 CD2B.0   CD2B03109636  stand   0    InBed    stand              trk  1.00 Bed        2   0     0.00  0.70  0.22  0.04  0.00  0.01
+11:31:31 1641.E   -             -       0    LeftBed  LeftBed(pad)       room -    OpenFloor  2   0     0.00  0.00  0.80  0.00  0.01  0.04
+11:31:31 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   0     0.00  0.00  1.00  0.00  0.00  0.00
+11:31:31 CD2B.1   CD2B13153708  stand   0    LeftBed  stand              room -    OpenFloor  2   0     0.00  0.00  0.82  0.00  0.02  0.02
+11:31:32 CD2B.1   CD2B13153708  stand   0    LeftBed  stand              room -    OpenFloor  2   0     0.00  0.00  0.85  0.00  0.01  0.02
+11:31:32 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   0     0.00  0.00  1.00  0.00  0.00  0.00
+11:31:33 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   0     0.00  0.00  1.00  0.00  0.00  0.00
+11:31:33 CD2B.1   CD2B13153708  stand   0    LeftBed  stand              room -    OpenFloor  2   0     0.00  0.00  0.86  0.00  0.01  0.02
+11:31:34 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   0     0.00  0.00  1.00  0.00  0.00  0.00
+11:31:34 CD2B.1   CD2B13153708  stand   0    LeftBed  stand              room -    OpenFloor  2   0     0.00  0.00  0.87  0.00  0.01  0.02
+11:31:35 CD2B.1   CD2B13153708  stand   0    LeftBed  stand              room -    OpenFloor  2   0     0.00  0.00  0.87  0.00  0.01  0.02
+11:31:35 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   0     0.00  0.00  1.00  0.00  0.00  0.00
+11:31:36 CD2B.1   CD2B13153708  stand   0    LeftBed  stand              room -    OpenFloor  2   0     0.00  0.00  0.87  0.00  0.01  0.02
+11:31:36 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   0     0.00  0.00  1.00  0.00  0.00  0.00
+11:31:37 CD2B.1   CD2B13153708  stand   0    LeftBed  stand              room -    OpenFloor  2   0     0.00  0.00  0.87  0.00  0.01  0.02
+11:31:37 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   0     0.00  0.00  1.00  0.00  0.00  0.00
+11:31:38 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   0     0.00  0.00  1.00  0.00  0.00  0.00
+11:31:38 CD2B.1   CD2B13153708  stand   0    LeftBed  stand              room -    OpenFloor  2   0     0.00  0.00  0.87  0.00  0.01  0.02
+11:31:39 CD2B.1   CD2B13153708  stand   0    LeftBed  stand              room -    OpenFloor  2   0     0.00  0.00  0.87  0.00  0.01  0.02
+11:31:39 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   0     0.00  0.00  1.00  0.00  0.00  0.00
+11:31:39 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   0     0.00  0.00  1.00  0.00  0.00  0.00
+11:31:39 CD2B.1   CD2B13153708  stand   0    LeftBed  stand              room -    OpenFloor  2   0     0.00  0.00  0.87  0.00  0.01  0.02
+11:31:39 CD2B.E   -             -       0    LeftBed  ExitRoom(rdr)      room -    OpenFloor  2   0     0.00  0.00  0.87  0.00  0.01  0.02
+11:31:41 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   0     0.00  0.00  0.98  0.00  0.00  0.00
+11:31:41 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   0     0.00  0.00  0.98  0.00  0.00  0.00
+11:31:42 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   12    0.00  0.00  0.98  0.00  0.00  0.00
+11:31:43 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   13    0.00  0.00  0.98  0.00  0.00  0.00
+11:31:44 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   14    0.00  0.00  0.98  0.00  0.00  0.00
+11:31:45 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   15    0.00  0.00  0.98  0.00  0.00  0.00
+11:31:46 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   16    0.00  0.00  0.98  0.00  0.00  0.00
+11:31:47 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   17    0.00  0.00  0.98  0.00  0.00  0.00
+11:31:48 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   18    0.00  0.00  0.98  0.00  0.00  0.00
+11:31:49 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   19    0.00  0.00  0.98  0.00  0.00  0.00
+11:31:50 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   20    0.00  0.00  0.98  0.00  0.00  0.00
+11:31:51 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   21    0.00  0.00  0.98  0.00  0.00  0.00
+11:31:52 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   22    0.00  0.00  0.98  0.00  0.00  0.00
+11:31:53 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  1   23    0.00  0.00  0.98  0.00  0.00  0.00
+11:31:53 CD2B.E   -             -       0    LeftBed  EnterRoom(rdr)     room -    OpenFloor  1   23    0.00  0.00  0.98  0.00  0.00  0.00
+11:31:53 CD2B.1   CD2B13153708  stand   82   LeftBed  stand              trk  0.96 OpenFloor  2   24    0.00  0.00  0.26  0.00  0.70  0.03
+11:31:53 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   24    0.00  0.00  1.00  0.00  0.00  0.00
+11:31:54 CD2B.1   CD2B13153708  stand   75   LeftBed  stand              trk  0.96 OpenFloor  2   24    0.00  0.00  0.53  0.00  0.42  0.01
+11:31:54 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   24    0.00  0.00  1.00  0.00  0.00  0.00
+11:31:55 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   25    0.00  0.00  1.00  0.00  0.00  0.00
+11:31:55 CD2B.1   CD2B13153708  walk    73   LeftBed  walk               trk  0.99 OpenFloor  2   25    0.00  0.00  0.72  0.00  0.19  0.02
+11:31:56 CD2B.1   CD2B13153708  walk    89   LeftBed  walk               trk  1.00 OpenFloor  2   26    0.00  0.00  0.81  0.00  0.08  0.02
+11:31:56 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   26    0.00  0.00  1.00  0.00  0.00  0.00
+11:31:57 CD2B.1   CD2B13153708  walk    81   LeftBed  walk               trk  1.00 OpenFloor  2   27    0.00  0.00  0.85  0.00  0.03  0.02
+11:31:57 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   27    0.00  0.00  1.00  0.00  0.00  0.00
+11:31:58 CD2B.0   CD2B03109636  stand   0    LeftBed  stand              trk  1.00 OpenFloor  2   28    0.00  0.00  1.00  0.00  0.00  0.00
+11:31:58 CD2B.1   CD2B13153708  walk    0    LeftBed  walk               trk  1.00 OpenFloor  2   28    0.00  0.00  0.86  0.00  0.02  0.02
 ```
+
+**汇总**: xray tick 407 | fire 0 | Fall 事件 0 () | 结论 = 无 Fall 无 fire

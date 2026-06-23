@@ -265,9 +265,19 @@ $$\delta_{\text{pad/floor}}=D_{\mathrm{KL}}\!\big(P(\text{XY}\mid\text{on-pad})\
 
 #### §A.1 ρ_xroom 计算式（有向 hand-off 耦合）
 
-记号：本房 $r$、同 unit 兄弟房集 $\mathcal N(r)$；本房 real-present track 消失时刻 $t^{\text{lost}}_r$（进 Blind 的丢轨时刻）；兄弟房 hand-off 落点事件时刻 $t^{\text{arr}}_{r'}$（EnterRoom ∨ InBed 翻转）；滞后
+记号：本房 $r$、同 unit 兄弟房集 $\mathcal N(r)$；本房 real-present track 消失时刻 $t^{\text{lost}}_r$（**取 last-observed，见下「lost 锚点」校正**）；兄弟房 hand-off 落点事件时刻 $t^{\text{arr}}_{r'}$（EnterRoom ∨ InBed 翻转）；滞后
 
 $$\Delta_{r'}=t^{\text{arr}}_{r'}-t^{\text{lost}}_r\qquad(\Delta>0=\text{先走后到}=\text{有向命中})$$
+
+**lost 锚点（§7.7 v2 意图 + 实测现状）**：
+
+- **设计意图**：$t^{\text{lost}}_r$ 取该轨**最后一次真被观测在场的时戳**，**不是系统「确认丢轨／进 Blind」那一帧**。后者迟到又抖——要等若干帧不再匹配 + coast 跑完才落定，叠加跨流抖动（sleepad 比 radar 晚 38–807ms），会把**最常见的 1–3s 正常过门接力**压成 $\Delta\approx0$ 撞低端门（$\Delta\le0$ 拒 ／ band-pass $\Delta{=}0$ 谷）误杀 = FP。意图是把 $\Delta$ 拉回 $(0,W]$ 正区间让过门接力正常放行。
+
+- **实现现状（已知偏差，决定保持不修）**：锚点取自 `lastSeenMs`，它在每个 census `Present==true` 帧刷新，而 `Present = nowMs − LastObservedMs < presenceCoastMs`（`track_manager.go:992`，**1200ms** coast 容差，本为吸收跨流漏帧）。故真实锚 = **最后一个 coast-present 帧**，比真观测**偏晚 ≤ presenceCoastMs ≈ 1.2s**。d523 实证（4X 重放可复现，数据时戳驱动与速度无关）：真观测 `13:35:05.387`（`D523.0 stand`）、引擎实锚 `13:35:06.445`（`tid=88` no-target coast 帧、位置冻结）、偏 **1058ms**；`pending_lost_ms` 即记此值。
+  - **上界严格 = $\min(\text{presenceCoastMs},\ \text{帧间隔})$**：帧稀时（firmware no-target `tid=88` 周期 ~30s）coast 窗内无帧落入 → 锚误差归 0；那 ~30s 是**丢轨检测延迟**（下一帧何时到），与锚误差**正交**，不会让锚偏到 30s。
+  - **方向 FN-safe，影响小 → 不修**：偏晚 → $\Delta$ 偏小 → 更易拒接力 → 不抑制 lost-fall → 倾向报警；代价仅"离房后 $<1.2$s 即在邻房冒头"的快接力多一次 FP，**不漏真摔**，且 $1.2\text{s}\ll W(90\text{–}150\text{s})/D(14\text{min})$。修法（锚改真 fresh 判据 `LastObservedMs==nowMs`，已存在于 `track_manager.go:939` 旁）成本小但收益仅消一个 FN-safe 系统偏差，**评估后保持现状**。
+
+- **落点**：从该锚点**向后**在 $\mathcal N(r)$ 找 $\Delta N_r>0$（兄弟房「新增 $+1$ real track」的守恒重现，§A.1(b)）= hand-off 落点；**source-agnostic**：radar 新轨 ∨ sleepad InBed 合成轨同等算数（只决定快窗／慢窗，不决定算不算一个 gain）。
 
 **(a) 有向新鲜度核**（与 ghost 对称核的关键分野——对 $\operatorname{sign}\Delta$ 不对称；**§38 规则③ band-pass 校正**：旧式 $e^{-\Delta/\tau_h}$ 在 $\Delta{=}0$ 取峰是**错的**——同 tick 两房 = 人没法瞬移过去 = 不可能是同一人 hand-off）：
 
