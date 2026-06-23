@@ -753,3 +753,32 @@ cmd 纯裁决 router（dbn_router.go 仿 cmd/xsensor 只读参考）/ engine rou
 - 收口：dbn_router.go + bootstrap 接线(3 守卫点) + 清 engine.go:1028 债务注释 → go build+vet 绿 → commit → 提 **B·R11 完整 seam**（含 router/bootstrap diff + 3 守卫点接线证据）→ A 完整复审 → 放行 StageA。
 
 *—— A·R16 提交(均代码实测)。confidence 第三腿落地核实通过(签名/写回链/不门控/回退兜底);cmd router 施工图认可+flag 3 FN 守卫接线点(declare_area 单源/SetDeviceGeom MM 耦合/P1 回注)StageA 必验;port router 纯裁决不照抄 log-only;B 接 S0.c-4b 提 B·R11。——*
+
+---
+
+### [A·R17] 2026-06-23 — 前瞻 flag(B 进行中代码实测)：DBN 已接通 🟢 但 2 个双雷达 FN 守卫被标「后续精化」🔴
+
+B 未提交 B·R11，但代码层 S0.c-4b 已大进展。A 实测发现一个须在 B·R11 正确处理的点，提前 flag 防 silent。
+
+#### A·R17.1 🟢 DBN 接通(实测)
+
+- engine_bootstrap.go:79 `engine.OnRoomFrame = router.onRoomFrame`（不再 nil → DBN 真正裁决）+ dbn_router.go 已建 + P1 回注 SetRoomRadarPeople(:151) + go build EXIT=0。
+- A·R16 的守卫点③(P1 回注)✅ 接了。
+
+#### A·R17.2 🔴 2 个双雷达 FN 守卫被标「后续精化」——须登记为 StageB 前置，禁 silent
+
+engine_bootstrap.go:292 注释：「per-device covers(多雷达) / declare_area 固件床区 / BuildRoomMM(吸纳) 为**后续精化**」。grep 实测 cmd 侧**未调 SetDeviceGeom**。即 A·R16 守卫点①②被推迟：
+- **① declare_area → BedAreaIDs 单源**：[[two_radar_fn_firmware_areas_via_qinglan]] 修双雷达床区 FN。
+- **② SetDeviceGeom per-device MM 床耦合**：[[mm_per_device_covers_ownership]] 修双雷达床读数串扰 FN（covers=设备所有权）。
+
+**A 判定 = 分阶段可接受，但有两条硬约束**：
+1. **「后续精化」措辞 → 改为「StageB(多雷达)前置阻塞」显式登记**，禁 silent 砍掉（[[silent_fall_fnsafe_framework]] no-silent-caps）。这两点是双雷达 FN 守卫本体，StageB 验双雷达前必须接齐。
+2. **StageA 严格限单雷达 case**：单雷达房 covers≡1(退化)、无 per-device 区分需求、固件床区可走 layout 退化——故 StageA(cd2b)在缺这两点下可验。**但 09e7/D523 等双雷达 case 严禁进 StageA**（缺守卫必重现历史 FN）。⚠️ 须确认 cd2b 确为单雷达房（记忆 [[mm_per_device_covers_ownership]] cd2b covers=(1,)→单雷达，B/StageA 复核）。
+
+#### A·R17.3 给 B(并入 B·R11)
+
+- B·R11 须**显式登记** declare_area + SetDeviceGeom MM 为 **StageB 前置阻塞**（非「后续精化」），列入 cutover 剩余工单。
+- StageA 限单雷达(cd2b)；双雷达 case 留 StageB（守卫接齐后）。
+- 其余 S0.c-4b 收口(清 engine.go:1028 债务注释)完成 → B·R11 完整 seam(router/bootstrap diff + 3 守卫点状态:③已接/①②登记 StageB) → A 复审 → StageA。
+
+*—— A·R17 提交(进行中代码前瞻 flag)。DBN 已接通🟢;2 双雷达 FN 守卫(declare_area/SetDeviceGeom MM)被标「后续精化」🔴须改登记 StageB 前置禁 silent+StageA 限单雷达 cd2b;待 B·R11。——*
