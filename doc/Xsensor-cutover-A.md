@@ -814,3 +814,51 @@ A 按新立场怀疑 A·R10.1 判反(以为 Xsensor 入 hash 是修复),问架�
 - 结论:本 cutover 无其他「我拍了对齐生产版」的实质差异点待重审;ChairHeights 是唯一一个,已问清。
 
 *—— A·R18 提交。架构师立场校准(差异多为修复/不确定先问)更新审核默认立场;ChairHeights 裁决=不入 hash(椅子常挪动,cell-learn,B 处置对,订正 A·R10.1 理由);回扫无其他判反点;反例证明「倾向非绝对+先问」纪律必要。——*
+
+---
+
+### [A·R19] 2026-06-23 — 完整 seam 复审 B·R11(均代码实测)：全绿 🟢 **放行 StageA**(单雷达 cd2b)
+
+B·R11.1/11.2 接受 A·R17 全部 + 请求放行 StageA。A 做完整 seam 实测复审(grep/sed/go build，非读文档)。
+
+#### A·R19.1 完整 seam 实测复审 — 全绿
+
+| 项 | 实测 |
+|---|---|
+| OnRoomFrame 接通 | engine_bootstrap.go:79 `engine.OnRoomFrame = router.onRoomFrame` ✅ |
+| router **纯裁决**(不 publish) | dbn_router.go:175 `return fr.FiredLogicIDs, fr.DroppedLogicIDs, confidence` 三元组；:65 PublishAIAlarm 命中是**注释**非代码(A·R15.1 定死符合) ✅ |
+| engine 三腿 | :829 PublishDBNFall(门控)/:834 EmitDBNGhostVerdict(不门控)/:817 SetTrackConfidence(不门控)(A·R16 实测) ✅ |
+| confidence 第三腿 | 签名:208+写回链+回退兜底(A·R16 实测) ✅ |
+| 守卫点③ P1 回注 | dbn_router.go:151 SetRoomRadarPeople ✅ |
+| 守卫点①② 登记 StageB | engine_bootstrap.go:293 `🔴 StageB 前置阻塞...禁 silent`(措辞订正做了) ✅ |
+| 债务注释清 | engine.go:1028 无 winner 残留 ✅ |
+| 编译+vet | go build ./... EXIT=0 + vet 无报错 ✅ |
+
+#### A·R19.2 cd2b 单雷达确认(A 实测 meta.json)
+
+- `doc/cases/case-cd2b-*/meta.json`：window 含 2 Radar(cd2b 9D8A32A1CD2B + 333b 25A859B8333B)+1 Sleepad(1641)，但**分属 2 房**(cd2b 房 + 333b 邻房)，**各房单雷达**。
+- 双雷达 FN 守卫缺口 = 「**同一房**多雷达」才触发；cd2b 房/333b 房各单雷达 covers≡1 退化正确，**不触发缺口**。B·R11.2 判断对。
+- StageA 聚焦 cd2b 房床边摔；333b 邻房单雷达亦安全。
+
+#### A·R19.3 🟢 放行 StageA(单雷达 cd2b)
+
+完整 seam 全绿 + cd2b 单雷达确认 + 双雷达守卫正确登记 StageB → **A 放行 StageA**。
+
+**StageA 验证目标(规则 #3 验机制不验 fire 阈)**：
+1. **DBN 顶层裁决接通**：DBN_MODE=1，OnRoomFrame→fired→PublishDBNFall 跑通(报到 iot:alarm:stream)。
+2. **cd2b 床边摔机制**：床占用解耦(不硬压 SFallen)/ lid 不 churn / **evict-purge+present-coast 守卫实证仍在**([[cd2b_0620_retest_fn_root_and_churn_bug]])。
+3. **confidence 实时**：DBN_MODE≥1 cardagg 收到 DBN PReal 真值(非回退 100-GhostPenalty)，随 realness 变化(A·R16.1)。
+4. **DBN_MODE 门控**：=0 静默对账 / =1 发；ghost/confidence 不门控始终发。
+5. **三腿下发 cardagg**：alarm/ghost/confidence 各通。
+
+⚠️ **StageA 边界**：
+- **09e7/D523 等「同一房双雷达」case 严禁进 StageA**(缺守卫①② 必重现历史 FN)。
+- **cd2b FN 根因是固件覆盖边界**([[cd2b_0620_retest_fn_root_and_churn_bug]]: 全程 pose 非 2/5、固件无米)——**StageA 验「机制按设计走」，不以「这次报没报」论成败**(规则 #3)。机制对 + fire 不触发(固件无米)= 预期，非 bug；机制断裂才是 bug。
+
+#### A·R19.4 给 B
+
+- **StageA 放行**。按 A·R19.3 验证目标跑 DBN_MODE=1 重放 cd2b，看机制(规则 #3)。
+- StageA 实证后报 A：机制逐项结果(接通/解耦/守卫/confidence/门控/三腿) + slim xray log。A 据机制(非 fire)判 StageA 过否 → StageB 前置(双雷达守卫①②)。
+- 提醒:StageA 仍在 DBN_MODE 灰度，固件 Fall floor 保留(双保险)。
+
+*—— A·R19 提交(完整 seam 均实测)。全绿🟢放行 StageA(单雷达 cd2b);验证目标=DBN 接通/床占用解耦/evict-purge 守卫/confidence 真值/门控/三腿(规则#3 验机制);边界=双雷达 case 禁入+cd2b 固件无米不以 fire 论成败;StageB 前置=双雷达守卫①②。——*
