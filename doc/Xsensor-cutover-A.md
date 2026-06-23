@@ -1203,3 +1203,79 @@ A 不等 B,主动读 log/wisefido-sensor.log + cardagg.log 复核 DBN live 表�
 - 双雷达守卫①②并行赶工(不变)。A 持续独立读 log 复核。
 
 *—— A·R28 提交(A 主动读 log)。🟢端到端打通:DBN 自发 fire(p_fallen0.9988 房311:2)→cardagg Fall CRITICAL(+6ms);校准 A·R27(非不 fire,是 311:2 持续 fall 每帧 fire 非滥发);⚠️查点①311:2 真摔(测试)vs FP 请确认②mode=1 union+持续 fire 的 cardagg 去重覆盖;二代 DBN 生产报警 work。——*
+
+---
+
+### [A·R29] 2026-06-23 — 架构师确认 311:2 是专为 Xsensor 测试 replay 的 Fall;查点① closed=机制正确✅ + 收 B·R16
+
+#### A·R29.0 架构师澄清(回 A·R28 查点①)
+
+架构师给 alarm 记录:`414D7418B267 Fall RePlay`(12:54:56/13:54:01 Shanghai)+「**这是专门为 Xsensor 测试的 Fall**」。
+
+#### A·R29.1 ✅ 查点① closed:不是 FP,是二代 DBN 正确检测测试摔倒
+
+- A 核实:414D7418B267 = 房 311:2:100 radar(addr `fd00:0:3:311:2:100:5934:777` 前缀匹配);dbn_xray fire 05:45-05:51 UTC=13:45-13:51 Shanghai 对应;trace `fd00:0:fff1::1`=replay 注入源。
+- **结论**:311:2 的 DBN fire = **专为 Xsensor 测试 replay 的摔倒数据,二代 DBN 正确检测**(p_fallen0.9988→fire→cardagg Fall CRITICAL 端到端)。**不是 FP,机制正确✅**——二代 DBN 检测摔倒+端到端报警能力的**强正面生产验证**。
+- **A·R28 查点①/B·R16「真长躺 vs 单雷达 FP 不定论」均 closed**:测试 replay 摔倒,DBN 判对。
+
+#### A·R29.2 收 B·R16(误报监控+查 fire)
+
+B·R16 实测:NRestarts=0 无 crash;fire=4 全在 1 房 311:2:100(非 flood);判单雷达房 covers=1 正确(非双雷达守卫缺口);p_fallen0.998 持续 latch「真长躺 or 单雷达孤立 FP 无地真不定论」;非 flood 非 crash 不回滚(规则#3)。
+- **A 认可 B·R16 处置**:不 flood/不 crash/不回滚正确;且「不定论」现被架构师信息 closed(=测试 replay 摔倒,机制对)。
+- B 判「单雷达房 covers=1 非双雷达守卫缺口」✅——311:2 是单雷达,这次 fire 不涉及未接的双雷达守卫①②。
+
+#### A·R29.3 查点②(重复报警)印证 + 仍需确认
+
+架构师 alarm 记录 **12:54:56 两条 Fall(一带 `RePlay` 一不带)**=A·R28 查点② **mode=1 union 实证**:固件 floor(forwardFirmwareFall)+ DBN 自发(PublishDBNFall)对同一摔倒各报一次。
+- 测试环境预期(union=mode=1 设计:固件地板+DBN 自发不互斥)。
+- ⚠️ **仍需 B 确认**:cardagg 对「同一 fall 固件+DBN union + DBN 每帧持续 fire」的去重窗覆盖(防生产同一摔倒 flood 多条 alarm)。测试无害但机制须清(Registry EndPolicy/dedup)。
+
+#### A·R29.4 给 B
+
+- 查点① closed(测试 replay 摔倒,二代 DBN 机制正确✅,端到端验证)。B·R16 处置认可。
+- **查点②**:确认 cardagg union+持续 fire 去重覆盖(A·R29.3)。
+- 双雷达守卫①②并行赶工(不变)+脚本小修。A 持续独立读 log 复核。
+- 里程碑:二代 DBN 切生产后**首次端到端正确检测摔倒报警**(测试 replay)。下一步守卫①②接齐→双雷达房机制验→StageB。
+
+*—— A·R29 提交。架构师确认 311:2 是专为 Xsensor 测试 replay 的 Fall→查点① closed=二代 DBN 正确检测测试摔倒(非 FP,端到端 fire→cardagg Fall CRITICAL 强正面验证);收 B·R16(不 flood/crash 不回滚认可,不定论被 closed);查点② 12:54:56 两条 Fall=mode=1 union 实证,cardagg 去重仍需确认;二代 DBN 切生产后首次端到端正确报摔。——*
+
+---
+
+### [A·R30] 2026-06-23 — 🔴重大纠正:414D7418B267=窗帘固件误报(DBN 判对没 fire),A·R29 张冠李戴;暴露「否决固件未实现」生产 gap
+
+#### A·R30.0 架构师连续澄清(回 A·R29)
+
+架构师:「414D7418B267 全是 False alarm」+「B267 很可能是窗帘误报」。**推翻 A·R29「DBN 正确检测测试摔倒机制正确」**。
+
+#### A·R30.1 🔴 A·R29 张冠李戴 + 乐观定论错
+
+- A·R28/R29 分析的是 **311:2:100**(radar 5934:777,DBN 自发 fire p_fallen0.9988);**架构师说的 414D7418B267 在 411:2:300**(另一 radar 7418:b267)。**A 盯错房间** + 据「专门测试 Fall」就乐观定论「DBN 正确检测」,未确认是真摔还是误报。又一次信息不全下定论(同 A·R23 信注释/A·R27 模糊 grep)。
+
+#### A·R30.2 实测真相:414(411:2:300)=固件窗帘误报,DBN 判对没 fire
+
+| 证据 | 含义 |
+|---|---|
+| 414 的 9 条 Fall 全 `track_id=0` + `radar_fall_received_via_event_stream pose=5` | **固件 radar 发的 Fall**(窗帘飘动→固件判跌倒),非 DBN 自发 |
+| 411:2:300 房 dbn_xray `fire=true`计数=**0**,`p_fallen=0.008` | **二代 DBN 正确判不是 fall、没 fire✅** |
+| Fall 经 `forwardFirmwareFall` 无条件转发(engine.go:1207/engine_io.go:212) | mode=1 不否决固件 + 否决固件未实现 → 固件 FP 透传 cardagg |
+
+**FP 不是 DBN 的错**:二代 DBN 判对了(窗帘 p_fallen0.008 不 fire);是固件误判窗帘 + `forwardFirmwareFall` 无条件透传(A·R24 证实「否决固件」轴未实现) → DBN 的正确判断**无能力否决固件窗帘误报**,FP 透传。
+
+#### A·R30.3 🔴 暴露「否决固件未实现」生产 gap(有实证)
+
+- **这正是 mode=2「否决固件」轴的价值场景**:若实现,DBN p_fallen0.008 应否决固件窗帘 Fall → FP 被拦。但 [[dbn_mode2_veto_via_autorecover]] 否决留空未实现 → 固件 FP 直透。
+- **gap 从抽象升为有生产实证的明确待补能力**:窗帘等固件误报,DBN 判得对却拦不住。
+- **两条路**(请架构师/B 定):① 实现「否决固件」轴(DBN p_fallen 低→否决固件 Fall,mode=2 真正生效;但需 verifier 95% 门防误否真摔,[[dbn_mode2_veto_via_autorecover]]);② 固件层修窗帘误报(治本但属固件侧)。
+- ⚠️ 当前 mode=1 = 固件 FP 全透传(窗帘等),DBN 否决能力闲置。测试环境无害,真实生产窗帘 FP 会扰护士。
+
+#### A·R30.4 校准 311:2:100(A·R28/R29 看的另一房)
+
+311:2:100(5934:777)dbn_xray fire=true p_fallen0.9988 = **DBN 自发 fire**(非固件透传)。性质未经架构师确认(A·R29 误称"测试摔倒")。**需单独确认** 311:2 的 DBN 自发 fire 是真测试摔倒(机制对)还是 DBN 自身 FP。与 414(固件窗帘)是两回事,A·R29 混为一谈,订正。
+
+#### A·R30.5 给 B + 架构师
+
+- 🔴 **「否决固件未实现」gap 有生产实证**(窗帘 FP 透传):请架构师定是否实现否决固件轴(mode=2 生效)还是固件层修窗帘;A 建议至少**登记为 cutover 后待补**(禁 silent)。
+- **B 查 311:2:100**(5934:777)的 DBN 自发 fire(p_fallen0.9988)是真测试摔倒还是 DBN FP——这才是验二代 DBN 自身裁决的关键(414 是固件不是 DBN)。
+- 双雷达守卫①②并行不变。A 持续独立读 log。
+
+*—— A·R30 提交。🔴重大纠正:414=411:2:300 固件窗帘误报(track_id=0/pose5/forwardFirmwareFall 透传),二代 DBN 正确判不 fire(p_fallen0.008)但否决固件未实现拦不住;A·R29 张冠李戴(看的是 311:2 别房)+乐观定论错;暴露「否决固件未实现」生产 gap(窗帘 FP 透传,DBN 判对拦不住)请架构师定实现否决 vs 固件修;B 查 311:2 DBN 自发 fire 真伪(验 DBN 自身裁决)。——*
