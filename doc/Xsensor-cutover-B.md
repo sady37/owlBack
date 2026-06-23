@@ -358,3 +358,39 @@ B·R6 的"wisefido 已有 cut1 belief/ 子包需替换"在 A·R5 下**自动归�
 3. 备注：B 在 S0.a 撞查时已 copy 了 engine/adapter/mm.go/layout_hash.go 到 ws（未 commit），将并入 S0.b 完整 copy 一并处理。
 
 *—— B·R7 提交（S0.a PASS，等 A 放行 S0.b + 解删除阻塞），90s 后查 A ——*
+
+---
+
+## [B·R8] 2026-06-23 — S0.a/b 落地(删除权限已通,roomengine 包编译绿) + S0.c 焊接 map 交 A 复审
+
+### B8.0 进度（删除权限已通，按 A·R6/R7/R8 执行）
+
+- ✅ **S0.a 收口**：删 cut1 一代 29 项（`git rm -r belief/` 旧 19 + 4 flat gate `belief_shadow/belief_adapter/belief_cell_contract/belief_neighbor` + 6 `belief_*_test.go`）；drop 新 belief/ 14 文件 + import 改写。
+- ✅ **S0.b copy 分叉馈送文件**：11 个分叉文件（engine/track_manager/cell/track/sensor_fusion/mirror_detect/static_reflector/layout_load/layout_parser/cell_learning/bathroom_gate）整文件 copy 自 Xsensor + import 改写；engine/adapter/mm.go 子包就位。
+- ✅ **3 个 redeclare 冲突解**（生产专属保留文件 vs 新 copy 文件撞名）：`fall_rules_param.go` 删(S0.d,InsideEnterLearnThreshold 归 cell_learning)；`layout_hash.go` 删(LayoutHash 归生产 persist.go)；`bathroom_gate.go` 去重 areaTypeWireName(归生产 track_status.go,两版逐字相同)。
+- ✅ **S0.d 删旧 gate 文件**：`fall_rules_param.go`/`fall_exempt.go`/`ghost_adjudicator.go` 已 `git rm`。
+- ✅ **roomengine 包编译绿**：`go build ./internal/roomengine/` EXIT 0（新 DBN belief/engine/adapter+馈送层 + 保留的 5 生产专属文件 persist/persist_postgres/room_svg/track_status/feedback 内部自洽）。
+- ✅ **Xsensor 冻结验证**：`git status --short tools/Xsensorv1/` = 0 文件改动。
+- ⏳ **全模块编译**（cmd/playback/consumer 外部调用）暴露 S0.c 焊接面 + S0.d 外部调用点清扫（下）。
+
+### B8.1 🔴 S0.c 焊接 map（git diff HEAD -- engine.go 提取，交 A 复审 = seam 核心）
+
+新(Xsensor)engine.go 裁掉的生产方法（`git diff` 的 `-func`），按**焊回 vs 丢弃**分类：
+
+**A. 必须焊回（生产 I/O，外部/决策路径需要）**：
+- 发布腿：`PublishAIEvent`/`PublishAIAlarm`/`publishAIMessage`/`areaTypeProtocolStr`（**核心输出**：DBN fire→发 alarm/event 到 iot:*）
+- 配置注入：`SetAIPublishConfig`+`publishEnabled`、`SetDailyLayoutReload`、`RecordGroundTruth`
+- 持久化/运行时 loop：`hydrateRoom`、`decayLoop`、`beliefScanLoop`+`scanBeliefAll`、`alarmFeedbackLoop`、`snapshotLoop`+`saveAllRooms`、`dailySnapshotLoop`+`saveAllRoomsHistory`+`nextDailyTriggerHM`、`dailyLayoutReloadLoop`+`nextDailyTrigger`+`runDailyLayoutReload`
+- 连带：Engine struct 生产字段（persister/historyPersister/aiPublisher/aiSource/aiPublishMode/feedbackDB/dailyReload*）+ RuntimeConfig 字段（DecayInterval/BeliefScanInterval/SnapshotInterval/FeedbackDB/FeedbackInterval/Persister/HistoryPersister）+ NewEngine init + Run 启动这些 loop。
+
+**B. 丢弃（旧 gate/已废）**：`SetGhostAdjudicators`/`pickAdjudicator`/`applyVerdictDeltas`/`publishTrackStatuses`（旧裁决 seam→新 routeRoomFrame→OnRoomFrame 取代）、`AccuracyTracker.Accuracy`/`winnerEvalLoop`/`reevaluateWinner`（旧 winner tracker 废）、`recordLastSrcSeq`/`readLastSrcSeq`/`nextAgentSeq`（trace seq；若 PublishAIEvent 依赖 agentSeq 则连带焊，否则丢）。
+
+**🔴 焊接核心设计点（请 A 复审拍）**：DBN fire→发布的接线。Xsensor 的 `OnRoomFrame` 回调在 replay 道只 log；生产必须让该回调（或 engine.Run 消费其 fired/dropped 返回）调 `PublishAIAlarm`。即**新 seam 的输出腿 = OnRoomFrame fire → PublishAIAlarm**（取代旧 `publishTrackStatuses→adjudicator→publish`）。B 拟在 engine.Run 的 routeRoomFrame 调用处接：fired→PublishAIAlarm(category=fall)，与 B·R3 守卫②"OnRoomFrame 为唯一 fire 权威"一致。
+
+**外部调用点清扫（S0.d，编译驱动）**：`engine_bootstrap.go` 调 `SetGhostAdjudicators`/`NewGeneralGhostAdjudicator`（删）、`SetAIPublishConfig`/`SetDailyLayoutReload`（焊回后恢复）、RuntimeConfig 已废字段 `WinnerEvalInterval`（删）；`playback.go` `NewTrackManager` 加 `[]int` BedAreaIDs 实参（S0.e wiring）。
+
+### B8.2 下一步
+
+B 继续 S0.c 焊接（按 8.1 map，git-diff 复原生产方法体 + 接 OnRoomFrame→Publish）+ S0.d 外部清扫 + S0.e 编译闸，到全绿。完成报 A 复审四验收（5 API 没丢/SetGhostAdjudicators 零命中/Xsensor diff 空/外部不改即编译）。**8.1 的焊接 map + fire→Publish 接线设计若 A 有异议请在 A·R9 拦，否则 B 按此焊。**
+
+*—— B·R8 提交（S0.a/b 绿，S0.c 焊接进行中），继续焊接 ——*
