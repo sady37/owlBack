@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 供 systemd 单模块启动；与 start-owlback.sh 同源环境约定。
-# 用法: owlback-run-service.sh wisefido-data|wisefido-cardagg|wisefido-qinglan|wisefido-sleepace|wisefido-iot|wisefido-sensor
+# 用法: owlback-run-service.sh wisefido-data|wisefido-cardagg|wisefido-qinglan|wisefido-sleepace|wisefido-iot|wisefido-sensor|roomengine-api
 set -euo pipefail
 
 MODULE="${1:-}"
@@ -154,6 +154,10 @@ case "$MODULE" in
     # 回退 v1 显式覆盖：SENSOR_DIR=wisefido-sensor-v1 systemctl restart owlback.sensor
     SENSOR_DIR="${SENSOR_DIR:-wisefido-sensor}"
     owlback_go_exec "$OWLBACK/$SENSOR_DIR" "./cmd/wisefido-sensor" "wisefido-sensor" "$LOG_DIR/wisefido-sensor.log"
+    ;;
+  roomengine-api)
+    # dev 工具,serve /roomengine/playback（vite 代理 127.0.0.1:7788）；无 auth 故只绑本地，公网仍经 vite /roomengine 前缀可达
+    owlback_go_exec "$OWLBACK/wisefido-sensor" "./cmd/roomengine-api" "roomengine-api" "$LOG_DIR/roomengine-api.log" --listen 127.0.0.1:7788 --out-dir "$OWL_ROOT/out"
     ;;
   *)
     echo "unknown module: $MODULE" >&2

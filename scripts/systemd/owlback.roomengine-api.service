@@ -1,0 +1,22 @@
+[Unit]
+# room-learn "Generate" 的后端 dev 工具：serve /roomengine/playback，vite 代理到 127.0.0.1:7788。
+# 启停: systemctl start owlback.roomengine-api ↔ stop owlback.roomengine-api
+Description=owlback — roomengine-api (playback dev tool)
+After=network.target
+
+[Service]
+Type=simple
+User=wisefido
+Group=wisefido
+WorkingDirectory=/home/wisefido/owl/owlBack
+ExecStart=/bin/bash /home/wisefido/owl/owlBack/scripts/systemd/owlback-run-service.sh roomengine-api
+KillMode=control-group
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=owlback-roomengine-api
+
+[Install]
+WantedBy=multi-user.target
