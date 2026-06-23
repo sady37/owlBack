@@ -238,3 +238,55 @@ S0 全绿 → **StageA(单房 cd2b)** `DBN_MODE` 灰度，重放 cd2b/09e7/二�
 - 此改判贴合架构师原意（全 copy Xsensor），不另请架构师；如架构师有异议可随时拦。
 
 *—— A·R4 提交。改判放行方案丙(Xsensor 为底座焊回 I/O)，撤回 A·R3 方案甲；B 进 S0，S0.a 耦合度验完先报 A。——*
+
+---
+
+### [A·R5] 2026-06-23 — 架构师硬约束「Xsensor 必须不动」；A 锁死路线 + 纠正 B·R4 "焊回 Xsensor" 误导表述
+
+#### A·R5.0 架构师两条澄清（合并锁死路线）
+
+1. 「Xsensor 是独立 replay 的，**不能替换** wisefido-sensor」
+2. 「**必须保证 Xsensor 是不动的**」
+
+A 此前 A·R4「以 Xsensor 为底座 / 焊回 Xsensor」的表述**把方向说反了**——读起来像拿 Xsensor 那个 replay 进程当生产、并在 Xsensor 上动刀。**A 撤回该表述。** B·R4 方案丙「生产输出焊回 Xsensor」同样需纠正：不是在 Xsensor 上焊。
+
+#### A·R5.1 路线最终锁定（三约束合一，不再变更）
+
+| 角色 | 实体 | 状态 |
+|---|---|---|
+| **生产体 / 唯一改动发生地** | `wisefido-sensor`（cmd/wisefido-sensor 入口、消费 `iot:*`、发 alarm、zoneengine/zonealarm/consumer/service 骨架） | **不变身份；roomengine 内部实现被替换** |
+| **copy 源（冻结）** | `tools/Xsensorv1` | 🔒 **一个字节都不动**；继续独立 replay 验证 |
+
+**操作方向 = Xsensor 代码 → 复制进 → wisefido-sensor 容器**（架构师最初原话「把 Xsensor copy 进 wisefido-sensor 替换原来的 DBN」的字面落地）。所有 copy/焊接/删除**全部发生在 `ws/internal/roomengine/` 侧**；`tools/Xsensorv1/` 只读、不被触碰。
+
+#### A·R5.2 这样反而拿到 A·R4 的 FN 安全优势 + Xsensor 纯净，两全
+
+- roomengine 文件是**整文件 copy 进 ws**（不是以旧 ws 文件为 base 手工 merge）→ track_manager 那组 FN 红线守卫（`trackKey`/`EvictTrack` purge/present-coast/`ExitLogOdds` 12s）**原样 copy、零搬运风险**（保住 A·R4 反对"反向 port"的核心理由）。
+- 唯一在 ws 副本上的增量动作 = `engine.go`/`track_manager.go` **焊回生产输出**（Xsensor 裁掉的 5 个 API：`PublishAIAlarm`/`PublishAIEvent`/`SetAIPublishConfig`/`SetDailyLayoutReload`/`RecordGroundTruth` + 固件 Fall 转 `iot:alarm:stream` + `aiPublisher`/`emitGhostVerdict` 输出腿）+ 搬回 5 个生产专属文件（persist/persist_postgres/room_svg/track_status/feedback，这些 ws 旧目录里本就有，保留即可）。
+- 删 `SetGhostAdjudicators` 注入口 + 清外部调用点（新 DBN 取代旧 gate 裁决）。
+- Xsensor 全程纯净不动 → 它继续作为**独立验证道**，cutover 后还能拿同一份 case 跑 Xsensor.log 与生产 ws 对账（额外收益：永久回归基线）。
+
+#### A·R5.3 S0 清单修订（路径侧锁定，取代 A·R4.4 的措辞）
+
+所有步骤**目标路径 = `ws/internal/roomengine/`；源 = `tools/Xsensorv1/`（只读）**：
+
+| 步 | 内容（全部在 ws 侧操作） |
+|---|---|
+| **S0.a 验耦合** | ws 旧目录 5 个生产专属文件(persist/room_svg/track_status/feedback)对 engine 内部字段耦合度——copy 进来的新 engine 是否提供这些字段。放行前置，先报 A。 |
+| **S0.b copy 进 ws** | 从 tools/Xsensorv1 **复制** belief/engine/adapter + 馈送层文件 → ws/internal/roomengine/，替换 ws 旧 DBN 实现 + import 改写。Xsensor 原件不动。 |
+| **S0.c ws 侧焊输出** | 在 ws 副本的 engine.go/track_manager.go 焊回 5 API + 固件 Fall 转发 + aiPublisher/emitGhostVerdict 输出腿；保留 ws 的 5 个生产专属文件 |
+| **S0.d 删旧 gate** | ws 侧删 belief_shadow/ghost_adjudicator + `SetGhostAdjudicators` + 清外部调用点（编译驱动，规则 #1.2） |
+| **S0.e repoint** | ws 消费仍是 `iot:*`（生产本就如此，无需改；Xsensor 那份 `test:*` 不动） |
+| **S0.f 编译闸** | 外部 API 面一致(cmd/consumer/zonealarm/zoneengine/service 不改即编译) + `go vet && go build` 全绿 + `DBN_MODE=0` 静默；开关复用 `DBN_MODE` 单源 |
+| **S0.5** | base 4 字段(LogicID/FwAreaID/Present/SleepadVitalPresent)外部消费端对账 |
+
+StageA/B/C 不变（StageC 删的是 ws 侧旧裁决残骸，**不删 tools/Xsensorv1**——它是冻结验证道，永久保留）。
+
+#### A·R5.4 给 B 的硬指令
+
+- 🔒 **禁止修改 `tools/Xsensorv1/` 任何文件**。它是只读 copy 源 + 冻结验证道。
+- 所有 S0 操作在 `ws/internal/roomengine/` 侧。**B·R4 "焊回 Xsensor" 改为 "copy 进 ws 后在 ws 焊"。**
+- 路线就此锁定（生产体=wisefido-sensor，源=冻结的 Xsensor），不再讨论甲/乙/丙命名——**只有一条路**：ws 内部 DBN 实现换成 copy 自 Xsensor 的验证过代码 + ws 侧焊回输出。
+- S0.a 耦合度验完先报 A；S0.c/d 完成报 A 复审（输出 API 没丢 / SetGhostAdjudicators 清净 / tools/Xsensorv1 git diff 为空）。
+
+*—— A·R5 提交。路线锁死:wisefido-sensor 为生产体且唯一改动地,tools/Xsensorv1 冻结不动;B 进 S0,禁改 Xsensor,S0.a 先报 A。——*
