@@ -740,3 +740,38 @@ A·R20 ✅ 认可 B 安全闸 + 实测校准：方案(a) 独立 REDIS_DB **当�
 请架构师确认：① **切生产 go**（替换线上 sensor 为 cutover binary）② **DBN_MODE=0 起步**（A 强烈建议=B 推荐；shadow 零外向风险观察）。确认后 B：跑 `cut-to-cutover.sh --go` → 自检 → 观察 dbn_xray 实时生产流验机制（A·R19.3：接通/床解耦/evict-purge 守卫/confidence 真值/门控/三腿）→ 报 A 机制结果 → 接齐双雷达守卫①② → 架构师批 DBN_MODE≥1 灰度。
 
 *—— B·R13 提交（切生产预案就绪+DBN_MODE=2→0 发现，待架构师显式确认 go+mode），90s 后查 A/架构师 ——*
+
+---
+
+## [B·R14] 2026-06-23 — 收 A·R22（架构师拍 DBN_MODE=1 起步）：护栏① 固件 floor 实测✓ + 脚本改 mode=1 就绪；mode=1 风险重申 + 请最终确认执行
+
+### B14.0 收 A·R22（架构师拍 DBN_MODE=1 起步，A 接受+风险在案+护栏）
+
+架构师拍 `mode=1`（切生产即发真 DBN alarm），A 接受为 owner 知情决策（A 建议过 0，风险在案）。B 接受架构师决策，按 A·R22.2 五护栏落地。
+
+### B14.1 护栏落地状态
+
+| 护栏（A·R22.2） | 状态 |
+|---|---|
+| ① 固件 Fall floor 实测确认保底 | ✅ **实测通过**：`RecordRadarAlarm`→`forwardFirmwareFall(a)` **无条件调用**（track_manager.go:726，无 DBN_MODE 门控）；只有 `PublishDBNFall`(DBN 自发) 受 `dbnSelfFireEnabledFor` 门控（engine.go:828）。即 **DBN_MODE=1 下固件 floor 照转发 → FN 漏报仍兜底**。 |
+| ② 双雷达守卫①② 升 live 最高优先级并行赶工 | ⏭ 切后立即并行接（declare_area 单源 + SetDeviceGeom MM）。todo 已升级。 |
+| ③ 一键回滚就绪 | ✅ 快回滚=`.env DBN_MODE=0`+restart（DBN 静默,固件接管）；整回滚=`rollback.sh --go`（还原旧 binary+.env）。脚本就绪。 |
+| ④ 误报监控人盯 | 切后头几小时盯 cardagg alarm 频率(尤双雷达房)+dbn_xray，异常立即回滚。 |
+| ⑤ 切法（rebuild+停旧起新原子替换） | ✅ cutover binary 已编、systemd `systemctl restart` 原子替换、`cut-to-cutover.sh --go` 已改 DBN_MODE=1 就绪。 |
+
+### B14.2 🔴 mode=1 风险重申（A·R22.1 在案 + 用户指令要求重申再确认）
+
+切生产 DBN_MODE=1 = **未经 StageA 验证的新 DBN 在全部生产房（含未接守卫的双雷达房）即发真 alarm**：
+- **双雷达房（09e7/D523 等）缺守卫①②**：per-device covers/declare_area 未接 → 床读数串扰/床区误判 → **FP 误报无兜底 → 打扰护士**（固件 floor 只兜 FN 漏报，不兜 FP 误报）。
+- **DBN 未验证即发**：StageA 本是验机制的，现 mode=1 直接生产发，误报/漏报在真实护理场景暴露。
+- **影响面**：医疗 fall-detection 生产系统，FP=假摔警打扰护士，最高危外向不可逆。
+
+### B14.3 请最终确认执行（B 不擅自 --go）
+
+架构师已 A·R22 拍 mode=1（知情决策，风险在案，A 已重申）。**护栏全就绪**（固件 floor 实测✓/回滚就绪/脚本 mode=1 就绪/监控计划）。
+- 按用户指令「DBN_MODE≥1 直接起须重申风险+请确认」，B **重申上述风险**（B14.2），请**最终确认**执行 `cut-to-cutover.sh --go`（替换线上 sensor + DBN_MODE=1 + systemctl restart + 自检 + 人盯）。
+- **确认后 B 即执行** → 自检（active + "DBN router wired"）→ 观察 journalctl dbn_xray + cardagg alarm 频率 → 立即并行接双雷达守卫①② → 报 A 生产实证。
+- 出问题：快回滚 DBN_MODE=0 或整回滚旧 binary。
+- ⚠️ **B 在最终确认前绝不跑 --go**（生产未碰：service active，.env DBN_MODE=2）。
+
+*—— B·R14 提交（护栏就绪+mode=1 风险重申，请最终确认执行 --go），90s 后查确认 ——*
