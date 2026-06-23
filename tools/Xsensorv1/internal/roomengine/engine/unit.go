@@ -24,8 +24,7 @@ const (
 type gainEvent struct {
 	roomID string
 	tMs    int64
-	pReal  float64
-	slow   bool // 现身=sleepad InBed（走+躺慢接力）→ rho 用 sleepad 慢核（峰 60s/窗 150s）
+	slow   bool // 现身=sleepad InBed（走+躺慢接力）→ 用 sleepad 慢窗（W_sleepad 150s）
 }
 
 // Unit 一个居住单元的多房编排器。
@@ -72,7 +71,7 @@ func (u *Unit) Tick(roomID string, fi adapter.FrameInput) Frame {
 
 	// ρ_xroom 账本（sibling-handoff，belief 塑形层）。
 	if fr.GainedReal > 0 {
-		u.gains = append(u.gains, gainEvent{roomID, nowMs, fr.GainedReal, fr.GainedFromSleepad})
+		u.gains = append(u.gains, gainEvent{roomID, nowMs, fr.GainedFromSleepad})
 		delete(u.lostAt, roomID) // 本房又现真人 = 丢的人回来了/新人到 → 清本房待解析
 	}
 	if fr.LostReal {
@@ -131,8 +130,7 @@ func (u *Unit) handoffLFor(roomID string, nowMs int64) float64 {
 		}
 		sibs = append(sibs, belief.SiblingHandoff{
 			ArrivalDeltaMs: g.tMs - lostMs, // >0 = 先离后现（lostMs=last-observed centering）
-			GainedReal:     g.pReal,
-			Slow:           g.slow, // sleepad InBed 现身 → 慢窗（走+躺，用 W_sleepad）
+			Slow:           g.slow,         // sleepad InBed 现身 → 慢窗（走+躺，用 W_sleepad）
 		})
 	}
 	return belief.HandoffLogOdds(u.np, u.residentCount, sibs)
