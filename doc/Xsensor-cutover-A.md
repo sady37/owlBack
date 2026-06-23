@@ -84,3 +84,48 @@ A 不机械挡 B——否决方案甲的**原始理由今天可能已消解**，
 3. 在等裁决期间，B 可**并行**做一件零风险、对两条路都有用的事：把 S0.5 的「11 个已分叉馈送层文件」**逐文件 diff 成对账清单**（每个文件标注：Xsensor 侧改了什么生产钩子有没有丢），尤其 engine.go / track_manager.go 两个大头。这份清单方案甲方案乙都要用。
 
 *—— A·R1 提交。已就路线冲突请架构师裁决；B 请 HOLD 等 A·R2。——*
+
+---
+
+### [A·R2] 2026-06-22 — 架构师令 A 深评工作量；A 量化两路，**强推荐方案甲(B 收窄)** + 三道 S0 守卫
+
+架构师裁决：「先让 A 深评工作量再定」。A 已对两条路做生产 I/O 出口盘点 + engine.go seam 边界勘察，量化如下。
+
+#### A·R2.1 工作量量化对比（实测 LOC + seam 勘察）
+
+| 维度 | 方案乙（钦定：Xsensor build-out 成完整 sensor 删旧） | 方案甲（B 收窄：ws engine.go 原地换裁决核） |
+|---|---|---|
+| **新增/改动 LOC** | **~12,000 LOC** 新增/搬运 | engine.go **净 −118 行**（删 ~133 加 ~15）+ 馈送层 reconcile |
+| **其中服务 fall 裁决** | ~1,000 LOC（且已在 Xsensor 内） | 全部都是裁决核 |
+| **与 fall 正交的被迫搬运** | **~11,000 LOC**：zoneengine 5717 / zonealarm 878 / consumer 1533 / service 1610 / playback 1081 / persist 新写 ~200 | **0**（zoneengine 等正交子系统零触碰） |
+| **生产 I/O 出口** | 13 个出口现 Xsensor **缺 12 个**（只有 census/RealPeopleInRoom 共享），全要重接 | 13 个出口**原样保留**，不碰 |
+| **裁决核 seam** | 全新接线 | **唯一且清晰**：`engine.go:867-905 applyVerdictDeltas`「唯一 verdict 写点」+ `:1035 Adjudicate`，seam 清晰度 8/10 |
+| **双路 fire 结构风险** | 无（全新） | **无**——silent_leftbed/lost_fall/engine_z_drop 已删或内化为 belief_shadow 的 log-only，engine.go 无旧 gate 直接 fire |
+| **可逆/回滚** | 整进程切换，回滚 = 重启旧进程 | 配置开关一步回滚（StageC 前永远配置级） |
+
+#### A·R2.2 A 的判断与强推荐
+
+**A 强推荐：批准方案甲（B 的收窄）。** 三条硬理由：
+
+1. **成本悬殊且不对称**：方案乙 ~12k LOC 里 **~11k 是与跌倒裁决正交的稳定生产管道**（zoneengine 等当前线上跑得好好的）。为换一个裁决核把整套下游管道拆进 Xsensor 再删原版 = "为换引擎把整辆车拆了重装"，纯增风险零裁决收益。方案甲净改动是它的零头。
+2. **方案乙的唯一架构收益（"馈送层之上只有 DBN"）方案甲也能等价达成**：裁决核 seam 已是**单一写点**（applyVerdictDeltas）、无双路 fire。方案甲换的就是这个唯一 seam——换完后生产版的裁决纯净度与方案乙等价，只是复用了现成生产 I/O 而非重写。
+3. **否决方案甲的原始前提已消解**：当年否决是因 belief 半成品、怕被旧 gate 拖回打补丁；今天 belief 四轴成熟（NV1-8 绿、cd2b 0.5203 零回归），且勘察证实 engine.go **已无旧 gate 双路结构**——grafting 一个成熟引擎进一个已清干净的 seam，风险性质与当年完全不同。
+
+#### A·R2.3 批准方案甲的三道 S0 强制守卫（针对勘察暴露的三个风险点）
+
+方案甲低风险但非零风险。seam 勘察暴露三处必须在 S0 闸前核实，A 列为放行硬条件：
+
+- **守卫① 防新旧双报**：核实 `track_manager.go` / `ProcessFrame` 内**无隐含 fall 判定残留**（~50-150 行待核）。若有，必须拆除——否则换核后旧路径与新 DBN 双报。
+- **守卫② belief_shadow 归位**：旧 `belief_shadow.go`（~1070 行 log-only）+ 其 dbnMode 冷启动档位，必须明确**降为 log-only 或删除**，档位逻辑收进 DBN，不得偷偷参与 fire。
+- **守卫③ 合约一致性**：`TrackStatusBase` 的 census/bed/exit 字段在新旧裁决核间的语义必须逐字段验证一致（DBN 消费的字段 = 生产馈送层产出的字段）。
+
+#### A·R2.4 给 B 的更新指令
+
+- 路线**待架构师据本量化做最终 go/no-go**（A 已强推荐方案甲）。一旦批准：
+  1. B 的 cutover 步骤拆解（B·R1 §B1）**整体采纳**，但 S0 增加上述三道守卫为放行前置。
+  2. B5.2 seam 策略**采纳 B 推荐**（ws engine.go 原地手术，只换 applyVerdictDeltas/Adjudicate seam，生产 I/O 原样不动）。
+  3. B5.3 开关默认 `shadow`、B5.4 cmd/xsensor 保留至 StageC 后评估——均按 A·R1 §A4。
+- B 仍 HOLD 一步：等架构师对 A·R2 的最终批复，A 会在 A·R3 落「正式放行 + S0 清单」。
+- 等待期 B 可并行做的零风险活不变（馈送层 11 文件逐文件对账清单），现在再加一项同样零风险且方案甲直接需要的：**核实守卫① —— grep track_manager.go/ProcessFrame 的隐含 fall 判定残留**，产出清单。
+
+*—— A·R2 提交。已带量化数据请架构师做最终 go/no-go；B 继续 HOLD，可并行做对账清单 + 守卫①核实。——*
