@@ -381,3 +381,45 @@ A 推荐 (a)。删除清单 A 已在 A·R7.2 列全（19+6+4=29 个文件/目录
 - 编译绿后即进 S0.b/c（engine.go/track_manager.go 焊回输出），完成报 A 复审 seam。
 
 *—— A·R7 提交。确认 REPLACE+守卫②再扩面(加 6 个 belief_*_test.go);替换方向正确(cut1 已作废非缺能力);🔴删除权限阻塞已上报用户,推荐放行 B 会话 rm。——*
+
+---
+
+### [A·R8] 2026-06-23 — 用户裁决 (a)：放行 B 会话删除权限；A 交付可执行删除清单 + 执行序
+
+#### A·R8.0 用户裁决
+
+A·R7.3 删除权限三选一，**用户选 (a)**：放行 B 会话 rm/git rm，**B 自己执行删除**。分工不变（A 审核 / B 实施）。B 会话获删除权限后即可落地。
+
+#### A·R8.1 cut1 一代删除清单（29 项，路径全相对 `wisefido-sensor/internal/roomengine/`）
+
+**① 旧 belief/ 子包（整目录 19 文件）**：
+```
+git rm -r wisefido-sensor/internal/roomengine/belief/
+```
+（area/belief/belief_test/calibration/decision_tau/decision_tau_test/doc/fall_reason/fall_reason_test/fall_weight_test/likelihood/model/observation/state/survival/survival_test/track_coexist_test/track/track_test）
+
+**② flat cut1 裁决文件（4）**：
+```
+git rm belief_shadow.go belief_adapter.go belief_cell_contract.go belief_neighbor.go
+```
+
+**③ 消费旧 belief 的 _test.go（6，违禁 unit test 铁律）**：
+```
+git rm belief_replay_test.go belief_recall_realdata_test.go belief_p61b_provisional_test.go \
+       belief_motion_symmetry_test.go belief_adapter_test.go belief_p5_bed_leak_test.go
+```
+
+#### A·R8.2 执行序（B）
+
+1. 删上述 29 项（①②③）。
+2. drop 新 belief/ 14 文件进 `ws/internal/roomengine/belief/`，import 改写 `owlBack/tools/Xsensorv1/...`→`wisefido-sensor/...`。
+3. `go build ./...` 编译闸：**若报残留 _test.go 引用已删 cut1 符号**（belief_shadow/belief_adapter 等），顺藤一并删——它们都是禁 unit test 铁律下本该清的（规则 #1.2 编译器驱动 fix）。
+4. 全绿后才 commit（规则 #1.6）。**commit 前核 `cd tools/Xsensorv1 && git diff` 为空**（A·R5/R6 硬验收：Xsensor 冻结未碰）。
+5. S0.a 收口后进 S0.b/c（engine.go/track_manager.go 用 git diff 比对法焊回输出），完成报 A 复审 seam。
+
+#### A·R8.3 A 注
+
+- 删除清单经 grep 实证（A·R7.1 核实），但 ③ 可能不全——cut1 flat 文件（belief_shadow 等）若被别的 _test.go 引用，编译器会在 step 3 暴露，B 顺势清。**判据**：凡 `_test.go` 一律可删（禁 unit test 铁律），不必纠结哪个该留。
+- 删后唯一 belief 消费链 = 新 engine/(OnRoomFrame) → 新 belief/，自洽闭环。
+
+*—— A·R8 提交。用户裁决 (a) 放行 B 删除;交付 29 项 cut1 删除清单(git rm 命令)+执行序;_test 一律可删;commit 前核 tools/Xsensorv1 diff 空。——*
