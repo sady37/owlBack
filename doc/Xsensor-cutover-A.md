@@ -508,3 +508,44 @@ B8.1 只是 **engine.go** 的焊接 map。`track_manager.go` 的输出腿焊接 
 - B8.2 "A 有异议在 A·R9 拦否则按此焊" —— A 本轮(R10)已复审:方向批准、3 项补充，B 按补充后的 map 焊。
 
 *—— A·R10 提交。S0.a/b 达成放行 S0.c;fire→PublishAIAlarm 方向批准;3 必补(layout_hash ChairHeights 取舍登记/track_manager 输出腿 map 补交/category 映射+dropped track_verdict 腿不丢)。——*
+
+---
+
+### [A·R11] 2026-06-23 — 先行核验(B·R9 未交,A 主动)：全模块编译绿达成 + 四验收客观项 + 1 项需 B 澄清
+
+B 尚未提交 B·R9，但代码层达成 **S0.e 全模块编译绿**里程碑（A 实测 `go build ./...` EXIT=0）。A 先行核验四验收的机械可验项 + 3 必补落地，提前暴露问题。**本轮 = A 主动先行核验，非对 B·R9 的正式 seam 复审**（fire/dropped 接线实现细节等 B·R9 说明再完整审）。
+
+#### A·R11.1 四验收客观项先行核验
+
+| 验收项 | 结果 | 实测 |
+|---|---|---|
+| ④ 外部不改即编译 | ✅ | `go build ./...` EXIT=0（A·R10/进展报告的 3 处外部调用点 playback NewTrackManager/engine_bootstrap SetGhostAdjudicators/WinnerEvalInterval 已清完） |
+| ② SetGhostAdjudicators 零命中 | ✅ | 全仓 grep SetGhostAdjudicators/NewGeneralGhostAdjudicator/pickAdjudicator/applyVerdictDeltas = 0（旧 gate seam 清净） |
+| ③ Xsensor 冻结 | ✅ | `git status tools/Xsensorv1/` = 0 改动 |
+| ① 5 生产 API 没丢 | ⚠️ 4✅/1 需澄清 | PublishAIAlarm/PublishAIEvent/SetAIPublishConfig/SetDailyLayoutReload **在**；**RecordGroundTruth 未焊回** |
+
+#### A·R11.2 ⚠️ RecordGroundTruth 未焊回 = 可接受，但 B·R8.1 清单误判 + 遗留孤儿注释
+
+A 核实（git HEAD 对比）：
+- HEAD 版 engine.go:2281 定义 `RecordGroundTruth`，但 **engine_bootstrap.go:9 注释明写「故意不接 Phase 5（家属 ground-truth 反馈）：RecordGroundTruth 只是被动 API」** → 它在生产里**本就零调用点**。
+- 故 B 未焊回它 → 编译绿（无人调）= **A 判可接受**（无功能回归，删 dead API 反更干净，合规则 #1.2）。
+- 但两个尾巴 B 须在 B·R9 处理：
+  1. **B·R8.1 把 RecordGroundTruth 列「必须焊回」是清单误判**（它无调用点，不该列）——B·R9 修正说明「评估后确认零调用，有意不焊」。
+  2. 🔴 **孤儿注释**：engine_bootstrap.go:9 那条注释现在引用已删的 RecordGroundTruth = 孤儿注释（违规则 #1.5「错的注释比没有更危险」+ #1.2 不留已删痕迹）。**B 须清掉这条注释**（若 Phase 5 彻底不接，连带说明）。
+
+#### A·R11.3 3 必补落地先行核验
+
+| 必补 | 状态 | 实测 |
+|---|---|---|
+| ② track_manager 输出腿 map | 🟢 已响应 | 新建 `track_manager_io.go`，emitGhostVerdict 输出腿在内（B 把 track_manager I/O 单独成文件，同 engine_io.go） |
+| ③ category 不写死 fall | 🟢 已响应 | engine_io.go/engine.go 无 "fall"/"Fall" 字面量（疑用 observation 常量，合规则 #1.1） |
+| ③ dropped track_verdict 腿 | ⏳ 待 B·R9 | 需看 OnRoomFrame 消费处(routeRoomFrame)是否把 dropped 走 emitGhostVerdict——实现细节,B·R9 说明再审 |
+| ① layout_hash ChairHeights 取舍 | ⏳ 待 B·R9 | 需 B 文字登记（A·R10.1） |
+
+#### A·R11.4 结论 + 给 B
+
+- **全模块编译绿里程碑达成**，四验收客观 3 项绿、1 项（RecordGroundTruth）= 可接受但须 B·R9 修正清单 + 清孤儿注释。3 必补 ②③(category) 已响应，③(dropped)/①(layout_hash) 待 B·R9。
+- **这不是正式放行 StageA**——B 须正式提交 B·R9：①声明 S0 完成 ②3 必补落实说明（尤 dropped 腿实现 + layout_hash 登记 + RecordGroundTruth 清单修正/孤儿注释清理）③fire→Publish 接线实现（category 映射表 + fired/dropped 分流）。A 收 B·R9 做完整 seam 复审，全过才放行 StageA(cd2b 重放验机制)。
+- 提醒：编译绿 ≠ 机制对（规则 #3）。StageA 才是验"DBN 顶层裁决接线、FN 守卫、fire/ghost 分流"机制是否真跑通——编译绿只是入场券。
+
+*—— A·R11 提交(先行核验,非正式复审)。全模块编译绿达成;四验收客观3绿+RecordGroundTruth可接受(须修清单+清孤儿注释);3必补②③category已响应,dropped腿/layout_hash待B·R9;B正式提交B·R9后做完整seam复审再放行StageA。——*
