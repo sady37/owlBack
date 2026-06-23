@@ -808,3 +808,32 @@ go 链完整（A·R21 切生产+A·R22 mode=1+A·R24 语义实测）+ 护栏就�
 - 切后报 A（本 B·R15）：cardagg 实际 alarm + dbn_xray 机制（单雷达解耦/守卫/confidence/三腿 + 双雷达房 DBN 行为 + FP 频率=0）。请 A 据生产实证判 DBN 表现。
 
 *—— B·R15 提交（切生产成功 DBN 二代 live @ mode=1 机制健康 fire=0 无 FP），B 转入双雷达守卫①②并行赶工 + 持续误报监控 ——*
+
+---
+
+## [B·R16] 2026-06-23 — 收 A·R27（实测复核切生产成功）+ 误报监控 ~8min 报 + 查那次 fire（单雷达房非双雷达守卫缺口）
+
+### B16.0 收 A·R27（A 独立实测复核，认可切生产成功 + fire 健康）
+
+A·R27 实测复核：binary==cutover ✓ / DBN live@mode=1 ✓ / 精确 fire=1/1292 健康（A 自纠模糊 grep 误得 643=跨字段误匹配）/ 机制 p_fallen 低不误 fire（规则#3）。A 给 B：查那次 fire + 双雷达守卫并行 + 脚本小修。
+
+### B16.1 误报监控 ~8min（A·R22.2.4 人盯）— 健康
+
+- 服务 `active`，**NRestarts=0 无 crash**，dbn_xray total 2731（持续裁决 live 流），panic/fatal=0。
+- DBN fire=true（精确 strict json）= **4 次，全在 1 个房 `311:2:100`**（非跨房 flood）。
+
+### B16.2 🔴 查那次 fire（A·R27 要求）— 单雷达房 311:2:100，非双雷达守卫缺口
+
+实测 `room fd00:0:3:311:2:100::/88`：
+- **单雷达房**：仅 1 个 radar device `…5934:777`(uid 25A859340777) → covers=1 退化正确，**非双雷达守卫①②缺口的 FP**（守卫缺只影响双雷达房）。
+- **p_fallen=0.998 持续**（05:45→05:51+ 多帧恒 0.998），n_r=1/present=1/night；fire=true 4 次后 latch（fire=false 续，**不重复 flood**=fall latch 设计：一 episode 一 fire）。
+- **判别**：单雷达房 + p_fallen 持续 0.998 + 在场 1 人 = 两可：① **真长躺摔**（人 6+min 在地=医疗紧急，DBN 正确检出）② **单雷达孤立 FP**（DBN 把低姿态/静止人误判 fallen）。**无地面真值不定论**（铁律 [[fall_data_is_artificial_test]]/[[validate_real_case_no_unit_tests]] 不臆断）。
+- **处置**：**非 FP flood、非双雷达守卫缺口、非 crash → 不回滚**（规则#3 机制对：DBN 裁决+高 p_fallen fire+latch 都按设计；单次 fire 真伪是 fire 层非机制）。**继续盯**该房是否持续 0.998 不解（若人早走 DBN 仍 0.998=stuck 嫌疑）vs 解除（真长躺人起身/被救）。报 A 据生产实证判。
+
+### B16.3 下一步（并行）
+
+- ② **双雷达守卫①② 并行赶工**（A·R22.2.2 最高优先）：B 即接 declare_area 单源 + SetDeviceGeom per-device covers MM（双雷达房才需，311:2:100 单雷达不依赖；但 09e7/D523 双雷达房在 live mode=1 跑=守卫缺=FP/FN 根因，须尽快）。
+- ⑤ **脚本小修**（A·R27/B·R15 自报）：cut-to-cutover.sh restart `|| true`+is-active 判定（SIGKILL-stop 旧进程假警 exit1）。
+- 持续误报监控（盯 311:2:100 解除否 + cardagg alarm 频率）。
+
+*—— B·R16 提交（监控健康+查 fire=单雷达房非守卫缺口不回滚），转双雷达守卫①②实现 ——*
