@@ -290,3 +290,46 @@ StageA/B/C 不变（StageC 删的是 ws 侧旧裁决残骸，**不删 tools/Xsen
 - S0.a 耦合度验完先报 A；S0.c/d 完成报 A 复审（输出 API 没丢 / SetGhostAdjudicators 清净 / tools/Xsensorv1 git diff 为空）。
 
 *—— A·R5 提交。路线锁死:wisefido-sensor 为生产体且唯一改动地,tools/Xsensorv1 冻结不动;B 进 S0,禁改 Xsensor,S0.a 先报 A。——*
+
+---
+
+### [A·R6] 2026-06-23 — 架构师给出 S0 比对法「旧文件改名留底 + copy 新进来 + 比对逻辑」；A 采纳并补 Go 编译约束
+
+#### A·R6.0 架构师指令
+
+> 把原来 wisefido-sensor 里的 xxx.go 重命名为 xxx-0.go，用 Xsensor 里的直接 copy 进来，再比对逻辑。
+
+A 采纳——这是 **比对驱动焊接**：留旧版当底稿，copy 新版进来，diff 两者精确定位 Xsensor 裁掉的生产输出，照着焊回，零漏焊零信息损失。但有一个 Go 编译硬约束必须绕。
+
+#### A·R6.1 🔴 Go 硬约束：同目录同包不能留 `xxx-0.go`
+
+`package roomengine` 下所有 `.go` 一起编译。`engine.go` 与 `engine-0.go` 并存 → 两文件都定义 `type Engine`/`func NewEngine` → **`redeclared` 编译失败**。`.go` 不能当 `.bak` 留在编译目录。
+
+#### A·R6.2 绕法（保留"留底比对"意图，不破坏编译/规则 #1.2）
+
+1. **主推 git diff**（最干净）：commit 当前 ws → 用 Xsensor 文件覆盖 `engine.go` → `git diff HEAD -- engine.go` = 新旧逐行对照。比 `-0` 并排更精确，编译树不留旧码。
+2. **想物理并排**：旧文件改名进 `_attic/`（下划线开头目录 Go 忽略不编译）或改后缀 `engine.go.0`（非 `.go` 不编译）当参照。
+3. `-0`/`_attic` 底稿 = S0 过渡物，**StageC 前清除**（规则 #1.2）。
+
+#### A·R6.3 比对法的精确适用范围（按文件类型）
+
+| 文件类型 | 处置 |
+|---|---|
+| **两边都有、Xsensor 裁了输出**：`engine.go`/`track_manager.go` | ✅ **正是这招**：留底 → diff 裁掉的生产输出段 → 焊回。这两个是 S0.c 焊接的核心对象 |
+| 两边都有、小 diff：`cell.go`/`track.go`/`layout_parser.go` 等 | 可用 git diff 核对常量/活调层是否丢（风险旗标③） |
+| 新子包：`belief/`/`engine/`/`adapter/`+`mm.go`/`layout_hash.go` | 纯 copy，ws 无对照，无需 -0 |
+| 旧裁决：`belief_shadow`/`ghost_adjudicator`/`fall_exempt`/`fall_rules_param` | **删**，不留 -0（规则 #1.2；删 `SetGhostAdjudicators`+清外部调用点） |
+| 生产专属：`persist`/`persist_postgres`/`room_svg`/`track_status`/`feedback` | **不碰**，ws 原样保留 |
+
+#### A·R6.4 S0.b/c 落地为操作序列（给 B）
+
+1. **基线 commit**：当前 ws 全绿状态先 commit（作 diff 锚点 + 回滚点）。
+2. **逐文件 copy 覆盖**：从 `tools/Xsensorv1/internal/roomengine/` 复制对应文件覆盖 ws 同名文件（新子包 + 分叉文件），import 路径机械改写。**tools/Xsensorv1 只读，git diff 必须为空**。
+3. **比对焊接**：对 `engine.go`/`track_manager.go` 跑 `git diff HEAD --`，找出被删的生产输出段（`PublishAIAlarm`/`PublishAIEvent`/`SetAIPublishConfig`/`SetDailyLayoutReload`/`RecordGroundTruth`/固件 Fall 转发/`aiPublisher`/`emitGhostVerdict`），逐段焊回 ws 副本。
+4. **删旧裁决**：删 `belief_shadow`/`ghost_adjudicator` 等 + `SetGhostAdjudicators` + 清外部调用点，编译报错驱动清扫。
+5. **编译闸**：`int→trackKey` 全调用点 + `BedAreaIDs` wiring + `go vet && go build` 全绿 + `DBN_MODE=0` 静默。
+6. **报 A 复审**（S0.c/d 收口验收项）：① `git diff HEAD` 显示 5 个生产输出 API 一根没丢 ② `grep SetGhostAdjudicators` 全仓零命中 ③ `cd tools/Xsensorv1 && git diff` 为空（Xsensor 没被碰）④ 外部 cmd/consumer/zonealarm/zoneengine/service 不改即编译。
+
+S0.a（5 个生产专属文件对新 engine 内部字段耦合度）仍是 S0.b 前的放行前置——若新 engine 没提供某字段，先报 A。
+
+*—— A·R6 提交。采纳架构师比对法,补 Go 编译约束(同包不能留 -0,改用 git diff/_attic);落地 S0.b/c 操作序列;复审验收含 tools/Xsensorv1 git diff 须为空。——*
