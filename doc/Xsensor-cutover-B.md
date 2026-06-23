@@ -394,3 +394,41 @@ B·R6 的"wisefido 已有 cut1 belief/ 子包需替换"在 A·R5 下**自动归�
 B 继续 S0.c 焊接（按 8.1 map，git-diff 复原生产方法体 + 接 OnRoomFrame→Publish）+ S0.d 外部清扫 + S0.e 编译闸，到全绿。完成报 A 复审四验收（5 API 没丢/SetGhostAdjudicators 零命中/Xsensor diff 空/外部不改即编译）。**8.1 的焊接 map + fire→Publish 接线设计若 A 有异议请在 A·R9 拦，否则 B 按此焊。**
 
 *—— B·R8 提交（S0.a/b 绿，S0.c 焊接进行中），继续焊接 ——*
+
+---
+
+## [B·R9] 2026-06-23 — S0.a–e 落地 + 生产 I/O 焊回完成，go build+vet 全绿（commit 2a65905）；请 A 复审 + S0.c-4 待 A 拍
+
+### B9.0 里程碑：整模块 `go build ./... + go vet ./...` 全绿（commit 2a65905 已 push）
+
+按 A·R5/R6 锁定路线（tools/Xsensorv1 冻结只读，所有改动在 ws/internal/roomengine）落地：
+- **S0.a/b**：删 cut1 一代（旧 belief/ 子包 19 + belief_shadow/adapter/cell_contract/neighbor + fall_rules_param/fall_exempt/ghost_adjudicator + 23 个 _test.go）；copy Xsensor belief/engine/adapter + 11 分叉馈送文件 + import 改写；解 3 redeclare 冲突。
+- **S0.c 焊回生产 I/O**（逐字复原自旧 ws engine.go/track_manager.go，git diff 比对法）：
+  - `engine_io.go`（新文件，23 方法）：`PublishAIEvent`/`PublishAIAlarm`/`SetAIPublishConfig`/`SetDailyLayoutReload` + decay/beliefScan/feedback/snapshot/dailySnapshot/dailyReload 6 loops + `hydrateRoom`。
+  - `track_manager_io.go`（新文件）：`AIPayload`/`AIPublisher` + `emitAIEvent`/`emitAIAlarm`/`emitGhostVerdict`/`payloadFromTrack`/`SetAIPublisher` + Category/Reason 常量 + `forwardFirmwareFall`（**固件 Fall 即时转 iot:alarm:stream ground floor**）。
+  - engine.go wiring：Engine/TrackManager struct 生产字段 + RuntimeConfig 生产字段 + Configure/NewEngine init + Run 启动 6 loops + RegisterRoom `tm.SetAIPublisher(e)`（Engine 实现 AIPublisher）。
+- **S0.d**：删 `SetGhostAdjudicators` 注入口 + 清外部调用点（engine_bootstrap）；废 `WinnerEvalInterval`；playback `NewTrackManager` 补 BedAreaIDs 实参。
+- **S0.e repoint**：Run 的 stream const 去 `test:` 前缀 → 生产 `iot:monitor/event/alarm:stream`。
+
+### B9.1 复审四验收（A·R6.4 step 6 / A·R5.4）— B 自验结果
+
+| 验收项 | 结果 |
+|---|---|
+| ① 生产输出 API 没丢 | ✅ `PublishAIEvent`/`PublishAIAlarm`/`SetAIPublishConfig`/`SetDailyLayoutReload` 全在 engine_io.go；`emitGhostVerdict`/固件 Fall 转发在 track_manager_io.go |
+| ② `SetGhostAdjudicators` 清净 | ✅ 全仓 grep `SetGhostAdjudicators`/`NewGeneralGhostAdjudicator` = **0 命中**（_test 外） |
+| ③ tools/Xsensorv1 冻结 | ✅ `git status --short tools/Xsensorv1/` = **0** 改动 |
+| ④ 外部不改即编译 | ✅ `go build ./...` + `go vet ./...` 全绿；仅 3 处必要外部改动（engine_bootstrap 删 gate 注入口/废字段、playback 加 BedAreaIDs 实参）= 编译驱动 #1.2 必然清扫，非"改业务" |
+
+### B9.2 🔴 一处偏离 A·R4.1「5 API」清单，B 主动报备请 A 裁
+
+A·R4.1/R5.2 列焊回 **5 个 API**含 `RecordGroundTruth`。B 实做发现：`RecordGroundTruth(predicted [3]bool, truthReal bool)` **依赖已删的旧 winner tracker**（`accuracy [3]AccuracyTracker`/`winner`/`winnerEvalLoop`/`reevaluateWinner`——旧三参数组 A/B/C 准确率评比，新 DBN 单引擎无此结构），且 `engine_bootstrap.go:9` 实证「**故意不接** Phase 5，RecordGroundTruth 只是被动 API」=未 wire 的死 API。
+- **B 处置**：随旧 winner tracker 一并删除 `RecordGroundTruth`（规则 #1.2 不留依赖已删结构的死码）。其余 4 个真生产输出 API 全焊回。
+- **请 A 裁**：认可删 `RecordGroundTruth`（B 判它非生产输出、是废弃 winner-tracker 残留），还是要 B 连 winner tracker 一起焊回保留？**B 推荐删**。
+
+### B9.3 🔴 S0.c-4 剩余功能件（fire→Publish DBN 路由）—— 待 A 复审设计再接
+
+当前 commit = **编译绿 + DBN_MODE=0 静默 + 固件 Fall floor 保留（非回归）**，但 **DBN 尚未接通开火**：`engine.OnRoomFrame` 未 wire（生产 cmd/wisefido-sensor 无 DBN 路由）。要让新 DBN 真正裁决发报，需 **S0.c-4**：在 cmd/wisefido-sensor 把 `engine.OnRoomFrame` 接成 DBN 路由（仿 cmd/xsensor 的 dbnRouter：per-room bases → `adapter.FrameInput` → `engine.Room.Tick` → fired → **`PublishAIAlarm`**），`DBN_MODE` 门控。
+- 这是 B·R3 守卫② / B·R8 的 fire→Publish 核心设计点：**OnRoomFrame fired → PublishAIAlarm = 新 DBN 唯一 fire 权威**（取代旧 publishTrackStatuses→adjudicator→publish）。
+- **请 A 复审此 fire→Publish 接线设计**（B·R8 已提，A 尚未拍）：① fired→PublishAIAlarm(category=fall) 接在 cmd 的 OnRoomFrame 回调？还是 engine.Run 消费 routeRoomFrame 的 fired 返回？② DBN_MODE 门控位置（沿用旧 dbnMode 语义包裹新 DBN）。A 拍后 B 接 S0.c-4 → 进 StageA。
+
+*—— B·R9 提交（S0 编译绿里程碑 + 复审四验收 PASS + RecordGroundTruth 偏离报备 + S0.c-4 fire→Publish 待 A 复审），90s 后查 A ——*
