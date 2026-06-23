@@ -593,3 +593,45 @@ B9.3 问 ① fired→Publish 接 cmd 回调还是 engine.Run；② DBN_MODE 门�
 - S0.c-4 完成 = DBN 真正接通开火。**进 StageA 前 B 报 A**：给 OnRoomFrame wire 的 diff + DBN_MODE 灰度方案。StageA = cd2b/09e7/二义 lost-fall 重放**验机制**(规则 #3，非 fire 阈)。
 
 *—— A·R12 提交。四验收 PASS+RecordGroundTruth 准删(5→4 API);S0.c-4 拍定=engine 内 fired→PublishAIAlarm+dropped→emitGhostVerdict+DBN_MODE 门控+category 映射;收口含清孤儿注释+layout_hash 登记;S0.c-4 完成报 A 再进 StageA。——*
+
+---
+
+### [A·R13] 2026-06-23 — 架构师提醒 track confidence(Xsensor 只 log/生产下发 cardagg)；A 核实=腿已焊但 DBN 写回链待验
+
+#### A·R13.0 架构师提醒
+
+> track confidence 原来在 Xsensor 中只是 log，在 Sensor 中使用，下发给 cardagg。
+
+又一条「Xsensor 裁掉非 DBN 部分时连生产输出一起裁」的实例（同 PublishAIAlarm/emitGhostVerdict）。A 核实现状 + 暴露一个更深的接线缺口。
+
+#### A·R13.1 核实：发送腿 B 已焊回（非回归）
+
+- 发送侧 `engine_io.go:149-150`：`observation.FieldTrackConfidence` 常量 → fields 下发 cardagg（合规则 #1.1）。
+- 装填侧 `track_manager_io.go:130`：`payloadFromTrack` 填 `TrackConfidence: conf`。
+- Xsensor 侧仅 `track_manager.go:51 TrackConfidence int` 字段、零 publish（架构师所言属实，replay 道只 log）。
+- **结论**：track confidence → cardagg 的**发送腿 B 在 S0.c 已焊回**，不是回归。
+
+#### A·R13.2 🔴 但 DBN→confidence 写回链 S0.c-4 必验
+
+`OnRoomFrame` 签名仅返回 `(fired, dropped []string)`（二元 logicID 列表），**无 per-track confidence 维度**。
+- 旧路径：`adjudicator 算 confidence → 写回 TrackState.TrackConfidence → payloadFromTrack 下发`。
+- 新 DBN 路径：OnRoomFrame 出 fired/dropped 二元。**DBN 算的 per-track 置信度（adapter/realness 的 PReal）若没写回 `TrackState.TrackConfidence`**，payloadFromTrack 发的是旧值/0 → **cardagg 收到空/陈旧 confidence（发送腿在但喂它的值没更新=哑火）**。
+- **要求 B（S0.c-4 必验）**：DBN 路由把每帧每 track 的 DBN 置信度（realness/PReal→0-100）**写回 TrackState.TrackConfidence**，使 cardagg 收到的是实时 DBN confidence。confidence 维度须从 engine.Room 单独取出写回，不能只靠 OnRoomFrame 的 fired/dropped 二元。
+
+#### A·R13.3 cardagg 三条输出腿（S0.c-4 接全，统一登记）
+
+| 腿 | 内容 | 状态 |
+|---|---|---|
+| `fired → PublishAIAlarm` | 跌倒报警（DBN_MODE 门控、category 映射） | A·R12 拍定 |
+| `dropped → emitGhostVerdict` | ghost 覆盖源（track_verdict） | A·R12 拍定 |
+| **per-track confidence → PublishAIEvent** | **track 实时置信度下发 cardagg** | 发送腿已焊；**DBN 写回链 S0.c-4 必验（A·R13.2）** |
+
+三条腿共性：都是 DBN 裁决结果→cardagg 的输出，S0.c-4 接 DBN 路由时一并接全，缺一条 cardagg 对应功能哑火（报警/ghost 覆盖/置信度显示）。
+
+#### A·R13.4 给 B（并入 S0.c-4 收口）
+
+A·R12.4 收口清单 + 本轮新增：
+- **⑥ track confidence 写回链**：S0.c-4 接 DBN 路由时验证 DBN 置信度写回 TrackState.TrackConfidence，cardagg 收到实时值（A·R13.2）。
+- StageA 重放时**增一项验证**：cardagg 侧收到的 track confidence 随 DBN realness 实时变化（非恒 0/恒旧值）——属"机制验证"（规则 #3，验置信度链通没通，非验具体阈值）。
+
+*—— A·R13 提交。架构师提醒 track confidence 下发 cardagg;核实发送腿 B 已焊(非回归)但 DBN→TrackConfidence 写回链 S0.c-4 必验(OnRoomFrame 仅 fired/dropped 二元无 confidence 维度);cardagg 三腿(alarm/ghost/confidence)S0.c-4 接全。——*
