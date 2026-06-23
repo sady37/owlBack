@@ -27,7 +27,7 @@ echo "▶ [3/6] 换 cutover 二进制"
 cp -f "$SDIR/.bin/wisefido-sensor.cutover" "$SDIR/.bin/wisefido-sensor"
 
 echo "▶ [4/6] systemctl restart（原子，防双跑；systemd 管理）"
-sudo systemctl restart "$SVC"
+sudo systemctl restart "$SVC" || true  # SIGKILL-stop 旧进程令 restart 返非零=假警，靠下方 is-active 判定
 sleep 4
 
 echo "▶ [5/6] 启动自检（fail-safe）"
