@@ -1020,3 +1020,47 @@ B·R13 doc 等「① 切生产 go ② mode 确认」(doc 文字滞后,收 A·R21
 5. **B·R13 doc 文字订正**:把「待确认 mode=0」更新为「mode=1(A·R22)」,避免与脚本(已 mode=1)不一致。
 
 *—— A·R23 提交。🔴自我纠错 DBN_MODE 语义(A·R21/R22 把 mode=0 当 floor 保底=反了;实测 mode=1 才是固件地板不可挡保底,mode=0 否决固件最危险);架构师 mode=1 对(结论对 A 理由错);prod mode=2→1=去否决固件减漏报非回退;B·R13 预案扎实+go 链完整(A·R21 切生产+A·R22 mode=1)→B 执行 cut-to-cutover.sh --go;护栏=固件地板兜漏报+DBN自发FP人盯+守卫并行+一键回滚。——*
+
+---
+
+### [A·R24] 2026-06-23 — 🔴二次纠正(架构师:否决固件未实现 mode2=1):A·R23 信注释又判错;读实现确认=mode=0 实质 shadow
+
+#### A·R24.1 架构师纠正
+
+> 当前并没有否决 firmware fire 的逻辑，mode=2 实质上 = 1。
+
+#### A·R24.2 读实现核实(这次不信注释)——架构师对
+
+| 实现点 | 实测 |
+|---|---|
+| `forwardFirmwareFall`(固件 Fall 转发) | track_manager.go:726 RecordRadarAlarm **无条件调用**,注释「ground floor，DBN observation 之外」→ 固件 fire 永发,**不受 DBN_MODE 门控** |
+| `dbn_mode.go` 唯一门控 | `dbnSelfFireEnabledFor = min(dbnMode,cap)≥1`(控 DBN 是否自发),**无任何否决固件逻辑** |
+| 全仓「否决固件/vetoFirmware」实现 | grep = **空**(未实现) |
+
+**「否决固件」轴根本没实现**(固件地板永在)。mode 实质只两态:
+
+| mode | dbnSelfFire | 固件地板 | **实质** |
+|---|---|---|---|
+| **0** | 否 | 永在 | **真 shadow**(固件 floor + DBN 不发) |
+| **1 / 2** | 是 | 永在 | 固件 floor + DBN 自发(**mode2 = mode1**) |
+
+#### A·R24.3 🔴 A·R23 的「纠错」是错的——又犯信注释不读实现
+
+- A·R23 称「mode=0 否决固件最危险 / mode=1 才是固件地板保底」——**信了 .env/systemd 的注释(三档「否决固件」),没读 dbn_mode.go 实现**。实现里否决固件未写,固件地板永在。
+- **这正是架构师上轮「你查代码还是看文档」提醒的同一个错,A 在一个「纠错」轮里又犯**。教训:安全关键语义**必须读实现代码**,注释(尤其描述设计意图的)不可信。
+- **A·R21 最初「mode=0 = shadow + 固件 floor 保底」实质上是对的**;A·R23 把它"纠错"成错的;现 A·R24 校回。**净结论同 A·R21+架构师 mode=1。**
+
+#### A·R24.4 切生产校准(最终)
+
+- 当前 prod mode=2 = 实质 mode=1(固件 floor + cut1 DBN 自发)。
+- 切 cutover **mode=1** = 固件 floor + **二代 DBN 自发** = **与当前 prod 行为一致**(都固件 floor + DBN 自发),仅 cut1 DBN → 二代 DBN。
+- **go 链不变**(A·R21 切生产 + A·R22 mode=1);B 脚本 mode=1 正确。可执行 `cut-to-cutover.sh --go`。
+- 风险/护栏**不变**(A·R22):二代 DBN 自发 + 双雷达守卫①②未接 → 双雷达房 FP 误报(固件地板兜漏报,FP 无兜底);护栏=人盯 cardagg+一键回滚+守卫并行赶工。
+- 备选:若想先 shadow 观察二代 DBN,**mode=0 实质=真 shadow**(固件地板+二代 DBN 静默 dbn_xray);架构师选 mode=1(与 prod 一致直接自发),亦可。
+
+#### A·R24.5 🔴 给 B:修那条害人的注释(规则 #1.5)
+
+- **`.env:195`/systemd:59-61/dbn_mode.go:10-11 的「否决固件」三档注释是未实现功能的描述**——正是害 A·R23 判错的根源(规则 #1.5「错注释比没有更危险」)。**B 修注释**:标注「否决固件轴未实现(forwardFirmwareFall 无条件);mode=2 实质=mode=1;0=DBN 静默 shadow / 1=2=DBN 自发」。填掉这个坑防下个人(含 A)再被误导。
+- 切生产 go 不变:执行 `cut-to-cutover.sh --go`(mode=1)+护栏(A·R22/R24.4)+切后报 A 生产实证。
+
+*—— A·R24 提交。🔴二次纠正:读实现确认否决固件未实现(forwardFirmwareFall 无条件/grep 空)→mode2=1,mode0=真shadow;A·R23 信注释又判错(架构师查代码提醒同源),A·R21 实质对;切生产 mode=1=与 prod 一致换二代 DBN,go 链不变;给 B 修害人注释(规则#1.5)+执行 --go。——*
