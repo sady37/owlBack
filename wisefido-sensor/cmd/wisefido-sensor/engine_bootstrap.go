@@ -289,8 +289,10 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 
 		// S0.c-4b：建 DBN 路由 geom + engine.Room（懒建，单房 unit ρ=0）。
 		// 进 DBN 判据 = 有信号源（雷达 layout OR canvas sleepad）。
-		// 注：per-device covers(多雷达)/declare_area 固件床区/BuildRoomMM(吸纳) 为后续精化——
-		//   单雷达房 seed covers=1 = 零回归正确；多雷达/sleepad 精度走精化（见 B·R11）。
+		// 单雷达房 seed covers=1 = 零回归正确（StageA cd2b 适用）。
+		// 🔴 StageB(多雷达) 前置阻塞（双雷达 FN 守卫本体，禁 silent，见 B·R11.1）：
+		//   declare_area→BedAreaIDs 单源 + SetDeviceGeom per-device covers MM + BuildRoomMM(sleepad 吸纳)。
+		//   缺这些时 09e7/D523 等双雷达 case 必重现历史 FN，严禁进 StageA。
 		if router != nil {
 			sleepadPresent := len(cfg.Sleepads) > 0
 			if hasLayout || sleepadPresent {
