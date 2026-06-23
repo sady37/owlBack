@@ -524,3 +524,41 @@ cardagg 三腿：alarm(fired→PublishAIAlarm,门控) / ghost(dropped→emitGhos
 B 接 ③④⑤，go build+vet 绿后 commit → 提 **B·R11 完整 seam** → A 复审 → StageA。
 
 *—— B·R10.2 提交（S0.c-4a 经 A·R15 确认正确 + confidence 第三腿纳入收口），继续 cmd router + confidence 实现 ——*
+
+---
+
+## [B·R10.3] 2026-06-23 — S0.c-4 进度：confidence 第三腿落地(e2b8f5e) + S0.c-4b cmd router 完整施工图(已勘 frozen 参考)
+
+### B10.3.1 已落地（go build+vet 全绿，commit 至 e2b8f5e）
+
+- **S0.c-4a engine fire→Publish**（A·R15 确认 = 最终方案）：routeRoomFrame 消费 fired→PublishDBNFall（DBN_MODE 门控 dbnSelfFireEnabledFor）/ dropped→EmitDBNGhostVerdict（不门控）+ dbn_mode.go（DBN_MODE+冷启 cap 重建）。
+- **S0.c-4 confidence 第三腿**（A·R13/R15.3-2）：OnRoomFrame 签名加 `confidence map[string]int` 返回；routeRoomFrame 写回 `tm.SetTrackConfidence`（不门控）；TrackState.DBNConfidence 字段（<0 回退 100-GhostPenalty）；payloadFromTrack 优先 DBNConfidence → PublishAIEvent → cardagg。
+
+### B10.3.2 S0.c-4b 完整施工图（cmd 纯裁决 router + bootstrap 接线；frozen cmd/xsensor 已勘为参考）
+
+**关键发现**：ws `cmd/wisefido-sensor/engine_bootstrap.go::registerAllRooms` 与 frozen `cmd/xsensor/bootstrap.go::registerAllRooms` **同源同构**（同 LoadRoomCanvases/BuildRoomConfigFromCanvases/RegisterRoom 循环）；engine/adapter/roomengine 子包函数（NewRoom/NewUnit/BuildRoomMM/BedGeoms/ApplyOptimizedExtent）ws 已 copy 可用。故 S0.c-4b = 在**现有** engine_bootstrap 注册循环里**增** DBN 路由接线（非另起 bootstrap）。
+
+**① 新建 `cmd/wisefido-sensor/dbn_router.go`**（port 自 cmd/xsensor/main.go 121-385，只读参考）：
+- `roomGeom` 结构（beds/bedAreaIDs/walls/entrances/radarPos/sleepadPresent/radarLess/nb）。
+- `dbnRouter` 结构（geom/rooms/units/roomUnit/roomType/roomTZ/mm/eng/logger map）。
+- `onRoomFrame(roomID, bases, bed, nowMs, exitLogOdds) (fired, dropped []string, confidence map[string]int)`：
+  - build adapter.FrameInput（tracks 从 bases：LogicID/TrackID/Online=Present/Pose/X/Y/Z/StillSec/AreaType/RoomType/FwAreaID；bed reading 从 bed.BedConfidence/BedStatus；sleepad-only 房合成 bed-track pose=6；sleepads[]；Census.Night=IsNightTime）。
+  - `u := units[roomUnit[roomID]]; fr := u.Tick(roomID, fi)`。
+  - P1 回注：`SnapshotSleepads`+`RadarBedStates`+`AbsorbSleepads`→`eng.SetRoomRadarPeople(roomID, fr.Decision.PeopleCount+uncovered)`。
+  - **三返回**：fired=`fr.FiredLogicIDs` / dropped=`fr.DroppedLogicIDs` / **confidence={t.LogicID: int(t.PReal*100+0.5) for t in fr.Tracks}**（A·R13/R15.3-2）。
+  - slim xray log（StageA 验机制用，可保留 fr.Decision/Probe 关键字段）。
+  - helpers port：poseLying=6/fwBed/sName/wallsFromPolygon/ones/rectsFrom/bedReadingName。
+**② engine_bootstrap.go registerAllRooms 循环增**（仿 xsensor bootstrap 314-391，在 RegisterRoom 后）：
+  - 建 roomGeom（从 cfg：beds=rectsFrom(cfg.Beds)/walls=wallsFromPolygon(cfg.WallPolygon)/entrances/radarPos/nb）。
+  - declare_area fwBeds（固件床区 area_id，单源；ws 若无 declare_area client 须 port cmd/xsensor/declare_area.go）→ cfg.BedAreaIDs。
+  - `room := engine.NewRoom(adapter.BedGeoms(seed), nb)` + per-radar `room.SetDeviceGeom(uidLast4(uid), deviceBedGeom(...))`（MM 床耦合）。
+  - router.rooms/roomType/roomTZ/roomUnit/mm 填充（BuildRoomMM）。
+**③ 单元分组 + 接线**（仿 xsensor bootstrap 79-94）：按 suiteID 分组 rooms→`engine.NewUnit(rooms,1)`→`eng.OnRoomFrame = router.onRoomFrame`。
+**④ 清** engine.go:1028「已删 X」债务注释（A·R12.2）。
+
+### B10.3.3 状态 + 下一步
+
+- 当前：engine 侧三腿全接 + DBN_MODE 门控 + confidence 写回**全部就绪且编译绿**；唯缺 cmd 侧 router 产出（onRoomFrame）+ bootstrap 建 Room/Unit/geom 接 OnRoomFrame。OnRoomFrame=nil 故 DBN 仍休眠（固件 floor 保留=非回归）。
+- S0.c-4b 是 FN 关键 DBN 路由（~300 行 router+bootstrap 集成），按 §B10.3.2 施工图落地；完成 go build+vet 绿 + commit → 提 **B·R11 完整 seam** → A 复审 → StageA。
+
+*—— B·R10.3 提交（confidence 第三腿落地 + S0.c-4b 完整施工图），按图实现 cmd router + bootstrap ——*
