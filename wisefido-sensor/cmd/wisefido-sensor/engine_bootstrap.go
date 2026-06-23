@@ -19,6 +19,8 @@ import (
 
 	"wisefido-sensor/internal/config"
 	"wisefido-sensor/internal/roomengine"
+	"wisefido-sensor/internal/roomengine/adapter"
+	dbnengine "wisefido-sensor/internal/roomengine/engine"
 )
 
 // startRoomEngine 创建 + 配置 + 注册房间 + 启动主循环；返回的 cancelFunc 用于优雅关闭。
@@ -36,6 +38,11 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 
 	engine := roomengine.NewEngine(rdb, logger)
 
+	// S0.c-4b：DBN 顶层裁决路由（纯裁决，engine.OnRoomFrame seam）。registerAllRooms 填 geom/rooms，
+	// 注册后按 suiteID 分组 engine.Unit 并接 engine.OnRoomFrame。
+	router := newDBNRouter(logger)
+	router.eng = engine
+
 	// 1. 注入 yaml 运行时参数 + Persister
 	engine.Configure(buildRuntimeConfig(cfg, db))
 
@@ -51,11 +58,26 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 	engine.SetSuiteCensus(census)
 
 	// 2. 注册所有有 layout 的房间（PR-7：IsPublicBathroom=true 自动 MarkPublicBathroom）
-	registered, err := registerAllRooms(ctx, engine, db, logger)
+	registered, err := registerAllRooms(ctx, engine, db, logger, router)
 	if err != nil {
 		return nil, fmt.Errorf("register rooms: %w", err)
 	}
 	logger.Info("roomengine: rooms registered", zap.Int("count", registered))
+
+	// 2b. S0.c-4b：按 suiteID 分组 rooms → engine.Unit（跨房 hand-off neighbor 轴）；
+	//     单房 unit 无兄弟 → ρ_xroom≡0 → 与单房 Room 逐帧等价。接 engine.OnRoomFrame = 纯裁决路由。
+	unitRooms := map[string]map[string]*dbnengine.Room{}
+	for roomID, unitKey := range router.roomUnit {
+		if unitRooms[unitKey] == nil {
+			unitRooms[unitKey] = map[string]*dbnengine.Room{}
+		}
+		unitRooms[unitKey][roomID] = router.rooms[roomID]
+	}
+	for unitKey, rooms := range unitRooms {
+		router.units[unitKey] = dbnengine.NewUnit(rooms, 1)
+	}
+	engine.OnRoomFrame = router.onRoomFrame
+	logger.Info("roomengine: DBN router wired", zap.Int("units", len(router.units)), zap.Int("rooms", len(router.rooms)))
 
 	// 3. 建立 device_uid / device_addr → room_id 路由表
 	mapped, err := mapDevicesToRooms(ctx, engine, db, logger)
@@ -161,7 +183,8 @@ type engineReloader struct {
 }
 
 func (r *engineReloader) ReloadRooms(ctx context.Context) error {
-	_, err := registerAllRooms(ctx, r.engine, r.db, r.logger)
+	// reload 只刷 layout/cell 重学；DBN router geom 不在 reload 重建（router=nil 跳过），由进程重启重建。
+	_, err := registerAllRooms(ctx, r.engine, r.db, r.logger, nil)
 	return err
 }
 
@@ -187,7 +210,7 @@ func (r *engineReloader) ReloadDevices(ctx context.Context) error {
 //     LPM order by masklen DESC 取最 specific 绑定（/96 bed > /88 room > /80 unit）
 //     multi-resident 场景下返回任意一个（决定 19 留 PR-X，详 sensor_v2.md §10.4 注释）。
 func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB,
-	logger *zap.Logger) (int, error) {
+	logger *zap.Logger, router *dbnRouter) (int, error) {
 
 	// SQL 注：multi-resident bedroom 场景（同 /80 多 resident 各绑 /96 bed）下，
 	// LIMIT 1 返回任意一个 — 决定 19 留 PR-X，需要 sleepad device_uid → resident.id 静态映射。
@@ -263,6 +286,51 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 
 		engine.RegisterRoom(cfg)
 		engine.SetRoomTenant(roomID, tenantID)
+
+		// S0.c-4b：建 DBN 路由 geom + engine.Room（懒建，单房 unit ρ=0）。
+		// 进 DBN 判据 = 有信号源（雷达 layout OR canvas sleepad）。
+		// 注：per-device covers(多雷达)/declare_area 固件床区/BuildRoomMM(吸纳) 为后续精化——
+		//   单雷达房 seed covers=1 = 零回归正确；多雷达/sleepad 精度走精化（见 B·R11）。
+		if router != nil {
+			sleepadPresent := len(cfg.Sleepads) > 0
+			if hasLayout || sleepadPresent {
+				nb := len(cfg.Beds)
+				if nb == 0 && sleepadPresent {
+					nb = 1
+				}
+				beds := rectsFrom(cfg.Beds)
+				for len(beds) < nb {
+					beds = append(beds, adapter.Rect{})
+				}
+				bedAreaIDs := make([]int, nb)
+				if hasLayout {
+					for j := 0; j < nb && j < len(cfg.BedAreaIDs); j++ {
+						bedAreaIDs[j] = cfg.BedAreaIDs[j]
+					}
+				} else {
+					for j := 0; j < nb; j++ {
+						bedAreaIDs[j] = j + 1
+					}
+				}
+				router.geom[roomID] = &roomGeom{
+					beds:           beds,
+					bedAreaIDs:     bedAreaIDs,
+					walls:          wallsFromPolygon(cfg.WallPolygon),
+					entrances:      rectsFrom(cfg.Enters),
+					radarPos:       adapter.Point{X: cfg.Radar.Center.X, Y: cfg.Radar.Center.Y},
+					sleepadPresent: sleepadPresent,
+					radarLess:      !hasLayout,
+					nb:             nb,
+				}
+				seed := adapter.FrameInput{Beds: beds, Covers: ones(nb), Onbed: ones(nb), Overlap: ones(nb)}
+				router.rooms[roomID] = dbnengine.NewRoom(adapter.BedGeoms(seed), nb)
+				router.roomType[roomID] = cfg.RoomType
+				if tz, terr := time.LoadLocation(cfg.Timezone); terr == nil {
+					router.roomTZ[roomID] = tz
+				}
+				router.roomUnit[roomID] = cfg.SuiteID
+			}
+		}
 		count++
 	}
 	if placeholderCount > 0 {

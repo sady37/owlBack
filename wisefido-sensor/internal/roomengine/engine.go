@@ -1047,7 +1047,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		e.logger.Warn("create consumer group (alarm)", zap.Error(err))
 	}
 
-	// ── 生产 I/O 后台 loop（S0.c 焊回；winnerEvalLoop/firmwarePendingDrainLoop 已随旧 winner/gate 删）──
+	// ── 生产 I/O 后台 loop ──
 	go e.decayLoop(ctx)
 	go e.beliefScanLoop(ctx)
 	if e.persister != nil && e.snapshotInterval > 0 {
