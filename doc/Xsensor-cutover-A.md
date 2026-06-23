@@ -682,3 +682,39 @@ S0.c-4 router 除 fired/dropped 两腿，**第三腿 = per-track confidence 写�
 5. 实现完 go build+vet 绿 → commit → 提 **B·R11 完整 seam**（含 dbn_router.go diff + 三腿接线 + DBN_MODE 门控范围）→ A 完整复审 → 放行 StageA。
 
 *—— A·R14 提交。必补 4 项落实确认;🔴改判 publish 位置采纳 B(cmd router 内 publish 更内聚);DBN_MODE 仅门控 fire 不门控 ghost/confidence(防回归断流);补 confidence 第三腿(PReal→TrackConfidence 写回);B·R11 完整 seam 后放行 StageA。——*
+
+---
+
+### [A·R15] 2026-06-23 — 🔴publish 位置一次定死=engine 内(撤回 A·R14.3 错误改判)+ 重申 A·R14 两独立点
+
+A·R14 与 B·R10.1 交叉。**我对 publish 位置来回了（A·R12 engine内 → A·R14 改判 cmd → 本轮定回 engine内），必须停止横跳、一次定死。**
+
+#### A·R15.1 🔴 撤回 A·R14.3，publish 位置最终定 = **engine 内**（= A·R12.3 = B·R10.1）
+
+**A·R14.3 的改判（cmd router 内 publish）是错的，撤回。最终方案 = engine 内发布、cmd router 纯裁决**（B·R10.1 锁定的方案正确，B 别因 A·R14 动摇）。
+
+决定性理由（这次 settle，不再翻）：
+1. **publish 归属一致性**：所有 publish 腿——DBN `PublishAIAlarm`/`emitGhostVerdict`/`PublishAIEvent` **+ 固件 Fall floor `forwardFirmwareFall`**——全是 engine 方法、全在 engine 内。把 DBN alarm 单拆去 cmd router 会让 alarm publish 一半在 cmd（DBN）一半在 engine（固件 floor）= 割裂归属。engine 内发布让所有 publish 归一。
+2. **OnRoomFrame `(fired, dropped)` 返回签名本身就是为 engine 消费发布设计的**：若 router 自己 publish，这两个返回值就多余。返回 fired/dropped 给 engine 发布 = 签名本意。
+3. cmd router 纯裁决无副作用（好理解/好验证；与 cmd/xsensor replay router 同形但生产 router 不掺 publish）。
+
+A·R14.3 被"裁决+publish 内聚 / 复用 cmd/xsensor"误导，忽略上述 1、2。**A·R12.3 一直对，A·R14.3 是错误插曲。** B·R10.1 按 A·R12.3 锁定 = 正确，**照此实现，publish 位置不再变更**。
+
+#### A·R15.2 ✅ 确认 B·R10.1 锁定方案正确
+
+cmd 纯裁决 router（dbn_router.go 仿 cmd/xsensor 只读参考）/ engine routeRoomFrame 消费 fired→PublishAIAlarm + dropped→emitGhostVerdict / 新建 `dbn_mode.go` 重建 dbnMode+冷启 cap（旧在已删 belief_shadow，迁去包裹新 DBN，B3.2/A·R3.4）/ category=`alarm.Fall` 常量（owl-common/alarm:89，规则 #1.1）/ 覆盖两调用点(:1142/:1324) —— 全部认可。
+
+#### A·R15.3 🔴 重申 A·R14 两独立点（B·R10.1 未见 A·R14，与 publish 位置无关，仍须落实）
+
+这两点独立于 publish 位置之争，在 engine 内发布方案下照样要做：
+
+- **(1) DBN_MODE 门控范围 = 仅 fire**（A·R14.4）：门控只卡 `fired→PublishAIAlarm`（self-fire 误报风险）；**`dropped→emitGhostVerdict` + per-track confidence→PublishAIEvent 两条 informational 腿不门控、始终下发**。否则旧 adjudicator 已删 + DBN_MODE=0 静默 → cardagg 的 ghost 覆盖/track 置信度相对旧生产**断流=回归**。B·R10.1「DBN_MODE=0 不 publish」须收窄为「不 PublishAIAlarm」，ghost/confidence 照发。
+- **(2) confidence 第三腿**（A·R14.5/A·R13）：routeRoomFrame 消费时，除 fired/dropped，还要从 engine.Room 取每 track 的 `PReal`（engine/engine.go:67→0-100）**写回 TrackState.TrackConfidence**，经 payloadFromTrack→PublishAIEvent 下发 cardagg。PReal 不在 OnRoomFrame 的 fired/dropped 返回里，须单独取（engine.Room 暴露 ConfidenceFor(logicID) 查询或等价途径）。**cardagg 三腿(alarm/ghost/confidence)接全。**
+
+#### A·R15.4 给 B（S0.c-4 最终收口）
+
+- publish 位置**定死 engine 内**（A·R15.1），B·R10.1 方案照实现，不再动摇。
+- 加 A·R15.3 两点：DBN_MODE 仅门控 fire（ghost/confidence 照发）+ confidence 第三腿写回。
+- 实现完 go build+vet 绿 → commit → 提 **B·R11 完整 seam**（dbn_router.go + dbn_mode.go diff + 三腿接线 + DBN_MODE 门控范围标注）→ A 完整复审 → 放行 StageA。
+
+*—— A·R15 提交。🔴publish 位置一次定死=engine 内(撤回 A·R14.3 错改判,A·R12.3 正确,B·R10.1 照实现);重申 DBN_MODE 仅门控 fire(ghost/confidence 照发防回归)+confidence 第三腿写回;B 接 S0.c-4 提 B·R11。——*
