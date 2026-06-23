@@ -711,3 +711,32 @@ A·R20 ✅ 认可 B 安全闸 + 实测校准：方案(a) 独立 REDIS_DB **当�
 - B 等架构师拍隔离方向 → 落地隔离 + 写 StageA 一键脚本（[[feedback_script_standard_ops_not_manual]]）+ 启动自检 + 跑。
 
 *—— B·R12.1 提交（守隔离红线，待架构师拍 (a)/(c)），90s 后查 A/架构师 ——*
+
+---
+
+## [B·R13] 2026-06-23 — 收 A·R21（架构师拍直接切生产）：切生产预案就绪（脚本 --go 守卫未执行）+ 🔴 .env DBN_MODE=2 实测 → 待架构师显式确认 DBN_MODE=0 起步
+
+### B13.0 收 A·R21（架构师拍直接切生产，A·R21.2 DBN_MODE=0 强制）
+
+架构师拍「直接切生产，在生产中验证」——cutover sensor 替换线上 sensor 接管**实时真数据**（非重放假数据→消解 B·R12 隔离难题，发布生产流正是新生产 sensor 要的）。A·R21.2 🔴 硬约束：生产含双雷达房、守卫①②未接 → **DBN_MODE=0 起步强制**（shadow：DBN 跑裁决不发 alarm，固件 floor 保底，ghost/confidence informational 照发；双雷达房缺守卫只影响 dbn_xray 观察不发真报警=安全）。DBN_MODE=1 发真 alarm 前须接齐双雷达守卫①②（StageB 前置）。
+
+### B13.1 切生产预案就绪（全部 safe prep，**未对生产执行**）
+
+- ✅ **cutover 二进制已编**：`.bin/wisefido-sensor.cutover`（go build cmd/wisefido-sensor，**独立名，未碰运行中进程**）。
+- ✅ **旧生产二进制已备份**：`.bin/wisefido-sensor.prod-backup`（回滚用）。
+- ✅ **管理机制确认**：systemd `owlback.sensor.service`（PPID=1，`Restart=on-failure`→须 systemctl 非 pkill；StandardOutput=journal→dbn_xray 在 journalctl）。binary launched via scripts/systemd/owlback-run-service.sh（source .env）。
+- ✅ **守卫脚本已写**（`scripts/stagecut/cut-to-cutover.sh` + `rollback.sh`，**--go 守卫，无 --go 安全中止，已自测**）：cut=备份 .env+binary→DBN_MODE=0→换 binary→systemctl restart→启动自检(active + "DBN router wired" + fail-safe 回滚)→dbn_xray dump；rollback=还原旧 binary+.env+restart。
+
+### B13.2 🔴 实测关键发现：.env 当前 DBN_MODE=2（必改 0 再切）
+
+实测 `.env` **`DBN_MODE=2`**（全开：否决 firmware + DBN 自发）——即**当前线上生产跑 cut1 DBN @ mode 2**（发 DBN alarm + 否决固件）。
+- **切生产若不改 DBN_MODE，新 binary 会 @ mode 2 起**→ 新 DBN 在**未接守卫的双雷达房**发真 alarm + 否决固件 = A·R21.2 正警告的双风险。**故 cut 脚本强制 DBN_MODE 2→0**（A·R21.2）。
+- **行为变化登记**：切后 = 旧 cut1-DBN-mode-2 → 新-DBN-shadow（DBN_MODE=0）+ 固件 floor。观察期 production fall = 固件 floor（非回归：固件保底）+ 新 DBN shadow 落 dbn_xray（不发）。**新 DBN 不发真 alarm 直到守卫接齐 + 架构师批 DBN_MODE≥1**。
+
+### B13.3 🔴 待架构师显式确认（切生产 = 最高危外向操作，B 不擅自 --go）
+
+切生产 = systemctl 替换线上生产 fall-detection + DBN_MODE 2→0，**最高危不可逆外向操作**。A·R21.4 正请架构师一句话确认起步 mode。**B 在架构师显式 go 前绝不跑 `cut-to-cutover.sh --go`**。
+
+请架构师确认：① **切生产 go**（替换线上 sensor 为 cutover binary）② **DBN_MODE=0 起步**（A 强烈建议=B 推荐；shadow 零外向风险观察）。确认后 B：跑 `cut-to-cutover.sh --go` → 自检 → 观察 dbn_xray 实时生产流验机制（A·R19.3：接通/床解耦/evict-purge 守卫/confidence 真值/门控/三腿）→ 报 A 机制结果 → 接齐双雷达守卫①② → 架构师批 DBN_MODE≥1 灰度。
+
+*—— B·R13 提交（切生产预案就绪+DBN_MODE=2→0 发现，待架构师显式确认 go+mode），90s 后查 A/架构师 ——*
