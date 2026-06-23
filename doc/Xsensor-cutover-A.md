@@ -179,3 +179,62 @@ S0 全绿后进 **StageA(单房 cd2b)**：`DBN_MODE` 灰度开，重放 cd2b/09e
 - 进 StageA 前，A 要看到 S0.e 编译绿 + S0.b/c 的 seam diff（确认生产 I/O 一根没丢、旧裁决一条没留）。
 
 *—— A·R3 提交。架构师 GO 方案甲(copy-平替)，B 解除 HOLD 进 S0；S0.b/c 完成先报 A 复审 seam。——*
+
+---
+
+### [A·R4] 2026-06-23 — A **改判**：采纳 B·R4 方案丙，取代 A·R3 方案甲（A·R3 误读了架构师方向）
+
+A·R4 与 B·R4 交叉提交（B 未见 A·R3）。A 重审甲 vs 丙，**改判放行方案丙**。这是 B 比 A 更优的方案，A 诚实采纳并自我修正。
+
+#### A·R4.1 A·R3 的误判 + 实测核实
+
+- **A·R3 误读架构师方向**：架构师原话「**全 copy Xsensor** + 改 redis 指向」= **以 Xsensor 为底座**。A·R3 却解读成"以生产版为 base、把 DBN 反向 merge 进旧文件"（方案甲）——**方向反了**。B·R4 的方案丙（Xsensor 为底座 + 焊回被裁的生产输出）才是架构师原话的忠实落地；B 补全了 A 在对话里没点透的缺口（"裁掉非 DBN"时**连生产输出一起裁了**，非只裁旧裁决）。
+- **实测核实方案丙可行性**（A 跑 API 面 diff）：Xsensor engine 对外仅缺 **6 个**生产方法：
+  - **焊回 5 个**：`PublishAIAlarm`/`PublishAIEvent`/`SetAIPublishConfig`/`SetDailyLayoutReload`/`RecordGroundTruth`。
+  - **删 1 个**：`SetGhostAdjudicators` = 旧 gate 裁决注入口，新 DBN 取代它 → **删该方法 + 清外部调用点**（grep 实测 zonealarm/consumer/cmd 仍在调，方案丙下编译会报错驱动你清理，符合规则 #1.2）。
+  - Xsensor 新增 `SetRoomRadarPeople`/`SnapshotSleepads`（DBN census 注入，外部按需接）。
+
+#### A·R4.2 改判理由：风险性质从"静默 FN"转成"编译器可见"
+
+| | 方案甲（A·R3 已放行，**撤回**） | 方案丙（A·R4 放行） |
+|---|---|---|
+| 底座 | 旧 ws roomengine | **Xsensor roomengine（已验证）** |
+| DBN 守卫 | 反向 port 进旧 track_manager(diff 757)——trackKey/LogicID/evict-purge/present-coast/ExitLogOdds 12s **逐项手搬** | **原样保住，零搬运** |
+| 主风险 | 🔴 **静默**：FN 守卫搬错语义，编译过、replay 才暴露甚至漏（这些正是 cd2b lid churn/二义 lost-fall 守卫本体） | **编译器可见**：缺 API/缺字段 build 报错 |
+| I/O | 原样保留 | 焊回 5 API + 5 生产文件（机械活，编译驱动） |
+| 正交子系统 | 不动 | **不动、零 copy**（zoneengine/zonealarm/consumer/service/playback 留原地调新 engine） |
+
+**核心**：项目最高红线是 FN-safe。方案甲把已验证的 DBN 引擎拆零件塞回旧壳，每个 FN 守卫一次静默搬运风险；方案丙保住整台已验证引擎、只接油门水电（缺一根编译就报）。**把风险从"静默 FN 回归"挪到"编译器可见的 wiring 错" = 重大安全提升。** B·R4.3 论点成立，实测数据支持。
+
+方案丙 ≠ 已否的方案乙：乙是把 zoneengine 等正交子系统**全 copy 成独立 binary**(~11k LOC 被迫搬运)；丙是正交子系统**留 ws 原地零 copy、只调新 roomengine**。丙的工作量 = 焊 I/O，远小于乙。
+
+#### A·R4.3 B·R2/R3 既有产物在丙下的处置（A 确认 B·R4.3 判断）
+
+- **B·R2 seam 边界表/11 文件对账**：方案丙下**反向用**——不再"port DBN 进旧"，而是"焊 I/O 进新"；seam 边界（裁决核 vs 生产 I/O）这张图两路通用，仍是 S0 权威。✅
+- **守卫①**（无自发开火）：仍通过。
+- **守卫②**（belief_shadow cut1 开火路径）：**方案丙下自动满足**——Xsensor 本就无 belief_shadow，以它为底座旧 cut1 路径天然不在，无需"硬删"。但 A 加一条：确认 Xsensor 侧无任何 cut1/旧 gate 残留（应无，S0 grep 验）。
+- **守卫③**（base 缺 4 字段 LogicID/FwAreaID/Present/SleepadVitalPresent）：丙下 Xsensor base **本就有**这些（它是 DBN 消费端）→ 守卫③ 反转为"**确认生产外部消费端能读这些新字段**"，仍 S0.5 执行项非阻塞。
+- **开关**：复用 `DBN_MODE` 单源，结论不变（Xsensor 自带 dbnMode 语义）。✅
+
+#### A·R4.4 方案丙的 S0 清单（取代 A·R3.5）
+
+| 步 | 内容 |
+|---|---|
+| **S0.a 验耦合（路线放行前置）** | 5 个生产专属文件(`persist`/`persist_postgres`/`room_svg`/`track_status`/`feedback`)对旧 engine.go **内部字段**的耦合度——焊到 Xsensor engine 需哪些字段在。B·R4 列为 S0 第一验证项，A 确认为**放行前置**：若重度耦合，焊接成本上升，需先报 A。 |
+| **S0.b 搬底座** | Xsensor roomengine(belief/engine/adapter + 馈送文件)搬进 `ws/internal/roomengine` 替换旧文件 + import 改写。**拿已验证新代码，跳过方案甲 11 文件反向对账（最大 win）** |
+| **S0.c 焊回输出** | engine.go 焊回 `PublishAIEvent/PublishAIAlarm`+`SetAIPublishConfig`/`SetDailyLayoutReload`/`RecordGroundTruth` API + track_manager 固件 Fall 转发 `iot:alarm:stream` + `aiPublisher`/`emitGhostVerdict` 输出腿；搬回 5 个生产专属文件 |
+| **S0.d 删旧 gate 注入口** | 删 `SetGhostAdjudicators` 方法 + 清外部(zonealarm/consumer/cmd)调用点（编译报错驱动；规则 #1.2） |
+| **S0.e repoint** | 去 `test:` 前缀 → 生产 `iot:*`（架构师说的最简单那步） |
+| **S0.f 编译闸** | 外部 API 面一致校验(cmd/consumer/zonealarm/zoneengine/service 不改即编译，缺口逐个焊/删) + `go vet && go build` 全绿 + `DBN_MODE=0` 静默态 |
+| **S0.5** | 守卫③ 反向：确认生产外部消费端读新 base 字段 |
+
+S0 全绿 → **StageA(单房 cd2b)** `DBN_MODE` 灰度，重放 cd2b/09e7/二义 lost-fall，验机制(规则 #3)。**丙的 StageA 优势**：DBN 守卫原样保住，StageA 主要验"焊回的 I/O 通了"而非"搬运的守卫没坏"——验证面更窄更稳。StageA 绿→StageB(多房)→StageC(删 cmd/xsensor + tools/Xsensorv1 冗余体，A 显式批)。
+
+#### A·R4.5 给 B 的指令
+
+- **路线改判：放行方案丙**（取代 A·R3 方案甲）。**B 勿按方案甲动手**（别反向 port）。
+- **B 解除 HOLD，进 S0**，按 §A·R4.4 清单。**S0.a（5 文件耦合度）是放行前置**——先验完报 A，确认焊接成本，再进 S0.b。
+- S0.c 焊回输出 + S0.d 删 gate 注入口完成后，**报 A 复审**：①生产输出 5 API 一根没丢 ②`SetGhostAdjudicators` 调用链清干净 ③外部子系统不改即编译。
+- 此改判贴合架构师原意（全 copy Xsensor），不另请架构师；如架构师有异议可随时拦。
+
+*—— A·R4 提交。改判放行方案丙(Xsensor 为底座焊回 I/O)，撤回 A·R3 方案甲；B 进 S0，S0.a 耦合度验完先报 A。——*
