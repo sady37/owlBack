@@ -782,3 +782,35 @@ engine_bootstrap.go:292 注释：「per-device covers(多雷达) / declare_area 
 - 其余 S0.c-4b 收口(清 engine.go:1028 债务注释)完成 → B·R11 完整 seam(router/bootstrap diff + 3 守卫点状态:③已接/①②登记 StageB) → A 复审 → StageA。
 
 *—— A·R17 提交(进行中代码前瞻 flag)。DBN 已接通🟢;2 双雷达 FN 守卫(declare_area/SetDeviceGeom MM)被标「后续精化」🔴须改登记 StageB 前置禁 silent+StageA 限单雷达 cd2b;待 B·R11。——*
+
+---
+
+### [A·R18] 2026-06-23 — 架构师立场校准(差异多为修复,不确定先问)+ ChairHeights 裁决(不入 hash,反例)
+
+#### A·R18.0 架构师立场校准(审核原则)
+
+> 许多 wisefido-sensor 之间遗漏的问题，已经在 Xsensor 中解决。不确定的，先问我。
+
+**A 审核默认立场更新**：Xsensor 是修复过的正本；Xsensor↔生产的差异**倾向于是 Xsensor 修了生产遗漏**，不是 Xsensor 缺失。**但非绝对**(见 ChairHeights 反例)——逐个 case 确认，不确定先问架构师，**不自己拍「对齐生产版」**。
+- 这印证最终路线(整文件 copy Xsensor 分叉文件、非反向 merge)正确：整文件 copy = 采纳 Xsensor 的修复，不被生产遗漏污染。
+
+#### A·R18.1 ChairHeights 裁决(架构师拍定)— B 处置对,A·R10.1 理由订正
+
+A 按新立场怀疑 A·R10.1 判反(以为 Xsensor 入 hash 是修复),问架构师。**裁决**：
+> 这属于 cell-learn。Xsensor、sensor/DBN 都没动这块。不入 hash，因为 chair 移来移动。
+
+- **不入 hash 是对的**：椅子常挪动，入 hash 会频繁触发 grid 重学抖动。属 cell-learn 层，DBN 迁移不碰。
+- **B 当前处置(删 Xsensor layout_hash.go、保生产版不入 hash)正确,保持**。
+- **订正 A·R10.1 理由**：A·R10.1 说"保生产版因 belief 零消费 + sensor_v2 权威"——理由错(方向碰巧对)。真正理由 = 椅子常挪动不入 hash(cell-learn 设计,非遗漏)。
+- **方法论意义**：ChairHeights 是「差异但非修复」的反例。证明 A·R18.0 立场是**倾向非绝对**,「不确定先问」是必要纪律——A 差点按「修复立场」反向改成入 hash(那才真判反)。
+
+#### A·R18.2 立场校准的回扫(其余「Xsensor↔生产差异」点复核)
+
+按新立场回扫本 cutover 已判的差异点,确认无其他判反:
+- **11 分叉文件整文件 copy**：= 采纳 Xsensor 版(含其修复),方向对(保住 Xsensor 修复)。✅
+- **生产 I/O 焊回(PublishAIAlarm 等)**：Xsensor 裁掉=replay 不需要,非「修复 vs 遗漏」,焊回对。✅
+- **RecordGroundTruth 删**：git 实证零调用 dead API,非差异判断。✅
+- **ChairHeights**：已裁决(不入 hash,B 对)。✅
+- 结论:本 cutover 无其他「我拍了对齐生产版」的实质差异点待重审;ChairHeights 是唯一一个,已问清。
+
+*—— A·R18 提交。架构师立场校准(差异多为修复/不确定先问)更新审核默认立场;ChairHeights 裁决=不入 hash(椅子常挪动,cell-learn,B 处置对,订正 A·R10.1 理由);回扫无其他判反点;反例证明「倾向非绝对+先问」纪律必要。——*
