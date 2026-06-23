@@ -27,11 +27,11 @@ echo "▶ [3/6] 换 cutover 二进制"
 cp -f "$SDIR/.bin/wisefido-sensor.cutover" "$SDIR/.bin/wisefido-sensor"
 
 echo "▶ [4/6] systemctl restart（原子，防双跑；systemd 管理）"
-systemctl restart "$SVC"
+sudo systemctl restart "$SVC"
 sleep 4
 
 echo "▶ [5/6] 启动自检（fail-safe）"
-systemctl is-active "$SVC" | grep -q '^active$' || { echo "❌ 服务未 active，回滚！"; "$OWLBACK/scripts/stagecut/rollback.sh" --go; exit 1; }
+sudo systemctl is-active "$SVC" | grep -q '^active$' || { echo "❌ 服务未 active，回滚！"; "$OWLBACK/scripts/stagecut/rollback.sh" --go; exit 1; }
 journalctl -u "$SVC" --since "1 min ago" -o cat 2>/dev/null | grep -q "DBN router wired" || echo "⚠️ 未见 'DBN router wired'（确认 OnRoomFrame 接通）"
 echo "  服务 active；DBN_MODE=1（DBN 自发真 alarm + 固件 floor 兜 FN）"
 

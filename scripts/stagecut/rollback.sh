@@ -8,5 +8,5 @@ SVC=owlback.sensor.service
 echo "▶ 还原旧 binary + .env"
 cp -f "$SDIR/.bin/wisefido-sensor.prod-backup" "$SDIR/.bin/wisefido-sensor"
 [[ -f "$OWLBACK/.env.precut-backup" ]] && cp -f "$OWLBACK/.env.precut-backup" "$OWLBACK/.env"
-systemctl restart "$SVC"; sleep 3
-systemctl is-active "$SVC" && echo "✅ 已回滚旧生产 sensor（DBN_MODE=$(grep -E '^DBN_MODE=' "$OWLBACK/.env"|cut -d= -f2)）"
+sudo systemctl restart "$SVC"; sleep 3
+sudo systemctl is-active "$SVC" && echo "✅ 已回滚旧生产 sensor（DBN_MODE=$(grep -E '^DBN_MODE=' "$OWLBACK/.env"|cut -d= -f2)）"

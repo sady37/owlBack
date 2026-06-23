@@ -7,9 +7,10 @@ import (
 )
 
 // dbn_mode.go — DBN cutover 开关（S0.c-4 重建，迁自已删 belief_shadow.go 的 dbnMode 门控，B3.2/A·R3.4 单源）。
-// 两正交轴=否决固件 × DBN 自发，三档；每-unit 冷启成熟度 cap=min(全局 DBN_MODE, unitCap)：
-//   0 静默（engine 内跑裁决但不 publish，shadow 对账）；1 DBN 自发 fire + 固件 floor；2 满冷启 cap 后可否决固件。
-// 运维 .env 翻 DBN_MODE / DBN_COLD_HOURS。门控放 engine 内 publish 处（A·R12.3），使 =0 仍走完整裁决可 log diff。
+// ⚠️ 「否决固件」轴**未实现**（forwardFirmwareFall 无条件转发，固件地板永在；本档只控 DBN 是否自发）：
+//   0 = 真 shadow（固件 floor + DBN 不自发，dbn_xray 对账）；1 = 2 = 固件 floor + DBN 自发（mode2 实质=mode1）。
+//   门控仅 dbnSelfFireEnabledFor=min(dbnMode,cap)≥1。冷启 cap 只在 mode≥1 内分档（A·R24 实测纠正，规则#1.5）。
+// 运维 .env 翻 DBN_MODE / DBN_COLD_HOURS。门控放 engine 内 publish 处（A·R12.3），=0 仍走完整裁决可 log diff。
 
 var dbnMode = parseDBNMode(os.Getenv("DBN_MODE"))
 var coldGraduateMs = parseColdHours(os.Getenv("DBN_COLD_HOURS"))
