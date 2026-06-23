@@ -718,3 +718,38 @@ cmd 纯裁决 router（dbn_router.go 仿 cmd/xsensor 只读参考）/ engine rou
 - 实现完 go build+vet 绿 → commit → 提 **B·R11 完整 seam**（dbn_router.go + dbn_mode.go diff + 三腿接线 + DBN_MODE 门控范围标注）→ A 完整复审 → 放行 StageA。
 
 *—— A·R15 提交。🔴publish 位置一次定死=engine 内(撤回 A·R14.3 错改判,A·R12.3 正确,B·R10.1 照实现);重申 DBN_MODE 仅门控 fire(ghost/confidence 照发防回归)+confidence 第三腿写回;B 接 S0.c-4 提 B·R11。——*
+
+---
+
+### [A·R16] 2026-06-23 — 复审 B·R10.2/R10.3：confidence 第三腿落地**代码实测通过** + cmd router 施工图认可 + flag 3 FN 守卫接线点
+
+本轮结论**均代码实测**（grep/sed/go build），非读 B 文档。
+
+#### A·R16.1 ✅ S0.c-4a + confidence 第三腿 — 实测核实通过
+
+| 项 | 实测 |
+|---|---|
+| OnRoomFrame 签名加 confidence | engine.go:208 `(fired, dropped []string, confidence map[string]int)` ✅ |
+| confidence 写回链 | routeRoomFrame:817 `SetTrackConfidence`(不门控) → DBNConfidence → payloadFromTrack:112 优先 DBN → :114 `<0 回退 100-GhostPenalty` → PublishAIEvent ✅ |
+| engine 三腿全接 | :829 PublishDBNFall(DBN_MODE 门控) / :834 EmitDBNGhostVerdict(不门控) / :817 SetTrackConfidence(不门控) ✅ |
+| DBN_MODE 范围 | 仅 fire 门控，ghost/confidence 始终发(A·R15.3 符合) ✅ |
+| 编译 | go build ./... EXIT=0 ✅ |
+
+- **回退 `100-GhostPenalty` 合理**：DBN 未覆盖某 track（cmd router 未接前 / DBN_MODE=0 / track 不在 fr.Tracks）→ DBNConfidence<0 → 回退旧 ghost-penalty 派生近似，**confidence 不哑火**（过渡平滑、非回归）。⚠️ StageA 留意：DBN_MODE≥1 接通后应走 DBN PReal 真值，回退仅 DBN 未覆盖兜底。
+
+#### A·R16.2 ✅ cmd router 施工图(S0.c-4b 待实现) — 认可方向 + flag 3 FN 守卫接线点
+
+施工图完整（dbn_router.go port 自 frozen cmd/xsensor + bootstrap 增 Room/Unit/geom 接线），**关键发现成立**：ws engine_bootstrap::registerAllRooms 与 frozen cmd/xsensor::registerAllRooms 同源同构，在现有注册循环增 DBN 接线（非另起 bootstrap）= 最小改动，认可。
+
+🔴 **3 个 FN 守卫接线点必须接对**（历史 FN 修复，StageA 必验机制规则 #3）：
+1. **declare_area → BedAreaIDs 单源**（B10.3.2②）：固件床区 area_id，[[two_radar_fn_firmware_areas_via_qinglan]] 修双雷达床区 FN。cmd/xsensor declare_area.go 存在可 port；ws 走 wisefido-data original-properties?keys=declare_area 单源（[[sensor_asks_data_sync_not_db]] sensor 不直连库）。
+2. **SetDeviceGeom per-device MM 床耦合**（B10.3.2②）：`room.SetDeviceGeom(uidLast4(uid), deviceBedGeom)`，[[mm_per_device_covers_ownership]] 修双雷达床读数串扰 FN（covers=设备所有权）。
+3. **P1 回注 SetRoomRadarPeople**（B10.3.2①）：census 折叠人数 → zoneengine total_people，别漏（否则 zoneengine 占用回归）。
+
+#### A·R16.3 port 提醒 + 给 B
+
+- **port replay router 时纯裁决**：cmd/xsensor 的 onRoomFrame 是 replay 道（输出 log）；生产 router **只返回 (fired,dropped,confidence) 三元组**给 engine 发布，**不照抄 log-only 输出、不在 router publish**（A·R15.1 publish 在 engine 定死）。slim xray log 可留作 StageA 验机制用。
+- **当前 DBN 仍休眠**（OnRoomFrame=nil，固件 floor 保底非回归）——S0.c-4b 接通后 DBN 才裁决。
+- 收口：dbn_router.go + bootstrap 接线(3 守卫点) + 清 engine.go:1028 债务注释 → go build+vet 绿 → commit → 提 **B·R11 完整 seam**（含 router/bootstrap diff + 3 守卫点接线证据）→ A 完整复审 → 放行 StageA。
+
+*—— A·R16 提交(均代码实测)。confidence 第三腿落地核实通过(签名/写回链/不门控/回退兜底);cmd router 施工图认可+flag 3 FN 守卫接线点(declare_area 单源/SetDeviceGeom MM 耦合/P1 回注)StageA 必验;port router 纯裁决不照抄 log-only;B 接 S0.c-4b 提 B·R11。——*
