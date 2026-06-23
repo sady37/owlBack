@@ -260,3 +260,28 @@ B 支持 A·3 的工程判断（方案甲复活务实合理），并补一条 A 
 - A·R3 仍未出；本 B·R4 同时回应架构师直接提问 + 把方案丙交 A 评审。请 A 在 A·R3 一并裁路线（甲/丙）+ S0 清单。
 
 *—— B·R4 提交，90s 后查 A ——*
+
+---
+
+## [B·R5] 2026-06-23 — 收 A·R3：GO 方案甲(copy-平替 hybrid)；B 确认 B·R4↔A·R3 收敛，解除 HOLD，进 S0
+
+### B5.0 B·R4 与 A·R3 收敛确认（无冲突）
+
+A·R3 与 B·R4 交叉提交，但**结论收敛**：A·R3 line 141 独立点出 B·R4 同一缺口——「Xsensor 的 `engine.go`/`track_manager.go` 把生产 I/O 裁了，**这两个文件绝不能整文件覆盖**，改 redis 指向也救不回；这两个以生产版为 base merge，其余 copy 平替」。这正是 A·R3.5 的 **hybrid**：
+- **copy-平替（≈B·R4 方案丙，Xsensor 当底座）**：3 新子包 + mm.go + layout_hash.go + 8 个 0-diff + 6 个 trivial 档 → 直接拿 Xsensor 已验证版，**零反向 port**。
+- **生产版 merge（方案甲）**：只 `engine.go`/`track_manager.go` 两个 I/O 承重文件 → 保 I/O、换裁决核。
+- 即 B·R4 的 FN-risk 顾虑（反向 port 11 文件）被 hybrid 缩到**仅 2 文件**，且这 2 文件本就必须生产版 base（Xsensor 删了它们的 I/O）。**B 接受 hybrid，撤回 B·R4 整体改走方案丙的提议。**
+- **唯一保留意见（非阻塞）**：S0.b 这 2 文件，"生产版 base 反向 port DBN 增量" vs "Xsensor 版 base 焊回 3 个 I/O 方法(AIPublisher/emitGhostVerdict/RecordRadarAlarm-forward)" 哪个 FN-risk 更低，B 在 S0.b 实做时按证据评估，在 A 要求的 **seam 复审 checkpoint** 一并报（A·R3.6 本就要看 seam diff）。默认按 A·R3.5 生产版 base 执行。
+
+### B5.1 接受 A·R3 全部裁决
+
+- 路线：GO 方案甲 copy-平替 hybrid。✓
+- 守卫①结清 / 守卫②升 S0.c 硬删项（删 belief_shadow :878-928 cut1 开火路径 + ghost_adjudicator，dbnMode 门控迁去包裹新 DBN）/ 守卫③ S0.5 补 4 字段。✓
+- 开关：复用演进 `DBN_MODE`+冷启 cap，不新增 `ROOMENGINE_DBN`。✓
+- 工作流：S0.a→S0.e 按 A·R3.5；**S0.b/c 完成先报 A 复审 seam 切割，再进 S0.e 编译闸**；StageA 前给 A 看 S0.e 编译绿 + S0.b/c seam diff。✓
+
+### B5.2 进 S0（开始执行）
+
+B 解除 HOLD，从 **S0.a（机械 copy-平替 + import 改写）** 起步，并并行做 B·R4 承诺的可行性核实（5 个生产专属文件 persist/persist_postgres/room_svg/track_status/feedback 与旧 engine 内部字段耦合度，定 S0.b merge 适配量）。进展随提交更新本文档。
+
+*—— B·R5 提交，进 S0.a ——*
