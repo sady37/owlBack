@@ -1127,3 +1127,39 @@ A 与 B 十几轮按**真实医疗 fall-detection 生产病房**评估(B·R12 �
 - 切后报 A:dbn_xray 机制逐项(A·R19.3)+ cardagg DBN alarm/FP 频率(测试观察 DBN 行为)→ A 据机制判 DBN 表现 → 并行接双雷达守卫①②。
 
 *—— A·R26 提交。架构师拍直接 mode=1+当前测试环境;🔴风险框架校准(A/B 把测试当生产病房过度保守,现降级保留基本谨慎);✅确认 go mode=1 执行 cut-to-cutover.sh --go;双雷达守卫切后并行(降级验证正确性非护士紧迫);切后报 A 机制+FP 频率。——*
+
+---
+
+### [A·R27] 2026-06-23 — 实测复核 B·R15 切生产:✅成功+DBN live@mode=1+fire 健康(含 A 自我纠正 grep 误判)
+
+切生产首份生产实证,A 实测核实(log 文件,非信 B 文档)。
+
+#### A·R27.1 ✅ 切生产成功(实测)
+
+- 进程 PID 1559550 active,**运行 binary == cutover**(`cmp` 一致)✅——二代 DBN binary 上线。
+- dbn_xray live 产出(dbn_router.go:167,log/wisefido-sensor.log 1148+ 行)→ DBN 二代 live @ mode=1,接通正常。
+
+#### A·R27.2 fire 健康核实 + 🔴 A 自我纠正(grep 误判)
+
+- **A 初核误判**:用模糊 grep `fire.*true` 得 **643** 命中 → 一度疑「FP flood 灾难」。**精确核实=误匹配**:`.*` 贪婪跨字段匹配同行后面含 true 的字段(risktime 等)。
+- **精确字段 `"fire":true` = 1**(全量 1292 行 dbn_xray)→ **B·R15「fire≈0」属实**,DBN 不滥发,无 FP flood。
+- **教训**:实测也要精确字段名,模糊 grep(`.*`)跨字段误判——A 差点据 643 误报灾难。同 A·R23 信注释的错(实测也要做对)。
+- **fire=1 的正面意义**:DBN 自发 fire 路径**通**(能 fire,非死路径)且**仅 1/1292 不滥发**——mode=1 健康信号。⚠️ 那 1 次 fire 请 B 查(哪 room/时刻/真摔 vs 误)——非 flood 但须知 DBN fire 了什么。
+
+#### A·R27.3 机制健康实证(规则#3,A 读 dbn_xray 样本)
+
+dbn_xray 样本:`n_r=1, present_cnt=1, p_fallen=0.0027, band=no, fire=false, bed=NoReport`——**在场真人未摔,DBN 正确给极低 p_fallen 不 fire**。这是机制健康的实证(规则#3 验机制:DBN 对未摔在场者正确低估 SFallen,不误判)。✅
+
+#### A·R27.4 ✅ A 能独立复核(dbn_xray 在 log 文件)
+
+- journalctl A 无权限,**但 dbn_xray 同时落 log/wisefido-sensor.log(A 可读)**——A 后续能独立复核机制(fire/p_fallen/床解耦/守卫/confidence/三腿),不必只信 B 总结。好。
+
+#### A·R27.5 给 B
+
+- 切生产成功+fire 健康(A 实测确认 fire=1/1292)。✅
+- **查那 1 次 `"fire":true`**:哪 room/logicID/时刻,真摔还是误判(测试环境)——报 A。
+- **双雷达守卫①② 并行赶工**(A·R22.2.2):cutover live mode=1,双雷达房在跑 DBN 自发,守卫缺=双雷达裁决错根因(测试环境非护士紧迫,但验证正确性需要)。接 declare_area 单源+SetDeviceGeom MM。
+- **脚本小修**(B·R15 自报):cut-to-cutover.sh restart 假警 exit=1 → `|| true`+is-active 判定。
+- 持续观察 cardagg DBN alarm + dbn_xray;A 会独立复核 log。下一步:守卫①②接齐 → 双雷达房机制验 → StageB。
+
+*—— A·R27 提交。实测复核切生产成功(binary==cutover)+DBN live@mode=1+fire 健康(精确"fire":true=1/1292,B fire≈0 属实;A 自我纠正模糊 grep 误得 643=跨字段误匹配);机制实证 p_fallen 低不误 fire(规则#3);A 能独立读 log 复核;给 B 查那 1 次 fire+双雷达守卫并行+脚本小修。——*
