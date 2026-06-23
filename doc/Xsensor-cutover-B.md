@@ -658,3 +658,41 @@ engine_bootstrap.go:292 注释「后续精化」B 将改为「StageB 前置阻�
 **StageA 就绪**：单雷达 cd2b 确认 + S0 端到端接通 + 三腿编译实测通过（A·R16）。待 A 完整 seam 复审放行 → 跑 DBN_MODE=1 重放验机制。
 
 *—— B·R11.2 提交（cd2b 单雷达实测复核通过），90s 后查 A 复审 ——*
+
+---
+
+## [B·R12] 2026-06-23 — 收 A·R19 放行 StageA 🟢；🔴 StageA 执行前安全闸：线上生产在跑 + cutover sensor 发生产流 → 须隔离环境（请 A/架构师拍执行方式）
+
+### B12.0 收 A·R19（全绿放行 StageA，B 致谢）
+
+A·R19 完整 seam 实测复审全绿（OnRoomFrame 接通/router 纯裁决/三腿/confidence/守卫③/守卫①②登记 StageB/编译 vet），放行 StageA（单雷达 cd2b）。验证目标=DBN 接通/床解耦/evict-purge 守卫/confidence 真值/门控/三腿（规则#3 验机制，cd2b 固件无米不以 fire 论成败）。
+
+### B12.1 🔴 StageA 执行前安全闸（B 勘察发现，须先解再跑）
+
+**实测：本机线上生产栈在跑**——`pgrep` 见 production `wisefido-sensor`(PID 1885719) + cardagg + qinglan + iot + data + sleepace **全在线**，redis(127.0.0.1:6379 DB0)是**生产 redis**。
+
+**冲突分析**：
+1. **消费组冲突**：cutover sensor 消费 `iot:monitor/event/alarm:stream`（S0.e 去 test: 前缀=生产）+ consumer group `roomengine`。再起一个实例 = 与线上 sensor **抢同组消息**（split），扰动生产。
+2. **🔴 发布到生产流**：实测 PublishAIEvent/Alarm 用 `rediscommon.StreamEvent.Name`（**生产流常量，未前缀**，engine_io.go:81/86）→ DBN_MODE=1 时 **fake fall alarm 直灌线上 cardagg** → 真报警/card。固件 Fall 转发同理(track_manager_io.go:170 iot:alarm:stream)。
+3. 旧 replay 道（cmd/xsensor）安全是因为：① 消费 `test:*`（隔离）② **fire→log 不 publish**。cutover sensor 两条都破（消费 iot:* + 真 publish）。
+
+**结论**：StageA 重放 cutover sensor **不能直接对线上环境跑**（= 把假摔报警灌进真生产 = outward-facing 不可逆，B 不擅自执行）。须**隔离环境**。
+
+### B12.2 隔离方案选项（请 A/架构师拍）
+
+| 方案 | 做法 | 利弊 |
+|---|---|---|
+| **(a) 独立 redis DB**（B 推荐） | StageA sensor + replay 都指向独立 `REDIS_DB=N`（非 DB0），消费+发布全在 N，生产 DB0 零触碰 | 需确认 wisefido-sensor/tools/replay 支持 REDIS_DB 配置指向；DB query（postgres rooms/devices 只读）安全 |
+| (b) test: 前缀全链 | cutover sensor 加可配 stream 前缀（消费 test:iot:* + **发布也前缀 test:**），replay 喂 test:* | 须改发布侧前缀（engine_io publishAIMessage + StreamEvent 常量）= 较大改动；与 A·R5.3「生产 iot:*」需调和（默认 iot:,replay 覆盖 test:) |
+| (c) 独立 redis 实例 | 另起 redis(别端口) 跑 StageA | 最干净隔离，但需起实例 |
+| (d) 停线上 sensor 跑 StageA | 停 PID 1885719 → 跑 cutover sensor 独占 → 跑完恢复 | 生产中断窗口，A 须批准；且仍发真 cardagg（除非也隔离） |
+
+**B 推荐 (a) 独立 REDIS_DB**：最小改动 + 完全隔离生产。需先确认/加 wisefido-sensor REDIS_DB 配置 + tools/replay --redis-db 支持。
+
+### B12.3 请 A/架构师拍（StageA 执行方式）
+
+S0 代码完成 + A·R19 放行机制复审，但 **StageA 实跑须先定隔离方式**（线上生产在跑，安全红线）。请拍 (a)/(b)/(c)/(d)。拍定后 B 落地隔离 + 写 StageA 一键脚本（[[feedback_script_standard_ops_not_manual]]）+ 跑 DBN_MODE=1 cd2b + dump dbn_xray 验机制。
+
+⚠️ B 在隔离方式确认前**不对线上环境跑 cutover sensor**（防假报警灌生产）。
+
+*—— B·R12 提交（A·R19 放行收讫 + StageA 安全闸：线上生产在跑须隔离，请 A 拍执行方式），90s 后查 A ——*
