@@ -85,6 +85,10 @@ const (
 	loungePlacementPermanent = "Lounge placement: Permanent (update layout)"
 	loungePlacementTemporary = "Lounge placement: Temporary (suppress 2h)"
 	stickyVetoMark           = "Sticky veto: never auto-learn fall suppression here"
+
+	// 永久加区 marker（owlFront alarm.ts SIT_PIN_MARKER / DENY_ZONE_MARKER）。
+	sitPinMark   = "Sit zone: pin permanently (update layout)"
+	denyZoneMark = "Interference zone: mark permanently (deny, update layout)"
 )
 
 // fallSuppressTemporaryMs 躺类"临时 2H 禁报"窗口长度。
@@ -108,6 +112,10 @@ type ParsedConditions struct {
 	// Lounge placement 二次问询（仅 FALoungeLongSofa 勾选时有意义）
 	LoungePermanent bool // ↳ permanent → MarkRestZoneByFeedback(AreaBed)
 	LoungeTemporary bool // ↳ temporary → FallSuppressUntilMs = now+2h
+
+	// 永久加区二次动作（追加 layout 对象）
+	SitPin   bool // ↳ sit zone pin → 追加 Chair object（reload→AreaSit 神圣）
+	DenyZone bool // ↳ interference zone → 追加 Interfere object（reload→AreaDeny）
 
 	// verified
 	StickyVeto bool // ↳ sticky veto → MarkLearnBlocked
@@ -153,6 +161,8 @@ func parseConditions(notes string) ParsedConditions {
 	// 二次问询 / veto 是 "↳ <marker>" 子行（非 ☑），直接 substring
 	out.LoungePermanent = strings.Contains(notes, loungePlacementPermanent)
 	out.LoungeTemporary = strings.Contains(notes, loungePlacementTemporary)
+	out.SitPin = strings.Contains(notes, sitPinMark)
+	out.DenyZone = strings.Contains(notes, denyZoneMark)
 	out.StickyVeto = strings.Contains(notes, stickyVetoMark)
 
 	return out
@@ -309,7 +319,14 @@ func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
 	// §3.3 Permanent：除 cell mark（routeFeedback 已做 AreaBed）外，再把这块躺区作为
 	// source='Feedback' object 浮到 layout canvas，让人在 RadarCanvas 看见/编辑/否决（方案 X）。
 	if operation == "false_alarm" && pc.FALoungeLongSofa && pc.LoungePermanent {
-		i.appendFeedbackLoungeObject(ctx, deviceAddr, canvas.X, canvas.Y, eventID)
+		i.appendFeedbackObject(ctx, deviceAddr, canvas.X, canvas.Y, eventID, feedbackLoungeObject)
+	}
+	// 永久加区：护士在 Handle 勾"钉为坐区/标干扰区" → 追加对应 source=Feedback layout 对象
+	if operation == "false_alarm" && pc.SitPin {
+		i.appendFeedbackObject(ctx, deviceAddr, canvas.X, canvas.Y, eventID, feedbackSitObject)
+	}
+	if operation == "false_alarm" && pc.DenyZone {
+		i.appendFeedbackObject(ctx, deviceAddr, canvas.X, canvas.Y, eventID, feedbackInterfereObject)
 	}
 
 	i.logger.Info("alarm_feedback_marked",
@@ -327,24 +344,41 @@ func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
 	return true
 }
 
-// appendFeedbackLoungeObject 把 Permanent 躺区作为 source='Feedback' 的 LongSofa object
-// 并发安全 append 进该 /128 device 的 room_visual_layout.canvas.objects[]（[[layout_authority_ai_correction_model]]）。
+// feedbackObjectSpec 描述一类"护士永久加区"追加的 layout 对象（typeName 决定 reload 后 engine 先验）。
+type feedbackObjectSpec struct {
+	idPrefix string // object id 前缀 + eventID（幂等键）
+	name     string
+	typeName string // 对齐 FE BaseObject + sensor layout_parser 的 case
+	category string
+	color    string
+	height   int
+	logKey   string
+}
+
+// reload 后 engine 先验：LongSofa→AreaBed（无sleepad床）/ Chair→AreaSit / Interfere→AreaDeny。
+// 三者均 source=Feedback：drawObjects 渲染虚线、updateRadarAreas 过滤不下发雷达（人确认转 Human 后才 declare）。
+var (
+	feedbackLoungeObject    = feedbackObjectSpec{"feedback_lounge_", "Lounge (learned)", "LongSofa", "furniture", "#c19a6b", 40, "feedback_lounge_object_appended"}
+	feedbackSitObject       = feedbackObjectSpec{"feedback_sit_", "Sit zone (pinned)", "Chair", "furniture", "#a0522d", 90, "feedback_sit_object_appended"}
+	feedbackInterfereObject = feedbackObjectSpec{"feedback_deny_", "Interference (marked)", "Interfere", "interference", "#4a4a4a", 120, "feedback_interfere_object_appended"}
+)
+
+// appendFeedbackObject 把"永久加区"动作作为 source='Feedback' object 并发安全 append 进
+// 该 /128 device 的 room_visual_layout.canvas.objects[]（[[layout_authority_ai_correction_model]]）。
 //   - 并发安全：DB 端 jsonb `||` 原子追加，不在 app 层读-改-写（FE 同时存 Human object 不冲突）。
 //   - 幂等：同 event 的 object id 已存在则不重复 append。
-//   - canvas_hash 置 NULL：让下次 FE save 必写（不误跳过）；engine snapshot 用自身 geometry hash，不受影响。
-//   - 形状对齐 FE BaseObject：typeName=LongSofa（lying）+ source=Feedback（drawObjects 渲染琥珀虚线、
-//     updateRadarAreas 过滤不下发）；几何 = fall 点周边小方块（默认 40cm，人可 resize 到真实沙发）。
-//   - LongSofa 不被 sensor layout_parser 消费（display-only），抑制仍由 cell mark 提供（方案 X 不双算）。
-func (i *AlarmFeedbackIngester) appendFeedbackLoungeObject(ctx context.Context, deviceAddr string, x, y int, eventID string) {
+//   - canvas_hash 置 NULL：让下次 FE save 必写；engine snapshot 用自身 geometry hash，不受影响。
+//   - 几何 = 告警点周边 40×40cm 小方块（angle=0 轴对齐，人可 resize 到真实家具）。
+func (i *AlarmFeedbackIngester) appendFeedbackObject(ctx context.Context, deviceAddr string, x, y int, eventID string, spec feedbackObjectSpec) {
 	if i.db == nil || deviceAddr == "" {
 		return
 	}
 	const half = 20 // 40×40cm 默认标记
-	objID := "feedback_lounge_" + eventID
+	objID := spec.idPrefix + eventID
 	obj := map[string]interface{}{
 		"id":        objID,
-		"name":      "Lounge (learned)",
-		"typeName":  "LongSofa",
+		"name":      spec.name,
+		"typeName":  spec.typeName,
 		"typeValue": 0,
 		"source":    "Feedback",
 		"geometry": map[string]interface{}{
@@ -359,14 +393,14 @@ func (i *AlarmFeedbackIngester) appendFeedbackLoungeObject(ctx context.Context, 
 				},
 			},
 		},
-		"visual":      map[string]interface{}{"color": "#c19a6b", "transparent": false, "reflectivity": 30},
+		"visual":      map[string]interface{}{"color": spec.color, "transparent": false, "reflectivity": 30},
 		"interactive": map[string]interface{}{"selected": false, "locked": false},
-		"device":      map[string]interface{}{"category": "furniture", "type": "LongSofa"},
-		"height":      40,
+		"device":      map[string]interface{}{"category": spec.category, "type": spec.typeName},
+		"height":      spec.height,
 	}
 	objJSON, err := json.Marshal(obj)
 	if err != nil {
-		i.logger.Warn("appendFeedbackLoungeObject: marshal", zap.Error(err))
+		i.logger.Warn("appendFeedbackObject: marshal", zap.String("type", spec.typeName), zap.Error(err))
 		return
 	}
 	res, err := i.db.ExecContext(ctx, `
@@ -380,11 +414,11 @@ func (i *AlarmFeedbackIngester) appendFeedbackLoungeObject(ctx context.Context, 
 		  AND NOT (COALESCE(canvas->'objects', '[]'::jsonb) @> $3::jsonb)
 	`, deviceAddr, string(objJSON), `[{"id":"`+objID+`"}]`)
 	if err != nil {
-		i.logger.Warn("appendFeedbackLoungeObject: update layout", zap.String("device_addr", deviceAddr), zap.Error(err))
+		i.logger.Warn("appendFeedbackObject: update layout", zap.String("device_addr", deviceAddr), zap.String("type", spec.typeName), zap.Error(err))
 		return
 	}
 	n, _ := res.RowsAffected()
-	i.logger.Info("feedback_lounge_object_appended",
+	i.logger.Info(spec.logKey,
 		zap.String("device_addr", deviceAddr), zap.String("object_id", objID),
 		zap.Int("canvas_x", x), zap.Int("canvas_y", y), zap.Int64("rows", n))
 }
