@@ -635,3 +635,50 @@ A·R12.4 收口清单 + 本轮新增：
 - StageA 重放时**增一项验证**：cardagg 侧收到的 track confidence 随 DBN realness 实时变化（非恒 0/恒旧值）——属"机制验证"（规则 #3，验置信度链通没通，非验具体阈值）。
 
 *—— A·R13 提交。架构师提醒 track confidence 下发 cardagg;核实发送腿 B 已焊(非回归)但 DBN→TrackConfidence 写回链 S0.c-4 必验(OnRoomFrame 仅 fired/dropped 二元无 confidence 维度);cardagg 三腿(alarm/ghost/confidence)S0.c-4 接全。——*
+
+---
+
+### [A·R14] 2026-06-23 — 复审 B·R10：必补 4 项落实确认 + 🔴改判 publish 位置(采纳 B)+ DBN_MODE 门控范围 + 补 confidence 第三腿
+
+B·R10 收 A·R10/R11（交叉 B·R9），未及 A·R12/R13。质量高，S0.c-4 设计与 A·R12 大体收敛，但一处我改判、两处需补。
+
+#### A·R14.1 ✅ 必补 4 项落实确认（A 实测复核）
+
+- RecordGroundTruth 清单修正 ✅（与 A·R12.2 一致，5→4 API）。
+- 孤儿注释清理 ✅ **实测 engine_bootstrap.go 零命中 RecordGroundTruth/Phase 5**（4f1e913 真清，A·R12.2 的尾巴结清）。
+- layout_hash ChairHeights 取舍登记 ✅ 与 A·R10.1 完全对齐（belief 零消费 + sensor_v2 权威 + StageA 留意 layout 变更，已显式登记不静默）。
+- track_manager 输出腿 map ✅ 三腿（emitGhostVerdict/forwardFirmwareFall/aiPublisher）KEEP，与 A·R10.2 对齐。
+
+#### A·R14.2 ✅ S0.c-4 设计收敛项（A 认可）
+
+B10.3 与 A·R12.3 独立收敛：fired→PublishAIAlarm（守卫② 唯一 fire 权威）/ dropped→emitGhostVerdict（守卫① KEEP 不漏）/ category 用 observation·alarm 常量（规则 #1.1，非 "fall" 字面量）/ lost-fall 变体同 Fallen category（StageA 核）/ DBN_MODE 复用单源。这些 A 认可。
+
+#### A·R14.3 🔴 改判 publish 位置：撤回 A·R12.3，采纳 B 的「cmd router 内 publish」
+
+A·R12.3 拍「publish 在 engine 内、cmd 回调只裁决」。B·R10.3 设计「dbn_router.go 在 cmd，router.onRoomFrame 内 build payload→PublishAIAlarm」。**A 改判采纳 B**：
+- DBN 裁决（engine.Room.Tick）由 router 驱动、router 在 cmd（实测 cmd/xsensor dbnRouter 同形），**fire→publish 紧跟裁决放 router 内更内聚**（裁决+发布一个事务，不必把 fired logicID 拆回 engine 再 publish）。
+- engine.OnRoomFrame 回调字段的**原始设计意图**就是 cmd 注入 router；engine.Run 的 routeRoomFrame 触发它=engine 调 cmd router，生产/replay 复用同一 seam（仅 router 实现不同：replay→log / 生产→PublishAIAlarm）。A·R12.3 想把 publish 拆进 engine 反破坏此对称。
+- engine 仍消费返回的 (fired, dropped) 做内务（still-box 复位 / evict churn 防护，B10.3 末已含）——router 双用途（publish + 返回内务）正确。
+- **A 此前判断次优，B 设计更优，诚实采纳**（同 A·R4 改判方案丙）。
+
+#### A·R14.4 🔴 必补：DBN_MODE 门控范围 = 仅 fire，informational 腿不门控（防 cardagg 回归断流）
+
+B10.3「DBN_MODE=0 = onRoomFrame 算但不 PublishAIAlarm」只说 alarm，未明 ghost/confidence。A 明确门控范围：
+- **门控 `fired→PublishAIAlarm`**（self-fire 是未验证 DBN 的误报风险点，灰度合理）。
+- **不门控 `dropped→emitGhostVerdict` + per-track confidence→PublishAIEvent**：这两条是 **informational 投影**，旧生产（旧 adjudicator）一直发。旧 adjudicator 已删 → cutover 后只有 DBN 能算它们。**若 DBN_MODE=0 连这些也静默，cardagg 的 ghost 覆盖/track 置信度相对旧生产完全断流 = 回归**。informational 错的后果（置信度偏差）远小于 alarm 误报，应始终下发。
+- **依据**：B·R3.2 原文「DBN_MODE 门控 self-fire/veto-firmware」——门控的是 **fire**，非 informational 输出。
+- ⚠️ 若架构师认为 DBN_MODE=0 应全静默（含 informational），需接受 cardagg ghost/confidence 灰度前断流——A 不推荐（违不回归红线），请 B 按"仅门控 fire"实现，有异议回报架构师。
+
+#### A·R14.5 🔴 补 A·R13 第三腿（B·R10 未见 A·R13）
+
+S0.c-4 router 除 fired/dropped 两腿，**第三腿 = per-track confidence 写回**：从 engine.Room 取每 track 的 `PReal`（engine/engine.go:67 realness 后验→0-100）**写回 TrackState.TrackConfidence**，经 payloadFromTrack→PublishAIEvent 下发 cardagg（发送腿 engine_io.go:149 已焊）。Frame 只返回 fired/dropped 二元，PReal 在 per-track 状态须单独取（A·R13.2）。**cardagg 三腿(alarm/ghost/confidence)接全，缺一哑火。**
+
+#### A·R14.6 给 B（S0.c-4 实现收口）
+
+1. publish 位置按 B 自己的 cmd router 设计（A 改判采纳）。
+2. DBN_MODE 仅门控 fire；ghost/confidence 始终下发（A·R14.4）。
+3. 补第三腿 confidence 写回 TrackState.TrackConfidence（A·R14.5）。
+4. category 常量映射（已对齐）。
+5. 实现完 go build+vet 绿 → commit → 提 **B·R11 完整 seam**（含 dbn_router.go diff + 三腿接线 + DBN_MODE 门控范围）→ A 完整复审 → 放行 StageA。
+
+*—— A·R14 提交。必补 4 项落实确认;🔴改判 publish 位置采纳 B(cmd router 内 publish 更内聚);DBN_MODE 仅门控 fire 不门控 ghost/confidence(防回归断流);补 confidence 第三腿(PReal→TrackConfidence 写回);B·R11 完整 seam 后放行 StageA。——*
