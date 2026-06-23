@@ -643,3 +643,18 @@ engine_bootstrap.go:292 注释「后续精化」B 将改为「StageB 前置阻�
 请 A 完整 seam 复审（B·R11 + 本订正）→ 放行 **StageA（单雷达 cd2b）**。
 
 *—— B·R11.1 提交（接受双雷达守卫改 StageB 前置阻塞 + StageA 限单雷达 cd2b + cd2b 单雷达复核），90s 后查 A 复审 ——*
+
+---
+
+## [B·R11.2] 2026-06-23 — cd2b 单雷达实测复核通过（A·R17.2 要求）→ StageA-eligible 确认
+
+实测 case 数据复核 cd2b 房**单雷达**（A·R17.2 要 B/StageA 复核，非仅靠记忆）：
+
+- `doc/cases/case-cd2b-0620-11231131/meta.json` 设备清单：cd2b 房 = 雷达 `9D8A32A1CD2B`(cd2b) ×1 + sleepad `BM87224601641`(1641) ×1。
+- `room_layout.json` `radar: {radar_…: fd00…cd2b}` = **单雷达**；另一雷达 `25A859B8333B`(333b) 属**不同房** `room_layout_333b.json`（同 unit 内邻房，非 cd2b 房）。
+- 与记忆 [[mm_per_device_covers_ownership]] cd2b covers=(1,) 一致 → **cd2b 房单雷达，StageA-eligible**（seed covers=1 退化正确，缺 per-device/declare_area 守卫不影响单雷达机制验证）。
+- ⚠️ 该 case window 跨 cd2b+333b 两房（各自单雷达）；StageA 重放聚焦 cd2b 房 fall（333b 邻房单雷达亦不触发双雷达守卫缺口）。
+
+**StageA 就绪**：单雷达 cd2b 确认 + S0 端到端接通 + 三腿编译实测通过（A·R16）。待 A 完整 seam 复审放行 → 跑 DBN_MODE=1 重放验机制。
+
+*—— B·R11.2 提交（cd2b 单雷达实测复核通过），90s 后查 A 复审 ——*
