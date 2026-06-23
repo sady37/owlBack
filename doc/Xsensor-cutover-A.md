@@ -902,3 +902,40 @@ B 发现「线上生产栈在跑 + cutover sensor 发生产流 → DBN_MODE=1 �
 - 架构师拍定后:B 落地隔离(按 3 硬约束)+ 写 StageA 一键脚本([[feedback_script_standard_ops_not_manual]])+ 启动自检 + 跑 DBN_MODE=1 cd2b + dump dbn_xray。
 
 *—— A·R20 提交。✅认可 B 守外向性红线;实测校准方案(a)当前不可行(REDIS_DB 硬编码 0+静默失效隐患);A 推荐(a)+验证闸或(c)fail-safe+3 硬约束(实测 log 验生效/group 隔离/启动自检);已请架构师拍隔离方式。——*
+
+---
+
+### [A·R21] 2026-06-23 — 架构师拍「直接切生产验证」；A 解读(绕过隔离难题)+ 🔴双雷达守卫硬约束 + 切法建议
+
+#### A·R21.0 架构师决策
+
+> 直接切生产，在生产中验证发现问题。
+
+**不走隔离重放,直接用 cutover sensor 替换线上 sensor、接管实时生产流验证。** B·R12 的 4 隔离方案均不采用。
+
+#### A·R21.1 A 解读：此决策聪明绕过 B·R12 隔离难题
+
+B·R12 安全闸的本质 = 「**重放历史 cd2b 摔倒数据**发生产流 → 假报警灌 cardagg」。架构师切生产 = **不重放历史假数据,接管实时真数据** → cutover sensor 发的是对**当前真人**的真判断(真摔真报/没摔不报),**非假报警**。隔离难题(REDIS_DB 硬编码/发布流未前缀)随之消失——发布流未前缀(发生产)在「切生产」语境下**正是要的**(它就是新生产 sensor)。B·R12 守红线没错(重放语境下成立),架构师换了验证范式(实时非重放)绕过它。
+
+#### A·R21.2 🔴 硬约束：切生产含双雷达房,守卫①②未接 → DBN_MODE 起步必须 0
+
+A·R19 的「StageA 限单雷达 cd2b、双雷达 case 禁入」在「切生产」下**无法成立**——生产含双雷达房(09e7/D523 等),cutover sensor 接管**所有**房。而双雷达 FN 守卫①②(declare_area 单源/SetDeviceGeom per-device MM)**还没接**(登记 StageB 前置)。
+
+故:
+- **DBN_MODE=0 起步(强制)**：DBN 跑裁决但**不发 alarm**(shadow),固件 Fall floor 保底(非回归),ghost/confidence informational 照发。双雷达房 DBN 缺守卫**只影响 dbn_xray 观察,不发真报警** → 安全。**这才是「在生产中验证发现问题」的安全实现**(实时流观察 DBN 裁决 vs 固件/实际,dbn_xray 对比发现问题,零外向风险)。
+- **DBN_MODE=1(发真 alarm)前,双雷达守卫①②必须接齐**——否则双雷达房 DBN_MODE=1 裸跑缺守卫,FN(漏)虽有固件 floor 兜底但 DBN 双雷达裁决错。即 **StageB 守卫①② = DBN_MODE=1 全量发真 alarm 的前置**。
+
+#### A·R21.3 切生产执行建议(A,给 B)
+
+1. **rebuild cutover binary**(.bin/wisefido-sensor 当前是旧生产 binary,须用 cutover 码重编)。
+2. **停旧 sensor(PID 1885719)+ 起 cutover sensor** —— **防双跑**(旧+新同消费组 `roomengine` 抢消息 split)。原子替换。
+3. **DBN_MODE=0 起步**(A·R21.2 强制):shadow 观察实时生产流,固件 floor 保底。dump dbn_xray 看 DBN 对真实数据的裁决(接通/床解耦/守卫/confidence/门控/三腿,A·R19.3 机制目标,现在生产实时流验非重放)。
+4. **回滚路径**:出问题 → DBN_MODE=0(已是)或切回旧 binary(停 cutover 起 1885719 同款)。
+5. **观察期**确认 DBN 机制对(单雷达房尤其)+ 不疯狂误判 → 接齐双雷达守卫①② → DBN_MODE=1 灰度发真 alarm。
+
+#### A·R21.4 请架构师一句话确认 + 给 B
+
+- **请架构师确认起步 mode**:A 强烈建议 **DBN_MODE=0 起步**(生产含双雷达房守卫未接,0=shadow 固件保底零风险观察;1=双雷达房裸跑+未验证 DBN 发真 alarm 双风险)。若架构师要直接 1,须知悉双雷达房缺守卫 + DBN 未验证的误报风险(固件 floor 仅兜底漏报不兜误报)。
+- B 按 A·R21.3 落地(rebuild+原子替换+DBN_MODE=0+dbn_xray+回滚脚本),不双跑;StageA 验证目标(A·R19.3 机制)在生产实时流跑。
+
+*—— A·R21 提交。架构师拍直接切生产(绕过隔离=接管实时真数据非重放假数据);🔴硬约束=生产含双雷达房守卫①②未接→DBN_MODE=0 起步强制(shadow+固件保底),DBN_MODE=1 发真 alarm 前须接齐双雷达守卫;切法=rebuild+停旧起新防双跑+dbn_xray+回滚;请架构师确认起步 mode。——*
