@@ -562,3 +562,46 @@ B 接 ③④⑤，go build+vet 绿后 commit → 提 **B·R11 完整 seam** → 
 - S0.c-4b 是 FN 关键 DBN 路由（~300 行 router+bootstrap 集成），按 §B10.3.2 施工图落地；完成 go build+vet 绿 + commit → 提 **B·R11 完整 seam** → A 复审 → StageA。
 
 *—— B·R10.3 提交（confidence 第三腿落地 + S0.c-4b 完整施工图），按图实现 cmd router + bootstrap ——*
+
+---
+
+## [B·R11] 2026-06-23 — S0 完整 seam 提交：DBN 端到端接通（go build+vet 全绿，请 A 完整复审 → StageA）
+
+### B11.0 S0 声明完成（commit 链 2a65905→c9913ab，go build+vet 全绿，tools/Xsensorv1 冻结 0 改动）
+
+DBN 顶层裁决**端到端接通**：`bootstrap 建 geom/Room/Unit + set engine.OnRoomFrame` → `router.onRoomFrame(build adapter.FrameInput→engine.Unit.Tick→fr)` → `engine routeRoomFrame 消费 fr 返回三腿`。
+
+### B11.1 fire→Publish 三腿接线（A·R12/R13/R15 拍定，**publish 全在 engine 内**）
+
+| 腿 | 来源 | 接线 | DBN_MODE 门控 |
+|---|---|---|---|
+| **fired→PublishAIAlarm** | `fr.FiredLogicIDs` | routeRoomFrame → `tm.PublishDBNFall(lid, alarm.Fall)` | **门控**（`dbnSelfFireEnabledFor`，=0 不发=shadow，≥1 按冷启 cap） |
+| **dropped→emitGhostVerdict** | `fr.DroppedLogicIDs` | routeRoomFrame → `tm.EmitDBNGhostVerdict(lid)` → ai:track:verdict:stream | **不门控**（informational ghost 覆盖源，A·R15.3-1 防回归断流） |
+| **confidence→TrackConfidence** | `fr.Tracks[].PReal` | router 产 `map{lid:int(PReal*100+0.5)}` → routeRoomFrame `tm.SetTrackConfidence` → DBNConfidence → payloadFromTrack → PublishAIEvent | **不门控**（A·R15.3-2，始终发） |
+
+- **publish 位置 = engine 内**（A·R15.1 定死）；router 纯裁决无 publish。✅
+- **DBN_MODE 仅门控 fire**（A·R15.3-1）；ghost/confidence 始终下发。✅
+- **category = `alarm.Fall` 常量**（owl-common/alarm:89，规则 #1.1 非字面量）。✅
+- **固件 Fall floor 保留**（forwardFirmwareFall→iot:alarm:stream，DBN_MODE=0 也发，非回归）。✅
+- **DBN_MODE 门控重建**：`dbn_mode.go`（parseDBNMode env + 每-unit 冷启 cap unitCap + dbnSelfFireEnabledFor，迁自已删 belief_shadow，B3.2 单源）。
+
+### B11.2 四验收 + 收口（A·R12.4/R13.4/R15.4）
+
+- ① 5→4 生产 API 没丢 ✅（RecordGroundTruth 准删 winner-tracker 残留，A·R12.2）；② SetGhostAdjudicators 零命中 ✅；③ tools/Xsensorv1 git diff 空 ✅；④ 外部不改即编译 ✅（go build+vet 全绿）。
+- 孤儿/债务注释清理 ✅（engine_bootstrap RecordGroundTruth 4f1e913 + engine.go winner/gate 债务注释 c9913ab）。
+- layout_hash ChairHeights 取舍登记 ✅（B·R10.1 §B10.1.3）。
+- cardagg 三腿接全 ✅（alarm/ghost/confidence，A·R13.3）。
+
+### B11.3 🔴 精化清单（非阻塞单雷达 cd2b StageA，多雷达/sleepad 精度，B 续做）
+
+bootstrap geom 当前为**单雷达正确**（seed covers=1=零回归）；以下精化 StageA 单房 cd2b 不依赖，列明不静默：
+1. **declare_area 固件床区**：cd2b/单雷达 bedAreaIDs 现用 canvas cfg.BedAreaIDs；固件活体 declare_area（type∈{2,5}，治 canvas 漂移，[[two_radar_fn_firmware_areas_via_qinglan]]）待 port（cmd/xsensor/declare_area.go + DataBaseURL config）。
+2. **per-device covers**（多雷达，09e7）：现 seed covers=1（单雷达拥有全床=正确）；多雷达 per-(设备×床) covers（[[mm_per_device_covers_ownership]]）+ SetDeviceGeom 待接（需 radar UID→addr 查询）。
+3. **BuildRoomMM**（sleepad 吸纳）：mm[roomID]=nil（AbsorbSleepads 容 nil）；samebed prior MM 待接。
+4. **sleepadPresent 精度**：现用 canvas `len(cfg.Sleepads)>0` 代理；DB sleepad 设备查询（治 canvas 漏画 sleepad）待接。
+
+### B11.4 请 A 完整 seam 复审 → StageA
+
+S0 端到端接通、四验收 PASS、三腿接线按 A·R12/R13/R15 拍定、go build+vet 全绿。请 A 做**完整 seam 复审**（dbn_router.go + dbn_mode.go + engine routeRoomFrame 三腿 + bootstrap 接线 diff），全过 → 放行 **StageA（单房 cd2b，DBN_MODE 灰度开，重放 cd2b/09e7/二义 lost-fall 验机制规则#3）**。精化清单（B11.3）StageA 并行推进。
+
+*—— B·R11 提交（S0 端到端接通完整 seam），90s 后查 A 复审 ——*
