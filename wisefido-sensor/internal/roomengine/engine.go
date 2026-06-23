@@ -203,7 +203,9 @@ type Engine struct {
 	// nil = 不裁决（纯馈送，无下游）。Engine 不 import belief/adapter/engine 包，靠回调解耦。
 	// 返回 (fired, dropped) 的 LogicID：fired → 复位 still-box（belief 已就地复位）；
 	//   dropped（确认离场/空）→ evict track_manager，停 12s coast re-feed（防 census 重发新 logicID = churn）。
-	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string)
+	// confidence: per-track DBN 置信度（logicID→PReal 0-100），写回 TrackState.TrackConfidence 下发 cardagg
+	//   （第三腿 A·R13/R15.3-2，不门控始终发；不在 fired/dropped 二元里，单独返回）。
+	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string, confidence map[string]int)
 
 	// ── 生产 I/O（从旧 ws engine 焊回；Xsensor replay 道裁掉，生产必需）──
 	srcSeqMu   sync.RWMutex
@@ -807,8 +809,13 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 			//   且丢轨 12s 驱逐后 base 空——闭包持 tm（recentRadarEvents/lostExitInfo 按 age 淘汰，不随 track drop）。
 			exitLogOdds = tm.ExitLogOdds
 		}
-		fired, dropped := e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds)
+		fired, dropped, confidence := e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds)
 		if tm != nil {
+			// 第三腿 confidence（A·R13/R15.3-2，不门控）：DBN per-track PReal 写回 TrackState.TrackConfidence
+			//   → payloadFromTrack → PublishAIEvent → cardagg（旧 adjudicator 已删，DBN 是唯一来源，断则回归）。
+			for lid, conf := range confidence {
+				tm.SetTrackConfidence(lid, conf)
+			}
 			// S0.c-4 fire→Publish（A·R12.3）：DBN 唯一 fire 权威在 engine 内闭环。
 			// fired → PublishAIAlarm（DBN_MODE 门控：=0 跑裁决不发=shadow；≥1 按冷启 cap 发）。
 			suiteID := e.roomSuiteID[roomID]

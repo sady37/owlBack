@@ -109,7 +109,10 @@ func (tm *TrackManager) RoomLedgerEmpty() bool {
 }
 
 func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
-	conf := 100 - ts.GhostPenalty
+	conf := ts.DBNConfidence // S0.c-4 第三腿：DBN realness PReal 优先；<0 回退旧 ghost-penalty 派生
+	if conf < 0 {
+		conf = 100 - ts.GhostPenalty
+	}
 	if conf < 0 {
 		conf = 0
 	}
@@ -232,4 +235,14 @@ func (tm *TrackManager) EmitDBNGhostVerdict(lid string, nowMs int64) {
 		return
 	}
 	tm.emitGhostVerdict(ts, "dbn_dropped", "dbn_state_drop", nowMs)
+}
+
+// SetTrackConfidence 写回 DBN per-track 置信度（第三腿 A·R13/R15.3-2，不门控）：
+// logicID → ts.TrackConfidence（0-100），供 payloadFromTrack 下发 cardagg 实时 DBN 置信度。
+func (tm *TrackManager) SetTrackConfidence(lid string, conf int) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if ts := tm.trackByLogicID(lid); ts != nil {
+		ts.DBNConfidence = conf
+	}
 }

@@ -179,6 +179,10 @@ type TrackState struct {
 	// 出生时由 birthScore 因子 1/2/4/6 累积；持续期由因子 3/5 增量。
 	GhostPenalty int
 
+	// DBNConfidence：DBN per-track 置信度（realness PReal 0-100，S0.c-4 第三腿 A·R13/R15.3-2，
+	// 经 SetTrackConfidence 每帧写回）。<0 = DBN 未设 → payloadFromTrack 回退 100-GhostPenalty。
+	DBNConfidence int
+
 	// LifetimeFactorsApplied：bitmask，防止 lifetime 因子（如 30s 静止）重复扣。
 	// bit 0 = factor 3 (30s static) applied
 	LifetimeFactorsApplied uint32
@@ -224,6 +228,7 @@ func NewTrackState(trackID int, deviceAddr, roomID string, x, y, z int, tMs int6
 		History:              []TimedPoint{birth},
 		FrameCount:           1,
 		Score:                50,
+		DBNConfidence:        -1, // <0 = DBN 未设，payloadFromTrack 回退 100-GhostPenalty
 		Verdict:              VerdictPending,
 		LastZ:                z,
 		LastUpdateMs:         tMs,
