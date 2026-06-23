@@ -57,10 +57,10 @@ type BedOnline []bool
 
 // Predict 联合时间转移（因子化 T_S ⊗ T_B，log 域）。
 // online[j] = 第 j 床 ρ_t（决定 T_B 用 K^obs/K^unobs）。
-// rhoXroom = neighbor ρ_xroom（§A.2，W3.1）：>0 仅在 lost-track 激活，把 Blind from-行的 →Fallen 整流入
-//   →Left（人挪去邻房非本房真摔）= **转移先验**，非 gate。rhoXroom≤0 → 用静态 logA（逐 tick 等价，零回归 oracle）。
+// 静态 logA（无转移塑形）：跨房 hand-off 改走 engine 层 SLeft 对数似然注入（§7.7 v2 矩形核），
+//   取代旧 GateBlindRow 转移整流（只搬 ρ×Fallen-seed 不够用、已退役）。
 // B1 契约：len(online) 须 == numBeds（床在线标志逐床显式）；不符 = 上游 wiring 错 → panic（规则 1.4）。
-func (f *Filter) Predict(online BedOnline, rhoXroom float64) {
+func (f *Filter) Predict(online BedOnline) {
 	js := f.space
 	nb := js.numBeds
 	if len(online) != nb {
@@ -69,20 +69,7 @@ func (f *Filter) Predict(online BedOnline, rhoXroom float64) {
 
 	logTB := f.buildLogTBCol(online) // bmaskN×bmaskN 因子化 log T_B 表（提出 S 循环外）
 
-	// neighbor 整流：仅 Blind from-行（SBlindRest/SBlindOpen）按 ρ 改向 F→L，其余行不变。
 	logA := &f.logA
-	var gated [numStates][numStates]float64
-	if rhoXroom > 0 {
-		gated = f.logA
-		for _, sFrom := range [...]State{SBlindRest, SBlindOpen} {
-			g := GateBlindRow(f.model.A[sFrom], rhoXroom) // prob 行 F→L 整流（行和守恒）
-			for sTo := 0; sTo < numStates; sTo++ {
-				gated[sFrom][sTo] = logP(g[sTo])
-			}
-		}
-		logA = &gated
-	}
-
 	next := js.NewJointVector()
 	// ᾱ(sTo, bTo) = LogSumExp_{sFrom, bFrom} ( logA[sFrom][sTo] + logTB[bFrom][bTo] + α )
 	for sTo := 0; sTo < numStates; sTo++ {
@@ -153,11 +140,11 @@ func (f *Filter) Correct(logPsi, logPhi JointVector) {
 }
 
 // Step 一帧推进。dtMs≤0（同帧重入）跳过 Predict。
-// rhoXroom（neighbor，进 Predict）；中性值 0 → 逐 tick 等价 S/B-only。
 // realness 绝不在此压 fall（FN-safe 铁律 [[realness_never_vetoes_fall]]：realness 只喂 N_r，不调制 SFallen 发射）。
-func (f *Filter) Step(nowMs int64, online BedOnline, logPsi, logPhi JointVector, rhoXroom float64) {
+// 跨房 hand-off 不进 Predict（已改 engine 层 SLeft 注入，§7.7 v2）。
+func (f *Filter) Step(nowMs int64, online BedOnline, logPsi, logPhi JointVector) {
 	if f.lastTs > 0 && nowMs > f.lastTs {
-		f.Predict(online, rhoXroom)
+		f.Predict(online)
 	}
 	f.Correct(logPsi, logPhi)
 	if nowMs > f.lastTs {

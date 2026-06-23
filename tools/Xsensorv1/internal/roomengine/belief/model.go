@@ -9,8 +9,8 @@ type Matrix [numStates][numStates]float64
 // 造跌倒的活交给观测。**安全性反转**：Blind* 久缺**应**从沉默 ramp Fallen（lost-fall 本义），
 // 故 Blind→Fallen 给**极小种子（0.5）**够 Observe 放大即可——ramp 靠每盲 tick 的 ObsNoDetect 放大（×1.6 复合）
 // × Fallen 自持 0.99 + Decider 90s confirm + dwell 生存尾，**绝不靠 A 自漂**（种子过大→纯 Predict 凭空造跌倒=FP）。
-// Blind* **无自漂 Left 逃生阀**（§84 步5）：Blind→Left 只由**证据**驱动——neighbor handoff（filter
-// GateBlindRow 据 ρ 整流 F→L）或离房趋势（lost 反算）。静态自漂 Left 会让开阔区真摔 lost 在 D 窗到点前
+// Blind* **无自漂 Left 逃生阀**（§84 步5）：Blind→Left 只由**证据**驱动——neighbor handoff（engine 层
+// SLeft 对数似然注入，§7.7 v2）或离房趋势（lost 反算）。静态自漂 Left 会让开阔区真摔 lost 在 D 窗到点前
 // 被 ramp 进 Left 误 drop（漏报）；改证据驱动后，无 handoff/无离房趋势的 blind 留到 D 满走 deadline fire。
 //
 //	→E    →Bed  →Sit  →Open →Bath  →Fa★  →BR   →BO   →Lf

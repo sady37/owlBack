@@ -42,6 +42,7 @@ type Frame struct {
 	Decision belief.Decision
 	// 步4 跨设备 hand-off 信号（Unit 编排器消费，§A 守恒+时间窗）：
 	LostReal   bool    // 本帧一条真人 track 消失（上帧在场真人、本帧不在）= hand-off 源候选
+	LostAtMs   int64   // 消失轨的 **last-observed 时戳**（非本帧 coast 判定时刻）→ Unit Δ centering（gain−LostAtMs）
 	LostExited bool    // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）= Unit D/UD timer cancel（人走了无人会摔）
 	GainedReal float64 // 本帧新现真人 track 的去 ghost 后验（0=无）= hand-off 宿候选（守恒重现）
 	GainedFromSleepad bool // 该 gain 来自 sleepad-only 房合成 track（走+躺慢接力）→ rho 用 sleepad 慢核
@@ -102,8 +103,10 @@ type Room struct {
 	nb            int
 	p             adapter.Params
 	lastMarg      belief.Vector   // 末帧房间代表 track 的 S 边缘（MarginalS 读出）
-	realStreak    map[string]int  // 每 logicID 连续在场真人帧数（步4 hand-off：confirmed=streak≥K，抗噪声 churn）
-	prevConfirmed map[string]bool // 上 tick 已确认真人(streak≥K)的 logicID 集（算 lost）
+	realStreak    map[string]int   // 每 logicID 连续在场真人帧数（步4 hand-off：confirmed=streak≥K，抗噪声 churn）
+	prevConfirmed map[string]bool  // 上 tick 已确认真人(streak≥K)的 logicID 集（算 lost）
+	lastSeenMs    map[string]int64 // 每 logicID 末次 fresh-present 时戳（census Present=本 tick 匹配）→ lost 的 last-observed centering
+	fallLatched   map[string]bool  // 每 logicID 已证摔 latch（SFallen 到过 0.85 或见 pose=fall）→ hand-off 注入永免疫（§7.7 v2 ③）
 	// F1 独居连续计时（跨 tick，与 realStreak 同层）：真人占用==1 连续起点 ms（0=当前非独居）。
 	//   占用判据 = PReal≥0.5 ∧ S∉{Empty,Left}（含 blind 续存的 faller，filter 后的 MarginalS），
 	//   **非** census.Nr() present-only——否则独居者摔进 blind 时占用掉 0 误清零计时（lost-fall FN）。
@@ -131,12 +134,15 @@ func NewRoom(geom []belief.BedGeom, nb int) *Room {
 		p:             adapter.DefaultParams(),
 		realStreak:    map[string]int{},
 		prevConfirmed: map[string]bool{},
+		lastSeenMs:    map[string]int64{},
+		fallLatched:   map[string]bool{},
 	}
 }
 
 // SetDeviceGeom bootstrap 注入某雷达设备(uid_last4)的 per-bed 几何（covers 从 MM：画了该床=1 否则 0）。
 // 未注入的设备/合成 track 走 defGeom（covers=1=改造前行为）。须在任何 Tick 前调用。
 func (r *Room) SetDeviceGeom(uid4 string, geom []belief.BedGeom) { r.geoms[uid4] = geom }
+
 
 // geomOf uid4 对应几何，无注入→defGeom。
 func (r *Room) geomOf(uid4 string) []belief.BedGeom {
@@ -302,7 +308,7 @@ type trackResult struct {
 }
 
 // Tick 一帧推进。rhoXroom（neighbor，单房=0）。每条 track 各跑一份滤波，房间 OR 聚合真人 fall。
-func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
+func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 	r.census.Update(fi.NowMs, fi.Tracks, fi.RadarPos, fi.Walls, fi.Entrances)
 	r.updateKappa(fi) // ① κ 两腿 per-device（维持 per-frame 弱 γ + 强化 15s 窗 强 γ，同向共跳）
 	online := adapter.Online(fi)
@@ -329,6 +335,12 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	for _, ts := range tracks {
 		if ts.Present && ts.PReal >= 0.5 {
 			curReal[ts.LogicID] = ts.PReal
+		}
+		if ts.Present {
+			r.lastSeenMs[ts.LogicID] = fi.NowMs // fresh-present（census 本 tick 匹配）→ lost 的 last-observed centering 参考
+			if ts.Obs.RadarTrack.Pose == poseFall {
+				r.fallLatched[ts.LogicID] = true // 见 pose=fall → 永久免疫 hand-off 注入（§7.7 v2 ③ latch-first）
+			}
 		}
 		f := r.filters[ts.LogicID]
 		dec := r.deciders[ts.LogicID]
@@ -365,20 +377,25 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 			}, fi.Sleepads, fi.Beds, fi.BedAreaIDs, r.p, fi.Census.Night)
 			logPhi = em.LogPhi(r.js, obs)
 			r.applyLeftBedOpen(cp, logPhi, obs, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p), false) // ③ lost → SBlindRest（gxy 用冻结末位）
-			// 离房证据按 LogicID 注入 SLeft 对数似然（ExitRoom 硬 + trend+np 软，源在 track_manager）：
-			//   抬 SLeft → 压 pF（不 fire）+ 够强自然 absorbed-drop。≥flip 阈 → Unit timer cancel（lostExited）。
+			// 离房证据注入 SLeft 对数似然（同一通道两源）：① ExitRoom 硬 + trend+np 软（track_manager）；
+			//   ② **hand-off 软 ExitRoom**（§7.7 v2 矩形核，Unit 算 handoffL）——人挪去邻房非本房真摔。
+			//   抬 SLeft → 压 pF（不 fire）+ ≥flip 即压 floor 兜底 + 够强 durable purge（absorbed-drop 撤轨）。
+			//   🔴 latch-first（③）：已证摔（fallLatched）绝不注入 hand-off → 真摔照常 floor 兜底，不被软清。
 			if fi.ExitLogOdds != nil {
 				exitL = fi.ExitLogOdds(ts.LogicID, fi.NowMs)
-				if exitL > 0 {
-					r.js.AddLogToS(logPhi, belief.SLeft, exitL)
-					if exitL >= exitFlipLogOdds {
-						lostExited = true
-					}
+			}
+			if handoffL > 0 && !r.fallLatched[ts.LogicID] {
+				exitL += handoffL
+			}
+			if exitL > 0 {
+				r.js.AddLogToS(logPhi, belief.SLeft, exitL)
+				if exitL >= exitFlipLogOdds {
+					lostExited = true // ≥flip → Unit timer cancel（离房/接力确认）
 				}
 			}
 		}
-		// 消失态：雷达中性 + 接触轴 + lost ramp（非离房趋势）；present 全发射。Predict 自持，无 TTL。
-		f.Step(fi.NowMs, online, logPsi, logPhi, rhoXroom)
+		// 消失态：雷达中性 + 接触轴；present 全发射。Predict 自持，无 TTL（hand-off 已改 SLeft 注入，不进 Predict）。
+		f.Step(fi.NowMs, online, logPsi, logPhi)
 
 		mS := f.Space().MarginalS(f.Alpha())
 		// F1 真人占用：PReal≥0.5（排 ghost）∧ S∉{Empty,Left}（含 blind 续存的 faller，未 absorbed 离场）。
@@ -388,6 +405,9 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 		}
 
 		pF := f.Space().PFallen(f.Alpha())
+		if pF >= lostFireThresh {
+			r.fallLatched[ts.LogicID] = true // SFallen 到过 confirm → 永久免疫 hand-off 注入（§7.7 v2 ③ latch-first）
+		}
 		lam := belief.ComputeLambda(f.Space(), neutralIfNil(logPsi, r.js), neutralIfNil(logPhi, r.js))
 		d := dec.Step(fi.NowMs, pF, lam, rc)
 		// lost fire（自然 belief）：blind 时 belief 自然演化到 0.85 → fire "lost"（loss 时已确认摔的 carry-over）。
@@ -455,7 +475,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 			DoorD: ts.DoorD, RepeatR: repeatR, SelfRecovered: selfRecovered, StillSec: ts.Obs.RadarTrack.StillSec,
 			SMarg: append([]float64(nil), mS[:]...), Covers: covers})
 
-		// drop（状态驱动）：消失 track 吸收到 {Left,Empty}（handoff 经 GateBlindRow 整流 / 离房证据注入抬 SLeft）
+		// drop（状态驱动）：消失 track 吸收到 {Left,Empty}（hand-off / 离房证据注入抬 SLeft → durable purge）
 		//   → 离场确认 → drop（非 TTL，cancel 非 fire）。离房趋势已折进 SLeft 后验，不再单列 bool 门。
 		if !ts.Present && mS[belief.SLeft]+mS[belief.SEmpty] >= absorbedThresh {
 			dropIDs = append(dropIDs, ts.LogicID) // dropTrack(census) + 回传 tm evict：停 12s coast re-feed
@@ -490,14 +510,20 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 	var gainedSleepad bool // 该 gain 来自 sleepad-only 房合成 track（lid=="sleepad-bed"）= 慢核接力（走+躺,~60s）
 	for id, pr := range curReal {
 		if newStreak[id] == arrivalConfirmFrames && pr > gained {
+			// sleepad gain 不强制 vital（实证 InBed 不必然有 HR/RR：刚躺下没锁/RR firmware 不返，硬 vital-gate 会拦真接力）。
+			//   去-ghost 判别 = InBed 转移 + streak K(3帧抗噪) + GainedReal≥0.5（HandoffLogOdds）+ 单住户 hard-gate。
 			gained = pr
 			gainedSleepad = id == "sleepad-bed" // 与 main.go onRoomFrame 合成 bed-track 的 lid 同源
 		}
 	}
 	lost := false // 上 tick 已确认真人、本 tick 不在场真人 = 确认离场（hand-off 源）
+	var lostAtMs int64
 	for id := range r.prevConfirmed {
 		if _, ok := curReal[id]; !ok {
 			lost = true
+			if r.lastSeenMs[id] > lostAtMs {
+				lostAtMs = r.lastSeenMs[id] // 取最近离开者 last-observed（先离后现的 loss 参考，Δ centering）
+			}
 		}
 	}
 	r.realStreak = newStreak
@@ -513,6 +539,7 @@ func (r *Room) Tick(fi adapter.FrameInput, rhoXroom float64) Frame {
 
 	fr := r.aggregate(results, nr, fi.NowMs)
 	fr.LostReal, fr.GainedReal, fr.GainedFromSleepad = lost, gained, gainedSleepad
+	fr.LostAtMs = lostAtMs
 	fr.LostExited = lostExited
 	fr.PresentCount, fr.Tracks = presentCount, forensic
 	fr.FuseSync = r.census.FuseForensic() // forensic：双雷达运动同步对状态
@@ -604,5 +631,7 @@ func (r *Room) dropTrack(id string) {
 	delete(r.deciders, id)
 	delete(r.floorGuards, id)
 	delete(r.escalators, id)
+	delete(r.lastSeenMs, id)
+	delete(r.fallLatched, id)
 	r.census.Drop(id)
 }

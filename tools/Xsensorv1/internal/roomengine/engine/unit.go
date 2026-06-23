@@ -6,7 +6,7 @@ import (
 )
 
 // unit.go — 多房 unit 编排器（§57 步4）。两层职责：
-//  1. ρ_xroom（neighbor handoff 守恒+时间窗）→ 喂该房 Room.Tick，belief 塑形（GateBlindRow Blind→Left）。
+//  1. hand-off 注入对数似然（neighbor 守恒+矩形时间窗，§7.7 v2）→ 喂该房 Room.Tick → engine 层 SLeft 注入。
 //  2. **UD timer 兜底**（lost-fall deadline）：lost 后若 unit 全空、且 belief 未自然到 0.85，到点补 SFall fire。
 //     bathroom（room_type）→ D（抢救紧迫，短 20min）；其它 → UD（unit 级最长 90min=AreaSit 久坐容忍）。
 //     **任何 track 现身 unit（任一房 present）→ 取消所有 timer**（有人在场=低风险，资源克制，一招统一
@@ -32,11 +32,10 @@ type gainEvent struct {
 type Unit struct {
 	rooms         map[string]*Room
 	np            belief.NeighborParams
-	residentCount int                // η sole-resident 衰减（单住户=1）
-	cAttr         float64            // 源型可信度：雷达新现=room-enter 事件（§A 默认 0.8，form-anchor 留 oracle）
+	residentCount int                // 多住户 hard-gate（==1 才注入 hand-off；承重，§7.7 v2）
 	gains         []gainEvent        // 近期跨房新现真人（窗内 pruned）
-	lostAt        map[string]int64   // 每房最近丢真人时戳（待 hand-off 解析；再现/解析后清）
-	lastRho       map[string]float64 // 末次喂各房的 ρ（forensic / 测试可观测）
+	lostAt        map[string]int64   // 每房最近丢真人的 **last-observed 时戳**（非 coast LostReal 帧；centering）
+	lastHandoffL  map[string]float64 // 末次喂各房的 hand-off 注入对数似然（forensic / 测试可观测）
 	roomPresent map[string]bool  // roomID → 末 tick 是否在场（PresentCount>0；UnitState forensic）
 	roomTickMs  map[string]int64 // roomID → 末 tick 时戳（新鲜度）
 }
@@ -53,9 +52,8 @@ func NewUnit(rooms map[string]*Room, residentCount int) *Unit {
 		rooms:         rooms,
 		np:            np,
 		residentCount: residentCount,
-		cAttr:         0.8, // room-enter（雷达新现 track = 有人进房）
 		lostAt:        map[string]int64{},
-		lastRho:       map[string]float64{},
+		lastHandoffL:  map[string]float64{},
 		roomPresent:   map[string]bool{},
 		roomTickMs:    map[string]int64{},
 	}
@@ -63,9 +61,9 @@ func NewUnit(rooms map[string]*Room, residentCount int) *Unit {
 
 // Tick 一个设备帧（roomID 设备所属房）到来：算 ρ_xroom → Room.Tick → 更新 handoff 账本 + UD timer 兜底。
 func (u *Unit) Tick(roomID string, fi adapter.FrameInput) Frame {
-	rho := u.rhoFor(roomID, fi.NowMs)
-	u.lastRho[roomID] = rho
-	fr := u.rooms[roomID].Tick(fi, rho)
+	handoffL := u.handoffLFor(roomID, fi.NowMs)
+	u.lastHandoffL[roomID] = handoffL
+	fr := u.rooms[roomID].Tick(fi, handoffL)
 	nowMs := fi.NowMs
 
 	// 本房在场：PresentCount>0 = 有新鲜观测 track；frozen 残留 Present=false 不计（走 present 路径前已计）。
@@ -78,17 +76,14 @@ func (u *Unit) Tick(roomID string, fi adapter.FrameInput) Frame {
 		delete(u.lostAt, roomID) // 本房又现真人 = 丢的人回来了/新人到 → 清本房待解析
 	}
 	if fr.LostReal {
-		u.lostAt[roomID] = nowMs
+		u.lostAt[roomID] = fr.LostAtMs // **last-observed 时戳**（非 coast LostReal 帧）：Δ centering，gain−lostAt 回正区间
 	}
 
-	// §I 合体：floor（stillbox 计时器，engine.go per-track，StillSec≥tFloor→保底发 SFallen）= 唯一时长兜底；
-	//   旧 D/DU 决断窗退役被吸收（floor 用实际 StillSec，比 lostMs 倒计时统一——present 久静 + lost 续算同源）。
-	//
-	// (b) **belief 抢发照常、只砍兜底**：band=lost/report（belief ≥0.85 抢发）不动；只对 floor 兜底腿做资源克制：
-	//   - **单房 unit**（len(rooms)==1）：资源少、无邻房印证、FP 风险剧增 → **不兜底**（belief 抢发仍报久躺强证据，§I/#1）；
-	//   - **hand-off**（ρ>0，本人现身隔壁，W 窗内）：人没在本房摔 → 不兜底。
-	//   其余取消已在 engine.go floor 块内：StillSec==0 → StillSec<tFloor 自然不 fire；exitL≥flip → floor 条件已挡。
-	if fr.Decision.Band == "floor" && (len(u.rooms) == 1 || rho > 0) {
+	// floor（stillbox 计时器，engine.go per-track，StillSec≥tFloor→保底发 SFallen）= 唯一时长兜底。
+	//   单房 unit（len(rooms)==1）：无邻房印证、FP 风险剧增 → **不兜底**（belief ≥0.85 抢发仍报久躺强证据，§I/#1）。
+	//   hand-off 抑制不再在此（旧 rho>0 砍兜底=瞬时压制，会绕过 latch）→ 改 engine 层 SLeft 注入（latch-first）：
+	//     注入抬 exitL≥flip → engine floor 闸（exitL<flip）已挡 + durable purge 撤轨；已证摔 latch 不注入 → 照兜底。
+	if fr.Decision.Band == "floor" && len(u.rooms) == 1 {
 		fr.Decision.Fire = false
 		fr.Decision.Band = "no"
 	}
@@ -107,10 +102,10 @@ func (u *Unit) unitHasTrack(nowMs int64) bool {
 	return false
 }
 
-// LastRho 末次喂房 roomID 的 ρ_xroom（forensic / 测试）。
-func (u *Unit) LastRho(roomID string) float64 { return u.lastRho[roomID] }
+// LastHandoffL 末次喂房 roomID 的 hand-off 注入对数似然（forensic / 测试）。
+func (u *Unit) LastHandoffL(roomID string) float64 { return u.lastHandoffL[roomID] }
 
-// PendingLostMs 本房待 hand-off 解析的丢轨时戳（0=无待解析 lost；>0=已注册 lost，rhoFor 在跑找接力）。forensic。
+// PendingLostMs 本房待 hand-off 解析的丢轨时戳（0=无待解析 lost；>0=已注册 lost，handoffLFor 在跑找接力）。forensic。
 func (u *Unit) PendingLostMs(roomID string) int64 { return u.lostAt[roomID] }
 
 // SiblingGainCount unit 内当前窗口存活的跨房新现真人 gain 数（hand-off 宿候选；0=无人在别房现身）。forensic。
@@ -121,13 +116,13 @@ func (u *Unit) UnitState(nowMs int64) (unitHasTrack, hasNeighbor bool) {
 	return u.unitHasTrack(nowMs), len(u.rooms) > 1
 }
 
-// rhoFor 房 roomID 的 ρ_xroom：若它有待解析的丢失，找**兄弟房**窗内新现真人 → SiblingHandoff → RhoXroom。
+// handoffLFor 房 roomID 的 hand-off SLeft 注入对数似然：若它有待解析丢失，找**兄弟房**窗内新现真人 → 矩形核。
 //
-//	同房新现不算 hand-off（人没穿房）；窗外/反向由 wDir 归零（§A.1）。
-func (u *Unit) rhoFor(roomID string, nowMs int64) float64 {
+//	同房新现不算 hand-off（人没穿房）；Δ=gain−last_observed（centering，先离后现）；窗外/多住户由 HandoffLogOdds 归零。
+func (u *Unit) handoffLFor(roomID string, nowMs int64) float64 {
 	lostMs, ok := u.lostAt[roomID]
 	if !ok {
-		return 0 // 本房没丢人 → 无 lost-fall 二义 → 不抑制
+		return 0 // 本房没丢人 → 无 lost-fall 二义 → 不注入
 	}
 	var sibs []belief.SiblingHandoff
 	for _, g := range u.gains {
@@ -135,18 +130,17 @@ func (u *Unit) rhoFor(roomID string, nowMs int64) float64 {
 			continue // 兄弟房才算（守恒=丢的人去了别的房）
 		}
 		sibs = append(sibs, belief.SiblingHandoff{
-			ArrivalDeltaMs: g.tMs - lostMs, // >0 = 先丢后现（有向，§A 区别 ghost 对称）
-			CAttr:          u.cAttr,
+			ArrivalDeltaMs: g.tMs - lostMs, // >0 = 先离后现（lostMs=last-observed centering）
 			GainedReal:     g.pReal,
-			Slow:           g.slow, // sleepad InBed 现身 → 慢核（走+躺 ~60s）
+			Slow:           g.slow, // sleepad InBed 现身 → 慢窗（走+躺，用 W_sleepad）
 		})
 	}
-	return belief.RhoXroom(u.np, u.residentCount, sibs)
+	return belief.HandoffLogOdds(u.np, u.residentCount, sibs)
 }
 
 // pruneGains 丢弃超 hand-off 窗的旧 gain（stale 证不了此刻在哪，[[partial_monitoring_fall_suppression_law]]）。
 //   保留窗取 radar/sleepad 两核较大者（sleepad 慢核窗 150s > radar W）：sleepad gain 须存活到慢核窗满，
-//   否则被 radar 窗（90s）先剪掉 → 慢接力还没解析就丢账。per-gain 是否真在窗内由 wDir 各自判。
+//   否则被 radar 窗（90s）先剪掉 → 慢接力还没解析就丢账。per-gain 是否真在窗内由 HandoffLogOdds 矩形窗各自判。
 func (u *Unit) pruneGains(nowMs int64) {
 	keepMs := u.np.HandoffWindowMs
 	if u.np.SleepadWindowMs > keepMs {
