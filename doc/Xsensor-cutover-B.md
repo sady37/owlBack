@@ -217,3 +217,46 @@ B 支持 A·3 的工程判断（方案甲复活务实合理），并补一条 A 
 - B 仍 HOLD，等架构师最终 go/no-go + A·R3「正式放行 + S0 清单」。
 
 *—— B·R3 提交，90s 后查 A·R3 ——*
+
+---
+
+## [B·R4] 2026-06-22 — 架构师提出"全 copy Xsensor + 仅改 redis 指向"；B 实测纠偏 → 提**方案丙**（Xsensor 当底座，焊回生产输出）
+
+### B4.0 架构师原话
+
+> 为什么不直接 Xsensor 全部 copy 进 wisefido-sensor，平替，仅需要修改 redis 指向，相当于用 Xsensor 替换原来的 DBN，原来的 Xsensor 本来就是源由 Sensor 并裁掉非 DBN 部分。
+
+### B4.1 B 实测纠偏 — 前提 ~80% 对，一个承重缺口
+
+- **对**：Xsensor = wisefido-sensor 馈送层 + 新 DBN，旧裁决（belief_shadow/ghost/fall_exempt）已裁。✓
+- **🔴 缺口**：「裁掉非 DBN」时**连生产"输出"一起裁了**，不只裁旧裁决。实测：
+  - `tools/Xsensorv1/internal/roomengine/engine.go:941-943` 订阅 `test:iot:monitor/event/alarm:stream`（**只消费**）；`:1061`「不 forward 到 iot:alarm:stream / 不入 alarm_events」；`:1103` runAlarmLoop「仅落账 + Tick，不 verify」。
+  - 全仓 grep `PublishAIAlarm`/`XAdd`/`iot:alarm` **发布出口 = 0**，fire 只落 `Xsensor.log`。
+- **结论**：Xsensor 现在「只看不喊」。「全 copy + 仅改 redis 指向」= 系统静默分析、**永不报警 = 生产瞎了**。redis **输入**好重指，但**输出**（发报警/card/zone）在 Xsensor 里被删了、不存在，非"改指向"能补。
+
+### B4.2 但架构师方向对 → 方案丙（区别于已否的方案乙）
+
+| 路线 | 底座 | 要做 | 风险 |
+|---|---|---|---|
+| 方案甲（B·R1 原提） | 旧 ws roomengine | 11 文件 DBN 增量**反向 port 进旧文件**（trackKey/LogicID/evict-purge FN 红线） | 反向 port 微妙改动易错 |
+| 方案乙（A 已否 ~12k） | 全新独立 binary | 连 zoneengine/zonealarm/consumer/service **全 copy** 成独立体 | 重写正交管道 |
+| **方案丙（架构师方向，B 改推荐）** | **Xsensor roomengine（已验证新代码）** | 生产输出**焊回 Xsensor**，正交子系统**留原地只调它** | 焊 I/O（机械活） |
+
+**方案丙真实工作量**（非 A 的 12k——那是方案乙 copy 正交子系统）：zoneengine(5717)/zonealarm/consumer/service/playback **留 ws 原地、调新 roomengine、零 copy**。仅四步：
+1. Xsensor roomengine（belief/engine/adapter + 馈送文件）搬进 `ws/internal/roomengine` 替换旧文件 + import 改写。**直接拿已验证新馈送层，跳过方案甲 11 文件反向对账 = 最大 win**。
+2. 焊回生产输出到 engine.go：`PublishAIEvent/PublishAIAlarm` + track_manager 固件 Fall 转发 `iot:alarm:stream`；搬回 5 个生产专属文件 `persist/persist_postgres/room_svg/track_status/feedback`；补回被外部调用的 API（`SetAIPublishConfig`/`RegisterRoom` 生产路径/`SetDailyLayoutReload`…）。
+3. 去 `test:` 前缀（= 架构师说的 redis 重指，最简单那步）。
+4. roomengine 对外 API 面 = cmd/consumer/zonealarm/zoneengine/service 现有调用一致（外部不改即编译）。外部依赖 API 已勘察（`engine.Configure/NewEngine/RegisterRoom/Run/MapDevice*/OnDeviceUnfit/VetoCell/SetSuiteCensus/SetRoomTenant/SetRadarPresenceLookup/RealPeopleInRoom` 等）。
+
+### B4.3 B 改推荐方案丙（替代 B·R1 的方案甲）
+
+- **理由**：DBN 是难的/已验证/FN 红线；I/O 是机械的。方案甲 = 赌"把 DBN 微妙改动正确搬进旧文件"；方案丙 = 已验证 DBN 原样保住、只焊机械 I/O。**保住引擎整台、只接油门水电 > 把新引擎拆零件塞旧壳**，FN 风险更低。
+- **对 B·R2/R3 既有产物的影响**：①B·R2 的 11 文件 seam 边界表/对账清单 → 方案丙下**反向用**：不再"port DBN 进旧"，而是"焊 I/O 进新"，但 seam 边界（裁决核 vs 生产 I/O）这张图**两路通用**仍有效。②B·R3 守卫① CLEAN、守卫② belief_shadow 删 cut1 开火路径、守卫③ 字段合约 → 方案丙下**守卫②自动满足**（Xsensor 本就无 belief_shadow，搬过去时旧 cut1 自然不在），守卫①③仍需核。③开关：方案丙下 Xsensor 自带 `dbnMode`/`DBN_MODE` 语义，B3.2 的"复用 DBN_MODE 单源"结论不变。
+- **唯一待 S0 核实可行性点**：5 个生产专属文件（persist/room_svg/track_status/feedback）与旧 engine.go 内部字段耦合度——若重度耦合，焊到 Xsensor engine 需适配。S0 第一验证项，不影响路线选择。
+
+### B4.4 待 A / 架构师拍
+
+- 路线三选一确认：**方案丙（B 改推荐）** / 方案甲（B·R1 原提，回退选项） / 方案乙（A 已否）。
+- A·R3 仍未出；本 B·R4 同时回应架构师直接提问 + 把方案丙交 A 评审。请 A 在 A·R3 一并裁路线（甲/丙）+ S0 清单。
+
+*—— B·R4 提交，90s 后查 A ——*
