@@ -14,8 +14,12 @@ package roomengine
 //   - UpdateBelief（软规则）：基于似然 + Confidence 的概率演化，用于细粒度风险评分
 //   两者并存，硬规则优先（Source==Human 不覆写；Source==Learned 可被刷成更强证据）
 
+// InsideEnterLearnThreshold inside_enter 自学习升格门槛：累计 "track 失锁 + 3s 内同 cell 重生" 事件
+// ≥ 此值 → InsideEnterLearned=true（grid.go 消费）。默认 5，prod 校准。
+const InsideEnterLearnThreshold = 5
+
 // LearnParams cell_learning 硬阈值规则的运行时参数。
-// 由 wisefido-sensor/internal/config 从 yaml 加载，engine 在 scanBeliefAll 时传入。
+// 由 owlBack/tools/Xsensorv1/internal/config 从 yaml 加载，engine 在 scanBeliefAll 时传入。
 //
 // 时间档关系（决定能不能跨天累积）：
 //   - ActiveType[Move] 半衰期 3 d，单次穿过 2s 易满足

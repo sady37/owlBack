@@ -164,7 +164,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		grid.SetPrior(r, roomengine.AreaDeny, 99, roomengine.SourceHuman)
 	}
 
-	tm := roomengine.NewTrackManager(opts.RoomID, grid)
+	tm := roomengine.NewTrackManager(opts.RoomID, grid, nil)
 	decayParams := roomengine.DefaultDecayParams()
 	learnParams := roomengine.DefaultLearnParams()
 	tm.SetMoveSpeedCms(learnParams.MoveSpeedCms)

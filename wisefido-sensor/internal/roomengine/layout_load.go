@@ -11,6 +11,7 @@ package roomengine
 import (
 	"context"
 	"database/sql"
+	"net/netip"
 
 	"owl-common/radarutils"
 
@@ -106,4 +107,39 @@ func BuildRoomConfigFromCanvases(roomID string, canvases []DeviceCanvas, logger 
 			zap.String("room_id", roomID), zap.Int("radar_count", parsed))
 	}
 	return merged, true
+}
+
+// LoadRoomBeds 扫 beds 表 bed_id /96 prefix（带 slot/name），按所属 /88 room 分组。
+// 供 mm.go 静态 MM（onbed=sleepad/128∈bed/96 前缀确定；covers n=房床数）。与 LoadRoomCanvases 同
+// 「DB 只读加载唯一归口」（避免加载逻辑双写漂移）。key = room_id /88 文本。
+func LoadRoomBeds(ctx context.Context, db *sql.DB, logger *zap.Logger) (map[string][]RoomBed, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT network(set_masklen(bed_id, 88))::text AS room_id,
+		       bed_id::text                           AS bed_prefix,
+		       bed_slot,
+		       bed_name
+		FROM beds
+		WHERE masklen(bed_id) = 96
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string][]RoomBed)
+	for rows.Next() {
+		var roomID, bedPrefix, bedName string
+		var slot int
+		if err := rows.Scan(&roomID, &bedPrefix, &slot, &bedName); err != nil {
+			logger.Warn("scan beds row", zap.Error(err))
+			continue
+		}
+		p, perr := netip.ParsePrefix(bedPrefix)
+		if perr != nil {
+			logger.Warn("parse bed prefix", zap.String("bed", bedPrefix), zap.Error(perr))
+			continue
+		}
+		out[roomID] = append(out[roomID], RoomBed{Prefix: p, Slot: slot, Name: bedName})
+	}
+	return out, rows.Err()
 }

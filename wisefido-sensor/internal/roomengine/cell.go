@@ -163,7 +163,7 @@ type Cell struct {
 	InsideEnterEvidenceN int
 	InsideEnterLearned   bool
 
-	// ---- Cell history integral（自适应阈值反馈，详见 fall_rules_param.go）----
+	// ---- Cell history integral（自适应阈值反馈，参数见本文件 cellFakeAlarmThreshold 等）----
 	// FakeAlarmCount: 在该 cell 触发的 fall 报警被人工标 false_alarm 累计次数（"Other" 兜底）
 	// ToleratedStillCount: track 在该 cell 长时间 stand-static 但最终自己离开（无 fall 报警）累计次数
 	// BlindSpotRecoveryCount: 人在 lost-fall pending 期间从该 cell 重新出现（盲区返回端点）次数
@@ -241,7 +241,7 @@ type Cell struct {
 //   - 即时态（Real/Ghost/Flow/Stand）：反映"最近一段在干嘛" → 短（默认 15 min）
 //   - 事件类（Fall/Sleepad/Door/Traverse）：稀疏 → 长（默认 7 d 跨天累计）
 //
-// 由 wisefido-sensor/internal/config 从 yaml 加载并传给 engine，engine 在 decayLoop / playback 中调用 DecayAll(dtSec, p)。
+// 由 owlBack/tools/Xsensorv1/internal/config 从 yaml 加载并传给 engine，engine 在 decayLoop / playback 中调用 DecayAll(dtSec, p)。
 type DecayParams struct {
 	ImmediateSec float64 // Real/Ghost/Flow/DwellEMA/ActiveType[Stand]
 	WalkSec      float64 // ActiveType[Move]
@@ -341,23 +341,33 @@ func (c *Cell) IsLikelyRestZone() bool {
 	return c.ActiveType[ActiveIdxSit] >= 30 || c.ActiveType[ActiveIdxLie] >= 30
 }
 
-// StillTimeoutSec 静止超时阈值（秒；0 = 不限）。默认读 Belief[0]。
-//
-// isRiskTime = true（高风险时段，默认夜间 23:30-07:30）→ 基线值（严格）。
-// isRiskTime = false（非风险时段，默认白天）→ 基线 × FallRulesParam.Still.NonRiskTimeFactor（宽松）。
-//
-// 逻辑：高风险时段跌倒更易发、人手少 → 更短阈值更快报警。
-// 时段判定见 math_util.go::IsNightTime（默认 23:30-07:30，可由 RiskTimeConfig 覆盖）。
-//
-// 调参常量集中在 fall_rules_param.go::FallRulesParam.Still。
+// still-fall-area 分类阈（cell-learning 用）：按 cell areaType 分的"久静多久算 fall-relevant"。
+// **这不是 fall 决策阈**——DBN silent-fall 阈权威 = belief/floor.go（契约 6A 其十五）。本组只供
+// cell-learning 判"哪些区不学 AreaSit（toilet/shower/deny）"(track_manager stillFallTimeoutSec) +
+// LongStill grid 标记(EffectiveStillTimeoutSec)。
+const (
+	stillAreaToiletShowerSec = 15 * 60 // AreaToilet/AreaShower
+	stillAreaDenySec         = 5 * 60  // AreaDeny
+	stillAreaDefaultSec      = 8 * 60  // 其它（Enter/Active/Unknown）
+	stillAreaNonRiskFactor   = 1.2     // 非风险时段放宽因子
+)
+
+// cell history 自适应容忍：反复假报/长静自然离开 → 放宽 EffectiveStillTimeoutSec，上限 MaxTolerance。
+const (
+	cellFakeAlarmThreshold      = 3
+	cellToleratedStillThreshold = 5
+	cellMaxToleranceFactor      = 2.0
+)
+
+// StillTimeoutSec 静止超时阈值（秒；0 = 不限）。默认读 Belief[0]。risk-time=基线（严格）；
+// non-risk-time=基线 × stillAreaNonRiskFactor（宽松）。时段见 math_util.go::IsNightTime。
 func (c *Cell) StillTimeoutSec(isRiskTime bool) int {
 	base := c.stillTimeoutBase()
 	if base == 0 {
 		return 0
 	}
 	if !isRiskTime {
-		// non-risk-time × NonRiskTimeFactor（默认 1.2 → 18min）
-		return int(float64(base) * FallRulesParam.Still.NonRiskTimeFactor)
+		return int(float64(base) * stillAreaNonRiskFactor)
 	}
 	return base
 }
@@ -369,11 +379,11 @@ func (c *Cell) stillTimeoutBase() int {
 	case AreaBed, AreaSit:
 		return 0
 	case AreaToilet, AreaShower:
-		return FallRulesParam.Still.ToiletShowerSec
+		return stillAreaToiletShowerSec
 	case AreaDeny:
-		return FallRulesParam.Still.DenyZoneSec
+		return stillAreaDenySec
 	}
-	return FallRulesParam.Still.DefaultSec
+	return stillAreaDefaultSec
 }
 
 // EffectiveStillTimeoutSec 综合 cell history 的最终静止超时阈值（秒）。
@@ -398,11 +408,7 @@ func (c *Cell) EffectiveStillTimeoutSec(isRiskTime bool) int {
 // 累计证据 ratio = (FakeAlarmCount + ToleratedStillCount) / (FakeAlarmThreshold + ToleratedStillThreshold)
 // 线性饱和：ratio=0 → factor=1.0；ratio>=1 → factor=MaxToleranceFactor。
 func (c *Cell) toleranceFactor() float64 {
-	p := FallRulesParam.CellHistory
-	thresholdSum := p.FakeAlarmThreshold + p.ToleratedStillThreshold
-	if thresholdSum <= 0 {
-		return 1.0 // 防御：未配置则不放宽
-	}
+	thresholdSum := cellFakeAlarmThreshold + cellToleratedStillThreshold
 	score := float64(c.FakeAlarmCount + c.ToleratedStillCount)
 	ratio := score / float64(thresholdSum)
 	if ratio < 0 {
@@ -411,11 +417,7 @@ func (c *Cell) toleranceFactor() float64 {
 	if ratio > 1 {
 		ratio = 1
 	}
-	maxF := p.MaxToleranceFactor
-	if maxF < 1.0 {
-		maxF = 1.0 // 不能比基线还严
-	}
-	return 1.0 + (maxF-1.0)*ratio
+	return 1.0 + (cellMaxToleranceFactor-1.0)*ratio
 }
 
 // IncrFakeAlarm 人工标记 false_alarm 反馈到该 cell（在告警触发位置调用）。
@@ -585,9 +587,7 @@ func (c *Cell) Decay(dtSec float64, p DecayParams) {
 	c.DoorEventCount = scaleInt(c.DoorEventCount, fEv)
 
 	// Cell history integral：用 EventSec 半衰期（与设计 30 天一致时配置 EventSec=30d）。
-	// 注：DecayParams.EventSec 默认 7d，若希望按 fall_rules_param.go::DecayHalfLifeDays(30) 衰减，
-	// 应在 engine 层用 FallRulesParam.CellHistory.DecayHalfLifeDays 作为独立衰减档。
-	// 当前先用 EventSec，后续若需精细化再加 HistorySec 字段。
+	// 当前先用 EventSec，后续若需精细化再加独立 HistorySec 衰减档。
 	c.FakeAlarmCount = scaleInt(c.FakeAlarmCount, fEv)
 	c.ToleratedStillCount = scaleInt(c.ToleratedStillCount, fEv)
 	c.BlindSpotRecoveryCount = scaleInt(c.BlindSpotRecoveryCount, fEv)

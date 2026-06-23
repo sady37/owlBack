@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -13,7 +12,6 @@ import (
 
 	"owl-common/alarm"
 	"owl-common/card"
-	"owl-common/observation"
 	"owl-common/radarutils"
 	rediscommon "owl-common/redis"
 	"owl-common/spatial"
@@ -42,6 +40,11 @@ type RoomConfig struct {
 	// 人工标注的矩形先验
 	Enters     []radarutils.Rect // AreaEnter
 	Beds       []radarutils.Rect // AreaBed
+
+	// BedAreaIDs 床区 area_id 集合（areaType∈{2床,5监护床}），来源=固件活体 declare_area
+	// （bootstrap 走 wisefido-data HTTP 覆盖，治 canvas 下发区域 vs 固件几何漂移）。
+	// radar track 帧的 area_id 命中此集合 → 在床（TrackManager.fwIsBed membership）→ N=1 驱动 SBed boost。
+	BedAreaIDs []int
 	Toilets    []radarutils.Rect // AreaToilet
 	Showers    []radarutils.Rect // AreaShower
 	Chairs     []radarutils.Rect // AreaSit（粗标沙发/椅子，Conf=80）
@@ -119,34 +122,11 @@ type RoomConfig struct {
 	IsPublicBathroom bool
 }
 
-// ========================================================================
-// ParamSet[3] 与 winner 选择
-// ========================================================================
-
-// DefaultParamSets 三组并行参数（保守/中庸/激进）
+// DefaultParamSets 三组并行参数（保守/中庸/激进），cell.UpdateBelief 似然先验用。
 var DefaultParamSets = [3]ParamSet{
 	{Alpha: 0.01, Beta: 0.2, FlipTh: 10, Name: "conservative"},
 	{Alpha: 0.02, Beta: 0.5, FlipTh: 20, Name: "balanced"},
 	{Alpha: 0.05, Beta: 1.0, FlipTh: 30, Name: "aggressive"},
-}
-
-// AccuracyTracker 单组参数的准确率累计（供 winner 选择使用）
-// TP / FP / TN / FN 由 feedback_loop.go 灌入
-type AccuracyTracker struct {
-	TruePositive  int
-	FalsePositive int
-	TrueNegative  int
-	FalseNegative int
-	LastEvalAt    time.Time
-}
-
-// Accuracy 准确率 [0,1]；样本不足返回 -1
-func (a *AccuracyTracker) Accuracy() float64 {
-	total := a.TruePositive + a.FalsePositive + a.TrueNegative + a.FalseNegative
-	if total < 5 {
-		return -1
-	}
-	return float64(a.TruePositive+a.TrueNegative) / float64(total)
 }
 
 // ========================================================================
@@ -154,9 +134,10 @@ func (a *AccuracyTracker) Accuracy() float64 {
 // ========================================================================
 
 type Engine struct {
-	mu           sync.RWMutex
-	rooms        map[string]*TrackManager         // roomID → TrackManager
-	grids        map[string]*RoomGrid             // roomID → Grid
+	mu            sync.RWMutex
+	rooms         map[string]*TrackManager         // roomID → TrackManager
+	radarPeople   map[string]int                   // roomID → census 折叠后 radar 真人数（belief 层经 SetRoomRadarPeople 注入）；RealPeopleInRoom 优先用，未注入回退 NonGhostTrackCount
+	grids         map[string]*RoomGrid             // roomID → Grid
 	deviceMounts map[string]radarutils.RadarMount // deviceAddr(/128) → 该 radar 安装参数（坐标转换用）；多雷达房每台一份
 	deviceRoom   map[string]string                // deviceAddr → roomID (sensor 唯一物理寻址)
 	deviceBeds   map[string][]radarutils.Rect     // deviceAddr(/128) → 该设备**自己 canvas** 的 bed 矩形（MM covers 只用本台 layout，不跨系借别台床）
@@ -166,61 +147,18 @@ type Engine struct {
 	deviceAddrToType map[string]string // deviceAddr(UUID) → 源 sensor 类型（"Radar"/"Sleepad"），AI publish 加 ".AI<node>" 后缀
 	roomTenants      map[string]string // roomID → tenant_id（alarm_events 必填）
 
-	// 北极星 reasoning trace 链：每 device 最近 inbound msg 的 envelope.SequenceNumber，
-	// AI verdict publish 时 evidence["trigger_seq_num"] = lastSrcSeq[deviceAddr]。
-	// 多 producer (qinglan/sleepace) 各自有独立 seq counter；本 map 按 deviceAddr 区分。
-	srcSeqMu   sync.RWMutex
-	lastSrcSeq map[string]uint64
-	// 不再维护 roomCards：AI 是 sensor 层 producer，只发 device 标识；card_id (subject_entity)
-	// 由 cardagg IotPreparedHandler 反查 device→cards 路由（多卡共享设备时自然 fan-out）。
-	// 协议层北极星 layer 1 / 2 解耦原则。详 doc/TODO.md 第 0 项。
-
-	// Sensor agent 节点完整身份字符串（如 "sensor.caregiver01"），同时作 envelope.Producer
-	// + wire fields["source"] + ai_emit log 审计字段。多实例横向扩展时各进程 source 不同 →
-	// wire 自动区分实例。来源见 cfg.AIPublish.Source。Phase B：命名规范 sensor.<role><实例号>。
-	aiSource string
-
-	// publish 模式："log" | "log&publish"。
-	// "log" 模式仅写 sensor.log，不发 redis stream；任何模式都不影响 alarm 触发路径。
-	aiPublishMode string
-
 	// layout 几何 hash，RegisterRoom 时计算；snapshot save/load 比对用
 	layoutHashes map[string]string
 
-	// 自适应参数
+	// cell.UpdateBelief 三组似然先验参数（hydrate 后冻结，DBN 读真实 AreaType）
 	paramSets [3]ParamSet
-	accuracy  [3]AccuracyTracker
-	winner    int // 当前 winner 组（0/1/2），-1=无 winner 用 baseline
 
 	// 运行时参数（由 Configure 注入；Decay/Learn 字段语义见 cell.go / cell_learning.go）
 	decayParams    DecayParams
 	learnParams    LearnParams
 	bedsideFallCfg BedsideFallConfig // R4 床边晕倒参数；RegisterRoom 时下发到 TrackManager
 
-	// 定时器
-	decayInterval      time.Duration // 默认 1 小时（Decay 计算一次）
-	beliefScanInterval time.Duration // PR-11: 默认 10 分钟（原 5min；降低 CPU 功率）
-	winnerEvalInterval time.Duration // 默认 24 小时（winner 重评）
-	snapshotInterval   time.Duration // 默认 5 分钟（持久化全量 dump）；0 = 关闭
-
-	// 持久化（nil = 不持久化）
-	persister Persister
-
-	// 历史归档（nil = 不归档）。每天 dailySnapshotHour:dailySnapshotMinute 触发，保留 historyRetainDays 天
-	historyPersister    HistoryPersister
-	dailySnapshotHour   int // 0-23 local；-1=禁用 daily snapshot
-	dailySnapshotMinute int // 0-59 local
-	historyRetainDays   int // <=0 表示不清理
-
-	// alarm-feedback ingestion（cell.IncrFakeAlarm 反馈链）
-	feedbackDB       *sql.DB
-	feedbackInterval time.Duration // 默认 5 分钟；0 = 关闭
-	feedbackIngester *AlarmFeedbackIngester
-
-	// PR-15: 每日定时 layout reload。dailyReloadHour 0-23（local time）；-1=禁用
-	// 目的：管理员下班后重读 rooms.layout_config，hash 变 → 重置该 room grid，从 0 重学
-	dailyReloadHour int
-	dailyReloadDB   *sql.DB // 用于 SELECT layout_config；nil 时跳过
+	decayInterval time.Duration
 
 	// 路由失败的 device 频率限制告警（避免每条 frame 都 warn 一次）。
 	// 同一 device key 60s 内只 warn 一次，确保 deviceRoom 缺失能被发现而不淹日志。
@@ -255,47 +193,43 @@ type Engine struct {
 	// 写者：publishTrackStatuses（per-room 串行，与 handleMessage 同 goroutine）；无锁需要。
 	trackLastSeen map[string]map[int]int64
 
-	// generalGhostAdj = NoopGhostAdjudicator(默认),gate-list bathroom ghost 已退役.
-	generalGhostAdj GhostAdjudicator
-
 	// sensor_v2 PR-5 BathroomGate 入口流量子模块（§4.A.2）：
 	//   每 bathroom room 一个 gate（key = roomID），lazy 创建在 publishTrackStatuses。
 	//   census + suiteID 为空时不创建（fallback noop）。
 	//   单 goroutine 读写（publishTrackStatuses per-room 串行），无锁需要。
 	bathroomGates map[string]*BathroomGate
 
-	// §9 3b belief shadow（roomID → 旁路信念引擎，只 log 不 fire）。
-	// tick 在 publishTrackStatuses goroutine、event 在 handleEventMessage goroutine → beliefShadowMu 保护。
-	beliefShadows  map[string]*beliefShadow
-	beliefShadowMu sync.Mutex
+	// OnRoomFrame seam：每帧 ProcessFrame + SnapshotTrackStatuses 之后触发，交上层 DBN（engine.Room）裁决。
+	// nil = 不裁决（纯馈送，无下游）。Engine 不 import belief/adapter/engine 包，靠回调解耦。
+	// 返回 (fired, dropped) 的 LogicID：fired → 复位 still-box（belief 已就地复位）；
+	//   dropped（确认离场/空）→ evict track_manager，停 12s coast re-feed（防 census 重发新 logicID = churn）。
+	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string)
 
-	// 工单5 cold-start per-unit 升档闸:suiteID(unit) → 该 unit 首次见 track 的 nowMs。
-	// effectiveMode = min(全局 dbnMode, unitCap);unitCap 启动=1(可自发不否决 firmware),
-	// now−firstTrack ≥ max(coldGraduateMs, coldFloorMs) 后升 2(可否决)。纯内存(Phase A):
-	// 重启 firstTrack 清零 → 重新冷启动(退档=FP 安全,委员会 §6.4 裁)。
-	unitFirstTrackMs map[string]int64
-	coldStartMu      sync.Mutex
-
-	// gate-list BathroomFallRules/BedroomFallRules 已退役(DBN_FIRE=1 短路,DBN 接管 fire)—码删 #1.2
+	// ── 生产 I/O（从旧 ws engine 焊回；Xsensor replay 道裁掉，生产必需）──
+	srcSeqMu   sync.RWMutex
+	lastSrcSeq map[string]uint64
+	aiSource      string
+	aiPublishMode string
+	beliefScanInterval time.Duration
+	snapshotInterval   time.Duration
+	persister           Persister
+	historyPersister    HistoryPersister
+	dailySnapshotHour   int
+	dailySnapshotMinute int
+	historyRetainDays   int
+	feedbackDB       *sql.DB
+	feedbackInterval time.Duration
+	feedbackIngester *AlarmFeedbackIngester
+	dailyReloadHour int
+	dailyReloadDB   *sql.DB
 }
 
-// RuntimeConfig 与 wisefido-sensor/internal/config::RoomEngineConfig 一一对应；
+// RuntimeConfig 与 owlBack/tools/Xsensorv1/internal/config::RoomEngineConfig 一一对应；
 // engine 包不依赖 config 包，wiring 在 cmd/wisefido-sensor/main.go 中完成转换。
 type RuntimeConfig struct {
-	Decay              DecayParams
-	Learn              LearnParams
-	ParamSets          [3]ParamSet
-	DecayInterval      time.Duration
-	BeliefScanInterval time.Duration
-	WinnerEvalInterval time.Duration
-	SnapshotInterval   time.Duration // 0 = 关闭持久化定时器；Persister 仍可在退出时 dump
-	Persister          Persister     // nil = 不持久化
-
-	// HistoryPersister + DailySnapshotHour/Minute + HistoryRetainDays：每日归档
-	HistoryPersister    HistoryPersister
-	DailySnapshotHour   int // -1=禁用；默认 11（11:50 local）
-	DailySnapshotMinute int // 0-59；默认 50
-	HistoryRetainDays   int // 默认 365；<=0 不清理
+	Decay     DecayParams
+	Learn     LearnParams
+	ParamSets [3]ParamSet
 
 	// 风险时段（夜间）；通过 SetRiskTimeConfig 注入到包级 nightCfg。
 	// 全 0 视为未设置，保留 IsNightTime 默认（23:30 - 07:30）。
@@ -305,16 +239,24 @@ type RuntimeConfig struct {
 	// 任一字段 0 保留 defaultBedsideFallCfg 默认值。
 	BedsideFall BedsideFallConfig
 
-	// FeedbackDB / FeedbackInterval：alarm_events false_alarm 反馈链。
-	// 二者都设置才启用；缺任一退化为不启动 feedbackLoop。
+	// ── 生产 I/O 运行时参数（S0.c 焊回；Xsensor replay 道无）──
+	DecayInterval      time.Duration
+	BeliefScanInterval time.Duration
+	SnapshotInterval   time.Duration // 0 = 关闭持久化定时器
+	Persister          Persister     // nil = 不持久化
+	HistoryPersister    HistoryPersister
+	DailySnapshotHour   int
+	DailySnapshotMinute int
+	HistoryRetainDays   int
 	FeedbackDB       *sql.DB
-	FeedbackInterval time.Duration // 默认 5 分钟
+	FeedbackInterval time.Duration
 }
 
 // NewEngine 创建 Room Engine（默认参数）。生产环境调用 Configure 注入 yaml 配置。
 func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 	return &Engine{
 		rooms:               make(map[string]*TrackManager),
+		radarPeople:         make(map[string]int),
 		grids:               make(map[string]*RoomGrid),
 		deviceMounts:        make(map[string]radarutils.RadarMount),
 		deviceRoom:          make(map[string]string),
@@ -323,22 +265,11 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		deviceAddrToUID:     make(map[string]string),
 		deviceAddrToType:    make(map[string]string),
 		roomTenants:         make(map[string]string),
-		lastSrcSeq:          make(map[string]uint64),
-		aiSource:            "sensor.caregiver01",
-		aiPublishMode:       "log&publish",
 		layoutHashes:        make(map[string]string),
 		paramSets:           DefaultParamSets,
-		winner:              1, // 默认 balanced
 		decayParams:         DefaultDecayParams(),
 		learnParams:         DefaultLearnParams(),
 		decayInterval:       1 * time.Hour,
-		beliefScanInterval:  10 * time.Minute, // PR-11
-		winnerEvalInterval:  24 * time.Hour,
-		snapshotInterval:    5 * time.Minute,
-		dailyReloadHour:     22, // PR-15：22:00 local 重读 layout
-		dailySnapshotHour:   11, // 每天 11:50 local 归档 daily history
-		dailySnapshotMinute: 50,
-		historyRetainDays:   365, // 一年滚动清理
 		unrouted:            make(map[string]int64),
 		redisClient:         redisClient,
 		logger:              logger,
@@ -348,8 +279,14 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		smallBathroom:       make(map[string]bool),
 		trackLastSeen:       make(map[string]map[int]int64),
 		bathroomGates:       make(map[string]*BathroomGate),
-		beliefShadows:       make(map[string]*beliefShadow),
-		unitFirstTrackMs:    make(map[string]int64),
+		lastSrcSeq:          make(map[string]uint64),
+		aiSource:            "sensor.caregiver01",
+		aiPublishMode:       "log&publish",
+		beliefScanInterval:  10 * time.Minute,
+		snapshotInterval:    5 * time.Minute,
+		dailySnapshotHour:   11,
+		dailySnapshotMinute: 50,
+		historyRetainDays:   365,
 	}
 }
 
@@ -381,20 +318,7 @@ func (e *Engine) warnUnrouted(stream, cardID, deviceAddr, deviceType string) {
 	)
 }
 
-// SetDailyLayoutReload 注入 daily layout reload 配置。
-// hourLocal：0-23 表示 local time 时刻；-1 禁用。
-// db：用于 SELECT rooms.layout_config；nil 时禁用。
-// PR-15：管理员下班后定时重读 layout，hash 变化 → 重置该 room grid 从 0 重学。
-func (e *Engine) SetDailyLayoutReload(hourLocal int, db *sql.DB) {
-	if hourLocal < -1 || hourLocal > 23 {
-		hourLocal = -1
-	}
-	e.dailyReloadHour = hourLocal
-	e.dailyReloadDB = db
-}
-
 // Configure 注入 yaml 加载的运行时参数。零值字段保留 New 时的默认值。
-// Persister 字段单独判断：显式传 nil 即关闭持久化（覆盖默认）。
 func (e *Engine) Configure(cfg RuntimeConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -407,30 +331,6 @@ func (e *Engine) Configure(cfg RuntimeConfig) {
 	if cfg.ParamSets[0].Name != "" {
 		e.paramSets = cfg.ParamSets
 	}
-	if cfg.DecayInterval > 0 {
-		e.decayInterval = cfg.DecayInterval
-	}
-	if cfg.BeliefScanInterval > 0 {
-		e.beliefScanInterval = cfg.BeliefScanInterval
-	}
-	if cfg.WinnerEvalInterval > 0 {
-		e.winnerEvalInterval = cfg.WinnerEvalInterval
-	}
-	if cfg.SnapshotInterval > 0 {
-		e.snapshotInterval = cfg.SnapshotInterval
-	}
-	// Persister 直接赋值（nil 也接受，表示禁用）
-	e.persister = cfg.Persister
-
-	// HistoryPersister 与 daily snapshot 时刻；时刻字段 0 视为未覆盖（保留默认 11:50/365 天）
-	e.historyPersister = cfg.HistoryPersister
-	if cfg.DailySnapshotHour != 0 || cfg.DailySnapshotMinute != 0 {
-		e.dailySnapshotHour = cfg.DailySnapshotHour
-		e.dailySnapshotMinute = cfg.DailySnapshotMinute
-	}
-	if cfg.HistoryRetainDays > 0 {
-		e.historyRetainDays = cfg.HistoryRetainDays
-	}
 
 	// 风险时段（IsNightTime 用）—— 包级 var，所有房间共享
 	SetRiskTimeConfig(cfg.RiskTime)
@@ -442,7 +342,25 @@ func (e *Engine) Configure(cfg RuntimeConfig) {
 		tm.SetBedsideFallConfig(cfg.BedsideFall)
 	}
 
-	// alarm feedback：默认 5min；缺 DB 不启用
+	// ── 生产 I/O 运行时参数（S0.c 焊回）──
+	if cfg.DecayInterval > 0 {
+		e.decayInterval = cfg.DecayInterval
+	}
+	if cfg.BeliefScanInterval > 0 {
+		e.beliefScanInterval = cfg.BeliefScanInterval
+	}
+	if cfg.SnapshotInterval > 0 {
+		e.snapshotInterval = cfg.SnapshotInterval
+	}
+	e.persister = cfg.Persister
+	e.historyPersister = cfg.HistoryPersister
+	if cfg.DailySnapshotHour != 0 || cfg.DailySnapshotMinute != 0 {
+		e.dailySnapshotHour = cfg.DailySnapshotHour
+		e.dailySnapshotMinute = cfg.DailySnapshotMinute
+	}
+	if cfg.HistoryRetainDays > 0 {
+		e.historyRetainDays = cfg.HistoryRetainDays
+	}
 	e.feedbackDB = cfg.FeedbackDB
 	if cfg.FeedbackInterval > 0 {
 		e.feedbackInterval = cfg.FeedbackInterval
@@ -492,6 +410,48 @@ func (e *Engine) RealPeopleInRoom(roomID string) int {
 	}
 	e.mu.RLock()
 	var tm *TrackManager
+	matchedKey := roomID
+	if t, ok := e.rooms[roomID]; ok {
+		tm = t
+	} else {
+		for k, t := range e.rooms {
+			if kp, perr := netip.ParsePrefix(k); perr == nil && kp == want {
+				tm = t
+				matchedKey = k
+				break
+			}
+		}
+	}
+	rp, rpOK := e.radarPeople[matchedKey]
+	e.mu.RUnlock()
+	if tm == nil {
+		return -1
+	}
+	// P1 占用人数：cutover 后用 belief 层 census 的折叠真人数（PReal 排 ghost + 同房跨雷达同人折叠，
+	//   2雷达1人→1；DBN 是权威，比 Verdict 版 NonGhostTrackCount 更准——后者会多算镜像 ghost）。
+	//   belief 未注入（未 Tick / 非 cutover）→ 回退 NonGhostTrackCount（向后兼容）。契约 §2 P1。
+	if rpOK {
+		return rp
+	}
+	return tm.NonGhostTrackCount()
+}
+
+// SetRoomRadarPeople belief 层每 tick 注入该房 census 折叠后的 radar 真人数（RealPeopleInRoom P1 用）。
+func (e *Engine) SetRoomRadarPeople(roomID string, n int) {
+	e.mu.Lock()
+	e.radarPeople[roomID] = n
+	e.mu.Unlock()
+}
+
+// SnapshotSleepads 按 roomID 取本房在场 sleepad 占用身份快照（forensic + 后续吸纳；只读身份不进裁决）。
+// roomID netip 归一查找与 RealPeopleInRoom 同（独立内联，不改 A 的占用函数体，规则 #1.3 协调）。
+func (e *Engine) SnapshotSleepads(roomID string, nowMs int64) []SleepadStatus {
+	want, err := netip.ParsePrefix(roomID)
+	if err != nil {
+		return nil
+	}
+	e.mu.RLock()
+	var tm *TrackManager
 	if t, ok := e.rooms[roomID]; ok {
 		tm = t
 	} else {
@@ -504,9 +464,9 @@ func (e *Engine) RealPeopleInRoom(roomID string) int {
 	}
 	e.mu.RUnlock()
 	if tm == nil {
-		return -1
+		return nil
 	}
-	return tm.NonGhostTrackCount()
+	return tm.SnapshotSleepads(nowMs)
 }
 
 // RadarBedReachCount 数本 radar 边界内有几张床——**只用该 radar 自己 canvas 画的床**(e.deviceBeds[addr])，
@@ -649,73 +609,6 @@ func (e *Engine) SetRoomTenant(roomID, tenantID string) {
 	e.mu.Unlock()
 }
 
-// recordLastSrcSeq 记录最近一条来自 deviceAddr 的消息 envelope.SequenceNumber。
-// AI verdict publish 时反查作 evidence.trigger_seq_num（reasoning trace 链锚定）。
-func (e *Engine) recordLastSrcSeq(deviceAddr string, seq uint64) {
-	if deviceAddr == "" || seq == 0 {
-		return
-	}
-	e.srcSeqMu.Lock()
-	e.lastSrcSeq[deviceAddr] = seq
-	e.srcSeqMu.Unlock()
-}
-
-// readLastSrcSeq 读取最近 source seq；0 表示无记录或源 producer 未填 SequenceNumber。
-func (e *Engine) readLastSrcSeq(deviceAddr string) uint64 {
-	if deviceAddr == "" {
-		return 0
-	}
-	e.srcSeqMu.RLock()
-	defer e.srcSeqMu.RUnlock()
-	return e.lastSrcSeq[deviceAddr]
-}
-
-// nextAgentSeq sensor 作为 platform agent producer 的单调 sequence number。
-// 跨重启不重置（Redis INCR），让 trace_id = "<producer>.<seqN>" 全局唯一可追溯。
-// Redis 不可用时 degrade 返 0（不阻塞 alarm 链；trace_id 会暂时为空，下次 publish 自愈）。
-func (e *Engine) nextAgentSeq(ctx context.Context, producer string) int64 {
-	if e.redisClient == nil || producer == "" {
-		return 0
-	}
-	key := "wisefido-sensor:seq:" + producer
-	v, err := e.redisClient.Incr(ctx, key).Result()
-	if err != nil {
-		return 0
-	}
-	return v
-}
-
-// SetAIPublishConfig 注入 AI publish 单点配置：mode + node_id（来自 yaml/env）。
-// 替换旧的 SetAIDeviceType + SetAIPublishEnabled，单一入口避免漂移。
-//
-// mode："log" 仅写 ai.log；"log&publish" 还会推 redis stream。任何模式下 alarm
-// 的 fire 路径都不变（"宁可误报不可漏报"原则——mode 仅控制下游 stream，不 gate
-// 告警生成）。
-//
-// source：完整节点身份字符串（"AI.Caregiver01" / "AI.Doctor01" 等），同时作
-// wire fields["source"] 默认值 + ai_emit log 审计字段。直接由 config 注入，
-// 不在此拼接——多实例横向扩展时各进程 source 不同即可。
-// device_type 保持源 sensor 类型，AI 派生身份在 dataValue.source 表达。
-func (e *Engine) SetAIPublishConfig(mode, source string) {
-	if mode == "" {
-		mode = "log&publish"
-	}
-	if source == "" {
-		source = "sensor.caregiver01"
-	}
-	e.mu.Lock()
-	e.aiPublishMode = mode
-	e.aiSource = source
-	e.mu.Unlock()
-}
-
-// publishEnabled 当前是否会真发到 redis（mode == "log&publish"）。
-func (e *Engine) publishEnabled() bool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.aiPublishMode == "log&publish"
-}
-
 // SetSuiteCensus 注入进程级共享 SuiteCensusManager（sensor_v2 PR-2 数据结构 + PR-3 publish 关联）。
 // nil = 禁用 PR-3 PersonID 关联（TrackStatus.PersonID 一律空）；
 // bootstrap 调用方负责生命周期（含 SaveToRedis 定时任务）。
@@ -748,16 +641,6 @@ func (e *Engine) SetSuiteCensus(m *SuiteCensusManager) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.suiteCensus = m
-}
-
-// SetGhostAdjudicators 注入 ghost 判定器(gate-list bathroom ghost 已退役,nil=bathroom)。
-func (e *Engine) SetGhostAdjudicators(general, _ GhostAdjudicator) {
-	if general == nil {
-		general = NoopGhostAdjudicator{}
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.generalGhostAdj = general
 }
 
 // GridForRoom 暴露 grid 给 BathroomGhostAdjudicator 用（lookup callback）。
@@ -841,68 +724,6 @@ func (e *Engine) SuiteHasOtherDevice(suiteID, excludeDevice string) bool {
 	return false
 }
 
-// pickAdjudicator 按 room_type binary 分类挑选 adjudicator。读锁内调用。
-// nil-safe：未调 SetGhostAdjudicators 时退化 Noop（保 PR-4 默认行为 == v1）。
-func (e *Engine) pickAdjudicator(_ int) GhostAdjudicator {
-	// gate-list bathroom ghost 已退役;统一走 general noop.
-	if e.generalGhostAdj != nil {
-		return e.generalGhostAdj
-	}
-	return NoopGhostAdjudicator{}
-}
-
-// applyVerdictDeltas 应用 GhostAdjudicator 输出到 TrackStatus 副本（**唯一 verdict 写点**）。
-//
-// 不变量守卫（sensor_v2 决定 21 / Q4 review）：
-//
-//	Anchored → Ghost 转换被拒绝；verdict 字段保持 Anchored，penalty 仍累加供 PR-6 BathroomGhost
-//	"持续疑似"审计观察。未来若需真正 unanchor，必须走显式重置路径（重启 / FeedbackEvent 清
-//	LongSurvival/StartupGrace），不能在单帧 delta 里悄悄做。
-//
-// 边界：
-//   - PenaltyDelta clamp 到 [0, 100]
-//   - delta 引用不存在的 TrackID → 静默丢弃（adjudicator 看到的 base 是当前帧 snapshot，
-//     长生命周期 stale delta 应当不会出现；warn log 留给单测验证）
-//   - delta.Reason 为空时仍应用（PR-4 默认 Noop 不返 reason；PR-6 之后 adjudicator 必填）
-func (e *Engine) applyVerdictDeltas(statuses []*TrackStatus, deltas []VerdictDelta) {
-	if len(deltas) == 0 {
-		return
-	}
-	byID := make(map[int]*TrackStatus, len(statuses))
-	for _, s := range statuses {
-		byID[s.TrackID] = s
-	}
-	for _, d := range deltas {
-		s, ok := byID[d.TrackID]
-		if !ok {
-			continue
-		}
-		if d.NewVerdict != nil {
-			newV := *d.NewVerdict
-			if s.Verdict == VerdictAnchored && newV == VerdictGhost {
-				e.logger.Warn("ghost_veto",
-					zap.String("reason", "anchored_reject"),
-					zap.String("detail", d.Reason),
-					zap.Int("track_id", d.TrackID),
-					zap.String("device_addr", s.DeviceAddr),
-					zap.String("room_id", s.RoomID),
-				)
-			} else {
-				s.Verdict = newV
-			}
-		}
-		if d.PenaltyDelta != 0 {
-			next := s.GhostPenalty + d.PenaltyDelta
-			if next < 0 {
-				next = 0
-			}
-			if next > 100 {
-				next = 100
-			}
-			s.GhostPenalty = next
-		}
-	}
-}
 
 // trackLostAnchorMs 失锁判定阈值：snapshot 未含某 trackID 持续 ≥ 60s → 视为真失锁，
 // 调 SuiteCensusManager.ClearAnchorOnLostTrack。偏保守的取值（MaxMissCount=10 帧 coast
@@ -910,40 +731,18 @@ func (e *Engine) applyVerdictDeltas(statuses []*TrackStatus, deltas []VerdictDel
 // 详见 suite_census.go ClearAnchorOnLostTrack 注释 "PR-3 wire 失锁判定建议"。
 const trackLostAnchorMs int64 = 60_000
 
-// publishTrackStatuses 把 TrackManager 的 Layer 1 投影 enrich 成 TrackStatus 列表，
-// 跑 GhostAdjudicator → apply deltas → 推流。调用时机：handleMessage 在 tm.ProcessFrame 之后。
-//
-// 流水线（PR-4）：
-//  1. 失锁清理：上一帧出现但本帧未出现且 ≥ 60s 的 trackID → census.ClearAnchorOnLostTrack（PR-3）
-//  2. Build：bases → []*TrackStatus 副本（含 PR-3 PersonID 关联 / zone 占位推断）
-//  3. Adjudicate：按 room.kind 挑 GhostAdjudicator（决定 16），调 Adjudicate(bases, nowMs)
-//  4. Apply：applyVerdictDeltas 执行 Anchored 守卫 + penalty clamp（决定 21 / Q4）
-//  5. Publish：每条 TrackStatus 推 sensor:track:status:stream
-//
-// PersonID 写入规则（sensor_v2 PR-3 review）：
-//
-//	if person, upgraded := suiteCensus.UpdatePersonFromTrack(...); upgraded && person != nil {
-//	    status.PersonID, status.PersonRole = person.PersonID, person.Role
-//	} // else 一律空
+// routeRoomFrame 馈送出口：失锁清理 census anchor + bathroom 入口流量 + PR-3 PersonID
+// 关联（更新 census 身份态），然后把 bases 交 OnRoomFrame seam 给上层 DBN 裁决。
+// Engine 不建 TrackStatus / 不跑 GhostAdjudicator / 不推 redis——决策权全在上层。
 //
 // Bathroom room 不调 UpdatePersonFromTrack —— bathroom 内 person 关联由 PR-5 BathroomGate
 // 入口流量 + suiteCensus.MarkPersonExitToBathroom/Return 维护，bathroom 帧只读 AnchorRoomType。
-func (e *Engine) publishTrackStatuses(ctx context.Context, roomID string, bases []TrackStatusBase, nowMs int64) {
-	// §9 3b belief shadow（旁路只 log 不 fire，R0）——**不依赖 redis publish**,无条件先跑(WF-b/审查㊺:
-	// shadow 是安全关键 trail,不该因 redis nil/down 静默失效;生产 redis 恒非 nil → 行为不变)。
-	// 下方 redis guard 只守真正的 redis publish;shadow 与 gate-list fall 并行对账,不依赖其输出。
-	e.beliefShadowTick(roomID, bases, nowMs)
-
-	if e.redisClient == nil {
-		return
-	}
-
+func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs int64) {
 	e.mu.RLock()
 	suiteID := e.roomSuiteID[roomID]
 	residentID := e.roomResidentID[roomID]
 	roomType := e.roomType[roomID]
 	census := e.suiteCensus
-	adjudicator := e.pickAdjudicator(roomType)
 	e.mu.RUnlock()
 
 	isBathroom := roomType == card.RoomTypeBathroom
@@ -972,7 +771,6 @@ func (e *Engine) publishTrackStatuses(ctx context.Context, roomID string, bases 
 	}
 
 	// 步骤 1.5：PR-5 BathroomGate（仅 bathroom room + 已挂 census + suiteID 三条件齐备）。
-	// gate 自己处理空 bases（依然要扫成员表做 timeout exit），所以放在 Build 之前调。
 	if isBathroom && census != nil && suiteID != "" {
 		gate, ok := e.bathroomGates[roomID]
 		if !ok {
@@ -982,292 +780,40 @@ func (e *Engine) publishTrackStatuses(ctx context.Context, roomID string, bases 
 		gate.Process(bases, nowMs)
 	}
 
-	// gate-list BathroomFallRules/BedroomFallRules 已退役(DBN_FIRE=1 短路,DBN 接管 fire)—码删 #1.2
-
-	// 步骤 2：Build TrackStatus 副本 + PR-3 PersonID 关联。
-	statuses := make([]*TrackStatus, 0, len(bases))
+	// 步骤 2：PR-3 PersonID 关联——更新 census 身份态（DBN 经 census 读，不再投影到 wire）。
 	for i := range bases {
 		b := &bases[i]
 		seen[b.TrackID] = nowMs
-		status := &TrackStatus{
-			TrackID:      b.TrackID,
-			DeviceAddr:   b.DeviceAddr,
-			RoomID:       b.RoomID,
-			Verdict:      b.Verdict,
-			GhostPenalty: b.GhostPenalty,
-			X:            b.X,
-			Y:            b.Y,
-			Z:            b.Z,
-			Pose:         b.Pose,
-			StillSec:     b.StillSec,
-			CellAreaType: b.CellAreaType,
-			EnterTarget:  b.EnterTarget,
-			InRoomZoneID: roomID,
-			UpdatedAtMs:  nowMs,
-		}
-		switch b.CellAreaType {
-		case AreaBed:
-			status.InBedZoneID = roomID
-		case AreaToilet, AreaShower:
-			status.InBathroomZoneID = roomID
-		}
-		if isBathroom {
-			status.InBathroomZoneID = roomID
-		}
-
 		if census != nil && suiteID != "" && !isBathroom {
-			person, upgraded := census.UpdatePersonFromTrack(
+			census.UpdatePersonFromTrack(
 				suiteID, residentID,
 				b.TrackID, b.SleepadInBed,
 				b.TraverseDelta, b.MoveActive,
 				nowMs,
 			)
-			if upgraded && person != nil {
-				status.PersonID = person.PersonID
-				status.PersonRole = person.Role
+		}
+	}
+
+	if e.OnRoomFrame != nil {
+		var bed card.BedState
+		var exitLogOdds func(logicID string, atMs int64) float64
+		tm := e.rooms[roomID]
+		if tm != nil {
+			bed = tm.BedOccupancyState(nowMs) // room 级权威 bed 读数（sleepad+radar 床事件融合）→ B 轴
+			// 离房 SLeft 对数几率（ExitRoom 硬 + trend+np 软），按 LogicID 反查：事件无坐标走不了 census 关联，
+			//   且丢轨 12s 驱逐后 base 空——闭包持 tm（recentRadarEvents/lostExitInfo 按 age 淘汰，不随 track drop）。
+			exitLogOdds = tm.ExitLogOdds
+		}
+		fired, dropped := e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds)
+		if tm != nil {
+			for _, lid := range fired {
+				tm.ResetStillBox(lid) // fall fire → still-box 从 0 热机（belief 已在 DBN 侧就地复位）
+			}
+			for _, lid := range dropped {
+				tm.EvictTrack(lid) // 确认离场/空 → 立即删 track，停 12s coast 期 re-feed（防 census churn）
 			}
 		}
-		statuses = append(statuses, status)
 	}
-
-	// 步骤 3-4：Adjudicator 跑 + apply delta（Anchored 守卫 + penalty clamp）。
-	// PR-4 默认 adjudicator 是 Noop → deltas 空 → applyVerdictDeltas 直接 return。
-	deltas := adjudicator.Adjudicate(bases, nowMs)
-	e.applyVerdictDeltas(statuses, deltas)
-
-	// 步骤 5：推流。
-	for _, status := range statuses {
-		PublishTrackStatus(ctx, e.redisClient, e.logger, status)
-	}
-}
-
-// PublishAIEvent 发布 AI 派生 event。
-//
-// 路由（PR1 A10 后）：
-//   - category=="track_verdict" → 走专用流 ai:track:verdict:stream（短 TTL=30s）
-//     cardagg 端用 ai_verdict_handler 单独消费，喂入 aiOverrides cache
-//   - 其他 category → 仍走 iot:event:stream（兼容历史路径）
-//
-// 旧路径：所有 category 都走 iot:event:stream，cardagg event_handler 统一消费 —
-// 已切走以便后续 cardagg 整体停订阅 iot:event:stream（B 组迁移前置）。
-// 旧代码可能仍传 "ghost" 兼容（按 track_verdict 等价处理）。
-//
-// 消息字段（Phase A v2 envelope）：
-//
-//	Producer:        e.aiSource（如 "sensor.caregiver01"），sensor agent layer 1 标识
-//	SubjectEntity:   留空（AI 不染卡概念，cardagg IotPreparedHandler 反查 device→subject）
-//	DeviceUID:       源 sensor 的 device_uid
-//	DeviceAddr:        源 sensor 的 UUID
-//	DeviceType:      源 sensor 类型（"Radar" / "Sleepad"）
-//	TenantID:        roomTenants[roomID]
-//	DataValue:       [{ track_id, ts, position_x/y/z, area_type, pose, track_confidence, source, ... }]
-//
-// 推送失败仅 warn 日志，不阻塞调用方。任何模式都打 ai_emit 结构化日志，作演示
-// 与审计追溯依据；mode=log 时 published=false 仅 log，mode=log&publish 时尝试推流。
-func (e *Engine) PublishAIEvent(ctx context.Context, p AIPayload, category string, nowMs int64) {
-	streamDef := rediscommon.StreamEvent
-	if category == "track_verdict" || category == "ghost" || category == CategorySensorDecision {
-		streamDef = rediscommon.StreamAITrackVerdict
-	}
-	e.publishAIMessage(ctx, p, category, "event",
-		streamDef.Name, streamDef.MaxLen, streamDef.RetentionSeconds, nowMs)
-}
-
-// PublishAIAlarm 发布 AI 派生 alarm 到 iot:alarm:stream。category = alarm 类别常量（alarm.Fall 等）；
-// fall 子类型成因走 AIPayload.Reason（DBN belief shadow 的 dbn_* reason 词表）。
-//
-// alarm 路径不受 mode 影响 fire 决策（"宁可误报不可漏报"），mode 仅控制是否推到 stream。
-func (e *Engine) PublishAIAlarm(ctx context.Context, p AIPayload, category string, nowMs int64) {
-	e.publishAIMessage(ctx, p, category, "alarm",
-		rediscommon.StreamAlarm.Name,
-		rediscommon.StreamAlarm.MaxLen, rediscommon.StreamAlarm.RetentionSeconds, nowMs)
-}
-
-func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
-	category, topicType, streamName string, maxLen int64, retentionSec int, nowMs int64) {
-	// p.DeviceAddr 现为 canonical IPv6 字符串（上游已切；engine 内部 Map 同步切）
-	addr, _ := netip.ParseAddr(p.DeviceAddr)
-	e.mu.RLock()
-	baseType := e.deviceAddrToType[p.DeviceAddr]
-	defaultSource := e.aiSource
-	mode := e.aiPublishMode
-	g := e.grids[p.RoomID]
-	e.mu.RUnlock()
-	// SubjectEntity 留空：sensor 不做 device→card 反查（非其职责）；
-	// cardagg alarm_router 在 SubjectEntity 空时调 metaCache.LookupCardByDeviceAddr LPM 兜底。
-
-	if baseType == "" {
-		baseType = "Radar" // 兜底：路由表缺失时默认按 radar 派生
-	}
-	// device_type 保持源 sensor 类型（不再拼 ".AI<NodeID>" 后缀）。
-	// AI 派生身份由 fields["source"] 一等公民字段表达。
-	deviceType := baseType
-
-	// alarm/event 流统一走 EventItem 契约（与 qinglan/sleepace publisher 一致）：
-	// EventItem 提供生命周期 + first-class 业务字段（TrackID/Pose/HeartRate/RespiratoryRate）；
-	// 其余 sensor-specific 字段（position / track_confidence / area_type / source / reason / evidence）
-	// 作为 dataValue map 同级平铺补充。
-	//
-	// EventStatus：默认 "instant"；payload 显式指定（如 RecordRadarAlarm forward Initialization→end）
-	// 时覆盖，让下游 cardagg AlarmRouter 按 EndPolicy=AutoResolve 关 alarm。
-	eventStatus := p.EventStatus
-	if eventStatus == "" {
-		eventStatus = "instant"
-	}
-	item := observation.NewEventItem(nowMs, eventStatus)
-	item.TrackID = p.Track.TrackID
-	if p.Track.Pose != 0 {
-		item.Pose = p.Track.Pose
-	}
-	if p.Track.HeartRate != 0 {
-		item.HeartRate = p.Track.HeartRate
-	}
-	if p.Track.RespiratoryRate != 0 {
-		item.RespiratoryRate = p.Track.RespiratoryRate
-	}
-	fields, _ := observation.EventItemToDataMap(&item)
-	if fields == nil {
-		fields = make(map[string]interface{})
-	}
-	// alarm_level 不由 sensor 盖：由 cardagg 从 device_config 单点决定（alarm_router Resolve）。
-	// sensor 只在源头 gate is_enabled（发 alarm vs event）+ 时间型阈值，不碰 level。
-	// sensor-specific 业务扩展字段平铺
-	if p.Track.PositionX != nil {
-		fields[observation.FieldPositionX] = *p.Track.PositionX
-	}
-	if p.Track.PositionY != nil {
-		fields[observation.FieldPositionY] = *p.Track.PositionY
-	}
-	if p.Track.PositionZ != nil {
-		fields[observation.FieldPositionZ] = *p.Track.PositionZ
-	}
-	if p.Track.TrackConfidence != 0 {
-		fields[observation.FieldTrackConfidence] = p.Track.TrackConfidence
-	}
-	if p.Track.LogicID != "" {
-		fields[observation.FieldLogicID] = p.Track.LogicID
-	}
-	if p.Event != "" {
-		fields["decision_event"] = p.Event
-	}
-	// AI 派生 track_verdict 与床状态无关；仅 sleepad_radar_conflict 显式传 BedStatus 才保留。
-	if p.Track.BedStatus != observation.BedStatusUnchanged {
-		fields[observation.FieldBedStatus] = p.Track.BedStatus
-	}
-	// area_type engine 自己算（observation.Track 的 AreaType 是字符串，engine 这边类型不同）
-	if g != nil {
-		px, py := 0, 0
-		if p.Track.PositionX != nil {
-			px = *p.Track.PositionX
-		}
-		if p.Track.PositionY != nil {
-			py = *p.Track.PositionY
-		}
-		if cell := g.CellAt(px, py); cell != nil {
-			fields["area_type"] = areaTypeProtocolStr(cell.Belief[0].Type)
-		}
-	}
-	// PR5b: Source（一等公民）+ Reason / Evidence（审计元数据）
-	// Source 默认 = e.aiSource（来自 cfg.AIPublish.Source，如 "AI.Caregiver01"）。
-	// p.Source 非空时尊重 caller override（未来多角色场景，如健康风险模块发 verdict）
-	source := p.Source
-	if source == "" {
-		source = defaultSource
-	}
-	if source != "" {
-		fields["source"] = source
-	}
-	if p.Reason != "" {
-		fields["reason"] = p.Reason
-	}
-	if len(p.Evidence) > 0 {
-		fields["evidence"] = p.Evidence
-	}
-	if p.IncidentMs > 0 {
-		fields["incident_ts_ms"] = p.IncidentMs
-	}
-	// 北极星 reasoning trace：verdict 必带触发它的 source envelope.seq —
-	// 下游审计可一句 grep 把 AI verdict 反向链回 producer 的具体 envelope。
-	if srcSeq := e.readLastSrcSeq(p.DeviceAddr); srcSeq != 0 {
-		fields["trigger_seq_num"] = srcSeq
-	}
-
-	willPublish := e.redisClient != nil && mode == "log&publish"
-
-	// 预先取 producer + seq，让 ai_emit log 带 trace_id（"<producer>.<seqN>"），
-	// 跨服务 grep trace_id 即可 join sensor→cardagg→data 整条链。
-	producer := source
-	if producer == "" {
-		producer = defaultSource
-	}
-	seq := e.nextAgentSeq(ctx, producer)
-	traceID := fmt.Sprintf("%s.%d", producer, seq)
-
-	// 任何模式都打 ai_emit 审计日志：sandbox 演示靠这条 log 看 AI 在思考
-	e.logger.Info("ai_emit",
-		zap.String("trace_id", traceID),
-		zap.String("source", source),
-		zap.String("mode", mode),
-		zap.String("device_type", deviceType),
-		zap.String("device_addr", p.DeviceAddr),
-		zap.String("device_uid_hex", e.DeviceUIDHex(p.DeviceAddr)),
-		zap.String("category", category),
-		zap.String("topic_type", topicType),
-		zap.String("would_publish_to", streamName),
-		zap.Bool("published", willPublish),
-		zap.Int("track_id", p.Track.TrackID),
-		zap.Int("track_confidence", p.Track.TrackConfidence),
-		zap.Int64("ts_ms", nowMs),
-	)
-
-	if !willPublish {
-		return
-	}
-
-	// Producer = sensor agent /128 INET；
-	// SubjectEntity 留空（cardagg LPM 反查兜底，见上注释）；
-	// DeviceAddr = p.DeviceAddr parse 后 /128。
-	msg := rediscommon.IoTStreamMessage{
-		Producer:       producer,
-		SequenceNumber: uint64(seq),
-		SubjectEntity:  "",
-		DeviceAddr:     addr,
-		DeviceType:     deviceType,
-		Timestamp:      nowMs,
-		TopicType:      topicType,
-		Category:       category,
-		DataValue:      []interface{}{fields},
-	}
-	if _, err := rediscommon.PublishToStream(ctx, e.redisClient, streamName, msg.ToStreamMap(), maxLen, retentionSec); err != nil {
-		e.logger.Warn("ai_publish_failed",
-			zap.String("source", source),
-			zap.String("stream", streamName),
-			zap.String("category", category),
-			zap.String("device_addr", p.DeviceAddr),
-			zap.Error(err),
-		)
-	}
-}
-
-// areaTypeProtocolStr 把 engine 的 AreaType 映射成 observation.EnumAreaType 协议字符串。
-// 协议：0=none / 1=custom / 2=bed / 3=interfer / 4=door / 5=monitor_bed / 6=sensing
-// engine 内部枚举跟协议不完全对齐；做一个 best-effort 映射，cardagg 端按 device_type=Radar 处理。
-func areaTypeProtocolStr(t AreaType) string {
-	switch t {
-	case AreaBed:
-		return "bed"
-	case AreaSit:
-		return "custom" // 沙发/椅子归 custom（协议没单独 sit 类）
-	case AreaToilet, AreaShower:
-		return "monitor_bed" // 卫浴归 monitor_bed（最接近的 high-risk 区）
-	case AreaEnter:
-		return "door"
-	case AreaDeny:
-		return "interfer"
-	case AreaActive:
-		return "sensing"
-	}
-	return "none"
 }
 
 // GetRoomOutputs 查询某房间最新 track 输出
@@ -1392,8 +938,9 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	} else {
 		e.deviceMounts[cfg.RoomID] = cfg.Radar
 	}
-	tm := NewTrackManager(cfg.RoomID, grid)
+	tm := NewTrackManager(cfg.RoomID, grid, cfg.BedAreaIDs)
 	tm.bedCount = len(cfg.Beds) // 同房多雷达占用对账单床闸（仅 ==1 启用）
+	tm.SetAIPublisher(e)        // 生产发布腿（S0.c）：engine 实现 AIPublisher（PublishAIEvent/Alarm/DeviceUIDHex）
 	tm.SetMoveSpeedCms(e.learnParams.MoveSpeedCms)
 	tm.SetBedsideFallConfig(e.bedsideFallCfg)
 	tm.SetLogger(e.logger)
@@ -1402,8 +949,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetInterferes(cfg.Interferes)
 	tm.SetRadarMount(cfg.Radar)        // L1 mirror pair 检测用 radar 中心做 ghost tiebreaker
 	tm.SetWallPolygon(cfg.WallPolygon) // 静止反射体检测判"近墙"
-	// PR-8: 注入 AI 派生事件 / 告警发布器（engine 实现 AIPublisher 接口）
-	tm.SetAIPublisher(e)
+	tm.SetUIDHexResolver(e.DeviceUIDHex)
 	// 注入 IANA 时区（IsNightTime 用）；空串保持 nil → IsNightTime 退化 UTC
 	if cfg.Timezone != "" {
 		if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
@@ -1437,7 +983,6 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		)
 	}
 
-	// 保存 layout hash（snapshot save/load 都按此 hash 比对）— 上面 short-circuit 已算过
 	e.layoutHashes[cfg.RoomID] = newHash
 	hash := newHash
 
@@ -1455,52 +1000,6 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		zap.Int("furnitures", len(cfg.Furnitures)),
 		zap.Int("cells", grid.Width*grid.Height),
 		zap.String("layout_hash", hash[:12]),
-	)
-
-	// 尝试加载已有 snapshot（hydrate Belief + counters）
-	// persister 可能未配置（dev/test 模式），用 background ctx 容忍 DB 慢
-	if e.persister != nil {
-		e.hydrateRoom(cfg.RoomID, grid, hash)
-	}
-}
-
-// hydrateRoom 从 persister 取回 snapshot 并灌入 grid。
-// 失败/不匹配/无记录都不致命——退化为 fresh start（baseline 已由 SetPrior 烤好）。
-// 调用方必须持有 e.mu.Lock。
-func (e *Engine) hydrateRoom(roomID string, grid *RoomGrid, expectedHash string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	storedHash, payload, found, err := e.persister.Load(ctx, roomID)
-	if err != nil {
-		e.logger.Warn("snapshot load failed", zap.String("room_id", roomID), zap.Error(err))
-		return
-	}
-	if !found {
-		e.logger.Info("no snapshot found, fresh start", zap.String("room_id", roomID))
-		return
-	}
-	if storedHash != expectedHash {
-		e.logger.Warn("snapshot layout_hash mismatch, discarding (layout edited?)",
-			zap.String("room_id", roomID),
-			zap.String("stored", storedHash[:12]),
-			zap.String("expected", expectedHash[:12]),
-		)
-		return
-	}
-
-	snap, err := UnmarshalSnapshot(payload)
-	if err != nil {
-		e.logger.Warn("snapshot unmarshal failed", zap.String("room_id", roomID), zap.Error(err))
-		return
-	}
-	if err := DecodeSnapshot(snap, grid); err != nil {
-		e.logger.Warn("snapshot decode failed", zap.String("room_id", roomID), zap.Error(err))
-		return
-	}
-	e.logger.Info("snapshot hydrated",
-		zap.String("room_id", roomID),
-		zap.Int("cells", len(snap.Cells)),
 	)
 }
 
@@ -1526,25 +1025,22 @@ func (e *Engine) Run(ctx context.Context) error {
 		e.logger.Warn("create consumer group (alarm)", zap.Error(err))
 	}
 
-	// 后台定时任务
+	// ── 生产 I/O 后台 loop（S0.c 焊回；winnerEvalLoop/firmwarePendingDrainLoop 已随旧 winner/gate 删）──
 	go e.decayLoop(ctx)
 	go e.beliefScanLoop(ctx)
-	go e.firmwarePendingDrainLoop(ctx) // 档 2:雷达静默时 force-forward 滞留的 firmware fall(fail-safe,不漏)
-	go e.winnerEvalLoop(ctx)
 	if e.persister != nil && e.snapshotInterval > 0 {
 		go e.snapshotLoop(ctx)
 	}
 	if e.feedbackIngester != nil && e.feedbackInterval > 0 {
 		go e.alarmFeedbackLoop(ctx)
 	}
-	// PR-15: daily layout reload — 管理员下班后重读 layout_config，hash 变 → reset grid
 	if e.dailyReloadHour >= 0 && e.dailyReloadDB != nil {
 		go e.dailyLayoutReloadLoop(ctx)
 	}
-	// Daily history snapshot — 每天指定时刻归档 grid 状态，保留 365 天
 	if e.historyPersister != nil && e.dailySnapshotHour >= 0 {
 		go e.dailySnapshotLoop(ctx)
 	}
+
 	// 单独 goroutine 消费 event 流（sleepad + radar 的 InBed/LeftBed/EnterRoom/ExitRoom）
 	go e.runEventLoop(ctx, eventStream, group)
 	// 单独 goroutine 消费 alarm 流（radar Fall 等）
@@ -1555,17 +1051,11 @@ func (e *Engine) Run(ctx context.Context) error {
 		zap.String("monitor_stream", monitorStream),
 		zap.String("event_stream", eventStream),
 		zap.String("alarm_stream", alarmStream),
-		zap.String("winner", e.paramSets[e.winner].Name),
-		zap.Bool("persist", e.persister != nil),
 	)
 
 	for {
 		select {
 		case <-ctx.Done():
-			// 优雅退出：dump 一次再走（避免最近 5 min 学习丢失）
-			if e.persister != nil {
-				e.saveAllRooms(context.Background())
-			}
 			e.logger.Info("room engine stopped")
 			return nil
 		default:
@@ -1629,8 +1119,6 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 
 	// 路由到房间（addr 是唯一 device 标识）
 	addrStr := m.DeviceAddr.String()
-	// 北极星 reasoning trace：记录这条 envelope.seq → 后续 AI verdict 引用为 trigger_seq_num
-	e.recordLastSrcSeq(addrStr, m.SequenceNumber)
 	e.mu.RLock()
 	roomID := e.deviceRoom[addrStr]
 	tm := e.rooms[roomID]
@@ -1640,11 +1128,18 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 		return
 	}
 
+	// 触发事件 X 光打点（每个 event 一行，与 per-tick xsensor_xray 按 ts 对齐）。
+	e.logger.Info("xsensor_event",
+		zap.String("room", roomID), zap.String("dev_type", dt),
+		zap.String("category", m.Category), zap.Int64("ts", ts), zap.String("addr", addrStr))
+
 	switch dt {
 	case "sleepad", "sleeppad":
 		for _, evt := range ParseSleepadBedEvents(m.DataValue, addrStr, m.Category, ts) {
 			tm.ProcessSleepadBedEvent(evt)
 		}
+		// sleepad 事件驱动 DBN tick：sleepad-only 房无 radar 帧、这是唯一驱动；radar 房也吃 bed 翻转更新。
+		e.routeRoomFrame(roomID, tm.SnapshotTrackStatuses(ts), ts)
 	case "radar":
 		// 2026-05-15 起 radar firmware Fall/SittingOnGround 也走 event stream（gateway 分流）。
 		// 见 doc/cardagg_sensor_split.md：cardagg 不再处理 radar producer Fall；sensor 接管 verifier。
@@ -1663,18 +1158,7 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 		if m.Category == alarm.Fall || m.Category == alarm.SittingOnGround {
 			alarms := ParseRadarFallAlarm(m.DataValue, addrStr, m.Category, ts)
 			for _, a := range alarms {
-				// DBN_MODE:档 2(dbnVetoFirmwareEnabled)→ 暂存,下一 belief tick 用 fresh bases 现算 co-existence
-				// 裁决放行/否决(option A,消除事件 vs tick 竞态,孤立必发)。档 1 → firmware 地板,立即转发。
-				// 工单5:per-unit effectiveMode（cold unit cap=1 → 不否决,firmware 立即直通兜底真摔）。
-				deferred := e.dbnVetoFirmwareEnabledFor(roomID, ts)
-				if deferred {
-					e.stashPendingFirmwareFall(roomID, a)
-				} else {
-					tm.RecordRadarAlarm(a)
-					if m.Category == alarm.Fall {
-						e.recordBeliefShadowFirmwareFall(roomID, a.TMs) // P2:喂 firmware Fall T_fire(recovery 参考)
-					}
-				}
+				tm.RecordRadarAlarm(a)
 				e.logger.Info("radar_fall_received_via_event_stream",
 					zap.String("device_addr", addrStr),
 					zap.String("device_uid_hex", e.DeviceUIDHex(addrStr)),
@@ -1685,7 +1169,6 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 					zap.String("room_id", roomID),
 					zap.Int64("ts_ms", a.TMs),
 					zap.String("ts_human", time.UnixMilli(a.TMs).Format("15:04:05.000")),
-					zap.Bool("dbn_deferred", deferred), // 档 2:暂存待 tick 裁决;档 0/1:立即转发
 				)
 			}
 			tm.Tick(ts)
@@ -1693,14 +1176,12 @@ func (e *Engine) handleEventMessage(msg rediscommon.StreamMessage) {
 		}
 		// 落账 radar EnterRoom/ExitRoom/InBed/LeftBed；同时 InBed/LeftBed 走"事件触发器"
 		// 路径：tm.RecordRadarEvent + tm.Tick(ts) → 段 4/5/6 立即跑一次。
-		// 当前不消费 EnterRoom/ExitRoom 做行为推断，仅落账供未来段 7 使用。
 		evts := ParseRadarTrackEvents(m.DataValue, addrStr, m.Category, ts)
 		if len(evts) == 0 {
 			return
 		}
 		for _, evt := range evts {
 			tm.RecordRadarEvent(evt)
-			e.beliefShadowEvent(roomID, evt.EventName, ts) // §9 3b shadow：EnterRoom/ExitRoom 喂 belief（取消源）
 		}
 		tm.Tick(ts)
 	}
@@ -1758,8 +1239,6 @@ func (e *Engine) handleAlarmMessage(msg rediscommon.StreamMessage) {
 
 	// 路由（addr 是唯一 device 标识）
 	addrStr := m.DeviceAddr.String()
-	// 北极星 reasoning trace：记录这条 envelope.seq → 后续 AI verdict 引用
-	e.recordLastSrcSeq(addrStr, m.SequenceNumber)
 	e.mu.RLock()
 	roomID := e.deviceRoom[addrStr]
 	tm := e.rooms[roomID]
@@ -1806,8 +1285,6 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 
 	// 路由到房间（addr 是唯一 device 标识）
 	addrStr := m.DeviceAddr.String()
-	// 北极星 reasoning trace：记录这条 envelope.seq → 后续 AI verdict 引用
-	e.recordLastSrcSeq(addrStr, m.SequenceNumber)
 	e.mu.RLock()
 	roomID := e.deviceRoom[addrStr]
 	tm := e.rooms[roomID]
@@ -1840,17 +1317,22 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 			// 否则之前活着的 track 永不进入消失判定 → silent/lost fall pending 不会创建。
 			// NoTargetTick 标记"固件明示无目标"，触发 88-加速驱逐（治 Case2 142s 陈旧 track）。
 			tm.NoTargetTick(ts)
+			// 空帧（无目标）仍喂 DBN：bases 反映 track 缺席 → engine.Room 对消失 track 仅 Predict
+			// 自持（blind 续存，S 留 Fallen，告警连续），fall 确认窗继续累积。若此处 return，丢轨期间
+			// DBN 永不 tick → 确认窗冻结 → fall fire 延迟到 track 重现（lost-fall 缺口）。
+			bases := tm.SnapshotTrackStatuses(ts)
+			e.routeRoomFrame(roomID, bases, ts)
 			return
 		}
 		outputs := tm.ProcessFrame(frames)
 		if e.onOutput != nil && len(outputs) > 0 {
 			e.onOutput(roomID, outputs)
 		}
-		// sensor_v2 PR-3：Layer 1 → Layer 2 TrackStatus 投影。
+		// 馈送出口：Layer 1 track 投影 → seam，交上层 DBN 裁决。
 		// 只在 radar 帧后派生（sleepad 帧不带 track 几何）；
 		// SnapshotTrackStatuses 自带 tm.mu，与 ProcessFrame 串行无竞态。
 		bases := tm.SnapshotTrackStatuses(ts)
-		e.publishTrackStatuses(context.Background(), roomID, bases, ts)
+		e.routeRoomFrame(roomID, bases, ts)
 
 	case "sleepad", "sleeppad":
 		// 多传感器融合：sleepad 帧喂入 TrackManager，silent fall 触发时做 short-circuit
@@ -1867,431 +1349,6 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 			}
 		}
 		tm.SetSleepadInBedCount(inBedCount)
-	}
-}
-
-// ========================================================================
-// 后台定时任务
-// ========================================================================
-
-// decayLoop 每 decayInterval 对所有 grid 做一次 DecayAll
-func (e *Engine) decayLoop(ctx context.Context) {
-	ticker := time.NewTicker(e.decayInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			e.mu.RLock()
-			dtSec := e.decayInterval.Seconds()
-			dp := e.decayParams
-			for _, grid := range e.grids {
-				grid.DecayAll(dtSec, dp)
-			}
-			e.mu.RUnlock()
-			e.logger.Debug("decay all rooms done", zap.Float64("dt_sec", dtSec))
-		}
-	}
-}
-
-// beliefScanLoop 每 beliefScanInterval 对所有 cell 跑 UpdateBelief（3 组并行）
-func (e *Engine) beliefScanLoop(ctx context.Context) {
-	ticker := time.NewTicker(e.beliefScanInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			e.scanBeliefAll()
-		}
-	}
-}
-
-// scanBeliefAll 全量扫每个 grid 的每 cell：
-//  1. cell_learning（硬阈值规则）：Walk/Sit 升格 + 床外 Lie 异常累计
-//  2. UpdateBelief（软概率规则）：3 组参数各 UpdateBelief 一次
-//
-// 两者顺序：硬规则先跑（确定性强），UpdateBelief 后跑做细粒度调整。
-func (e *Engine) scanBeliefAll() {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	totalCells := 0
-	totalLieAnomalies := 0
-	lp := e.learnParams
-	nowMs := time.Now().UnixMilli()
-	for _, grid := range e.grids {
-		grid.LearnCellAreas(lp, nowMs)
-		totalLieAnomalies += grid.LearnLyingAnomalies(lp)
-		for i := range grid.Cells {
-			for g := 0; g < 3; g++ {
-				grid.Cells[i].UpdateBelief(g, e.paramSets[g])
-			}
-		}
-		totalCells += len(grid.Cells)
-	}
-	e.logger.Debug("belief scan done",
-		zap.Int("total_cells", totalCells),
-		zap.Int("lie_anomalies", totalLieAnomalies),
-		zap.Int("winner", e.winner),
-	)
-}
-
-// alarmFeedbackLoop 每 feedbackInterval 跑一次 alarm_events false_alarm 反馈同步。
-// 启动时立即跑一次（首次会全量扫历史，把过往 false_alarm 灌入 cell.FakeAlarmCount）。
-// 单次失败只警告，不退出循环。
-func (e *Engine) alarmFeedbackLoop(ctx context.Context) {
-	if e.feedbackIngester == nil {
-		return
-	}
-	// 启动延迟 5s，避免与 RegisterRoom / hydrate 同时进 DB
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(5 * time.Second):
-	}
-	if n, err := e.feedbackIngester.IngestOnce(ctx); err != nil {
-		e.logger.Warn("alarm_feedback ingest at startup", zap.Error(err))
-	} else {
-		e.logger.Info("alarm_feedback startup ingest", zap.Int("processed", n))
-	}
-	ticker := time.NewTicker(e.feedbackInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if n, err := e.feedbackIngester.IngestOnce(ctx); err != nil {
-				e.logger.Warn("alarm_feedback ingest tick", zap.Error(err))
-			} else if n > 0 {
-				e.logger.Info("alarm_feedback ingest tick", zap.Int("processed", n))
-			}
-		}
-	}
-}
-
-// snapshotLoop 每 snapshotInterval 把所有 grid 状态 dump 到 persister。
-// 单次 dump 失败只警告，不退出循环（DB 抖动不应拖垮 engine）。
-func (e *Engine) snapshotLoop(ctx context.Context) {
-	ticker := time.NewTicker(e.snapshotInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			e.saveAllRooms(ctx)
-		}
-	}
-}
-
-// saveAllRooms 遍历所有 grid，逐房间 UPSERT 到 persister。
-// 调用方可来自 snapshotLoop（带 ctx）或 Run 退出（用 background ctx）。
-func (e *Engine) saveAllRooms(ctx context.Context) {
-	if e.persister == nil {
-		return
-	}
-	e.mu.RLock()
-	// 拷贝 (roomID, grid, hash) 三元组到本地切片，释放锁后再做 IO，避免锁内 DB 写
-	type roomDump struct {
-		id   string
-		grid *RoomGrid
-		hash string
-	}
-	dumps := make([]roomDump, 0, len(e.grids))
-	for id, g := range e.grids {
-		dumps = append(dumps, roomDump{id: id, grid: g, hash: e.layoutHashes[id]})
-	}
-	e.mu.RUnlock()
-
-	saved, failed := 0, 0
-	for _, d := range dumps {
-		snap := EncodeSnapshot(d.grid)
-		payload, cellCount, err := MarshalSnapshot(snap)
-		if err != nil {
-			e.logger.Warn("snapshot marshal failed",
-				zap.String("room_id", d.id), zap.Error(err))
-			failed++
-			continue
-		}
-		if err := e.persister.Save(ctx, d.id, d.hash, cellCount, payload); err != nil {
-			e.logger.Warn("snapshot save failed",
-				zap.String("room_id", d.id), zap.Error(err))
-			failed++
-			continue
-		}
-		saved++
-	}
-	e.logger.Debug("snapshot batch done",
-		zap.Int("saved", saved), zap.Int("failed", failed))
-}
-
-// dailySnapshotLoop 每天 dailySnapshotHour:dailySnapshotMinute (local) 归档 grid 状态到 history 表。
-// 区别于 snapshotLoop（每 5min 写 live 表，仅最新一份）：history 表按日期保留 365 天用于 playback 历史起点。
-func (e *Engine) dailySnapshotLoop(ctx context.Context) {
-	for {
-		next := nextDailyTriggerHM(time.Now(), e.dailySnapshotHour, e.dailySnapshotMinute)
-		wait := time.Until(next)
-		e.logger.Info("daily_snapshot_scheduled",
-			zap.Time("next", next),
-			zap.Duration("wait", wait),
-			zap.Int("hour_local", e.dailySnapshotHour),
-			zap.Int("minute_local", e.dailySnapshotMinute),
-			zap.Int("retain_days", e.historyRetainDays),
-		)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(wait):
-		}
-		e.saveAllRoomsHistory(ctx, time.Now())
-	}
-}
-
-// saveAllRoomsHistory 遍历所有 grid，逐房间 SaveDaily 到 history 表。
-// snapshotDate 用 nowLocal 的日期部分；retainDays 写入完成后顺手清理。
-func (e *Engine) saveAllRoomsHistory(ctx context.Context, nowLocal time.Time) {
-	if e.historyPersister == nil {
-		return
-	}
-	e.mu.RLock()
-	type roomDump struct {
-		id   string
-		grid *RoomGrid
-		hash string
-	}
-	dumps := make([]roomDump, 0, len(e.grids))
-	for id, g := range e.grids {
-		dumps = append(dumps, roomDump{id: id, grid: g, hash: e.layoutHashes[id]})
-	}
-	e.mu.RUnlock()
-
-	saved, failed := 0, 0
-	for _, d := range dumps {
-		snap := EncodeSnapshot(d.grid)
-		payload, cellCount, err := MarshalSnapshot(snap)
-		if err != nil {
-			e.logger.Warn("daily snapshot marshal failed",
-				zap.String("room_id", d.id), zap.Error(err))
-			failed++
-			continue
-		}
-		if err := e.historyPersister.SaveDaily(ctx, d.id, d.hash, nowLocal, cellCount, payload, e.historyRetainDays); err != nil {
-			e.logger.Warn("daily snapshot save failed",
-				zap.String("room_id", d.id), zap.Error(err))
-			failed++
-			continue
-		}
-		saved++
-	}
-	e.logger.Info("daily_snapshot_done",
-		zap.Int("saved", saved),
-		zap.Int("failed", failed),
-		zap.String("snapshot_date", nowLocal.Format("2006-01-02")),
-	)
-}
-
-// nextDailyTriggerHM 返回下一次 hour:minute 的 local 时间点；已过则取明天。
-func nextDailyTriggerHM(now time.Time, hour, minute int) time.Time {
-	t := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
-	if !t.After(now) {
-		t = t.Add(24 * time.Hour)
-	}
-	return t
-}
-
-// dailyLayoutReloadLoop PR-15：每天 dailyReloadHour:00 (local) 重读 rooms.layout_config。
-//
-// 用途：管理员通过前端 layout 编辑器修改房间布局后，无需重启 wisefido-sensor 即可生效。
-// 每日触发时刻应避开管理员上班时间（默认 22:00 = 晚 10 点）。
-//
-// 流程：
-//  1. 等到下次 dailyReloadHour:00:00 local
-//  2. 扫所有已注册 room，对比 DB 中 layout_config 的 hash 与内存 layoutHashes
-//  3. hash 变 → 重置该 room（替换 TrackManager + 清空 grid 学习状态）
-//  4. 立即持久化（覆盖旧 snapshot）
-//
-// 不变 hash 的 room 跳过；DB 查不到（room 已删）的房间也跳过。
-func (e *Engine) dailyLayoutReloadLoop(ctx context.Context) {
-	for {
-		next := nextDailyTrigger(time.Now(), e.dailyReloadHour)
-		wait := time.Until(next)
-		e.logger.Info("daily_layout_reload_scheduled",
-			zap.Time("next", next),
-			zap.Duration("wait", wait),
-			zap.Int("hour_local", e.dailyReloadHour),
-		)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(wait):
-		}
-		e.runDailyLayoutReload(ctx)
-	}
-}
-
-// nextDailyTrigger 返回下一次 hour:00:00 local 的时间点。
-// 若当前已经过当天 hour 时刻，则取明天。
-func nextDailyTrigger(now time.Time, hour int) time.Time {
-	t := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, now.Location())
-	if !t.After(now) {
-		t = t.Add(24 * time.Hour)
-	}
-	return t
-}
-
-// runDailyLayoutReload 扫 rooms 表 → hash diff → 重置变化 room。
-// 调用方：dailyLayoutReloadLoop 触发时；不持锁进入。
-func (e *Engine) runDailyLayoutReload(ctx context.Context) {
-	if e.dailyReloadDB == nil {
-		return
-	}
-	// v2 schema: layout 在 room_visual_layout 表（PK=spatial_prefix）；
-	// rooms 表无 tenant_id/unit_id 列；tenant_id 由 room_id INET prefix /48 派生；
-	// unit timezone 通过 unit /80 LPM contains room /88 取。
-	// 按 /128 device 加载 canvas、按 /88 room 聚合（与 registerAllRooms 共用 LoadRoomCanvases
-	// + BuildRoomConfigFromCanvases，避免双写漂移）。room 元数据单独查。
-	canvasesByRoom, err := LoadRoomCanvases(ctx, e.dailyReloadDB, e.logger)
-	if err != nil {
-		e.logger.Warn("daily_reload load canvases failed", zap.Error(err))
-		return
-	}
-	rows, err := e.dailyReloadDB.QueryContext(ctx, `
-		SELECT r.room_id::text,
-		       r.room_name,
-		       COALESCE(u.timezone, '') AS timezone,
-		       host(set_masklen(r.room_id, 48))::text || '/48' AS tenant_pref
-		FROM rooms r
-		LEFT JOIN units u ON u.unit_id >>= r.room_id`)
-	if err != nil {
-		e.logger.Warn("daily_reload query failed", zap.Error(err))
-		return
-	}
-	defer rows.Close()
-
-	type pendingReload struct {
-		cfg      RoomConfig
-		tenantID string
-		newHash  string
-	}
-	var pending []pendingReload
-	for rows.Next() {
-		var roomID, roomName, tenantID, timezone string
-		if err := rows.Scan(&roomID, &roomName, &timezone, &tenantID); err != nil {
-			continue
-		}
-		cfg, hasLayout := BuildRoomConfigFromCanvases(roomID, canvasesByRoom[roomID], e.logger)
-		if !hasLayout {
-			continue
-		}
-		cfg.RoomName = roomName
-		cfg.Timezone = timezone
-		ApplyOptimizedExtent(&cfg)
-		newHash := LayoutHash(cfg)
-		e.mu.RLock()
-		oldHash := e.layoutHashes[roomID]
-		e.mu.RUnlock()
-		if oldHash == newHash {
-			continue // 没变
-		}
-		pending = append(pending, pendingReload{cfg: cfg, tenantID: tenantID, newHash: newHash})
-	}
-	for _, pr := range pending {
-		e.logger.Info("daily_reload room changed, resetting",
-			zap.String("room_id", pr.cfg.RoomID),
-			zap.String("new_hash", pr.newHash[:12]),
-		)
-		// RegisterRoom 替换 TrackManager + grid，hydrateRoom 见 hash 不同会丢弃旧 snapshot
-		e.RegisterRoom(pr.cfg)
-		e.SetRoomTenant(pr.cfg.RoomID, pr.tenantID)
-	}
-	if len(pending) > 0 && e.persister != nil {
-		// 立刻持久化新状态，覆盖旧 snapshot
-		e.saveAllRooms(ctx)
-	}
-}
-
-// winnerEvalLoop 每 24 小时评估一次 winner（需要 feedback_loop 积累 accuracy 数据）
-func (e *Engine) winnerEvalLoop(ctx context.Context) {
-	ticker := time.NewTicker(e.winnerEvalInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			e.reevaluateWinner()
-		}
-	}
-}
-
-// reevaluateWinner 依据 accuracy[3] 选择新 winner。
-// 规则：
-//   - 若 3 组准确率都 < 样本阈值 → 不切换
-//   - 若最高准确率 ≥ 雷达 baseline + 20% → 切到该组
-//   - 否则维持当前 winner
-//
-// 实际 baseline（雷达直报准确率）需要 feedback_loop 单独统计，这里暂用 0.5 占位。
-func (e *Engine) reevaluateWinner() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	const baselineAcc = 0.5 // 占位：二期从 alarm_events 统计雷达直报准确率
-
-	best := -1
-	bestAcc := -1.0
-	for g := 0; g < 3; g++ {
-		acc := e.accuracy[g].Accuracy()
-		if acc < 0 {
-			continue // 样本不足
-		}
-		if acc > bestAcc {
-			best = g
-			bestAcc = acc
-		}
-	}
-
-	if best < 0 {
-		e.logger.Debug("winner eval skipped: not enough samples")
-		return
-	}
-	if bestAcc < baselineAcc+0.20 {
-		e.logger.Info("winner eval: AI not beating baseline by 20%, keep current",
-			zap.Float64("best_acc", bestAcc),
-			zap.Float64("baseline", baselineAcc),
-			zap.String("current_winner", e.paramSets[e.winner].Name),
-		)
-		return
-	}
-	if best == e.winner {
-		return
-	}
-	e.logger.Info("winner switched",
-		zap.String("from", e.paramSets[e.winner].Name),
-		zap.String("to", e.paramSets[best].Name),
-		zap.Float64("new_acc", bestAcc),
-	)
-	e.winner = best
-}
-
-// RecordGroundTruth 外部（feedback_loop.go）每收到一条家属反馈就调一次
-// predicted: engine 在该 cell/track 上对三组的预测（如"是否 fall"），truthReal: 是否真 fall
-func (e *Engine) RecordGroundTruth(predicted [3]bool, truthReal bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for g := 0; g < 3; g++ {
-		switch {
-		case predicted[g] && truthReal:
-			e.accuracy[g].TruePositive++
-		case predicted[g] && !truthReal:
-			e.accuracy[g].FalsePositive++
-		case !predicted[g] && truthReal:
-			e.accuracy[g].FalseNegative++
-		default:
-			e.accuracy[g].TrueNegative++
-		}
 	}
 }
 

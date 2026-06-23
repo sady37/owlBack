@@ -1,9 +1,9 @@
 package roomengine
 
 import (
-	"context"
 	"fmt"
 	"math"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -53,12 +53,29 @@ type TrackFrame struct {
 }
 
 // TrackManager 管理一个房间内所有 track 的生命周期
+// trackKey track 身份键 = 源设备 + firmware track_id。多雷达同房各雷达独立从 0 编号，裸 track_id 会撞键
+// （后到雷达的帧覆盖先到雷达的 TrackState，摔倒轨被站立轨吞 → SFallen 起不来漏报）；带设备命名空间根治。
+type trackKey struct {
+	dev string
+	tid int
+}
+
+// less 确定性排序（map 迭代不稳定时固定顺序：先设备名后 firmware track_id）。
+func (k trackKey) less(o trackKey) bool {
+	if k.dev != o.dev {
+		return k.dev < o.dev
+	}
+	return k.tid < o.tid
+}
+
 type TrackManager struct {
-	mu      sync.Mutex
-	roomID  string
-	grid    *RoomGrid
-	tracks  map[int]*TrackState
-	outputs map[int]*TrackOutput
+	mu          sync.Mutex
+	roomID      string
+	grid        *RoomGrid
+	aiPublisher AIPublisher // 生产发布腿（S0.c 焊回）：AI event/alarm + ghost verdict + 固件 Fall 转发；nil=replay 道静默
+	bedAreaIDs  []int        // firmware 床区 area_id（baseline type2/5）→ radar InBed 判定用 area_id 非 cell（排 sofa）
+	tracks     map[trackKey]*TrackState // 键=（设备,firmware track_id）：多雷达同房各台从 0 编号，不带设备会撞键互相覆盖
+	outputs map[trackKey]*TrackOutput
 
 	// lastRealTrackByDevice：每雷达设备最近一次本房观测到"真 track"的 ms（key=源 device_addr）。
 	// 同房多雷达占用对账：lost-fall fire 前若**另一台**雷达近期仍见真人 → 人还在房里被别台看着 → 抑制。
@@ -95,8 +112,11 @@ type TrackManager struct {
 	// PR-11: 双方一致 InBed 时间窗判定 — sleepad 与 radar 各自最近 InBed 事件 ts。
 	// 仅当 |sleepadInBed - radarInBed| ≤ 15s 时，sleepad HR/RR 视作可信，触发 AreaBed cell refresh。
 	lastSleepadInBedMs int64
-	lastRadarInBedMs   int64
+	lastRadarInBedMs   int64 // radar 离散 InBed **事件** ts（状态翻转权威；非每帧几何）
 	lastRadarLeftBedMs int64 // 审查㊾:radar LeftBed ts(any-source-OR bed 占用 veto)
+	// lastRadarInBedGeomMs：way3 每帧"present track 在 firmware 床区"几何续命 ts（连续在床补 InBed 事件缺失）。
+	// 与离散 InBed 事件分开存：几何分不出"躺床/站床边"，须服从离床 latch——不得越过离散 LeftBed 续命床占用。
+	lastRadarInBedGeomMs int64
 
 	// lastNumberPeople：固件最近一次上报的房内人数(单一 np latch,审查51 #1.3 单源真相)。
 	// np=0 ≡ count==0(原 lastNumberPeopleZeroMs subsume 进此,不留两个独立 latch 防 drift)。
@@ -107,7 +127,8 @@ type TrackManager struct {
 	// 供 88-加速驱逐：持续无目标 ≥ heartbeat88EvictMs 时陈旧 track 不必等满 MaxMissCount
 	// （稀疏心跳下要 >120s，见 Case2 142s）即可快速进 lost_fall/vanish。镜像 cardagg ClearDeviceTracks。
 	noTargetSinceMs int64
-	// 占用账（enter/exit 权威的人数守恒）：房账"空" = lastExitMs > lastEnterMs（只信 ExitRoom，见 roomLedgerEmpty）。
+	// 占用账（enter/exit 权威的人数守恒）：lastEnterMs/lastExitMs 供 NeighborRoomEnterMs 跨房 hand-off 判占用。
+	//   lost-fall"人过门走了"已改按 track_id 算 SLeft 对数几率（ExitLogOdds），不再用房级 lastExit>lastEnter（多人误判）。
 	// lost_fall 入池前查：房账为空 → 失锁 track 是"人走后残影"（冻住的反射）→ 抑制。不靠 ghost，靠 enter/exit。
 	lastEnterMs int64
 	lastExitMs  int64
@@ -116,12 +137,17 @@ type TrackManager struct {
 	// 全 0 = 用默认（180s / 100cm / 900s）。
 	bedsideFallCfg BedsideFallConfig
 
-	// recentRadarAlarms / recentRadarEvents：来自 iot:alarm:stream / iot:event:stream 的 radar 来源记录。
-	// 仅"落账"，当前无消费方；未来段 7 (radar fall verify) 会读取做 narrative。
-	// 保留窗口 = recentBufferMs（默认 5 min），由 RecordXxx 顺手 evict。
+	// recentRadarAlarms：firmware Fall 落账，当前无消费方（段 7 radar fall verify 会读），age=recentBufferMs(5min)。
+	// recentRadarEvents：ExitRoom/EnterRoom 离散事件，被 ExitLogOdds(12s claim)+出生关联(≤5s)消费，age=eventBufferMs(12s)。
+	//   两表 age 不同：events 久滞会 haunt 复用 track_id（误翻离房），故 12s evict；alarms 无此风险留 5min。
 	recentRadarAlarms map[int64]*RadarFallAlarm  // key = TMs
 	recentRadarEvents map[int64]*RadarTrackEvent // key = TMs
-	recentBufferMs    int64                      // 默认 5 min
+	recentBufferMs    int64                      // recentRadarAlarms 专用 age（5 min）
+
+	// lostExitInfo：丢轨"离房趋势"快照（track 失锁前末 2s 朝门强度），key=LogicID（身份单源,跨 evict 存活）。
+	//   track 失锁 12s 即驱逐(trackEvictMaxMs)，但 blind 窗 12-14min——趋势须丢轨时存下，
+	//   np/ExitRoom 后到的按 LogicID 实时查（见 ExitLogOdds）。由 age(recentBufferMs)淘汰。
+	lostExitInfo map[string]*lostExitRec
 
 	// logger：用于 ai.log 输出 ghost / fall 结构化事件。
 	// 默认 zap.NewNop()，engine.Run 会调 SetLogger 注入真 logger。
@@ -157,115 +183,23 @@ type TrackManager struct {
 
 	// 静止金属反射体自学习（static_reflector.go）：wallPolygon 判近墙；staticReflectorLastMark 去抖。
 	wallPolygon             []radarutils.Point
-	staticReflectorLastMark map[int]int64
+	staticReflectorLastMark map[trackKey]int64
 
 	// startupMs：TrackManager 创建时间。用于"service 启动 5min grace"反 ghost 兜底
 	// （grace 内 first-seen 的 track 视为已存在，birth filter 不打 ghost）。
 	startupMs int64
 
-	// PR-8: AI 派生事件 / 告警发布回调。engine 注入；nil 时不发布（playback / 测试场景）。
-	aiPublisher AIPublisher
+	// uidHexFn 反查 device addr → hex MAC（logicID 出生锚定 + log 双格式用）。engine 注入；
+	// nil 时退化空前缀（logicID 仍含 trackID+时戳保唯一）。
+	uidHexFn func(deviceAddr string) string
 }
 
-// AIPayload 发布 AI 事件/告警的轻量载荷。
-// 不耦合 TrackState（lost fall 在 track 删除后才报，没有 ts 在手）。
-//
-// 设计原则（PR5b）：
-//  1. 观测信号走 observation.Track —— 与 firmware/engine 上游同一 schema，
-//     AI 只填它要表达的字段（如 ghost verdict 只填 TrackConfidence + 位置；
-//     未来 vital 修正只填 HeartRate + VitalConfidence）。零值 = "AI 无意见"。
-//  2. Source 是决策路径标识（一等公民）—— 不是 AI/非AI 二元 tag，而是具体的
-//     "哪个算法路径产生的"，用于审计、调参、误报追溯、商业演示讲故事。
-//     cardagg 落 alarm_events.metadata.source；前端可读、可 group by。
-//  3. Reason / Evidence 是审计元数据 —— 解释"为什么 AI 这么判"，不参与下游
-//     分支判定（分支判定由 Source 或 Track 数值阈值驱动）。
-type AIPayload struct {
-	DeviceAddr string // 源 sensor UUID（FK to devices.device_addr）
-	RoomID     string
-
-	// AI 写的观测（与上游 firmware/engine 同一 schema）。
-	// AI 只填它要表达的字段，其它留零值 = "AI 对此无意见"。
-	Track observation.Track
-
-	// Source 数据生产者节点身份（WHO）。当前 TrackManager 全部派生自护工角色，
-	// engine.publishAIMessage 默认填 cfg.AIPublish.Source（如 "AI.Caregiver01"）。
-	// 本字段保留作未来多角色 override 钩子（例：同一 TrackManager 内派生健康风险
-	// verdict 时可显式设为 "AI.Doctor01"）。空 = 用 engine 默认。
-	Source string
-
-	// Reason AI 派生决策的理由路径（WHY）。填本地 Reason* 路径常量；空 = 非 AI 派生。
-	Reason string
-
-	// Evidence 证据 KV map（score / penalty / context 等审计字段，下游不解析）。
-	Evidence map[string]interface{}
-
-	// Event 决策事件类型（审计用，写 sensor_decision_log.event）：verdict_change /
-	// lostfall_pending / lostfall_cancel / lostfall_fire / lostfall_suppress。空 = 不是决策审计事件。
-	Event string
-
-	// EventStatus 事件生命周期阶段（"start" / "end" / "instant"）。空 = "instant"（默认）。
-	// 用于 firmware 撤销链路：qinglan 收到 Initialization (last_pose=2/7) → forward end →
-	// sensor 透传 → cardagg AlarmRouter 按 Registry[Fall/SittingOnGround].EndPolicy=AutoResolve 关 alarm。
-	EventStatus string
-
-	// IncidentMs 实际发生时刻 ms（推断类 fall 才有值）。
-	// firmware Fall = 0（incident == alerted == nowMs）；silent/lost/still fall = last_active/still_box_start/leftbed/empty_since 等真实 incident 时刻。
-	// 写到 fields["incident_ts_ms"]，cardagg AlarmRouter 当 alarm_events.triggered_at；nowMs 当 alerted_at。
-	// 0 = 不写字段，下游回退 triggered_at = alerted_at = nowMs。
-	IncidentMs int64
-}
-
-// CategoryTrackVerdict 是 track verdict 的 category 路由键（事件 TYPE，不是 verdict label）。
-const CategoryTrackVerdict = "track_verdict"
-
-// CategorySensorDecision 是 lost-fall 决策审计事件的 category（与 verdict 同流 ai:track:verdict:stream，
-// iot 落 sensor_decision_log；cardagg override 只认 track_verdict，按 category 跳过本类）。
-const CategorySensorDecision = "sensor_decision"
-
-// Reason 常量本地定义——目前 wisefido-sensor 是唯一 producer，下游 cardagg /
-// wisefido-data 透传字符串不解析。未来若出现第二个 AI producer（如健康风险
-// 模块），再上移到 owl-common 共享。
-//
-// Source（"AI.Caregiver01" 等）由 engine 在 publishAIMessage 默认填入
-// （取自 cfg.AIPublish.Source），TrackManager 不直接设置——避免节点身份
-// 散落到业务代码。
-const (
-	// Reason: ghost 判定（track_verdict category）
-	ReasonGhostPostReal = "ghost_post_real" // Real → Ghost 翻转（已确认 real 后 penalty 累积超阈）
-	ReasonGhostPenalty  = "ghost_penalty"   // 主路径：累积 penalty ≥ 阈值（含 motion_symmetry / no_enter_pair）
-	ReasonGhostLowScore = "ghost_low_score" // probation 期满 score 低于阈值
-
-	// Reason: fall 判定（alarm category，4 个 fall 派生子类型）
-	ReasonLostTrack            = "lost_track"             // track 异常消失（可能是真摔倒后失锁）
-	ReasonStillInBathroom      = "still_in_bathroom"      // 浴室长时间静止 still-fall
-	ReasonBedsideSilent        = "bedside_silent"         // LeftBed 后床边静止过久 R4
-	ReasonSleepadRadarConflict = "sleepad_radar_conflict" // sleepad LeftBed + radar 仍在床
-
-	// sensor_v2 PR-10 BathroomFallRules（§6.A）— SuitePerson 主语 fall：
-	ReasonBathroomStill              = "bathroom_still"                        // §6.A.1 cell Toilet/Shower + Stand + 10/12min
-	ReasonBathroomLongStatic         = "bathroom_long_static"                  // §6.A.2 90s grace + 任意位置 8min（非 Toilet/Shower）
-	ReasonSuitePersonCompletelyLost  = "suite_person_completely_lost_no_ghost" // §6.A.3 最强档 bathroom 内活 track==0 ≥ 30s
-	ReasonSuitePersonSilentWithGhost = "suite_person_silent_with_ghost_proxy"  // §6.A.3 次强档 SuitePerson static ≥ 7min
-
-	// sensor_v2 PR-11 BedroomFallRules（§6.B）— SuitePerson 主语 bedroom fall：
-	ReasonBedroomBedsideStatic = "bedroom_bedside_static" // §6.B.3 BedState→Vacant + 床边 ≤100cm 静止 ≥15min
-	ReasonBedroomPersonSilent  = "bedroom_person_silent"  // §6.B.2 SuitePerson AnchorRoomType=bedroom + LastActiveMs > threshold
-)
-
-// AIPublisher PR-8 解耦：TrackManager 不直接持有 redis client，由 engine 实现接口注入。
-type AIPublisher interface {
-	PublishAIEvent(ctx context.Context, p AIPayload, category string, nowMs int64)
-	PublishAIAlarm(ctx context.Context, p AIPayload, category string, nowMs int64)
-	// DeviceUIDHex 反查 device addr → hex MAC（log 双格式人眼可读）；缺失返回空字符串
-	DeviceUIDHex(deviceAddr string) string
-}
-
-// devUIDHex helper：track_manager 内部调用 aiPublisher 反查；nil-safe（nil publisher 返回空）
+// devUIDHex 反查 device addr → hex MAC；nil resolver 返回空字符串。
 func (tm *TrackManager) devUIDHex(deviceAddr string) string {
-	if tm.aiPublisher == nil {
+	if tm.uidHexFn == nil {
 		return ""
 	}
-	return tm.aiPublisher.DeviceUIDHex(deviceAddr)
+	return tm.uidHexFn(deviceAddr)
 }
 
 // BedsideFallConfig R4 床边晕倒参数。
@@ -285,12 +219,13 @@ var defaultBedsideFallCfg = BedsideFallConfig{
 }
 
 // NewTrackManager 创建 track 管理器
-func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
+func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackManager {
 	return &TrackManager{
 		roomID:                  roomID,
 		grid:                    grid,
-		tracks:                  make(map[int]*TrackState),
-		outputs:                 make(map[int]*TrackOutput),
+		bedAreaIDs:              bedAreaIDs,
+		tracks:                  make(map[trackKey]*TrackState),
+		outputs:                 make(map[trackKey]*TrackOutput),
 		lastRealTrackByDevice:   make(map[string]int64),
 		bedSessions:             make(map[string]*BedSession),
 		sleepadStates:           make(map[string]*SleepadObservation),
@@ -299,11 +234,12 @@ func NewTrackManager(roomID string, grid *RoomGrid) *TrackManager {
 		recentRadarAlarms:       make(map[int64]*RadarFallAlarm),
 		recentRadarEvents:       make(map[int64]*RadarTrackEvent),
 		recentBufferMs:          5 * 60 * 1000, // 5 min
+		lostExitInfo:            make(map[string]*lostExitRec),
 		logger:                  zap.NewNop(),
 		startupMs:               time.Now().UnixMilli(),
 		mirrorBuffer:            make(map[mirrorPairKey]*mirrorPairBuffer),
 		mirrorCooldownMs:        60_000,
-		staticReflectorLastMark: make(map[int]int64),
+		staticReflectorLastMark: make(map[trackKey]int64),
 	}
 }
 
@@ -412,17 +348,12 @@ func (tm *TrackManager) SetStartupMs(ms int64) {
 	}
 }
 
-// SetAIPublisher PR-8：注入 AI 派生事件/告警的发布器。
-// engine 在 RegisterRoom 后调用，传入 engine 自身（实现 AIPublisher 接口）。
-// nil = 不发布（playback / 测试场景）。
-func (tm *TrackManager) SetAIPublisher(p AIPublisher) {
+// SetUIDHexResolver 注入 device addr → hex MAC 反查（logicID 出生锚定用）。nil = 退化空前缀。
+func (tm *TrackManager) SetUIDHexResolver(fn func(deviceAddr string) string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	tm.aiPublisher = p
+	tm.uidHexFn = fn
 }
-
-// emitAIEvent / emitAIAlarm 内部 helper：仅当 aiPublisher 非 nil 时调用。
-// payloadFromTrack 从 TrackState 构造 AIPayload。
 
 // makeLogicID 出生时锚定的稳定逻辑身份 = uidlast4 + track_id + mmssms（分秒毫秒，UTC）。
 // uidHex 缺失（nil publisher）时退化为空前缀，仍含 track_id+时戳保唯一。
@@ -437,13 +368,24 @@ func makeLogicID(uidHex string, trackID int, birthMs int64) string {
 
 // nearestAliveTrack 在当前存活 track 中找离 (x,y)（画布坐标）最近、且已有 logic_id 的一条。
 // 用于"无 enter 事件的新 track"继承同一逻辑身份（firmware track_id 重用/跳变/分裂的数据关联）。
-// 无候选返回 nil。调用时新 track 尚未加入 tm.tracks，故不会自指。
-func (tm *TrackManager) nearestAliveTrack(x, y int) *TrackState {
+// **限同一设备**：多雷达同房各自独立 track/logicID，绝不跨设备继承（否则一台的 track 会并掉另一台的
+// 身份，如摔倒雷达被站立雷达吃掉 → SFallen 起不来漏报）。
+// **排并发 track**：继承只对"renumber/分裂"（旧 track_id 已不报、新号顶上同一目标）；并发上报的另一目标
+// （如静止反射 ghost 与摔倒真人各占一号、两台雷达交叉）不可被继承，否则两条并发 track 并成一个 logicID →
+// census 同号互相覆盖（faller pose5 被 ghost pose4 盖掉）→ 漏报。两道判据（任一命中即跳过候选）：
+//   ① frameKeys：候选在本批 frames 里（同一条消息同时报）；
+//   ② 新鲜度：候选末次观测距今 < presenceCoastMs（一个雷达周期内仍在报）= 并存，非"旧号已静默"的 renumber。
+//      （分批到达时 frameKeys 看不到对台/异步消息，靠新鲜度兜住。）
+// 无候选返回 nil。调用时新 track 尚未加入 tm.tracks。
+func (tm *TrackManager) nearestAliveTrack(x, y int, deviceAddr string, nowMs int64, frameKeys map[trackKey]bool) *TrackState {
 	var best *TrackState
 	bestD := 1 << 30
 	for _, ts := range tm.tracks {
-		if ts.LogicID == "" || ts.Kalman == nil {
+		if ts.LogicID == "" || ts.Kalman == nil || ts.DeviceAddr != deviceAddr {
 			continue
+		}
+		if frameKeys[trackKey{ts.DeviceAddr, ts.TrackID}] || nowMs-ts.LastObservedMs < presenceCoastMs {
+			continue // 并发上报（本帧/一个雷达周期内仍在报）= 并存目标，非 renumber，不继承
 		}
 		px, py := ts.Kalman.Position()
 		if d := distInt(x, y, int(math.Round(px)), int(math.Round(py))); d < bestD {
@@ -458,12 +400,12 @@ func (tm *TrackManager) nearestAliveTrack(x, y int) *TrackState {
 // 用于 lost_fall 的换ID守恒闸：某 track_id 失锁但其 logic_id 仍活在别的 track_id 上 =
 // 同一逻辑目标只是被 firmware 换了 ID（数量守恒，无人真消失）→ 不入 lost-fall pending。
 // 不依赖 ghost verdict（铁律：ghost 不进 Fall 决策路径），纯靠身份连续性。
-func (tm *TrackManager) hasOtherLiveTrackWithLogicID(logicID string, exceptTrackID int) bool {
+func (tm *TrackManager) hasOtherLiveTrackWithLogicID(logicID string, exceptKey trackKey) bool {
 	if logicID == "" {
 		return false
 	}
 	for id, ts := range tm.tracks {
-		if id != exceptTrackID && ts.LogicID == logicID {
+		if id != exceptKey && ts.LogicID == logicID {
 			return true
 		}
 	}
@@ -471,25 +413,12 @@ func (tm *TrackManager) hasOtherLiveTrackWithLogicID(logicID string, exceptTrack
 }
 
 // HasOtherLiveTrackWithLogicID 自锁版（beliefShadowTick 不持 tm.mu，跨 track range 须锁防并发 map 读写）。
-func (tm *TrackManager) HasOtherLiveTrackWithLogicID(logicID string, exceptTrackID int) bool {
+func (tm *TrackManager) HasOtherLiveTrackWithLogicID(logicID string, exceptKey trackKey) bool {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	return tm.hasOtherLiveTrackWithLogicID(logicID, exceptTrackID)
+	return tm.hasOtherLiveTrackWithLogicID(logicID, exceptKey)
 }
 
-// roomLedgerEmpty 占用账是否为空：最近 ExitRoom 晚于最近 EnterRoom。
-// **只信 ExitRoom（过门的空间证据=确实离开），不信 np=0**——铁律：count=0≠离开
-// （人摔倒后雷达丢锁也会 np=0，用 np=0 抑制会漏真摔）。默认（无事件）=非空，保守不抑制。
-func (tm *TrackManager) roomLedgerEmpty() bool {
-	return tm.lastExitMs > tm.lastEnterMs
-}
-
-// RoomLedgerEmpty 自锁版（beliefShadowTick 不持 tm.mu；读 lastExit/lastEnterMs 与 RecordRadarEvent 写并发须锁）。
-func (tm *TrackManager) RoomLedgerEmpty() bool {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	return tm.roomLedgerEmpty()
-}
 
 // NeighborRoomEnterMs 跨房 hand-off：最近一次 EnterRoom 的 ts + 当前是否仍占用（未被 ExitRoom 翻掉）。
 // 自锁（与 RecordRadarEvent 写 lastEnterMs 持的 tm.mu 一致；仅 beliefShadowTick 跨房读，无重入）。
@@ -503,71 +432,6 @@ func (tm *TrackManager) NeighborRoomEnterMs() (enterMs int64, occupied bool) {
 func (tm *TrackManager) NeighborBedHandoff(nowMs int64) (statusTs int64, inBed bool, conf float64) {
 	bs := tm.BedOccupancyState(nowMs)
 	return bs.BedStatusTs, bs.BedStatus == 0 && bs.BedConfidence > 0, float64(bs.BedConfidence) / 100
-}
-
-func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
-	conf := 100 - ts.GhostPenalty
-	if conf < 0 {
-		conf = 0
-	}
-	if conf > 100 {
-		conf = 100
-	}
-	return AIPayload{
-		DeviceAddr: ts.DeviceAddr,
-		RoomID:     ts.RoomID,
-		Track: observation.Track{
-			BedStatus:       observation.BedStatusUnchanged,
-			TrackID:         ts.TrackID,
-			LogicID:         ts.LogicID,
-			PositionX:       intPtr(ts.LastRawH),
-			PositionY:       intPtr(ts.LastRawV),
-			PositionZ:       intPtr(ts.LastRawZ),
-			Pose:            ts.LastPose,
-			TrackConfidence: conf,
-		},
-	}
-}
-
-func (tm *TrackManager) emitAIEvent(p AIPayload, category string, nowMs int64) {
-	if tm.aiPublisher == nil {
-		return
-	}
-	tm.aiPublisher.PublishAIEvent(context.Background(), p, category, nowMs)
-}
-
-func (tm *TrackManager) emitAIAlarm(p AIPayload, category string, nowMs int64) {
-	if tm.aiPublisher == nil {
-		return
-	}
-	tm.aiPublisher.PublishAIAlarm(context.Background(), p, category, nowMs)
-}
-
-// emitGhostVerdict 发布 track_verdict（事后裁决）到 iot:event:stream。
-//
-// reason 传 ReasonGhostXxx 路径常量；context 传自然语言细节（如 BirthReason
-// / "low_score"），进 Evidence["context"] 作审计。Reason 是机器可分类的子路
-// 径，下游可按值 group by；context 是自然语言审计文本，下游不解析。
-// Source 由 engine.publishAIMessage 默认填入（cfg.AIPublish.Source），不在此设置。
-// TrackConfidence 由 payloadFromTrack 给（= 100 - GhostPenalty，AI 实时评估值，
-// ghost 路径自然落入低分区间），下游按数值阈值渲染饱满度（如 ≤30 → 低饱和）。
-//
-// 不参与 alarm 触发路径——firmware/AI alarm 仍按"宁可误报不可漏报"原则照常 fire。
-func (tm *TrackManager) emitGhostVerdict(ts *TrackState, reason, context string, nowMs int64) {
-	p := tm.payloadFromTrack(ts)
-	p.Reason = reason
-	p.Evidence = map[string]interface{}{
-		"score":         ts.Score,
-		"birth_score":   ts.BirthScore,
-		"ghost_penalty": ts.GhostPenalty,
-		"frame_count":   ts.FrameCount,
-	}
-	if context != "" {
-		p.Evidence["context"] = context
-	}
-	p.Event = "verdict_change"
-	p.Evidence["verdict"] = int(ts.Verdict)
-	tm.emitAIEvent(p, CategoryTrackVerdict, nowMs)
 }
 
 // IsBathroomByRoomName 用 owl-common/roomutil.ClassifyRoomType 判定本房间是否 bathroom。
@@ -601,10 +465,13 @@ func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
 	}
 
 	// LeftBed：如实落 LeftBedAtMs（BedOccupancyState→cardagg bed_state）。
-	// 原 5min precondition 是 silent-fall 质量过滤,已随 gate-list 退役——真上床又下床如实报 LeftBed 才正确。
+	// 设备开机即在床 / sensor 重启 / 数据裁切等情形常缺前置 InBed 事件,但 LeftBed 本身是 firmware
+	// 观测信号且床边离床=高风险 → 从宽认定:无 in-bed 历史也建会话记 LeftBedAtMs(不丢),
+	// 由 BedOccupancyState(latestInBed==0 仍认离床)消费。
 	s := tm.bedSessions[evt.DeviceUID]
-	if s == nil || s.InBedSinceMs == 0 {
-		return // 没有有效 in-bed 历史
+	if s == nil {
+		s = &BedSession{DeviceUID: evt.DeviceUID}
+		tm.bedSessions[evt.DeviceUID] = s
 	}
 	s.LeftBedAtMs = evt.TMs
 }
@@ -658,8 +525,11 @@ const (
 const (
 	trackEvictMaxMs    = int64(12_000)
 	heartbeat88EvictMs = int64(6_000)
+	// lostStillCarryMs：lost track 冻结坐标续 still-box 的保留上限（25min，覆盖 bathroom floor 20min+余量）。
+	// 1Hz 固件下精度做不了 lost 判定，靠时长累积兜底真摔；撤销由 belief SLeft 压 floor 承担（人走了不兜底），
+	// 超此上限或固件明示无目标(88)才删 track。
+	lostStillCarryMs = int64(1_500_000)
 )
-
 
 // ghostJudgable ghost≥2 闸：ghost 是真 track 的镜像/反射，需 ≥2 条 track（至少 1 条作母体）才可判 ghost。
 // 仅 1 条 track 时不判 ghost——单 track 判 ghost 会压制从盲区返回的真人/真摔。调用方持锁。
@@ -673,7 +543,7 @@ func (tm *TrackManager) ghostJudgable() bool {
 //
 // 调用方持锁。
 func (tm *TrackManager) markRadarInBedCell(e RadarTrackEvent) {
-	ts, ok := tm.tracks[e.TrackID]
+	ts, ok := tm.tracks[trackKey{e.DeviceUID, e.TrackID}]
 	if !ok || ts.Verdict == VerdictGhost {
 		return
 	}
@@ -745,34 +615,72 @@ func (tm *TrackManager) sleepadOffBed(nowMs int64) bool {
 
 // BedOccupancyState P5(审查㊾):既有 bed 贝叶斯 Markov(BedSession)+ **any-source-OR LeftBed** → card.BedState。
 // 占用 = 最近一次床事件(任一源 sleepad∨radar)是 InBed(BedStatus=0);任一源 LeftBed 更晚 → NotInBed(=1,释放)。
-// BedConfidence=90(sleepad 接触式)/30(radar-only 降档)/0(无床数据→bedAdapter Fresh=false 不喂)。
+// BedConfidence=90(sleepad 接触式)/20(radar-only 降档=90-70)/0(无床数据→bedAdapter Fresh=false 不喂)。
 // 供 belief shadow P5:bedAdapter→ObsBedOccupied 占用概率压 SFallen(无 radar-on-bed 要求,R5-clean 接触占用非 pose/z)。
 // 自锁(beliefShadowTick 不持 tm.mu)。
+// fwIsBed firmware area_id 命中声明的床区（baseline type2/5,设备真值）。0/255=声明区外。
+func (tm *TrackManager) fwIsBed(areaID int) bool {
+	if areaID == 0 || areaID == 255 {
+		return false
+	}
+	for _, id := range tm.bedAreaIDs {
+		if id != 0 && id != 255 && areaID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (tm *TrackManager) BedOccupancyState(nowMs int64) card.BedState {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	var latestInBed, latestLeftBed int64
+	// 离散事件层(状态翻转权威,any-source-OR):InBed/LeftBed 事件不分 sleepad/radar 平等参与。
+	//   几何续命(lastRadarInBedGeomMs)**不**进此层——它服从下方离床 latch。
+	var latestInBedEvt, latestLeftBed int64
 	inBedFromSleepad := false
+	leftFromSleepad := false // LeftBed 来源:sleepad 接触(果断清) vs radar 几何(弱清,<50% 可信)
 	for _, s := range tm.bedSessions {
-		if s.InBedSinceMs > latestInBed {
-			latestInBed, inBedFromSleepad = s.InBedSinceMs, true
+		if s.InBedSinceMs > latestInBedEvt {
+			latestInBedEvt, inBedFromSleepad = s.InBedSinceMs, true
 		}
 		if s.LeftBedAtMs > latestLeftBed {
-			latestLeftBed = s.LeftBedAtMs
+			latestLeftBed, leftFromSleepad = s.LeftBedAtMs, true
 		}
 	}
-	if tm.lastRadarInBedMs > latestInBed {
-		latestInBed, inBedFromSleepad = tm.lastRadarInBedMs, false
+	// 连续 sleepad InBed monitor（bed_status=0）也算接触在床(非几何):InBed 事件常缺前置（窗裁/重启/
+	//   firmware 只发 monitor），连续 bed_status=0 在 sleepadStates 持续报在床 → 用其最新 TMs。离床即 noreport→不再刷。
+	for _, s := range tm.sleepadStates {
+		if s.InBed && s.TMs > latestInBedEvt {
+			latestInBedEvt, inBedFromSleepad = s.TMs, true
+		}
+	}
+	if tm.lastRadarInBedMs > latestInBedEvt { // radar 离散 InBed 事件（firmware 进床判定，非每帧几何）
+		latestInBedEvt, inBedFromSleepad = tm.lastRadarInBedMs, false
 	}
 	if tm.lastRadarLeftBedMs > latestLeftBed {
-		latestLeftBed = tm.lastRadarLeftBedMs
+		latestLeftBed, leftFromSleepad = tm.lastRadarLeftBedMs, false
+	}
+	// 离床 latch:任一源 LeftBed 事件 ≥ 最近离散 InBed 事件 → 释放(any-source-OR veto,审查㊾ 漏报-safe)。
+	//   **几何续命被 latch 否决**:radar firmware-area 分不出"躺床/站床边"，不得越过离散 LeftBed 续命床占用
+	//   （治 way3 回归:人离床站床边 area_id 仍在床区→每帧顶掉 LeftBed→BedReleased 永假→压 SFallen=床边摔漏报）。
+	//   解 latch 须靠后续离散 InBed 事件(任一源接触/firmware 进床)，非几何。含"无在先 InBed"(latestInBedEvt==0):
+	//   LeftBed 从宽认定离床(sensor 重启/数据裁切丢 InBed 不吞离床)。
+	if latestLeftBed > 0 && latestLeftBed >= latestInBedEvt {
+		// conf 编码 LeftBed 来源(下游 onRoomFrame 据此分 BedLeftBed/BedLeftBedRadar 差异化清空力度):
+		//   sleepad 接触 LeftBed=权威果断清(conf=90);radar 几何 LeftBed=弱清(conf=20,<50% 可信防漂移误清)。
+		conf := bedConfSleepad
+		if !leftFromSleepad {
+			conf = bedConfSleepad - bedConfRadar
+		}
+		return card.BedState{BedStatus: 1, BedStatusTs: latestLeftBed, BedConfidence: conf}
+	}
+	// 未被 latch:事件层 InBed 胜(或从无 LeftBed)。此时几何续命才作"连续在床"补证(InBed 事件常缺前置)。
+	latestInBed := latestInBedEvt
+	if tm.lastRadarInBedGeomMs > latestInBed {
+		latestInBed, inBedFromSleepad = tm.lastRadarInBedGeomMs, false
 	}
 	if latestInBed == 0 {
-		return card.BedState{} // 无床数据 → BedConfidence=0 → bedAdapter Fresh=false,不喂 shadow
-	}
-	if latestLeftBed >= latestInBed {
-		// 任一源 LeftBed ≥ 最近 InBed(any-source-OR veto)→ 离床 → 不压 → Fall 浮出(漏报-safe,审查㊾)
-		return card.BedState{BedStatus: 1, BedStatusTs: latestLeftBed, BedConfidence: bedConfSleepad}
+		return card.BedState{} // 真无床数据(InBed/LeftBed/几何 都没)→ BedConfidence=0,不喂 shadow
 	}
 	conf := bedConfSleepad // sleepad 接触式权威=90
 	if !inBedFromSleepad {
@@ -806,12 +714,8 @@ func (tm *TrackManager) SetBedsideFallConfig(c BedsideFallConfig) {
 	}
 }
 
-// RecordRadarAlarm 落账 radar firmware Fall/SittingOnGround 并转发 iot:alarm:stream（producer="wisefido-sensor"，
-// cardagg 落库）。firmware 直发跌倒的 forward 原语:DBN_MODE 档 0/1 立即转发;档 2 经 belief shadow 延迟裁决后调。
-// 调用方应紧跟 tm.Tick(alarm.TMs)。end status 让 cardagg AlarmRouter 按 EndPolicy 关 alarm。
-//
-// 2026-06: gate-list 时期的 verifier(verifyRadarFall,纯 informational 不 gate、读 gate-list 信号)已删;
-// firmware fall 的 ghost 否决归 DBN(dbnVetoFirmwareEnabled,co-existence 现算)。
+// RecordRadarAlarm 落账 radar firmware Fall/SittingOnGround 进 recentRadarAlarms，
+// 供下游 DBN 经 SnapshotTrackStatuses bases 读取 firmware fall 作观测。调用方应紧跟 tm.Tick(a.TMs)。
 func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 	tm.mu.Lock()
 	cp := a
@@ -819,38 +723,7 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 	tm.evictOldRadarAlarms(a.TMs)
 	tm.mu.Unlock()
 
-	if tm.aiPublisher == nil {
-		return // playback / 测试场景
-	}
-
-	// emit status：start/instant 触发新 alarm；end 让 cardagg AlarmRouter 按 EndPolicy 关 alarm。
-	emitStatus := a.Status
-	if emitStatus == "" {
-		emitStatus = "start"
-	}
-
-	// 构造 forward payload。track 信息从 firmware 抄；位置/HR/RR 现阶段不从 firmware 携带。
-	payload := AIPayload{
-		DeviceAddr:  a.DeviceUID, // = canonical IPv6 string
-		RoomID:      tm.roomID,
-		EventStatus: emitStatus,
-		Track: observation.Track{
-			BedStatus: observation.BedStatusUnchanged,
-			TrackID:   a.TrackID,
-			Pose:      a.Pose,
-		},
-		Reason: "firmware_radar_fall",
-		Evidence: map[string]interface{}{
-			"context":         "qinglan_publisher_event_stream_passthrough",
-			"firmware_status": a.Status,
-		},
-	}
-	// envelope.Category：Fall / SittingOnGround（qinglan 已 collapse Suspected→Confirmed）
-	emitCat := a.Category
-	if emitCat == "" {
-		emitCat = alarm.Fall // 兜底：旧路径无 Category 字段时
-	}
-	tm.aiPublisher.PublishAIAlarm(context.Background(), payload, emitCat, a.TMs)
+	tm.forwardFirmwareFall(a) // S0.c 焊回：固件 Fall 即时转 iot:alarm:stream（ground floor，DBN observation 之外）
 }
 
 // RecordRadarEvent 落账 radar 来源的事件（EnterRoom/ExitRoom/InBed/LeftBed）。
@@ -902,12 +775,14 @@ func (tm *TrackManager) LastNumberPeopleZeroMs() int64 {
 	return 0
 }
 
+// numberPeopleTTLMs number_people event 新鲜窗（firmware 分钟级 push，>1min stale 不再当新鲜）。
+const numberPeopleTTLMs = 70_000
+
 // CurrentNumberPeople 单 np latch:最近房内人数 + 是否新鲜(TTL 内)。count=-1/fresh=false=从未上报。
-// 审查51 NP-1:belief shadow tick 读它喂 ObsNumberPeople(弱 corroboration,R5 不入 SFallen)。自锁。
 func (tm *TrackManager) CurrentNumberPeople(nowMs int64) (count int, fresh bool) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	if tm.lastNumberPeopleTs == 0 || nowMs-tm.lastNumberPeopleTs > beliefNumberPeopleTTLMs {
+	if tm.lastNumberPeopleTs == 0 || nowMs-tm.lastNumberPeopleTs > numberPeopleTTLMs {
 		return -1, false
 	}
 	return tm.lastNumberPeople, true
@@ -925,7 +800,7 @@ func (tm *TrackManager) evictOldRadarAlarms(nowMs int64) {
 }
 
 func (tm *TrackManager) evictOldRadarEvents(nowMs int64) {
-	cutoff := nowMs - tm.recentBufferMs
+	cutoff := nowMs - eventBufferMs // 12s age（治误发 ExitRoom 久滞 haunt；EnterRoom 出生关联 ≤5s 仍够）
 	for k := range tm.recentRadarEvents {
 		if k < cutoff {
 			delete(tm.recentRadarEvents, k)
@@ -970,6 +845,7 @@ func (tm *TrackManager) SetSleepadInBedCount(count int) {
 // SnapshotTrackStatuses 返回 base 列表，engine 层进一步 enrich 成 TrackStatus 再 publish。
 type TrackStatusBase struct {
 	TrackID          int
+	LogicID          string // tm 出生锚定唯一逻辑身份（透传给 census/engine 作身份键，下游不再按位置重造）
 	DeviceAddr       string
 	RoomID           string
 	Verdict          TrackVerdict
@@ -977,13 +853,46 @@ type TrackStatusBase struct {
 	X, Y, Z          int // 画布坐标（grid/cell 算法用；Kalman 输出）
 	RawH, RawV, RawZ int // firmware raw 雷达本地坐标 — alarm publish 用，对外契约不变
 	Pose             int
-	StillSec         int // 逐帧 |Δpos|<15cm 累计；任一帧 ≥15cm 瞬清（脆，质心抖动易断）
-	StillBoxSec      int // still-box 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动，fall 判据用）
+	StillBoxSec      int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动）→ FloorGuard 纯计时器（直立折扣已移 emission）
 	CellAreaType     AreaType
+	FwAreaID         int // firmware area_id（present=本帧；lost=冻结末值）→ adapter N 床判定
 	EnterTarget      string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
 	MoveActive       bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
+	Present          bool   // 本帧是否被真实观测（LastObservedMs == nowMs）；false=漏帧/丢轨 → DBN 走 blind 续存
 	TraverseDelta    int    // 自上次 SnapshotTrackStatuses 累计的 traverse cells（用于 SuiteCensus 升格判定）
 	SleepadInBed     bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
+	SleepadVitalPresent bool // 任一 sleepad 在床 + HR/RR fresh(TTL 内)→ 活体在垫,喂 belief 抬 SBed
+	// 离房（ExitRoom 硬 + trend+np 软）已改为丢轨时按 track_id 算 SLeft 对数几率（见 ExitLogOdds/lostExitInfo），
+	//   喂 blind track 的 logPhi[SLeft]，不再走 base 级 ExitTrend bool（事件无坐标 + 丢轨 base 空）。
+}
+
+// SnapshotSleepads 返回当前在场 sleepad 的占用身份快照（每设备一份 lid）。
+// 与 SnapshotTrackStatuses 平行：radar 给 track lid，sleepad 给占用 lid（uid_last4+S+bedHex2+track_id）。
+// forensic 暴露 + 后续吸纳路由用；本快照只读身份，不进裁决。
+func (tm *TrackManager) SnapshotSleepads(nowMs int64) []SleepadStatus {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	out := make([]SleepadStatus, 0, len(tm.sleepadStates))
+	for _, obs := range tm.sleepadStates {
+		if obs == nil {
+			continue
+		}
+		// uid_last4 走 hex MAC 反查（与 radar makeLogicID 同源 uidHexFn）；obs.DeviceUID 实为 addr 不可用。
+		uidHex := ""
+		if tm.uidHexFn != nil {
+			uidHex = tm.uidHexFn(obs.DeviceAddr)
+		}
+		addr, _ := netip.ParseAddr(obs.DeviceAddr) // 失败=零 Addr → SamebedConf 返 0 → 不吸纳(uncovered,FN-safe)
+		out = append(out, SleepadStatus{
+			LogicID:    SleepadLogicID(uidHex, obs.DeviceAddr, obs.TrackID),
+			DeviceUID:  uidHex,
+			DeviceAddr: addr,
+			InBed:      obs.InBed,
+			Fresh:      obs.InBed && obs.HasVitalSign() && nowMs-obs.TMs < sleepadVitalTTLMs,
+			Stale:      nowMs-obs.TMs >= sleepadVitalTTLMs, // 垫哑 ≥TTL → 解吸纳防幽灵(§3.3 V6)
+		})
+	}
+	return out
 }
 
 // SnapshotTrackStatuses 返回当前所有 live track 的 Layer 1 原始投影。
@@ -997,10 +906,16 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 
 	// 同房间 sleepad InBed 状态（任一 sleepad inbed 即 true；多 sleepad 取或）
 	sleepadInBed := false
+	sleepadVitalPresent := false // sleepad 接触 vital:在床(垫压)+ HR/RR fresh(TTL 内)→ 活体在垫,抬 SBed
 	for _, obs := range tm.sleepadStates {
-		if obs != nil && obs.InBed {
+		if obs == nil {
+			continue
+		}
+		if obs.InBed {
 			sleepadInBed = true
-			break
+			if obs.HasVitalSign() && nowMs-obs.TMs < sleepadVitalTTLMs {
+				sleepadVitalPresent = true // sleepad 稀疏发 vital(分钟级),用 fresh 窗续(非当帧)
+			}
 		}
 	}
 
@@ -1012,6 +927,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 
 		base := TrackStatusBase{
 			TrackID:      ts.TrackID,
+			LogicID:      ts.LogicID,
 			DeviceAddr:   ts.DeviceAddr,
 			RoomID:       ts.RoomID,
 			Verdict:      ts.Verdict,
@@ -1024,22 +940,45 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			RawZ:         ts.LastRawZ,
 			Pose:         ts.LastPose,
 			MoveActive:   ts.StillBoxRunStart == 0 || ts.LastObservedMs == nowMs,
-			SleepadInBed: sleepadInBed,
+			Present:      nowMs-ts.LastObservedMs < presenceCoastMs,
+			SleepadInBed:        sleepadInBed,
+			SleepadVitalPresent: sleepadVitalPresent,
+			FwAreaID:     ts.LastFwAreaID,
 		}
-		// StillSec/StillBoxSec：still-box 单源（StillBoxRunStart==0 非静止；否则 box run 秒，30s 滚动 50×50 抗抖动）。
+		// StillBoxSec=raw box run 秒（30s 滚动 50×50 抗抖动）→ FloorGuard 纯计时器。直立折扣已移 emission（压 SFallen）。
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
-			base.StillSec = base.StillBoxSec
 		}
 		// LongSurvival / StartupGrace 锚定 → 升格 Anchored verdict（v2 §10.1.1）
 		if base.Verdict == VerdictReal && (ts.LongSurvivalAnchored || ts.StartupGrace) {
 			base.Verdict = VerdictAnchored
 		}
 		if c := tm.grid.CellAt(px, py); c != nil {
-			base.CellAreaType = c.Belief[0].Type
+			base.CellAreaType = c.Belief[0].Type // cell 仍喂 tFloor 阈 + sit/bath/active redirect（含 sofa 的 lying 区，故不换 baseline）
 			if c.Belief[0].Type == AreaEnter {
 				base.EnterTarget = c.EnterTarget
 			}
+		}
+		// present track 在 firmware 床区 = radar 连续 InBed 几何证据，刷 lastRadarInBedGeomMs（事件常缺前置/窗裁，连续刷补上）。
+		//   用 **firmware area_id（baseline type2/5，设备真值）** 而非 cell AreaBed：cell 含 sofa(lying 区)会把沙发误判成床；
+		//   firmware 床区只真床。**写几何字段非离散事件字段**：几何分不出"躺床/站床边"，BedOccupancyState 让它服从离床 latch
+		//   （治 way3 回归:人离床站床边 area_id 仍在床区→每帧顶掉刚到的 LeftBed→床占用永不释放→压 SFallen）。
+		if base.Present && tm.fwIsBed(ts.LastFwAreaID) {
+			tm.lastRadarInBedGeomMs = nowMs
+		}
+		// 离房趋势快照：仅丢轨首帧算一次（30s History 足够），冻结喂 ExitLogOdds（track 12s 驱逐后仍存）。
+		//   在场（含重新抓到）→ 清陈旧快照。ExitLogOdds 只被 belief 对 not-present track 查，在场轨的残留无害。
+		if !base.Present {
+			if _, done := tm.lostExitInfo[ts.LogicID]; !done {
+				tm.lostExitInfo[ts.LogicID] = &lostExitRec{
+					trendRatio: tm.exitTrendRatio(ts),
+					lostMs:     ts.LastObservedMs,
+					dev:        ts.DeviceAddr,
+					fwTrackID:  ts.TrackID,
+				}
+			}
+		} else {
+			delete(tm.lostExitInfo, ts.LogicID)
 		}
 		// TraverseDelta：差分本 track 的 LifetimeTraverse 累计（无字段时退化为 0）。
 		// PR-3 暂用 FrameCount 近似单调累计；PR-5 (BathroomGate) 接入后换实际 grid.MarkTraverse 计数。
@@ -1048,6 +987,116 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 	}
 	return out
 }
+
+// presenceCoastMs：在场判定容忍窗——「最近一个 radar 周期内被观测过 = 仍在场」。radar ~1Hz（实测帧间隔
+// median 1000ms），跨流 tick（sleepad bed 事件 / neighbor / timer 触发，无新 radar 帧）的 nowMs 与 radar 末帧
+// 错开（实测 ≤807ms）；用 ==nowMs 严判会把连续在报的 radar track 一拍误判离场 → 误进 belief lost 分支 →
+// ExitLogOdds 翻陈旧 ExitRoom → absorbed-drop → census 重生 lid churn。1200ms 容忍跨流 tick，真丢轨（多秒）仍判离场。
+const presenceCoastMs = 1200
+
+// sleepadVitalTTLMs：sleepad HR/RR fresh 窗。sleepad 稀疏发 vital(分钟级,cd2b 全程 13 帧≈37s/帧),
+// 用最近 fresh 窗续(非当帧),70s 容忍一个发包间隔。喂 belief SleepadVitalPresent 抬 SBed。
+const sleepadVitalTTLMs = 70_000
+
+// eventBufferMs：radar 离散事件(ExitRoom/EnterRoom)记录 age = 12s,12s 后清理。
+// ≤ 所有消费窗:EnterRoom 出生关联 enterPairWindowMs(3s)+birthGrace(2s)=5s;ExitRoom claim coast 12s
+// (def5940,= trackEvictMaxMs)。治旧 5min 窗下"误发 ExitRoom(人没走)残留几分钟,后续 lost track 被翻成离房"haunt。
+// (recentBufferMs 5min 仅保留给 recentRadarAlarms firmware Fall 落账。)
+const eventBufferMs = 12_000
+
+// lostExitRec 丢轨离房趋势快照（SnapshotTrackStatuses 每帧算，丢轨后冻结）。
+type lostExitRec struct {
+	trendRatio float64 // 朝门强度 = 150/(d1+d2)，gate(d1<d2-margin ∧ 仍移动)后；0=没朝门走
+	lostMs     int64   // 末次真观测 ms（=失锁点，算 np gap 基准）
+	dev        string  // 源设备（ExitRoom 硬证据按 设备+firmware track_id 匹配，多雷达防撞号）
+	fwTrackID  int     // firmware track_id（同上；logicID 不含设备全名，匹配 ExitRoom 事件需原始号）
+}
+
+// exitTrendRatio 末 2s 朝门强度（离房软证据，喂 SLeft belief）。丢轨首帧算一次（30s History 足够）。
+//
+//	d1 = 末次真观测点与门距离（History 末点，非 coast 位），d2 = 倒数第 2s 与门距离；
+//	gate：① 仍移动(StillBoxRunStart==0，门口摔已静止→0) ② d1 < d2 - exitMarginCm（朝门走，留 10cm 抗 XY 抖动）。
+//	强度 = 150/(d1+d2)：越贴门越大，封顶 exitRatioCap。形态阈留 oracle（[[fall_data_is_artificial_test]]），只钉结构。
+func (tm *TrackManager) exitTrendRatio(ts *TrackState) float64 {
+	if tm.grid == nil || ts.StillBoxRunStart != 0 || len(ts.History) == 0 {
+		return 0 // 无几何 / 已静止（门口摔）/ 无历史 → 不算离房
+	}
+	last := ts.History[len(ts.History)-1] // 末次真观测位
+	d1 := tm.grid.NearestEntryDist(last.X, last.Y)
+	d2 := -1 // 倒数第 2s
+	for _, p := range ts.History {
+		if p.TMs <= last.TMs-exitLookbackMs {
+			d2 = tm.grid.NearestEntryDist(p.X, p.Y)
+		}
+	}
+	if d2 < 0 || d1 >= d2-exitMarginCm {
+		return 0 // 历史不足 / 没朝门走（含抖动余量）→ 0
+	}
+	sum := d1 + d2
+	if sum < 1 {
+		sum = 1
+	}
+	r := exitNearScaleCm / float64(sum)
+	if r > exitRatioCap {
+		r = exitRatioCap
+	}
+	return r
+}
+
+// ExitLogOdds 丢轨人"离房"的 SLeft 对数几率（喂 blind track 的 logPhi[SLeft]）。两路相加：
+//
+//	① ExitRoom 硬证据（过门事件，按 设备+firmware track_id 反查）→ exitRoomLogOdds 大常量，单发顶过 absorbedThresh；
+//	② trend+np 软组合（乘法 AND，两证据互证才采信）：V = 0.85·(30/gap)·trendRatio，clamp[0,0.95]，加 logit(V)。
+//	   np=0 单看不可信（摔倒丢锁也 np=0），靠 ① trendRatio 的"朝门走"门挡住摔倒（摔倒 trendRatio=0→此路 0）。
+//
+// 自锁版（belief 经 OnRoomFrame 闭包调用，不持 tm.mu）。按 LogicID 身份查（多雷达同房 track_id 撞号已用
+// rec.dev+fwTrackID 还原源号匹配 ExitRoom，绝不跨设备误翻）。形态常量留 oracle，replay 标定。
+func (tm *TrackManager) ExitLogOdds(logicID string, nowMs int64) float64 {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	rec := tm.lostExitInfo[logicID]
+	if rec == nil {
+		return 0 // 无丢轨快照（不该被 belief 对 present track 查）→ 无离房证据
+	}
+	L := 0.0
+	cutoff := nowMs - eventBufferMs // ExitRoom 硬证据消费窗 = 12s coast claim;超此=陈旧/误发,不再 haunt(records 也 12s evict)
+	for k, e := range tm.recentRadarEvents {
+		if k >= cutoff && e.EventName == alarm.ExitRoom && e.DeviceUID == rec.dev && e.TrackID == rec.fwTrackID {
+			L += exitRoomLogOdds // ① 硬证据
+			break
+		}
+	}
+	if rec != nil && rec.trendRatio > 0 && tm.lastNumberPeople == 0 && tm.lastNumberPeopleTs >= rec.lostMs {
+		gapSec := float64(tm.lastNumberPeopleTs-rec.lostMs) / 1000.0
+		if gapSec < 1 {
+			gapSec = 1
+		}
+		npFactor := exitNpRefSec / gapSec
+		if npFactor > exitNpCap {
+			npFactor = exitNpCap
+		}
+		v := exitBase * npFactor * rec.trendRatio
+		if v > exitVMax {
+			v = exitVMax
+		}
+		if v > 0.5 { // 只加正向证据（V≤0.5 的 logit≤0 不往 SLeft 推）
+			L += math.Log(v / (1 - v)) // ② logit(V)
+		}
+	}
+	return L
+}
+
+const (
+	exitLookbackMs   = 1000 // d2 回看（末 2s 中倒数第 2s）
+	exitMarginCm     = 10   // d1<d2 余量：抗 1s 两点采样的 XY 抖动
+	exitNearScaleCm  = 150  // 朝门强度归一：d1+d2=150 → ratio=1（标称）
+	exitRatioCap     = 3.0  // trendRatio 封顶
+	exitRoomLogOdds  = 8.0  // ExitRoom 硬证据 log-odds（单发顶过 absorbedThresh）
+	exitNpRefSec     = 30.0 // np gap 参照：gap=30s → npFactor=1（标称）
+	exitNpCap        = 3.0  // npFactor 封顶
+	exitBase         = 0.85 // V 标称基（trend=1 ∧ np=1 → V=0.85）
+	exitVMax         = 0.95 // V 封顶（永留余地，到不了 1）
+)
 
 // ========================================================================
 // ProcessFrame：每帧双维度喂（即时流 + 历史流）
@@ -1071,15 +1120,23 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		tm.noTargetSinceMs = 0 // 收到真 track 帧 → 清"无目标"标记
 	}
 
-	activeIDs := make(map[int]bool)
+	activeIDs := make(map[trackKey]bool)
+
+	// frameKeys：本批次全部上报 track 的键（含尚未在循环中处理到的）。logicID 继承用之排并发 track
+	//   （本帧仍在报的 track = 并存目标非 renumber，不可被新生 track 继承走身份，见 nearestAliveTrack）。
+	frameKeys := make(map[trackKey]bool, len(frames))
+	for _, f := range frames {
+		frameKeys[trackKey{f.DeviceAddr, f.TrackID}] = true
+	}
 
 	// PR-9: v1 bathroomRealCount 入口盘点已删除（caregiver 例外抑制 dropped）。
 	// PR-10 BathroomStillFall 将通过 SuiteCensus.BathroomCount + AnchorRoomType 重新引入。
 
 	// ========== 段 1: 观测到的 track ==========
 	for _, f := range frames {
-		activeIDs[f.TrackID] = true
-		ts, exists := tm.tracks[f.TrackID]
+		key := trackKey{f.DeviceAddr, f.TrackID}
+		activeIDs[key] = true
+		ts, exists := tm.tracks[key]
 
 		var quality, vx, vy, dtSec int
 
@@ -1089,7 +1146,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			// 重用/跳变/分裂 → 继承最近存活 track 的 logic_id（跨 track_id 数据关联，
 			// 让"漂走/重编"的同一逻辑目标保持身份连续，供 ghost/lost-fall 按 logic_id 聚合）。
 			if !tm.hasRecentEnterRoom(f.TMs) {
-				if parent := tm.nearestAliveTrack(f.X, f.Y); parent != nil {
+				if parent := tm.nearestAliveTrack(f.X, f.Y, f.DeviceAddr, f.TMs, frameKeys); parent != nil {
 					ts.LogicID = parent.LogicID
 					tm.logger.Info("logic_id_inherited_no_enter",
 						zap.String("device_uid", f.DeviceAddr),
@@ -1120,13 +1177,14 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				ts.Score = ts.BirthScore
 				ts.GhostPenalty = b.penalty
 			}
-			tm.tracks[f.TrackID] = ts
+			tm.tracks[key] = ts
 			ts.PrevCore = RadarPoseToCore(f.Pose)
 			ts.LastPose = f.Pose
 			ts.LastZ = f.Z
 			ts.LastRawH = f.RawH
 			ts.LastRawV = f.RawV
 			ts.LastRawZ = f.RawZ
+			ts.LastFwAreaID = f.AreaType
 			quality = ts.Score
 			dtSec = 1
 		} else {
@@ -1165,6 +1223,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			ts.LastRawH = f.RawH
 			ts.LastRawV = f.RawV
 			ts.LastRawZ = f.RawZ
+			ts.LastFwAreaID = f.AreaType
 		}
 
 		// 维度 B: 历史流（每帧无条件）
@@ -1200,18 +1259,28 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		if dt <= 0 {
 			dt = 1
 		}
-		ts.Kalman.PredictOnly(dt)
+		ts.Kalman.PredictOnly(dt) // 外推位置仅供 PathBreak/exit 旁证；still-box 用冻结坐标另算
 		ts.LastUpdateMs = nowMs
 
-		// 驱逐 = 帧计数(MaxMissCount) ∪ 时间兜底(trackEvictMaxMs) ∪ 88-加速(固件持续无目标≥6s)。
-		// 治"88 稀疏心跳下 MissCount 凑满 10 要 142s"（Case2）：LastObservedMs 是上次真观测，按真实时间判，
-		// 不受帧稀疏影响。88-加速：固件明示无目标且持续 ≥ heartbeat88EvictMs 时，6s 即驱逐进 lost_fall/vanish。
+		// lost 续 still-box：用最后已知坐标冻结续算（1Hz 固件下靠时长不靠精度，FN-safe 默认兜底）。
+		//   位移恒=0 → still 保持/新起 → StillBoxSec 续涨喂 FloorGuard（engine floor 解锁消费）。
+		//   手动 append History 不用 PushPoint（PushPoint 设 LastObservedMs 会假装在场破坏 blind）；
+		//   不碰 LastObservedMs → Present=false 仍走 blind 续存。residualF=0 不污染 MaxKalmanResidual。
+		if len(ts.History) > 0 {
+			last := ts.History[len(ts.History)-1]
+			ts.History = append(ts.History, TimedPoint{X: last.X, Y: last.Y, Z: last.Z, TMs: nowMs})
+			if len(ts.History) > HistoryLen {
+				ts.History = ts.History[len(ts.History)-HistoryLen:]
+			}
+			tm.updateContinuousIndicators(ts, TrackFrame{TrackID: ts.TrackID, X: last.X, Y: last.Y, Z: last.Z, Pose: ts.LastPose, TMs: nowMs}, nowMs, 0)
+		}
+
+		// 驱逐：续 still-box 期间保留到 lostStillCarryMs 上限（让 still 累积到 floor 兜底）。
+		//   不用 noTargetSustained(固件 88 无目标)删——它分不清"人走了"vs"跟丢摔倒的人"，删了=漏摔；
+		//   撤销（人真走了不兜底）由 belief exitL≥flip(ExitRoom 硬证据)压 floor 承担，不在此删 track。
 		unseenMs := nowMs - ts.LastObservedMs
-		noTargetSustained := tm.noTargetSinceMs > 0 && nowMs-tm.noTargetSinceMs >= heartbeat88EvictMs
-		if ts.Kalman.MissCount > MaxMissCount ||
-			unseenMs > trackEvictMaxMs ||
-			(noTargetSustained && unseenMs >= heartbeat88EvictMs) {
-			// track 消失：lost-fall 判定已迁出 gate-list（DBN belief shadow lost-track 路径）。
+		if unseenMs > lostStillCarryMs {
+			// track 消失：lost-fall 判定已迁出 gate-list（DBN belief blind 续存路径）。
 			// 此处仅保留 PathBreak——非门区 Real track 突然消失的非 fall 异常标记。
 			if ts.Verdict == VerdictReal {
 				pxF, pyF := ts.Kalman.Position()
@@ -1248,12 +1317,6 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			if ts.GhostPenalty >= GhostPenaltyThreshold && !ts.LongSurvivalAnchored && !ts.StartupGrace && tm.ghostJudgable() {
 				if ts.Verdict != VerdictGhost {
 					ts.Verdict = VerdictGhost
-					// PR5b: track_verdict（事后裁决）—— Real → Ghost 翻转
-					reason := ts.BirthReason
-					if reason == "" {
-						reason = "ghost_penalty_accumulated_post_real"
-					}
-					tm.emitGhostVerdict(ts, ReasonGhostPostReal, reason, nowMs)
 				}
 			}
 			continue
@@ -1272,8 +1335,6 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			if reason == "" {
 				reason = "ghost_penalty_accumulated"
 			}
-			// PR5b: track_verdict（事后裁决）—— 主路径 penalty 累积
-			tm.emitGhostVerdict(ts, ReasonGhostPenalty, reason, nowMs)
 			if !ts.LoggedGhost {
 				pxF, pyF := ts.Kalman.Position()
 				tm.logger.Info("ghost_veto",
@@ -1304,8 +1365,6 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				if reason == "" {
 					reason = "low_score"
 				}
-				// PR5b: track_verdict（事后裁决）—— score-based 路径
-				tm.emitGhostVerdict(ts, ReasonGhostLowScore, reason, nowMs)
 				if !ts.LoggedGhost {
 					pxF, pyF := ts.Kalman.Position()
 					tm.logger.Info("ghost_veto",
@@ -1386,7 +1445,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			Source:     source,
 		}
 		results = append(results, out)
-		tm.outputs[ts.TrackID] = &out
+		tm.outputs[trackKey{ts.DeviceAddr, ts.TrackID}] = &out
 	}
 
 	return results
@@ -1405,7 +1464,6 @@ func (tm *TrackManager) GetOutputs() []TrackOutput {
 
 // PR-Bootstrap: StillFallStats + stillFallReportCount 已删除（v1 fire path 删除后无 source）。
 // PR-10 BathroomStillFall 的统计走 ai.log audit 路径，不再 per-TrackManager 计数。
-
 
 // ========================================================================
 // 出生打分（PR-5.1+5.2+5.3 重写：累积 GhostPenalty 模式）
@@ -1629,14 +1687,14 @@ func (tm *TrackManager) checkMirrorSymmetry(ts *TrackState) (int, int, int, int,
 	bx, by := int(math.Round(bxF)), int(math.Round(byF))
 	for _, m := range tm.interferes {
 		rx, ry := reflectAcrossMirror(bx, by, m)
-		for tid, t := range tm.tracks {
-			if tid == ts.TrackID || t.Verdict != VerdictReal {
+		for _, t := range tm.tracks {
+			if t == ts || t.Verdict != VerdictReal {
 				continue
 			}
 			axF, ayF := t.Kalman.Position()
 			ax, ay := int(math.Round(axF)), int(math.Round(ayF))
 			if distInt(ax, ay, rx, ry) <= mirrorDistCm {
-				return tid, ax, ay, rx, ry, true
+				return t.TrackID, ax, ay, rx, ry, true
 			}
 		}
 	}
@@ -1685,8 +1743,8 @@ func (tm *TrackManager) checkMotionSymmetry(ts *TrackState, nowMs int64) bool {
 	)
 	// 找另一个共存 Real track
 	var partner *TrackState
-	for tid, t := range tm.tracks {
-		if tid == ts.TrackID {
+	for _, t := range tm.tracks {
+		if t == ts {
 			continue
 		}
 		if t.Verdict != VerdictReal {
@@ -1748,6 +1806,10 @@ func positionAtMsAgo(ts *TrackState, nowMs int64, windowMs int64) (TimedPoint, b
 	return ts.History[0], true
 }
 
+// ThresholdNonRestMs 非休息区 region-static 门限（12min，老人慢走容差）；neighbor D 窗锚此 + 余量
+// （§82 单源：belief/engine 侧不持 12min 字面量，由 bootstrap 注入 Room）。
+const ThresholdNonRestMs = 12 * 60 * 1000
+
 // updateRegionStatic PR-13：region static 累积器 + A/B 路径触发判定。
 //
 // 区域定义：连续帧间 |dx|≤15 AND |dy|≤15（D523 实测 ~96% 帧满足；single-axis 跳变 ≤5%）。
@@ -1768,9 +1830,9 @@ func (tm *TrackManager) updateRegionStatic(ts *TrackState, prev TimedPoint, x, y
 		ratioMin         = 0.90
 		ratioResetMin    = 0.85 // ratio 跌破此值 → region 失效 reset
 		zJumpMinCm       = 10
-		zJumpMinElapse   = 2 * 60 * 1000  // 2 min
-		thresholdRest    = 8 * 60 * 1000  // RestZone cell: 8min
-		thresholdNonRest = 12 * 60 * 1000 // 其它: 12min
+		zJumpMinElapse   = 2 * 60 * 1000      // 2 min
+		thresholdRest    = 8 * 60 * 1000      // RestZone cell: 8min
+		thresholdNonRest = ThresholdNonRestMs // 其它 12min（= 导出 ThresholdNonRestMs，§82 neighbor D 锚单源）
 	)
 
 	dx := x - prev.X
@@ -1906,7 +1968,7 @@ func (tm *TrackManager) nearestEnterRoomMs(tMs int64, windowMs int64) (int64, bo
 // 调用方持锁（segment 1 已持锁）。
 //
 // 注：仅 look-back（不 look-forward）—— 出生瞬时如 event-stream 还没到 → 判错 false ghost。
-// 修正路径：BirthFinalDeadlineMs 给 grace 缓冲（FallRulesParam.Lost.BirthFinalGraceMs，默认 2s），
+// 修正路径：BirthFinalDeadlineMs 给 grace 缓冲（track.go::birthFinalGraceMs，默认 2s），
 // 到点用 hasRecentEnterRoomBetween([T-3s, deadline]) 重检（见 tryGraceUpgrade）。
 func (tm *TrackManager) hasRecentEnterRoom(tMs int64) bool {
 	return tm.hasRecentEnterRoomBetween(tMs-enterPairWindowMs, tMs)
@@ -2308,11 +2370,12 @@ func (tm *TrackManager) occupancyFactor() float64 {
 	return 1.0
 }
 
-// stillFallTimeoutSec "bathroom-like 位置过滤器"（不再驱动 alarm 发射，PR-Bootstrap 拆走 fire path）。
-// 仅作 AreaSit 自学习 gate 用（line 1971 + 2294 处）：bathroom 内长时间 stand 不应被误学为坐位。
+// stillFallTimeoutSec "bathroom-like 位置过滤器"。**不是 fall 决策阈**（DBN silent-fall 阈权威=
+// belief/floor.go，契约其十五）；仅作 cell-learning AreaSit 自学习 gate：bathroom 内长时间 stand
+// 不应被误学为坐位。
 //
 //	cell.AreaToilet/AreaShower → cell.EffectiveStillTimeoutSec
-//	cell 未学到但 room.name 是 bathroom → FallRulesParam.Still.ToiletShowerSec × NonRiskTimeFactor
+//	cell 未学到但 room.name 是 bathroom → cell.go::stillAreaToiletShowerSec × stillAreaNonRiskFactor
 //	都不匹配 → 0
 //
 // PR-Bootstrap：删除 stayAlarmEnabled 分支（loadStayAlarmEnablement 已删，stayAlarmEnabled 永 false）。
@@ -2326,9 +2389,9 @@ func (tm *TrackManager) stillFallTimeoutSec(cell *Cell, isRiskTime bool) int {
 		return cell.EffectiveStillTimeoutSec(isRiskTime)
 	}
 	if roomutil.IsBathroom(tm.roomName) {
-		base := FallRulesParam.Still.ToiletShowerSec
+		base := stillAreaToiletShowerSec
 		if !isRiskTime {
-			base = int(float64(base) * FallRulesParam.Still.NonRiskTimeFactor)
+			base = int(float64(base) * stillAreaNonRiskFactor)
 		}
 		return base
 	}
@@ -2380,6 +2443,58 @@ func (tm *TrackManager) otherDeviceRealTrackRecent(excludeDevice string, nowMs i
 	return false
 }
 
+// ResetStillBox 清空一条 track 的 still-box 累积，使 StillSec 从 0 冷启重数（fall fire 后该 track 推断 episode
+// 结束 → 从 0 热机，需重新攒满 tFloor 才再发）。清 StillBoxRunStart/起点坐标 + History（History 不清则下帧
+// 会回锚到 30s 窗最早帧 → StillSec 跳回 ~30s 非真 0）。只复位 still-box；身份(LogicID)/realness(Score/Verdict)/
+// Kalman 跟踪连续性保留（对应 DBN 侧"不清 census"）。
+func (tm *TrackManager) ResetStillBox(logicID string) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	for _, ts := range tm.tracks {
+		if ts.LogicID != logicID {
+			continue
+		}
+		ts.StillBoxRunStart = 0
+		ts.StillBoxStartX = 0
+		ts.StillBoxStartY = 0
+		ts.History = ts.History[:0]
+		return
+	}
+	// 已被 lost-reap 驱逐 → firmware 再发即 NewTrackState，本就从 0
+}
+
+// EvictTrack 立即删除一条 track（belief 状态驱动 drop 回传：确认离场/空）。停止 12s coast 期对已离场 track 的
+// re-feed——否则 belief 已 drop 其 logicID 但 SnapshotTrackStatuses 仍每帧把它当 base 发出 → census 无对应
+// logicID → 每帧重发新号 = churn。只删 tracks/outputs；lostExitInfo/recentRadarEvents 保留按 age 自然淘汰
+// （in-flight 邻居 handoff / 离房证据仍可能被 belief 查）。幂等(delete 缺失 key 安全)。
+func (tm *TrackManager) EvictTrack(logicID string) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	var dev string
+	var fwTrackID int
+	found := false
+	for k, ts := range tm.tracks {
+		if ts.LogicID == logicID {
+			dev, fwTrackID, found = ts.DeviceAddr, ts.TrackID, true
+			delete(tm.tracks, k)
+			delete(tm.outputs, k)
+			break
+		}
+	}
+	// 生命周期 purge（logicID 根治第一刀）：track 确认离场 → 连带清该（设备,track_id）的离场证据。
+	// 否则 ExitRoom（firmware 常不带 track_id → 默认 0）+ trend 快照按 recentBufferMs(5min) 滞留，
+	// track_id 复用时（A 离房 0 / B 在床 0）被下一占用者经 ExitLogOdds 误翻 → 误抬 SLeft → churn/二义 lost-fall FN。
+	// 触发离场的那条 ExitRoom 就此被它造成的 drop 消费掉，绑 coast 生命周期而非死等 age。
+	delete(tm.lostExitInfo, logicID)
+	if found {
+		for k, e := range tm.recentRadarEvents {
+			if e.DeviceUID == dev && e.TrackID == fwTrackID {
+				delete(tm.recentRadarEvents, k)
+			}
+		}
+	}
+}
+
 // updateContinuousIndicators 每帧维护 StillBox（静止无移动）检测 + Kalman birth-coherence 指标。
 //
 //  1. StillBox（静止无移动）检测（box 判据，2026-05-03 由 byte-equal 改为 box）：
@@ -2394,12 +2509,15 @@ func (tm *TrackManager) otherDeviceRealTrackRecent(excludeDevice string, nowMs i
 //
 // 调用位置：processFrameAt 已有 track 分支，Kalman.Update 之后。
 func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame, nowMs int64, residualF float64) {
-	// ---- StillBox（静止无移动）检测（50×50 per-axis box 判据）----
+	// ---- StillBox（静止无移动）检测（50×50 per-axis box 判据 + 累计路程闸）----
 	// 用 BoxRangeWithinMs（max(dx,dy)）而非 DisplacementWithinMs（对角线）：50×40 倒地框
 	// 对角线 64 会被误判成"动"，per-axis 算 50（≤StillBoxCm=50）才正确判 still。
+	// 但 box(max-min) 对"50cm 盒内反复踱步"会误判 still（盒小但累计走好几米）→ 再叠累计
+	// 路程闸 PathLengthWithinMs ≤stillPathCm：踱步累计 >200cm 即破盒,用运动量直接量,不靠 pose。
 	ts.StillBoxBreakDurMs = 0 // 每帧清；仅本帧 break 时设（移动块 MarkDwell 消费）
 	disp := ts.BoxRangeWithinMs(30_000, nowMs)
-	if disp <= FallRulesParam.Lost.StillBoxCm && len(ts.History) >= 2 {
+	path := ts.PathLengthWithinMs(30_000, nowMs)
+	if disp <= stillBoxCm && path <= stillPathCm && len(ts.History) >= 2 {
 		if ts.StillBoxRunStart == 0 {
 			// 起点回填到 History 最早帧（box 内最早可见点）；同步存起点位置（cell engine 久静量单源读）。
 			ts.StillBoxRunStart = ts.History[0].TMs
@@ -2415,14 +2533,10 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 				zap.Int("track_id", f.TrackID),
 				zap.Int64("duration_ms", dur),
 				zap.Int("disp_cm", disp),
+				zap.Int("path_cm", path),
 				zap.Int64("now_ms", nowMs))
 		}
 	}
-	// NOTE（防御层备忘，未实施）：box 判据只看 max-min 范围。理论 edge case：
-	// box 内反复抖动（30cm 范围内来回跨越）→ box 小但累计位移大 → 误判 still。
-	// 实测 D523/CD2B/D5F7 未观察到（firmware 单帧抖动通常 ±5-10cm）。生产若遇
-	// 此类"假 still 导致 lost-fall 误判"再加：30s 内逐帧累计 > 200cm 也清零
-	// StillBoxRunStart（200cm = box 周长 120cm × 1.6 倍，超过即反复跨越）。
 
 	// ---- MaxKalmanResidual ----
 	if residualF > ts.MaxKalmanResidual {

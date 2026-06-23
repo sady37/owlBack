@@ -35,13 +35,14 @@ const (
 	mirrorGhostPenaltyAdd  = 50   // 命中 ghost 累加的 GhostPenalty
 )
 
-// mirrorPairKey 两 track 配对（小 ID 在前，固定 key 顺序）
+// mirrorPairKey 两 track 配对（小 ID 在前，固定 key 顺序）。ID = trackKey（设备+firmware track_id），
+// 多雷达同房裸 track_id 撞号已根治。
 type mirrorPairKey struct {
-	A, B int
+	A, B trackKey
 }
 
-func newMirrorPairKey(a, b int) mirrorPairKey {
-	if a > b {
+func newMirrorPairKey(a, b trackKey) mirrorPairKey {
+	if b.less(a) {
 		a, b = b, a
 	}
 	return mirrorPairKey{a, b}
@@ -72,8 +73,8 @@ func (b *mirrorPairBuffer) pushSample(s mirrorPairSample) {
 // mirrorEvaluation evaluateMirrorPair 输出
 type mirrorEvaluation struct {
 	IsMirror      bool
-	GhostTrackID  int      // tiebreaker 选出的 ghost 端（A 或 B 的 trackID）
-	RealTrackID   int      // 配对中的 real 端
+	GhostTrackID  trackKey // tiebreaker 选出的 ghost 端（A 或 B 的 trackKey）
+	RealTrackID   trackKey // 配对中的 real 端
 	BouncePoints  []radarutils.Point
 	MidlinePoint  radarutils.Point // 镜面线上锚点（中点重心）
 	MidlineDirX   float64          // 镜面线方向单位向量
@@ -82,7 +83,7 @@ type mirrorEvaluation struct {
 
 // evaluateMirrorPair 给定 5 帧配对样本 + 雷达位置，跑三不变量 + tiebreaker。
 // IDs 是两 track id（与样本顺序一致：第一个传 A trackID，第二个传 B trackID）。
-func evaluateMirrorPair(samples []mirrorPairSample, idA, idB int, radarX, radarY int) mirrorEvaluation {
+func evaluateMirrorPair(samples []mirrorPairSample, idA, idB trackKey, radarX, radarY int) mirrorEvaluation {
 	out := mirrorEvaluation{}
 	if len(samples) < mirrorMinSamples {
 		return out
@@ -281,7 +282,7 @@ func reflectPoint(p, anchor radarutils.Point, dirX, dirY float64) radarutils.Poi
 // mirrorCandidate 内部使用：scanMirrorGhostPairs 收集的 live track 快照。
 // 定义为 package-level 类型让 gcMirrorBuffer 能引用同一个类型。
 type mirrorCandidate struct {
-	ID   int
+	ID   trackKey
 	X, Y int
 }
 
@@ -306,7 +307,7 @@ func (tm *TrackManager) scanMirrorGhostPairs(nowMs int64) {
 		return
 	}
 	// 固定 ID 顺序（map 迭代不稳定）
-	sort.Slice(cands, func(i, j int) bool { return cands[i].ID < cands[j].ID })
+	sort.Slice(cands, func(i, j int) bool { return cands[i].ID.less(cands[j].ID) })
 
 	radarX := tm.radarMount.Center.X
 	radarY := tm.radarMount.Center.Y
@@ -349,8 +350,8 @@ func (tm *TrackManager) scanMirrorGhostPairs(nowMs int64) {
 				}
 				tm.logger.Info("ghost_veto",
 					zap.String("reason", "mirror_pair_l1"),
-					zap.Int("ghost_track_id", res.GhostTrackID),
-					zap.Int("real_track_id", res.RealTrackID),
+					zap.String("ghost_device", res.GhostTrackID.dev), zap.Int("ghost_track_id", res.GhostTrackID.tid),
+					zap.String("real_device", res.RealTrackID.dev), zap.Int("real_track_id", res.RealTrackID.tid),
 					zap.Int("penalty_added", mirrorGhostPenaltyAdd),
 					zap.Int("ghost_penalty_now", ghost.GhostPenalty),
 					zap.Int("bounce_points", len(res.BouncePoints)),
@@ -372,7 +373,7 @@ func (tm *TrackManager) gcMirrorBuffer(live []mirrorCandidate) {
 	if len(tm.mirrorBuffer) == 0 {
 		return
 	}
-	liveSet := make(map[int]struct{}, len(live))
+	liveSet := make(map[trackKey]struct{}, len(live))
 	for _, c := range live {
 		liveSet[c.ID] = struct{}{}
 	}
