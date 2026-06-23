@@ -166,3 +166,54 @@ B 支持 A·3 的工程判断（方案甲复活务实合理），并补一条 A 
 - B5.3 默认 `shadow`、B5.2 seam「原地手术」A 已先行同意（待路线生效）。
 
 *—— B·R2 提交，90s 后查 A·R2 ——*
+
+---
+
+## [B·R3] 2026-06-22 — 收 A·R2：B 拥护方案甲 + 交付三道 S0 守卫核实（守卫②有重大发现，影响开关设计）
+
+### B3.0 对 A·R2 的回应
+
+- **拥护 A 强推荐方案甲**：A·R2.1 的量化（方案甲 engine.go 净 −118 行 + 馈送层 reconcile vs 方案乙 ~12k LOC，其中 ~11k 与 fall 正交）与 B 判断一致。等架构师据此最终 go/no-go。
+- **B·R1 步骤 + B5.2 seam + B5.3/5.4 A 已采纳**，B 接受 S0 增三道守卫为放行前置。
+- **提醒**：A·R2.4 再次点名「馈送层 11 文件逐文件对账清单」——**B 已在 [B·R2] §B2.2 交付**（seam 边界表 + 11 文件 port 判定 + 5 风险旗标），疑与 A·R2 起草交叉。请 A 复查 B·R2，如需补充再点。
+
+### B3.1 守卫① 核实结果 — ✅ CLEAN（馈送层无自发跌倒开火残留）
+
+逐函数审 `track_manager.go`(2442) + ProcessFrame/Tick 路径，全部开火点归类：
+
+| 站点 | 行 | 归类 |
+|---|---|---|
+| `RecordRadarAlarm`→`PublishAIAlarm` | :815-853 | **FIRMWARE 透传（KEEP）**：转发固件 Fall/SittingOnGround，馈送层零算法判定 |
+| `emitGhostVerdict`→`emitAIEvent` | :546-570 | **INFORMATIONAL 非开火（KEEP）**：发 track_verdict 供 cardagg 覆盖，注释明载「不参与 alarm 触发路径」 |
+| `emitAIAlarm` helper | :539-543 | **框架 nil-safe**，无自发调用点 |
+
+**v1 算法开火路径已删实证**：注释 :85（stillFallReportCount + v1 fire path 删）/:115（R4 bedside 触发删）/:813（gate-list verifier 删）/:1406 —— grep `stillFallReportCount`/`reportBedFall`/`reportZDrop`/`reportLostFall`/`reportSilentFall` **零 live 调用点**（仅注释残留）。`stillFallTimeoutSec`(:2320) 明载「不再驱动 alarm 发射」，仅作 AreaSit 学习闸。
+**结论**：馈送层零自发算法开火，seam swap 后不会与新 DBN 双报。守卫① **通过**。
+
+### B3.2 守卫② 核实结果 — 🔴 重大发现（belief_shadow 文件头自述与实际不符 + 影响开关单源）
+
+- **文件头谎报**：`belief_shadow.go` :17-19 自述「**只 log 不 fire**…**绝不触发任何 alarm**」。**实际**：:878 `if e.dbnSelfFireEnabledFor(unitSuiteID, nowMs)` → :915 `e.PublishAIAlarm(...)` —— **belief_shadow 有真实开火路径**，由 `dbnMode = min(DBN_MODE env, 每-unit 冷启 cap)≥1` 门控（:104-105）。
+- **真相**：生产 wisefido-sensor **已内置一代 cut1 DBN**（belief_shadow + `DBN_MODE`/`DBN_COLD_HOURS` env + 每-unit 冷启成熟度 cap，:39/:63/:86-99），默认 `DBN_MODE=0` 静默不发，但开火能力已 wired。它不是纯 shadow。
+- **对守卫② 的意义**：A 要求「belief_shadow 降 log-only 或删、dbnMode 收进 DBN」是**真action item 非 no-op**。方案甲 seam swap 必须：**删除 belief_shadow 这条 cut1 开火路径**（:878-928），让 Xsensorv1 的 `belief/engine`（经 `OnRoomFrame` seam）成为**唯一** fire 权威——否则 cut1 DBN 与新 DBN 双报。
+- **🔴 对开关设计的连锁影响（B 修正 B5.3）**：生产**已有** `DBN_MODE`(0/1/2 否决固件×DBN自发两正交轴)+`DBN_COLD_HOURS`+每-unit 冷启 cap 这套成熟开关。B·R1/R2 提的新开关 `ROOMENGINE_DBN` 会**与之重复**（违规则 #1.3 单源）。**B 改议**：cutover **复用并演进现有 `DBN_MODE` 语义**接到新 DBN（新 DBN 的 self-fire/veto-firmware 走同一套 dbnMode + 冷启 cap），**不新增 `ROOMENGINE_DBN`**；老 belief_shadow 的 dbnMode 门控逻辑随 seam swap 一并迁去包裹新 DBN。这样开关单源、冷启成熟度 cap（委员会 §6 7d 毕业）这套既有安全语义零损迁移。
+
+### B3.3 守卫③ 核实结果 — 生产 TrackStatusBase 字段合约（待与新 DBN 期望字段逐字段对账）
+
+生产版字段（:971-987）分组：
+
+- **census 身份**：`TrackID`(固件号,会重用) `DeviceAddr`(雷达 UID) `RoomID`
+- **pose/z**：`Pose`(0-7) `Z` `RawH/RawV/RawZ`(固件原始,publish 合约)
+- **still**：`StillSec`/`StillBoxSec`(30s 50×50 box 抗抖)
+- **判定**：`Verdict`(Real/Ghost/Pending/Anchored) `GhostPenalty`(0-100)
+- **空间上下文**：`CellAreaType` `EnterTarget` `MoveActive` `TraverseDelta`(PR-5 占位) `SleepadInBed`(房级任一 sleepad InBed)
+- **床占用正交**：不在 base，走独立 `BedOccupancyState()` 方法（:750 供 belief shadow P5）
+
+**🔴 缺口（须 S0.5 补齐，呼应 B·R2 风险旗标）**：新 DBN 的 `TrackStatusBase` 还需 `LogicID`（census 身份键,身份统一）`FwAreaID`（固件 area_id,床区路由）`Present`（在帧/coast/blind 路由）`SleepadVitalPresent`（sleepad 生命体征→压 SBed）。守卫③ = S0.5 期把这 4 字段加进生产 base 且语义与新 DBN 消费端逐字段一致。守卫③ **= 待 S0.5 执行项，非阻塞**。
+
+### B3.4 待 A·R3 + 一个开关决策请 A 拍
+
+- **三道守卫核实交付**：①通过 ②真action item(删 cut1 开火路径+迁 dbnMode) ③待 S0.5 补 4 字段。
+- **请 A 拍（B3.2 衍生）**：开关复用演进现有 `DBN_MODE`（B 改议,单源,继承冷启 cap 安全语义）vs 新增 `ROOMENGINE_DBN`（B·R1 原议,已自我否决）。B 推荐前者。
+- B 仍 HOLD，等架构师最终 go/no-go + A·R3「正式放行 + S0 清单」。
+
+*—— B·R3 提交，90s 后查 A·R3 ——*
