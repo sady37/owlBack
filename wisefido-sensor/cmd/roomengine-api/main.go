@@ -257,6 +257,7 @@ func handlePlayback(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 			return
 		}
 		f.Close()
+		pruneCacheDir()
 		var size int64
 		if st, _ := os.Stat(fpath); st != nil {
 			size = st.Size()
@@ -279,6 +280,7 @@ func handlePlayback(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	if err := playback.WriteHTML(io.MultiWriter(w, f), roomID, res.Snapshots); err != nil {
 		log.Printf("write html (multi): %v", err)
 	}
+	pruneCacheDir()
 }
 
 func respondJSONCached(w http.ResponseWriter, filename string, size int64, start, end time.Time) {
@@ -305,6 +307,51 @@ func respondJSONFresh(w http.ResponseWriter, filename string, size int64, roomID
 		"end":      end.Format(time.RFC3339),
 		"snaps":    snaps,
 	})
+}
+
+// out-dir 缓存总量上限：playback HTML 降采样后仍可达数十 MB，不淘汰会逐步填满磁盘。
+// 每次写入新文件后按 modTime 淘汰最旧的直到回到上限之下。best-effort，失败仅记日志（housekeeping 不影响请求）。
+const cacheBudgetBytes = 2 << 30 // 2 GiB
+
+func pruneCacheDir() {
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		log.Printf("prune cache: read out-dir: %v", err)
+		return
+	}
+	type fmeta struct {
+		path    string
+		size    int64
+		modTime time.Time
+	}
+	files := make([]fmeta, 0, len(entries))
+	var total int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, fmeta{filepath.Join(outDir, e.Name()), info.Size(), info.ModTime()})
+		total += info.Size()
+	}
+	if total <= cacheBudgetBytes {
+		return
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].modTime.Before(files[j].modTime) })
+	for _, f := range files {
+		if total <= cacheBudgetBytes {
+			break
+		}
+		if err := os.Remove(f.path); err != nil {
+			log.Printf("prune cache: remove %s: %v", filepath.Base(f.path), err)
+			continue
+		}
+		total -= f.size
+		log.Printf("prune cache: evicted %s (%d bytes)", filepath.Base(f.path), f.size)
+	}
 }
 
 // handleListFiles: GET /roomengine/playback/files?uid=<uid>

@@ -124,6 +124,18 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.RowLimit <= 0 {
 		opts.RowLimit = 30000
 	}
+	// 快照全量驻留内存（每张全房 SVG≈190KB），长窗口按固定 snap_min 会撑爆内存/磁盘
+	// （7d×10min≈1008 张≈190MB）。按窗口时长抬高有效 snap_min 使快照数封顶 maxSnapshots，
+	// 短窗口（用户 snap_min 已够稀）不受影响。
+	const maxSnapshots = 200
+	loops := opts.Cycles
+	if loops < 1 {
+		loops = 1
+	}
+	simMinutes := (opts.End.UnixMilli() - opts.Start.UnixMilli()) / 60000 * int64(loops)
+	if byCap := int(simMinutes/maxSnapshots) + 1; byCap > opts.SnapMin {
+		opts.SnapMin = byCap
+	}
 
 	cfg := opts.Cfg
 
