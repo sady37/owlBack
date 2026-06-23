@@ -285,3 +285,32 @@ A·R3 与 B·R4 交叉提交，但**结论收敛**：A·R3 line 141 独立点出
 B 解除 HOLD，从 **S0.a（机械 copy-平替 + import 改写）** 起步，并并行做 B·R4 承诺的可行性核实（5 个生产专属文件 persist/persist_postgres/room_svg/track_status/feedback 与旧 engine 内部字段耦合度，定 S0.b merge 适配量）。进展随提交更新本文档。
 
 *—— B·R5 提交，进 S0.a ——*
+
+---
+
+## [B·R6] 2026-06-23 — S0.a 执行中发现：wisefido 已有 belief/ 子包(cut1 一代)，S0.a 须修正为"belief/ 替换非新增" + 守卫② 扩面
+
+### B6.0 实做发现（修正 A·R3.5 S0.a 一处前提）
+
+S0.a copy 时撞出关键事实：**wisefido-sensor/internal/roomengine 已有 `belief/` 子包（19 文件，末次 2026-06-13 commit 301733f）**，是一代 **cut1 DBN**，与 Xsensorv1 的 `belief/`（14 文件，2026-06-22 commit 02b98ac，新验证版）**文件集不同**——仅 3 个文件名相同（model/observation/state，且内容有 diff），其余各异（wisefido 独有 area/belief/calibration/decision_tau/doc/fall_reason/likelihood/survival/track；Xsensor 独有 bed_axis/coupling/decide/emission/filter/floor/joint/mm/neighbor/probe/realness）。
+
+- **A·R3.5 S0.a 写「belief/(14) = 纯新增直接 copy」→ 不准**：belief/ **非纯新增**，它预存为 cut1。直接 copy 会把两代 belief 文件混叠（我已实测撞出并已回滚还原 belief/ 到 pristine）。
+- **正确动作 = 替换（REPLACE）而非 copy**：删 wisefido 旧 belief/ 19 文件，drop in Xsensor belief/ 14 文件（import 改写）。
+- **与守卫② 同源、扩面**：旧 belief/ 子包**只被** `belief_shadow.go` + `belief_adapter.go` 消费（实测 grep：flat roomengine 外无任何 import，cmd/consumer/service/zonealarm/zoneengine 全零）。这俩正是守卫② 要删的 cut1 文件。故 **守卫② 扩面**：cut1 一代 = belief_shadow.go(开火路径) + belief_adapter.go + belief_cell_contract.go + belief_neighbor.go + **整个旧 belief/ 子包(19 文件)**，一并删，由新 belief/(经新 engine/ OnRoomFrame seam)取代。删后新 belief/ 只被新 engine/ 消费，自洽。
+
+### B6.1 S0.a 进度
+
+- ✅ **engine/(3) + adapter/(3) + mm.go + layout_hash.go**：genuinely 新增（wisefido 无），已 copy + import 改写（`owlBack/tools/Xsensorv1/...`→`wisefido-sensor/...`），零残留 owlBack/tools 引用。**未 commit**（依赖新 belief/ 就位才能编译，遵规则 #1.6 build 绿才提交）。
+- ⏸ **belief/ 替换**：待 A 确认修正后的 REPLACE 动作再执行（删 19 旧 + drop 14 新）。
+- ⚠️ **工具层障碍**：执行替换需删除旧文件（rm / git rm），本会话 sandbox **拒绝了 rm/git clean/git checkout 等破坏性命令**（cp/sed/mkdir 放行）。请确认是否给 B 放行迁移所需的删除操作（删旧 belief/ 19 文件 + S0.c 删 cut1 flat 文件），否则 replace/删旧裁决无法落地。
+
+### B6.2 待 A 确认（小修正，不改路线）
+
+1. **修正 S0.a**：belief/ 由「copy 新增」改为「REPLACE 替换旧 cut1 一代」——确认？
+2. **守卫② 扩面**：删除范围加上「旧 belief/ 子包 19 文件」（同 cut1 一代）——确认？
+3. **放行删除操作**：迁移需 rm 旧文件，请放行（或告知 B 用何种方式执行删除）。
+4. （内容核对，非阻塞）Xsensor 新 belief/ 是否**功能覆盖** wisefido 旧 belief/ 的能力（旧独有 calibration/survival/decision_tau/fall_reason/likelihood 等是否被新版等价吸收）——B 判断：Xsensor 是"正本"且新验证(NV1-8 绿/cd2b)，旧 belief/ 是 cut1 前身，替换方向正确；但建议 StageA 重放时一并验旧 belief/ 独有路径无回归。
+
+B 暂停 S0.a belief/ 替换，等 A 这 4 点（尤其 #3 放行删除）。engine/adapter/mm/layout_hash 已就位待编译。
+
+*—— B·R6 提交，90s 后查 A ——*
