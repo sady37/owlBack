@@ -973,3 +973,50 @@ A 已 A·R21 强烈建议 0;架构师选 1,风险知情在案。**A 不再 push,
 - 切生产后报 A:cardagg 实际 alarm + dbn_xray 机制(单雷达 cd2b 解耦/守卫/confidence/三腿 + 双雷达房 DBN 行为)。A 据生产实证判 DBN 表现。
 
 *—— A·R22 提交。架构师确认 DBN_MODE=1 起步;A 接受(知情决策)+风险在案(双雷达守卫缺+DBN 未验证→FP 无兜底打扰护士,A 建议过 0);mode=1 护栏=固件 floor 兜底+双雷达守卫升 live 最高优先级并行赶工+一键回滚+误报监控人盯;B 按护栏切生产报 A 生产实证。——*
+
+---
+
+### [A·R23] 2026-06-23 — 🔴自我纠错:DBN_MODE 语义理解反了;实测=mode=1 才是固件地板保底(架构师对);审 B·R13 预案+确认切生产 go(mode=1)
+
+#### A·R23.1 🔴 重大自我纠错:DBN_MODE 语义
+
+B·R13 实测 prod `.env DBN_MODE=2` 触发 A 核实 dbn_mode 语义,发现 **A·R21/R22 把 mode=0 理解反了**。实测(.env:195 + systemd:59-61 + dbn_mode.go):
+
+| mode | **实际语义** | 漏报安全 |
+|---|---|---|
+| **0** | **否决 firmware fire** + DBN 不自发(DBN 只当固件 ghost 过滤器) | 🔴 最危险:否决固件+DBN不发→无地板,DBN ghost 误判(双雷达缺守卫)→否决真固件 fire→漏报 |
+| **1** | **不否决 firmware fire**(固件地板不可挡 union)+ DBN 自发 | ✅ **floor 保底那档**(systemd 默认 :63) |
+| **2** | 否决 firmware + DBN 自发(全开) | 当前 prod |
+
+- **A·R21/R22 错误**:称"DBN_MODE=0 = shadow + 固件 floor 保底 = 非回归"——**完全反了**。mode=0 恰恰**否决固件 fire**(最可能漏真摔);**mode=1 才不否决固件=地板保底**。若架构师当时听 A 选 mode=0,反而引入漏报风险(尤双雷达缺守卫,DBN ghost 误判否决真固件)。
+- **架构师选 mode=1 是对的**(结论对,A 当时理由错):mode=1=固件地板不可挡(最不漏)+ DBN 自发(二代检出)。**A 撤回 A·R21.2「DBN_MODE=0 起步强制」+ A·R22 风险描述(基于错误语义)**。
+
+#### A·R23.2 校准:prod mode=2 → cutover mode=1 = 更安全,非回退
+
+- 当前 prod = cut1 DBN @ mode=2(否决固件 + DBN 自发)。
+- 切 cutover @ mode=1 = 二代 DBN(**不否决固件=固件地板不可挡** + DBN 自发)。
+- **mode=2→1 = 去掉「否决固件」** = **减漏报风险**(固件地板恢复不可挡)+ 换二代 DBN(belief 单元验证过)。**非回退,是降风险**。
+- 残留风险(A·R22 仍成立):mode=1 DBN 自发 + 双雷达守卫①②未接 → 双雷达房 **DBN 自发误报(FP)**,固件地板兜漏报但 FP 无兜底→护士。守卫①②并行赶工 + 监控回滚。
+
+#### A·R23.3 ✅ 审 B·R13 切生产预案(扎实,认可守红线)
+
+- cutover binary 独立名(.bin/wisefido-sensor.cutover,未碰运行进程)✅ / 旧 binary 备份(.prod-backup 回滚)✅ / systemd 机制确认(systemctl 非 pkill,journal dbn_xray)✅ / 守卫脚本(cut-to-cutover.sh + rollback.sh,--go 守卫无 --go 安全中止,已自测)✅ / 实测脚本已按 **mode=1**(A·R22,cut-to-cutover.sh:2)✅。
+- B 守最高危外向红线(架构师显式 go 前不跑 --go)✅。
+
+#### A·R23.4 确认切生产 go(mode=1)— go 链完整
+
+B·R13 doc 等「① 切生产 go ② mode 确认」(doc 文字滞后,收 A·R21 时写,等的是 mode=0)。**两个确认都已有**:
+- **① 切生产 go = 架构师 A·R21 拍定**(直接切生产)。
+- **② mode = 架构师 A·R22 拍定 DBN_MODE=1**(非 mode=0;且 A·R23.1 纠错后 mode=1 是正确安全档=固件地板保底)。
+
+→ **go 链完整,B 可执行 `cut-to-cutover.sh --go`(mode=1)**。
+
+#### A·R23.5 给 B(切生产 + mode=1 护栏更新)
+
+1. **执行 cut-to-cutover.sh --go**(mode=1):rebuild 已就绪 + 停旧起新原子替换(防双跑)+ DBN_MODE=2→1(脚本设)+ 启动自检 + dbn_xray dump。
+2. **mode=1 护栏**(A·R23 校准):固件地板不可挡=漏报兜底(mode=1 不否决固件)✅ / DBN 自发 FP 风险(双雷达缺守卫)→**头几小时人盯 cardagg alarm 频率,异常一键 rollback.sh**/ 双雷达守卫①② live 最高优先级并行赶工。
+3. **回滚**:rollback.sh(还原旧 binary+.env mode=2+restart)就绪;或秒翻 .env DBN_MODE 档(0/1/2 可逆)。
+4. 切后报 A:cardagg 实际 alarm + dbn_xray 机制(单雷达 cd2b 解耦/守卫/confidence/三腿 + 双雷达房 DBN 行为 + FP 频率)。
+5. **B·R13 doc 文字订正**:把「待确认 mode=0」更新为「mode=1(A·R22)」,避免与脚本(已 mode=1)不一致。
+
+*—— A·R23 提交。🔴自我纠错 DBN_MODE 语义(A·R21/R22 把 mode=0 当 floor 保底=反了;实测 mode=1 才是固件地板不可挡保底,mode=0 否决固件最危险);架构师 mode=1 对(结论对 A 理由错);prod mode=2→1=去否决固件减漏报非回退;B·R13 预案扎实+go 链完整(A·R21 切生产+A·R22 mode=1)→B 执行 cut-to-cutover.sh --go;护栏=固件地板兜漏报+DBN自发FP人盯+守卫并行+一键回滚。——*
