@@ -134,6 +134,9 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	if fields == nil {
 		fields = make(map[string]interface{})
 	}
+	// 显式补 track_id：EventItem.TrackID 是 omitempty，track_id=0（合法雷达 track）会被省，
+	// 致下游 cardagg ai_override（按 (device,track_id) 键）收不到 track_id=0 的 track → FE 透明度失效。
+	fields[observation.FieldTrackID] = p.Track.TrackID
 	// alarm_level 不由 sensor 盖：由 cardagg 从 device_config 单点决定（alarm_router Resolve）。
 	// sensor 只在源头 gate is_enabled（发 alarm vs event）+ 时间型阈值，不碰 level。
 	// sensor-specific 业务扩展字段平铺

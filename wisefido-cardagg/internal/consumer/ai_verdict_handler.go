@@ -93,8 +93,15 @@ func (h *AIVerdictHandler) handleRaw(raw map[string]interface{}) {
 	if data == nil {
 		return
 	}
-	tid := intFromAny(data["track_id"])
-	if tid <= 0 {
+	// track_id=0 是合法雷达 track（固件从 0 编号，实测占比高）——旧 `tid<=0` 误把它当无效跳过，
+	// 致 track_id=0 的 track（含 ghost）confidence override 永不生效、FE 渲不出透明度。
+	// 改：仅跳过「track_id 字段缺失」（room-level/无 track）或负数；track_id=0 放行。
+	rawTID, hasTID := data["track_id"]
+	if !hasTID {
+		return
+	}
+	tid := intFromAny(rawTID)
+	if tid < 0 {
 		return
 	}
 	conf := intFromAny(data["track_confidence"])

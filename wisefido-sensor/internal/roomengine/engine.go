@@ -815,6 +815,7 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 			//   → payloadFromTrack → PublishAIEvent → cardagg（旧 adjudicator 已删，DBN 是唯一来源，断则回归）。
 			for lid, conf := range confidence {
 				tm.SetTrackConfidence(lid, conf)
+				tm.EmitTrackConfidence(lid, nowMs) // 周期发 DBN conf → cardagg ai_override → FE 透明度（治 present ghost 只写不发 gap，节流 20s）
 			}
 			// S0.c-4 fire→Publish（A·R12.3）：DBN 唯一 fire 权威在 engine 内闭环。
 			// fired → PublishAIAlarm（DBN_MODE 门控：=0 跑裁决不发=shadow；≥1 按冷启 cap 发）。

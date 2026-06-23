@@ -246,3 +246,31 @@ func (tm *TrackManager) SetTrackConfidence(lid string, conf int) {
 		ts.DBNConfidence = conf
 	}
 }
+
+// confEmitThrottleMs: per-track DBN confidence 发布节流（20s，在 cardagg ai_override 60s TTL 内刷新，低频不 flood）。
+const confEmitThrottleMs = 20_000
+
+// EmitTrackConfidence 周期发 present track 的 DBN 置信度（track_verdict 事件，带 track_confidence）。
+// 治本「confidence 第三腿只写回不发布」gap（S0.c-4 SetTrackConfidence 只写 ts.DBNConfidence）：
+//   旧 publishTrackStatuses 删后，present ghost（低 PReal、未 drop）的低 conf 不发 → cardagg override 缺刷新 →
+//   FE 渲不出 50% 透明。本方法对每个 present track 周期发 DBN conf → cardagg ai_override(release) 每帧盖 realtime card → FE 透明度。
+// 节流 per-(device,track_id) 20s；不受 DBN_MODE 门控（informational 非 alarm，A·R15.3-1）。
+func (tm *TrackManager) EmitTrackConfidence(lid string, nowMs int64) {
+	tm.mu.Lock()
+	ts := tm.trackByLogicID(lid)
+	if ts == nil {
+		tm.mu.Unlock()
+		return
+	}
+	key := trackKey{ts.DeviceAddr, ts.TrackID}
+	if nowMs-tm.confEmitMs[key] < confEmitThrottleMs {
+		tm.mu.Unlock()
+		return
+	}
+	tm.confEmitMs[key] = nowMs
+	p := tm.payloadFromTrack(ts)
+	tm.mu.Unlock()
+	p.Reason = "dbn_confidence"
+	p.Event = "confidence"
+	tm.emitAIEvent(p, CategoryTrackVerdict, nowMs)
+}

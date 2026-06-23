@@ -73,6 +73,7 @@ type TrackManager struct {
 	roomID      string
 	grid        *RoomGrid
 	aiPublisher AIPublisher // 生产发布腿（S0.c 焊回）：AI event/alarm + ghost verdict + 固件 Fall 转发；nil=replay 道静默
+	confEmitMs  map[trackKey]int64 // per-track DBN confidence 最近发布 ts（EmitTrackConfidence 节流，刷 cardagg override 60s TTL → FE 透明度）
 	bedAreaIDs  []int        // firmware 床区 area_id（baseline type2/5）→ radar InBed 判定用 area_id 非 cell（排 sofa）
 	tracks     map[trackKey]*TrackState // 键=（设备,firmware track_id）：多雷达同房各台从 0 编号，不带设备会撞键互相覆盖
 	outputs map[trackKey]*TrackOutput
@@ -226,6 +227,7 @@ func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackMana
 		bedAreaIDs:              bedAreaIDs,
 		tracks:                  make(map[trackKey]*TrackState),
 		outputs:                 make(map[trackKey]*TrackOutput),
+		confEmitMs:              make(map[trackKey]int64),
 		lastRealTrackByDevice:   make(map[string]int64),
 		bedSessions:             make(map[string]*BedSession),
 		sleepadStates:           make(map[string]*SleepadObservation),
