@@ -494,3 +494,33 @@ A·R12 完整复审 B·R9：**四验收 PASS**，RecordGroundTruth 准删（清�
 **B 接 S0.c-4 实现**（FN 关键 fire 路径，新会话 fresh context 谨慎落地）：engine publish leg + dbn_mode.go 门控重建 + cmd dbn_router.go + bootstrap 接线 + tm 按 logicID 取 payload/emitGhost helper；go build+vet 绿后 commit → 提 **B·R11 完整 seam（含 OnRoomFrame wire diff + DBN_MODE 灰度方案）** → A 复审 → StageA。
 
 *—— B·R10.1 提交（A·R12 拍定收讫 + S0.c-4 计划锁定），继续 S0.c-4 实现 ——*
+
+---
+
+## [B·R10.2] 2026-06-23 — 收 A·R13/R14/R15：publish 位置定死 engine 内（S0.c-4a 已正确）+ 补 confidence 第三腿
+
+A·R13（confidence 腿）+ A·R14（改判 cmd publish）+ A·R15（**撤回 A·R14 改判，定死 engine 内 publish**）。净结论 B 已落实/确认：
+
+### B10.2.1 S0.c-4a 已实现且 A·R15 确认正确（commit 06ff700）
+
+- **publish 位置 = engine 内（A·R15.1 定死 = A·R12.3 = B·R10.1）**：B 的 S0.c-4a 正是 engine 内（routeRoomFrame 消费 fired→PublishDBNFall / dropped→EmitDBNGhostVerdict），**无需改**。A·R14.3「改判 cmd publish」已被 A·R15 撤回，B 未动摇（按 B·R10.1 锁定实现）。✅
+- **DBN_MODE 仅门控 fire（A·R15.3-1/A·R14.4）**：B S0.c-4a 实现 = `fired→PublishDBNFall` 受 `dbnSelfFireEnabledFor` 门控；`dropped→EmitDBNGhostVerdict` **不门控始终发**（informational ghost 覆盖源，防 cardagg 断流回归）。**已符合 A·R15.3(1)**。✅
+
+### B10.2.2 🔴 新增必做：confidence 第三腿（A·R13/R14.5/R15.3-2）
+
+cardagg 三腿：alarm(fired→PublishAIAlarm,门控) / ghost(dropped→emitGhostVerdict,不门控) / **confidence(per-track→PublishAIEvent,不门控)**。前两腿 S0.c-4a 已接；**第三腿待接**：
+- DBN per-track 置信度 = engine.Room 的 `PReal`（engine/engine.go:67 realness 后验→0-100），**不在 OnRoomFrame 的 (fired,dropped) 二元返回里**，须单独取。
+- **写回链**：取 PReal → 写回 `TrackState.TrackConfidence` → `payloadFromTrack`（track_manager_io.go:130 已填 conf）→ `PublishAIEvent`（engine_io.go:149 已焊发送腿）→ cardagg。
+- **设计**：扩 `OnRoomFrame` 返回 `(fired, dropped []string, confidence map[string]int)`（confidence=logicID→0-100）；routeRoomFrame 写回 `tm.SetTrackConfidence(lid, conf)`（新 tm 方法，写 ts.TrackConfidence）；**不门控始终写**（A·R15.3-1）。cmd router 从 `fr.Tracks`（Frame 含 per-track forensic PReal）构 confidence map 返回。
+
+### B10.2.3 S0.c-4 最终收口（A·R15.4）
+
+1. publish 位置 engine 内 ✅（S0.c-4a）。
+2. DBN_MODE 仅门控 fire ✅（S0.c-4a）。
+3. **confidence 第三腿**（待接：OnRoomFrame 加 confidence 返回 + tm.SetTrackConfidence 写回 + cmd router 产出）。
+4. **cmd dbn_router.go**（待接：纯裁决 onRoomFrame build adapter.FrameInput→engine.Room.Tick→return fired/dropped/confidence + bootstrap 建 Room+SetDeviceGeom+set OnRoomFrame）。
+5. 清 engine.go:1028「已删 X」债务注释（A·R12.2）。
+
+B 接 ③④⑤，go build+vet 绿后 commit → 提 **B·R11 完整 seam** → A 复审 → StageA。
+
+*—— B·R10.2 提交（S0.c-4a 经 A·R15 确认正确 + confidence 第三腿纳入收口），继续 cmd router + confidence 实现 ——*
