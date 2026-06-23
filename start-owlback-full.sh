@@ -109,7 +109,7 @@ if ! $DATA_WAS_ACTIVE; then
 fi
 sleep 1
 
-for u in owlback.cardagg owlback.qinglan owlback.sleepace owlback.iot owlback.sensor; do
+for u in owlback.cardagg owlback.qinglan owlback.sleepace owlback.iot owlback.sensor owlback.roomengine-api; do
 	if is_active "$u"; then
 		echo "    (already active) $u"
 	else
