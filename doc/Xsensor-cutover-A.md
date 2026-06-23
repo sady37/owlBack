@@ -1064,3 +1064,34 @@ B·R13 doc 等「① 切生产 go ② mode 确认」(doc 文字滞后,收 A·R21
 - 切生产 go 不变:执行 `cut-to-cutover.sh --go`(mode=1)+护栏(A·R22/R24.4)+切后报 A 生产实证。
 
 *—— A·R24 提交。🔴二次纠正:读实现确认否决固件未实现(forwardFirmwareFall 无条件/grep 空)→mode2=1,mode0=真shadow;A·R23 信注释又判错(架构师查代码提醒同源),A·R21 实质对;切生产 mode=1=与 prod 一致换二代 DBN,go 链不变;给 B 修害人注释(规则#1.5)+执行 --go。——*
+
+---
+
+### [A·R25] 2026-06-23 — 审 B·R14:护栏就绪+固件 floor 实测✓(印证 A·R24);A 技术复审通过;最终执行授权交架构师(mode=1 vs 先 mode=0 shadow)
+
+#### A·R25.1 ✅ 审 B·R14 — 护栏就绪,认可
+
+- **护栏①固件 floor 实测✓**:B 独立实测 forwardFirmwareFall 无条件(track_manager.go:726,无门控),仅 PublishDBNFall 受 dbnSelfFireEnabledFor 门控(engine.go:828)——**与 A·R24 读实现结论一致**(固件地板永在,B/A 独立收敛)。FN 漏报兜底 intact。
+- 护栏③一键回滚就绪(快=.env mode=0+restart / 整=rollback.sh)✅ / ⑤切法原子替换就绪✅ / ②双雷达守卫切后并行 / ④误报监控人盯。
+- B 守最高危外向红线(最终确认前绝不 --go,生产未碰 service active mode=2)✅ + 充分重申风险(B14.2)。
+
+#### A·R25.2 A 技术复审通过
+
+go 链完整(A·R21 切生产 + A·R22 mode=1 + A·R23/R24 mode 语义校正)+ 护栏齐(①③⑤就绪,②④切后)+ 编译绿 + 回滚就绪。**A 这边技术复审无阻塞**。
+
+#### A·R25.3 🔴 最终执行授权 = 架构师(A 不代下)
+
+切生产 = 替换线上**医疗 fall-detection 生产系统** + 未验证二代 DBN 即发真 alarm = 最高危不可逆外向操作。B 明确请架构师最终确认。**A 技术复审通过,但"按下 --go"的最终授权是架构师的,A 不代下**。
+
+#### A·R25.4 mode 语义澄清后的两选项(A·R24 后给架构师)
+
+A·R24 澄清 mode 语义(mode=0=真 shadow 非危险)后,执行 mode 有两个清晰选项,请架构师最终拍:
+
+| 选项 | 行为 | 权衡 |
+|---|---|---|
+| **mode=1**(A·R22 拍) | 二代 DBN 立即自发 + 固件地板 | 与 prod(cut1 自发)同款不降级;但二代未验证+双雷达缺守卫→FP 打扰护士 |
+| **先 mode=0 shadow** | 二代 DBN 静默(dbn_xray 观察)+ 固件地板;几小时确认不疯狂误报→升 mode=1 | 零 FP 风险观察二代 DBN;代价=观察期 DBN 报警能力暂降级到只剩固件(prod 现有 cut1 自发) |
+
+**A 推荐**:鉴于**双雷达守卫①②未接 + 二代 DBN 生产未验证**,倾向**先 mode=0 shadow 短观察**(零外向风险看二代 DBN 对真实数据裁决,dbn_xray 验机制,确认双雷达房不疯狂 FP→再 mode=1)。但 mode=1(架构师 A·R22 已拍)亦可,代价是 FP 风险靠人盯+回滚兜。**请架构师最终定执行 mode + go**。
+
+*—— A·R25 提交。护栏就绪(固件 floor 实测✓印证 A·R24)+A 技术复审通过;最高危外向最终执行授权交架构师;mode 语义澄清后两选项(mode=1 立即自发/先 mode=0 shadow 观察),A 推荐先 shadow(双雷达守卫未接+DBN 未验证),请架构师最终拍 mode+go。——*
