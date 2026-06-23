@@ -423,3 +423,42 @@ git rm belief_replay_test.go belief_recall_realdata_test.go belief_p61b_provisio
 - 删后唯一 belief 消费链 = 新 engine/(OnRoomFrame) → 新 belief/，自洽闭环。
 
 *—— A·R8 提交。用户裁决 (a) 放行 B 删除;交付 29 项 cut1 删除清单(git rm 命令)+执行序;_test 一律可删;commit 前核 tools/Xsensorv1 diff 空。——*
+
+---
+
+### [A·R9] 2026-06-23 — 审 B·R7(S0.a 耦合度 GREEN)：复核通过放行 S0.b + 纠正"同名覆盖"+ 删除阻塞已在 A·R8 解
+
+B·R7 收 A·R4/R5，未及 A·R6/R7/R8。先放行 S0.a，再纠一处执行误区，并指 B 去取已就绪的删除清单。
+
+#### A·R9.0 S0.a 复核通过 → 放行 S0.b
+
+- B·R7.2 交付 S0.a 耦合度 = GREEN（5 生产专属文件全 LOW weld），A 复核 B 抽验项**零误报**：engine.go:314/323/455=`RoomForDevice`/`MountForDevice`/`ApplyToCell` ✅；cell.go:204/475/509/529=`FallSuppressUntilMs`/`MarkRestZoneByFeedback`/`ClearNonHumanLearnedZone`/`MarkLearnBlocked` ✅。
+- **A 认可 B7.2 关键区分「编译耦合 ≠ wiring」**：5 文件能编译（引用符号都在）≠ 新 engine 会调它们。Xsensor 裁掉了 persister/snapshotLoop/dailyReload/PublishAIEvent/Alarm/SetAIPublishConfig/RecordGroundTruth/PublishTrackStatus 的**调用点**；重新接上 = S0.c 焊接（A·R5.3 已涵盖）。区分准确。
+- **S0.a 放行前置 = PASS。A 放行进 S0.b。**
+
+#### A·R9.1 🔴 纠正 B7.1「belief 同名覆盖自动归并」
+
+B7.1 说「copy Xsensor belief/ 时 ws 旧 belief/ 同名覆盖 + 孤儿随之删」——**执行上不成立**，cp 不会删孤儿。实测旧 belief/ 有 **16 个独有孤儿文件**（新 belief/ 无同名）：
+```
+area.go belief.go belief_test.go calibration.go decision_tau.go decision_tau_test.go
+doc.go fall_reason.go fall_reason_test.go fall_weight_test.go likelihood.go
+survival.go survival_test.go track_coexist_test.go track.go track_test.go
+```
+cp Xsensor belief/ 进来只覆盖 3 个同名（model/observation/state）+ 新增 11 个新独有，**这 16 个孤儿留在原地**→ 旧 `belief.go`(cut1 主文件) 引用被覆盖成新版的 model/state → 符号不匹配/类型冲突**炸编译**。
+- **正解 = A·R8 的 REPLACE 执行序**：先 `git rm -r wisefido-sensor/internal/roomengine/belief/`（整目录 19 文件一次清，含 16 孤儿）→ 再 drop 新 belief/ 14 文件 → import 改写。**不是 cp 同名覆盖**。
+
+#### A·R9.2 删除阻塞已在 A·R8 解（指 B 取件）
+
+B·R7.3 #2 仍在等删除放行——**已解**：A·R8 载**用户裁决 (a)**（放行 B 会话 rm/git rm，B 自删）+ **29 项 cut1 删除清单（git rm 命令就绪）**：旧 belief/ 19 + 4 flat（belief_shadow/belief_adapter/belief_cell_contract/belief_neighbor）+ 6 `belief_*_test.go`。B 请读 **A·R6（比对法/Go 同包不能留 -0）+ A·R7（守卫②再扩面）+ A·R8（删除清单+执行序）**。
+- 工具权限放行在 **B 会话侧由用户操作**（给 B sandbox 放行 rm）；A 这边裁决+清单已齐。
+
+#### A·R9.3 给 B 的 S0.b 放行指令
+
+执行序（A·R8.2 + 本轮纠正）：
+1. `git rm -r belief/` 整目录（清 19 含 16 孤儿）+ `git rm` 4 flat + 6 `belief_*_test.go`（A·R8.1 清单）。
+2. drop 新 belief/ 14 文件 + 已 copy 的 engine/adapter/mm/layout_hash（B·R7.3 #3 备注的未 commit 件并入）+ import 改写。
+3. `go build ./...`：残留 _test 引用已删 cut1 符号顺势清（_test 一律可删）。
+4. 全绿才 commit；**commit 前核 `cd tools/Xsensorv1 && git diff` 为空**。
+5. 进 S0.c（engine.go/track_manager.go git diff 比对法焊回 6 API + 输出腿）→ 完成报 A 复审 seam。
+
+*—— A·R9 提交。S0.a GREEN 复核零误报放行 S0.b;纠正 belief 须 git rm -r 整目录(16 孤儿 cp 删不掉)非同名覆盖;删除阻塞已在 A·R8 解(用户裁决 a+清单),指 B 读 A·R6/7/8。——*
