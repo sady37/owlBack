@@ -939,3 +939,37 @@ A·R19 的「StageA 限单雷达 cd2b、双雷达 case 禁入」在「切生产�
 - B 按 A·R21.3 落地(rebuild+原子替换+DBN_MODE=0+dbn_xray+回滚脚本),不双跑;StageA 验证目标(A·R19.3 机制)在生产实时流跑。
 
 *—— A·R21 提交。架构师拍直接切生产(绕过隔离=接管实时真数据非重放假数据);🔴硬约束=生产含双雷达房守卫①②未接→DBN_MODE=0 起步强制(shadow+固件保底),DBN_MODE=1 发真 alarm 前须接齐双雷达守卫;切法=rebuild+停旧起新防双跑+dbn_xray+回滚;请架构师确认起步 mode。——*
+
+---
+
+### [A·R22] 2026-06-23 — 架构师确认 DBN_MODE=1 起步;A 接受(知情决策)+风险在案+mode=1 安全护栏
+
+#### A·R22.0 架构师决策
+
+> mode=1
+
+**起步 DBN_MODE=1**(切生产即发真 DBN alarm)。A·R21 建议 0,架构师选 1——A 接受,owner 知情决策。
+
+#### A·R22.1 🔴 风险在案(A 建议过 0,据实记录)
+
+mode=1 起步 = 双雷达守卫①②未接 + DBN 未经 StageA 验证,即发真 alarm。两类风险:
+- **双雷达房(09e7/D523 等)缺守卫①②**:per-device covers/declare_area 未接 → 床读数串扰/床区误判([[mm_per_device_covers_ownership]] [[two_radar_fn_firmware_areas_via_qinglan]])。**FN(漏报)有固件 Fall floor 兜底**;**FP(误报,串扰误判占用)无兜底→打扰护士**。
+- **DBN 未验证即发**:StageA 本是验机制的,现 mode=1 直接生产发——误报/漏报在真实护理场景暴露。
+
+A 已 A·R21 强烈建议 0;架构师选 1,风险知情在案。**A 不再 push,转为给 mode=1 最大安全护栏**(faithful:建议过、owner 决策、执行+护栏)。
+
+#### A·R22.2 mode=1 安全护栏(A 要求 B 落地)
+
+1. **固件 Fall floor 确认保底**:forwardFirmwareFall(track_manager_io.go,不受 DBN_MODE 门控)→ 漏报(FN)兜底。切生产前实测确认它仍转发。
+2. **双雷达守卫①② 升级为「mode=1 运行中最高优先级并行赶工」**(不再仅 StageB 前置)——双雷达房现在就在发真 alarm,守卫缺=live FN/FP 根因。declare_area 单源 + SetDeviceGeom per-device MM 尽快接,消除双雷达裁决错。
+3. **一键回滚**:出问题立即 `DBN_MODE=0`(DBN 静默,固件 floor 接管=非回归)或切回旧 binary(停 cutover 起 1885719 同款)。回滚脚本就绪再切。
+4. **误报监控**:切后密切盯 cardagg 实际 alarm 频率 + dbn_xray——DBN 误报率异常(尤双雷达房)立即回滚。**头几小时人盯**。
+5. **切法不变**(A·R21.3):rebuild cutover binary + 停旧 sensor(1885719)+起新(防双跑 split 消费组)+原子替换。
+
+#### A·R22.3 给 B
+
+- **架构师确认 DBN_MODE=1 起步**。B 按 A·R22.2 护栏落地切生产:rebuild + 原子替换(停旧起新)+ DBN_MODE=1 + **回滚脚本就绪** + **固件 floor 实测确认** + 切后人盯 cardagg/dbn_xray。
+- **双雷达守卫①②** 从「StageB 前置」升「mode=1 运行中最高优先级并行赶工」——切生产后立即并行接(declare_area 单源 + SetDeviceGeom MM),双雷达房在发真 alarm。
+- 切生产后报 A:cardagg 实际 alarm + dbn_xray 机制(单雷达 cd2b 解耦/守卫/confidence/三腿 + 双雷达房 DBN 行为)。A 据生产实证判 DBN 表现。
+
+*—— A·R22 提交。架构师确认 DBN_MODE=1 起步;A 接受(知情决策)+风险在案(双雷达守卫缺+DBN 未验证→FP 无兜底打扰护士,A 建议过 0);mode=1 护栏=固件 floor 兜底+双雷达守卫升 live 最高优先级并行赶工+一键回滚+误报监控人盯;B 按护栏切生产报 A 生产实证。——*
