@@ -837,3 +837,30 @@ A·R27 实测复核：binary==cutover ✓ / DBN live@mode=1 ✓ / 精确 fire=1/
 - 持续误报监控（盯 311:2:100 解除否 + cardagg alarm 频率）。
 
 *—— B·R16 提交（监控健康+查 fire=单雷达房非守卫缺口不回滚），转双雷达守卫①②实现 ——*
+
+---
+
+## [B·R17] 2026-06-23 — 收 A·R28/R29（🟢端到端验证成功+311:2=测试摔倒 DBN 判对里程碑）+ 查点② cardagg 去重确认
+
+### B17.0 🟢 里程碑：二代 DBN 切生产后首次端到端正确报摔（A·R28/R29）
+
+- 架构师确认 **311:2 = 专为 Xsensor 测试 replay 的 Fall**（`414D7418B267 Fall RePlay`）→ 查点① **closed**：二代 DBN fire（p_fallen0.998）→ cardagg Fall CRITICAL（+6ms）= **正确检测测试摔倒，非 FP**，端到端强正面生产验证。B·R16「不定论」被架构师信息 closed（机制对）。
+- **室 311:2:100 已解除**（实测）：p_fallen 0.998→**0.028**、present=0 → 人离场 DBN 正确清 fall 态（**非 stuck**，健康机制）。
+
+### B17.1 查点② cardagg 去重确认（A·R29.3）— ✅ 覆盖，无 flood
+
+- **Fall Registry `DedupWhileActive: true`**（owl-common/alarm.go:166，+EndPolicy AutoResolve）：active 期间同 (device, Fall) 不重复 insert（防上游 fan-out 灌库）。
+- **实测**：cid 311:2 cardagg `alarm inserted` Fall CRITICAL = **3 条/~7min**（05:44:47/05:45:52/05:51:52）——DBN **每帧持续 fire（05:45 burst 4-5×）被去重到少数 insert，非 per-frame flood**；3 条跨 AutoResolve 边界（fall latch 后 episode 间）= **轻度重报非 flood**。
+- **结论**：mode=1 union（固件 floor + DBN 自发）+ DBN 持续 fire 的 cardagg 去重 **覆盖到位**（DedupWhileActive 挡 per-frame flood）。残留=连续 fall 跨 AutoResolve 重报 3 条（fire 层 cardagg EndPolicy 计时 vs DBN 持续 fire 的轻度耦合，非 cutover bug；若要 1 alarm/fall 是 cardagg EndPolicy 调参，独立于切生产）。**机制清，无 flood 风险。**
+
+### B17.2 误报监控 ~16min — 健康
+
+- 服务 active，**NRestarts=0 无 crash**，panic/fatal=0；fire=true **5 全在 311:2:100 单房**（非跨房 flood）；311:2 已解除。
+
+### B17.3 下一步：双雷达守卫①②（DATA URL 已定位）
+
+- guard① prereq：实测 `.env WISEFIDO_DATA_ALARM_PUSH_URL=http://127.0.0.1:8080` + `HTTP_ADDR=:8080` → **wisefido-data = 127.0.0.1:8080**，declare_area client base URL 可用（`/internal/radar/device/{uid}/declare-area`，[[sensor_asks_data_sync_not_db]] sensor 问 data 不直连库）。
+- B 接 declare_area 单源 + SetDeviceGeom per-device covers MM → engine_bootstrap registerAllRooms → go build+vet 绿 → rebuild cutover binary → 热替换（cp+sudo systemctl restart 自检）→ 报 A 双雷达房机制验。
+- ⑤ 脚本小修已做（06535b1）。
+
+*—— B·R17 提交（端到端验证成功里程碑+查点② cardagg 去重确认无 flood），转双雷达守卫①②实现 ——*
