@@ -76,9 +76,10 @@ const (
 	faLoungeLongSofa    = "Lying Lounge Chair / Long Sofa"
 	faBehindChairTable  = "Behind Chair / Table"
 	faWheelchair        = "Sit in Wheelchair"
-	faElectricAC        = "Electric / AC Interference"
+	faMetalMirror       = "Metal / Mirror (reflection)"
+	faCurtainFanPlants  = "Curtain / Fan / Plants"
+	faPet               = "Pet"
 	faErrorPose         = "Error Pose Detection"
-	faOutOfRange        = "Out of Detection Range"
 	faUnknown           = "Unknown"
 
 	loungePlacementPermanent = "Lounge placement: Permanent (update layout)"
@@ -97,11 +98,12 @@ type ParsedConditions struct {
 	FAWheelchair        bool
 	// 躺类（→ 二次问询 Lounge placement）
 	FALoungeLongSofa bool
-	// 传感误差/干扰
-	FAElectricAC bool
-	FAErrorPose  bool
-	FAOutOfRange bool
-	FAUnknown    bool
+	// 伪迹组（无真人，不进 sit/lying 学习）
+	FAMetalMirror      bool // 静止反射 → ghost
+	FACurtainFanPlants bool // 运动杂波（死物）→ fake
+	FAPet              bool // 活体目标 → fake
+	FAErrorPose        bool // 姿态误判 → 不进 counter
+	FAUnknown          bool // 兜底 → fake
 
 	// Lounge placement 二次问询（仅 FALoungeLongSofa 勾选时有意义）
 	LoungePermanent bool // ↳ permanent → MarkRestZoneByFeedback(AreaBed)
@@ -118,7 +120,8 @@ type ParsedConditions struct {
 // anyFASelected 是否有任一 false_alarm 勾选。
 func (p ParsedConditions) anyFASelected() bool {
 	return p.FASitChairShortSofa || p.FABehindChairTable || p.FAWheelchair ||
-		p.FALoungeLongSofa || p.FAElectricAC || p.FAErrorPose || p.FAOutOfRange || p.FAUnknown
+		p.FALoungeLongSofa || p.FAMetalMirror || p.FACurtainFanPlants || p.FAPet ||
+		p.FAErrorPose || p.FAUnknown
 }
 
 // anySitClass 坐类（Chair/ShortSofa/Behind/Wheelchair → AreaSit）。
@@ -141,9 +144,10 @@ func parseConditions(notes string) ParsedConditions {
 	out.FALoungeLongSofa = hasMark(faLoungeLongSofa)
 	out.FABehindChairTable = hasMark(faBehindChairTable)
 	out.FAWheelchair = hasMark(faWheelchair)
-	out.FAElectricAC = hasMark(faElectricAC)
+	out.FAMetalMirror = hasMark(faMetalMirror)
+	out.FACurtainFanPlants = hasMark(faCurtainFanPlants)
+	out.FAPet = hasMark(faPet)
 	out.FAErrorPose = hasMark(faErrorPose)
-	out.FAOutOfRange = hasMark(faOutOfRange)
 	out.FAUnknown = hasMark(faUnknown)
 
 	// 二次问询 / veto 是 "↳ <marker>" 子行（非 ☑），直接 substring
@@ -453,13 +457,19 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 				routes = append(routes, "lounge_no_action")
 			}
 		}
-		// Electric/AC → ghost 学习（非 lying）
-		if pc.FAElectricAC {
+		// Metal/Mirror（静止反射）→ ghost 学习（继承旧 Electric/AC）
+		if pc.FAMetalMirror {
 			if apply(func(c *Cell) { c.IncrGhostCount() }) {
 				routes = append(routes, "ghost")
 			}
 		}
-		// Error Pose / Out of Range：传感误差，不进任何 counter（§3.2，不污染 lying/sit/ghost）。
+		// Curtain/Fan/Plants（运动杂波）+ Pet（活体）：非人非反射 → 通用假报容忍
+		if pc.FACurtainFanPlants || pc.FAPet {
+			if apply(func(c *Cell) { c.IncrFakeAlarm() }) {
+				routes = append(routes, "fake_generic")
+			}
+		}
+		// Error Pose：姿态误判，不进任何 counter（§3.2，不污染 lying/sit/ghost）。
 		// Unknown 或全无勾选 → 兜底 fake alarm 容忍。
 		if pc.FAUnknown || !pc.anyFASelected() {
 			if apply(func(c *Cell) { c.IncrFakeAlarm() }) {
