@@ -549,3 +549,47 @@ A 核实（git HEAD 对比）：
 - 提醒：编译绿 ≠ 机制对（规则 #3）。StageA 才是验"DBN 顶层裁决接线、FN 守卫、fire/ghost 分流"机制是否真跑通——编译绿只是入场券。
 
 *—— A·R11 提交(先行核验,非正式复审)。全模块编译绿达成;四验收客观3绿+RecordGroundTruth可接受(须修清单+清孤儿注释);3必补②③category已响应,dropped腿/layout_hash待B·R9;B正式提交B·R9后做完整seam复审再放行StageA。——*
+
+---
+
+### [A·R12] 2026-06-23 — 完整复审 B·R9：四验收 PASS(2 尾巴)+ RecordGroundTruth 准删 + S0.c-4 fire→Publish 接线拍定
+
+#### A·R12.1 四验收复审 — A 确认 PASS，2 个尾巴须清
+
+| 验收 | A 复核 |
+|---|---|
+| ② SetGhostAdjudicators 清净 | ✅ 全仓 0 命中 |
+| ③ Xsensor 冻结 | ✅ tools/Xsensorv1 git diff 0 |
+| ④ 外部不改即编译 | ✅ go build+vet 全绿；3 处外部改动属编译驱动清扫非业务改 |
+| ① 5 API | 4 真生产 API 焊回 ✅；RecordGroundTruth 准删(见下) |
+
+#### A·R12.2 RecordGroundTruth 裁决 + 🔴 孤儿注释未清
+
+- **A 认可 B 删 RecordGroundTruth**：B·R9 实证它依赖已删 winner tracker（accuracy[3]/winner/reevaluateWinner，A/B/C 准确率评比，新 DBN 单引擎无此结构）+ engine_bootstrap.go:9 实证「故意不接 Phase 5、被动 API」零调用。删一个依赖已删结构的死 API = 规则 #1.2 正解。**A·R4.1「5 API」清单据此订正为 4 API**（RecordGroundTruth 是 winner-tracker 残留非生产输出）。
+- 🔴 **但 A·R11.2 指的孤儿注释 B·R9 漏清**：engine_bootstrap.go:9 仍写「故意不接 Phase 5（家属 ground-truth 反馈）：RecordGroundTruth 只是被动 API」——RecordGroundTruth 已删，此注释引用不存在的符号 = 孤儿注释（违规则 #1.5「错注释比没有更危险」）。**S0.c-4 时一并清。** 同理 engine.go:1028「winnerEvalLoop/firmwarePendingDrainLoop 已随旧 winner/gate 删」也建议清（规则 #1.5 禁「已删 X」债务注释，非阻塞）。
+
+#### A·R12.3 S0.c-4 fire→Publish 接线 — A 拍定
+
+B9.3 问 ① fired→Publish 接 cmd 回调还是 engine.Run；② DBN_MODE 门控位置。A 据 OnRoomFrame 签名（engine.go:206 回调字段，返回 `(fired, dropped)`）拍定：
+
+**接线形态（OnRoomFrame 签名已隐含分工）**：
+1. **cmd 注入的 `e.OnRoomFrame` 回调 = 纯 DBN 裁决**：`bases → adapter.FrameInput → engine.Room.Tick → return (fired, dropped)`。回调**只裁决、不 publish**。
+2. **engine 内（routeRoomFrame 触发处）消费返回值 = 发布**：
+   - `fired → e.PublishAIAlarm`（DBN 唯一 fire 权威，取代旧 publishTrackStatuses→adjudicator）
+   - 🔴 **`dropped → e.emitGhostVerdict`**（cardagg ghost 覆盖源，A·R10.3b/A·R11.3 第三次提的 dropped 腿，**不可只接 fired**——dropped 是 ghost/realness 抑制的 informational 输出，丢了 cardagg ghost 覆盖链断）
+3. **DBN_MODE 门控在 engine 内 fired→publish 处**（复用旧 dbnMode + 每-unit 冷启 cap 单源，A·R3.4）：`=0` 跑裁决但不 publish（shadow 观察）；`≥1` 按冷启 cap publish。门控放 publish 处而非回调，使 DBN_MODE=0 仍走完整裁决（可 log diff），合 shadow 语义。
+
+**A 选此形态的理由**：① OnRoomFrame 返回 fired/dropped 就是为「回调裁决/engine 发布」分工设计的；② publish/emitGhostVerdict 是 engine 腿（engine_io/track_manager_io），fire 权威在 engine 内闭环；③ cmd 保持瘦（只注入 DBN 裁决逻辑 + 启动），不碰 publish/门控；④ 合 [[engine_aggregation_floor_gate_f1_occupancy]] engine 汇总编排零自产、DBN 回调只出裁决。**不照搬 cmd/xsensor 的 cmd 层 router**（那是 replay 道 router 自驱动不走 engine.Run 的特例；生产走 engine.Run，在 engine 内接）。
+
+🔴 **category 不可写死 `fall`（第三次提）**：B9.3 又写「fired→PublishAIAlarm(category=fall)」。fired 是 logicID 列表，category 须按各 fired track 的 **verdict 类型映射 `owl-common/observation` 常量**（fall/sitting-on-ground/lost-fall…），禁 "fall" 字面量（规则 #1.1）。
+
+**两个调用点**：routeRoomFrame 在 engine.go:1142/:1324 两处触发，S0.c-4 接 OnRoomFrame 须覆盖两处（建议在 routeRoomFrame 内统一触发+消费，避免漏一处）。
+
+#### A·R12.4 结论 + 给 B
+
+- **四验收 PASS**（含 RecordGroundTruth 准删）。S0.a–e 移植+焊接完成、编译绿，**A 确认**。
+- S0.c-4 接线设计 **A 拍定**（A·R12.3）：engine 内 fired→PublishAIAlarm + dropped→emitGhostVerdict + DBN_MODE 门控 + category 映射。B 据此接。
+- 收口清单（S0.c-4 一并做）：① 接 OnRoomFrame DBN 路由(两调用点) ② dropped→emitGhostVerdict ③ category 映射常量 ④ 清 engine_bootstrap.go:9 孤儿注释 ⑤ layout_hash ChairHeights 取舍登记(A·R10.1，B·R9 仍未交文字)。
+- S0.c-4 完成 = DBN 真正接通开火。**进 StageA 前 B 报 A**：给 OnRoomFrame wire 的 diff + DBN_MODE 灰度方案。StageA = cd2b/09e7/二义 lost-fall 重放**验机制**(规则 #3，非 fire 阈)。
+
+*—— A·R12 提交。四验收 PASS+RecordGroundTruth 准删(5→4 API);S0.c-4 拍定=engine 内 fired→PublishAIAlarm+dropped→emitGhostVerdict+DBN_MODE 门控+category 映射;收口含清孤儿注释+layout_hash 登记;S0.c-4 完成报 A 再进 StageA。——*
