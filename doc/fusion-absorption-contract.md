@@ -278,3 +278,18 @@ A 复审 B 的"`GateBlindRow` rho×非-Left→SLeft 向量手术"，提更干净
 3. **latch-first**：`fallLatched`（SFallen 到过 0.85 / 见 pose=fall）每 tick 在注入**最前**判，封顶 2.197 是第二道、latch 是硬底（全强度连续累计照样能抽干真摔）。
 
 **批准条件（焊死）**：① `[rc==1]` 真 hard-gate（承重，不可松）；② GainedReal≥阈 + sleepad vital-gate；③ latch-first；④ **上实现前用 replay 验「多住户 + 二义lost + ghost-gain」三料场景确认不漏**（规则#3，这是新承重门，必须真 case 过，不靠推理）。四条满足即可实现。
+
+#### B 已实现 + 🔴 vital-gate 撤回（须 A 知会，2026-06-22，commit f48fb8e）
+
+§7.7 v2 矩形核全套落地，4 门控里 **③latch-first / ①rc==1 hard-gate / ④replay** 按 A 焊死要求实现并验过；**②的 sleepad vital-gate 经用户裁定撤回**：
+
+- **撤回理由（实证）**：A 的 vital-gate 前提"sleepad InBed ⟹ 有活体 HR/RR"**不成立**。case-d523-13341336 真数据：window_sleepad.json RR **整 case 为空**、接力那刻（979100）pad 帧 HR/RR 都 None（HR 别处有值 51-78，但 InBed 转移刻没锁）。硬 vital-gate 把 **Δ=73s 在窗内的真接力**直接拦死（gain 永不生成）→ 反而制造 FP（安全去隔壁躺床的人，lost 轨 floor 误兜底）。**用户拍：InBed 不必然有 HR/RR，不强制 vital。**
+- **替代去-ghost 判别**（保 A 的 FN 关切）：sleepad gain = **InBed 转移 + streak K(3帧抗噪) + GainedReal≥0.5（de-ghost 后验）+ 单住户 hard-gate**。实测 GainedReal=1.0（真人 de-ghost 到顶）过阈；ghost/镜像 de-ghost 后验低 → 此阈仍判别。残留"压力伪迹"风险低（新 InBed 转移 + 与 lost 同窗有向，静态物难凑）。
+- **请 A 复核**：撤 vital-gate 后"全强度平注入 bulletproof"是否仍成立？A 原认为 vital 是"拿掉衰减后的判别洞补丁"；B 论点 = GainedReal de-ghost 才是承重判别器（§7.7 v2 已定），vital 是"有更好、没有也不该拦"的加分项而非硬门。
+
+**replay 实证（规则#3 查机制，case-d523-13341336）**：
+- rc=1 接力 **fire**：sleepad-bed gain=1.0@979100 → D523 lost 轨 handoffL=**2.20**@005498 + lost_exited=True + top_s Empty→**Left**（durable purge 进行，case 末截断未到 0.9）；Δ=gain−last_observed=**73s** 正在 W_sleepad(150s) 窗。
+- rc=2 **hard-gate**：max handoffL=**0**（多住户挡住 → 不 purge → floor 兜底 → 无 FN）✅。
+- **零回归**：真 fire=0、lid=2 稳（无 churn）。
+- **centering 生效**：lostAt=last-observed(906445) < coast LostReal 帧(907278)，Δ 回正区间。
+- ⚠️ 残留：case 数据末尾截断，只见 SLeft 起涨（Left 0.23）未见 purge 走完（SLeft+SEmpty≥0.9）——机制轨迹明确（exitL=2.20≥flip 每 tick 恒定注入，几 tick 必到），但"purge 走完"待更长 case 或真长躺数据兜底验。
