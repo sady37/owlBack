@@ -129,3 +129,53 @@ A 不机械挡 B——否决方案甲的**原始理由今天可能已消解**，
 - 等待期 B 可并行做的零风险活不变（馈送层 11 文件逐文件对账清单），现在再加一项同样零风险且方案甲直接需要的：**核实守卫① —— grep track_manager.go/ProcessFrame 的隐含 fall 判定残留**，产出清单。
 
 *—— A·R2 提交。已带量化数据请架构师做最终 go/no-go；B 继续 HOLD，可并行做对账清单 + 守卫①核实。——*
+
+---
+
+### [A·R3] 2026-06-23 — 架构师 GO 方案甲（copy-平替形态）；A 正式放行 S0 + 结清 B·R2/R3 全部待办
+
+#### A·R3.0 路线裁决：架构师 GO 方案甲
+
+架构师经对话定调**走方案甲**，并给出比"逐文件手术"更具体的实操形态——**copy-平替**：「Xsensor 本就是从 sensor 同源 copy + 裁掉非 DBN 部分，绝大多数文件直接 copy 进 wisefido-sensor 平替即可」。A 据实测把它精确化为 S0 执行总纲（下 §A·R3.5）。**B 解除 HOLD，可进 S0。**
+
+**copy-平替的唯一陷阱（A 实测确认，B·R2 §B2.2 已独立画出）**：Xsensor 的 `engine.go`/`track_manager.go` 把生产 I/O（`persister` engine.go:207、`PublishAIAlarm`、`aiPublisher` track_manager.go:167）**裁掉了**。这两个文件**绝不能整文件覆盖**——否则发报警/写库/发 card 的代码被一起删，改 redis 指向也救不回（动作代码本身不存在）。这两个文件**以生产版为 base 做 merge**，其余文件 copy 平替。
+
+#### A·R3.1 复查 B·R2 §B2.2 — 对账清单已交付，A 致歉重复点名
+
+A·R2.4 重复点名「11 文件对账清单」确系与 A·R2 起草交叉（B·R2 §B2.2 已交付）。A 已复查，**该清单质量高，A 直接采纳为 S0.5 权威施工图**：seam 边界表（"换 vs 留"划清）、11 文件 port 判定（trivial/careful/手术 三档）、5 风险旗标。B·R3.0 的提醒成立，A 撤回重复要求。
+
+#### A·R3.2 守卫① — A 认可 **通过**
+
+B·R3.1 给了实证（grep `stillFallReportCount`/`reportBedFall`/`reportZDrop`/`reportLostFall`/`reportSilentFall` **零 live 调用**，仅注释残留；`RecordRadarAlarm`/`emitGhostVerdict` 是固件透传+informational 非自发开火）。馈送层零自发算法开火，seam swap 后不双报。**守卫① 结清。**
+
+#### A·R3.3 守卫② — A 高度认可 B 的重大发现，升为 S0 硬删项
+
+B·R3.2 挖出关键事实：`belief_shadow.go` 文件头**谎报** log-only（:17-19「绝不触发任何 alarm」），实际 :878 `dbnSelfFireEnabledFor`→:915 `PublishAIAlarm` **有真实开火路径**，由 `DBN_MODE`+每-unit 冷启 cap 门控。即生产里**已埋一代 cut1 DBN**（默认 `DBN_MODE=0` 静默，但开火能力 wired）。
+
+这修正了 A 此前（含对话中）"belief_shadow 只是纯影子"的表述——**B 的实证更准**。意义：方案甲 seam swap 必须**物理删除 belief_shadow 这条 cut1 开火路径（:878-928）+ ghost_adjudicator gate 裁决**，让 Xsensorv1 `belief/engine`（经 `OnRoomFrame` seam）成为**唯一** fire 权威（规则 #1.2 不留双路）。否则 cut1 DBN 与新 DBN 双报。**守卫② = S0 硬删项，A 列为 StageA 放行前置。**
+
+#### A·R3.4 守卫③ + 开关决策
+
+- **守卫③**（base 缺 `LogicID`/`FwAreaID`/`Present`/`SleepadVitalPresent` 4 字段）：A 认可为 **S0.5 执行项、非阻塞**。S0.5 把 4 字段加进生产 `TrackStatusBase` 且与新 DBN 消费端逐字段语义一致即可。
+- **开关决策（B3.4 请 A 拍）**：A 批准 **B 改议——复用并演进现有 `DBN_MODE`，不新增 `ROOMENGINE_DBN`**。**A 撤回** A·R1§A4/A·R2.4 同意的"默认 shadow `ROOMENGINE_DBN`"建议——B·R3.2 暴露生产已有 `DBN_MODE`(0/1/2)+`DBN_COLD_HOURS`+每-unit 冷启 cap 这套成熟开关，新增 `ROOMENGINE_DBN` 违规则 #1.3 单源、且白丢委员会 §6 冷启 7d 毕业安全语义。**正确做法**：新 DBN 的 self-fire/veto-firmware 走同一套 `DBN_MODE`+冷启 cap；belief_shadow 删开火路径时，把 dbnMode 门控逻辑迁去包裹新 DBN（不是删开关，是把开关的下游从 cut1 改接到二代）。
+
+#### A·R3.5 正式放行：S0 执行清单（A 授权 B 动手）
+
+| 步 | 内容 | 处置 |
+|---|---|---|
+| **S0.a copy 平替** | `belief/`(14) `engine/`(3) `adapter/`(3) `mm.go` `layout_hash.go` = 纯新增直接 copy；8 个 0-diff 文件随意覆盖；trivial 档(sensor_fusion/mirror_detect/static_reflector/layout_load/cell_learning/bathroom_gate)近似平替 | 机械 copy + import 改写 |
+| **S0.b 两文件 merge** | `engine.go`/`track_manager.go` 以**生产版为 base**：按 B·R2 §B2.2 seam 表只换裁决核(删 `beliefShadowTick`/`pickAdjudicator`/`Adjudicate`/`applyVerdictDeltas`，接 `routeRoomFrame→OnRoomFrame→belief/engine`)，**全部生产 I/O 保留**(`PublishAIAlarm`/`aiPublisher`/`emitGhostVerdict`/`persister`/`Run`/`RegisterRoom`/daily reload) | 手术，最大风险点 |
+| **S0.c 守卫② 硬删** | 删 belief_shadow cut1 开火路径(:878-928)+ ghost_adjudicator；dbnMode 门控迁去包裹新 DBN(`DBN_MODE` 单源) | 删旧路径 |
+| **S0.d careful 档** | `cell.go`/`track.go`/`layout_parser.go` port 时保留 `FallRulesParam` 活调层(别硬编码丢可调性，风险旗标③) | port-careful |
+| **S0.e 编译闸** | `int→trackKey` 全调用点清扫(风险旗标①) + `BedAreaIDs` wiring(风险旗标④) + `go vet && go build` 全绿；shadow 编译态(能跑、`DBN_MODE=0` 静默) | 规则 #1.6 自检 |
+| **S0.5** | 守卫③ 补 4 字段 + 逐字段语义对账 | 执行项 |
+
+S0 全绿后进 **StageA(单房 cd2b)**：`DBN_MODE` 灰度开，重放 cd2b/09e7/二义 lost-fall 三红线 case，**验机制不验 fire**(规则 #3)——风险旗标⑤(`EvictTrack` purge+present-coast+`ExitLogOdds` 12s)整组 port 实证仍在 = cd2b lid churn/二义 lost-fall 守卫本体。StageA 绿→StageB(多房 unit)→StageC(删 cmd/xsensor replay 道+旧裁决残骸，A 显式批)。
+
+#### A·R3.6 给 B 的指令
+
+- **B 解除 HOLD，进 S0**。按 §A·R3.5 清单执行；S0.b/S0.c 是两个风险点，完成后**先报 A 复审 seam 切割**再进 S0.e 编译闸。
+- 三道守卫：①已通过 ②升 S0 硬删项 ③S0.5 执行项。开关复用 `DBN_MODE`（已拍）。
+- 进 StageA 前，A 要看到 S0.e 编译绿 + S0.b/c 的 seam diff（确认生产 I/O 一根没丢、旧裁决一条没留）。
+
+*—— A·R3 提交。架构师 GO 方案甲(copy-平替)，B 解除 HOLD 进 S0；S0.b/c 完成先报 A 复审 seam。——*
