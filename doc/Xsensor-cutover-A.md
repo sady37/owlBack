@@ -1163,3 +1163,43 @@ dbn_xray 样本:`n_r=1, present_cnt=1, p_fallen=0.0027, band=no, fire=false, bed
 - 持续观察 cardagg DBN alarm + dbn_xray;A 会独立复核 log。下一步:守卫①②接齐 → 双雷达房机制验 → StageB。
 
 *—— A·R27 提交。实测复核切生产成功(binary==cutover)+DBN live@mode=1+fire 健康(精确"fire":true=1/1292,B fire≈0 属实;A 自我纠正模糊 grep 误得 643=跨字段误匹配);机制实证 p_fallen 低不误 fire(规则#3);A 能独立读 log 复核;给 B 查那 1 次 fire+双雷达守卫并行+脚本小修。——*
+
+---
+
+### [A·R28] 2026-06-23 — A 主动复核生产 log:🟢端到端链路打通(DBN→cardagg Fall)+2 查点(311:2 真伪/重复报警去重)
+
+A 不等 B,主动读 log/wisefido-sensor.log + cardagg.log 复核 DBN live 表现(A·R27.4 能力)。
+
+#### A·R28.1 🟢 端到端链路打通(关键正面实证)
+
+| 时刻 | 事件 |
+|---|---|
+| dbn_xray 05:45:52.991 房 311:2:100 | `p_fallen=0.9988, fire=true, band=report, n_r=1, present=1, bed=NoReport` |
+| cardagg 05:45:52.997(**+6ms 同房**) | `alarm inserted type=Fall level=CRITICAL` cid 311:2::/80 |
+
+**二代 DBN 自发 fire → PublishDBNFall → iot:alarm:stream → cardagg Fall CRITICAL,端到端 work**。整条新链路(A·R12.3 fire→Publish + A·R16 三腿)生产实证通。
+
+#### A·R28.2 校准 A·R27「fire≈0」认知
+
+非「DBN 不 fire」,而是**房 311:2:100 检测到持续 fall**(每帧 fire,p_fallen 持续 0.9988;n_r=1 present bed=NoReport=一真人躺非床区),其余房 p_fallen 低(0.0027)。A·R27 说 fire=1,log 增长后 3 条(**同一 fall 持续 fire,非 3 独立事件**)。DBN 自发 fire 路径通且只对这一处高 p_fallen fire(不滥发)。
+
+#### A·R28.3 ⚠️ 查点①:311:2:100 是真摔(测试)还是 FP?
+
+- 证据:n_r=1 真人 + present + bed=NoReport(非床) + p_fallen 0.9988 持续 = 一人持续躺非床区。
+- DBN 判 fall。**若 311:2 当时真有测试摔倒(测试员躺,[[fall_data_is_artificial_test]])→ DBN 正确 fire(机制对✅);若无人摔(静止物/反射误判)→ FP**。
+- **请 B/架构师确认** 05:45 前后 311:2:100 有无测试摔倒/真人躺。这决定这次 fire 是「机制正确」还是「首个 FP」。
+
+#### A·R28.4 ⚠️ 查点②:重复报警去重(mode=1 union + 持续 fire)
+
+- cardagg 311:2 两条 Fall inserted:05:44:47(trace fff1=疑固件 floor) + 05:45:52(DBN 自发)= **mode=1 union(固件地板 + DBN 自发各报一次同 fall)**。
+- + DBN 每帧持续 fire(311:2 多条 fire=true)→ cardagg 多次 insert 风险。
+- **观察点**:cardagg AlarmRouter 去重窗是否够(防同一 fall 被固件+DBN+每帧 flood)。05:39 有 auto-resolved=去重存在,但 05:44/05:45 两条未去重。测试环境无害,但**生产同一 fall 多源多帧重复报警**须 B 确认 cardagg 去重覆盖(Registry EndPolicy/dedup 窗)。
+
+#### A·R28.5 给 B
+
+- 🟢 端到端链路通(A 实测 DBN→cardagg Fall CRITICAL),二代 DBN 生产报警 work。
+- **查点①**:确认 311:2:100 05:45 有无测试摔倒(真摔=机制对/无=首 FP)→报 A。
+- **查点②**:cardagg 对「同 fall 固件+DBN union + DBN 每帧持续 fire」的去重是否覆盖(防 flood);测试无害但机制须清。
+- 双雷达守卫①②并行赶工(不变)。A 持续独立读 log 复核。
+
+*—— A·R28 提交(A 主动读 log)。🟢端到端打通:DBN 自发 fire(p_fallen0.9988 房311:2)→cardagg Fall CRITICAL(+6ms);校准 A·R27(非不 fire,是 311:2 持续 fall 每帧 fire 非滥发);⚠️查点①311:2 真摔(测试)vs FP 请确认②mode=1 union+持续 fire 的 cardagg 去重覆盖;二代 DBN 生产报警 work。——*
