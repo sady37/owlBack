@@ -222,6 +222,8 @@ type Engine struct {
 	feedbackIngester *AlarmFeedbackIngester
 	dailyReloadHour int
 	dailyReloadDB   *sql.DB
+	unitFirstTrackMs map[string]int64 // suiteID → 首见 track 时戳（DBN_MODE 冷启 cap，dbn_mode.go）
+	coldStartMu      sync.Mutex
 }
 
 // RuntimeConfig 与 owlBack/tools/Xsensorv1/internal/config::RoomEngineConfig 一一对应；
@@ -287,6 +289,7 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		dailySnapshotHour:   11,
 		dailySnapshotMinute: 50,
 		historyRetainDays:   365,
+		unitFirstTrackMs:    make(map[string]int64),
 	}
 }
 
@@ -806,10 +809,22 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 		}
 		fired, dropped := e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds)
 		if tm != nil {
+			// S0.c-4 fire→Publish（A·R12.3）：DBN 唯一 fire 权威在 engine 内闭环。
+			// fired → PublishAIAlarm（DBN_MODE 门控：=0 跑裁决不发=shadow；≥1 按冷启 cap 发）。
+			suiteID := e.roomSuiteID[roomID]
+			if suiteID == "" {
+				suiteID = roomID
+			}
+			fireEnabled := e.dbnSelfFireEnabledFor(suiteID, nowMs)
 			for _, lid := range fired {
 				tm.ResetStillBox(lid) // fall fire → still-box 从 0 热机（belief 已在 DBN 侧就地复位）
+				if fireEnabled {
+					tm.PublishDBNFall(lid, nowMs) // DBN Fallen fire → iot:alarm:stream（category=alarm.Fall）
+				}
 			}
+			// dropped → emitGhostVerdict（守卫① ghost 覆盖源不丢；不受 DBN_MODE 门控，informational 非 alarm）。
 			for _, lid := range dropped {
+				tm.EmitDBNGhostVerdict(lid, nowMs)
 				tm.EvictTrack(lid) // 确认离场/空 → 立即删 track，停 12s coast 期 re-feed（防 census churn）
 			}
 		}

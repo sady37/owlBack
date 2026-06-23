@@ -194,3 +194,42 @@ func (tm *TrackManager) forwardFirmwareFall(a RadarFallAlarm) {
 	}
 	tm.aiPublisher.PublishAIAlarm(context.Background(), payload, emitCat, a.TMs)
 }
+
+// trackByLogicID 按 LogicID 反查在管 TrackState（fire/drop 发布腿用）。调用方持 tm.mu。
+func (tm *TrackManager) trackByLogicID(lid string) *TrackState {
+	for _, ts := range tm.tracks {
+		if ts.LogicID == lid {
+			return ts
+		}
+	}
+	return nil
+}
+
+// PublishDBNFall DBN fire 发布腿（S0.c-4，A·R12.3）：fired logicID → 构 payload → emitAIAlarm(alarm.Fall)。
+// DBN_MODE 门控在 engine 内 dbnSelfFireEnabledFor（本方法只发，调用方已判门控）。
+func (tm *TrackManager) PublishDBNFall(lid string, nowMs int64) {
+	tm.mu.Lock()
+	ts := tm.trackByLogicID(lid)
+	var p AIPayload
+	if ts != nil {
+		p = tm.payloadFromTrack(ts)
+	}
+	tm.mu.Unlock()
+	if ts == nil {
+		return
+	}
+	p.Reason = "dbn_fall"
+	tm.emitAIAlarm(p, alarm.Fall, nowMs)
+}
+
+// EmitDBNGhostVerdict DBN dropped 输出腿（S0.c-4，守卫① ghost 覆盖源不丢）：
+// dropped(ghost/realness 抑制) logicID → emitGhostVerdict → ai:track:verdict:stream（cardagg ghost 覆盖）。
+func (tm *TrackManager) EmitDBNGhostVerdict(lid string, nowMs int64) {
+	tm.mu.Lock()
+	ts := tm.trackByLogicID(lid)
+	tm.mu.Unlock()
+	if ts == nil {
+		return
+	}
+	tm.emitGhostVerdict(ts, "dbn_dropped", "dbn_state_drop", nowMs)
+}
