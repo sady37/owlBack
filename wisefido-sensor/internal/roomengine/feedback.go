@@ -5,12 +5,15 @@
 // 反馈源（cardagg 前端 admin 标记 → alarm_events.notes）：
 //
 //   operation='false_alarm' (False Alarm Reason；label 镜像 owlFront/src/utils/alarm.ts):
-//     ☑ Sit on Chair / Short Sofa · Behind Chair / Table · Sit in Wheelchair
+//     ☑ Sit on Chair / Short Sofa · Sit in Wheelchair
 //                                          → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaSit)
+//         ↳ Sit zone pin                   → 追加 Chair object（reload→AreaSit 神圣不衰减）
 //     ☑ Lying Lounge Chair / Long Sofa     → 二次问询 ↳ Lounge placement:
 //         "Permanent (update layout)"      → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaBed) 永久学 lying
 //         "Temporary (suppress 2h)"        → cell.FallSuppressUntilMs = handTime + 2h
 //         (无 ↳ 行)                         → 不动 layout
+//     ☑ BlindArea / No Fall (家具后遮挡盲区) ↳ permanent → 追加 Furniture object（reload→AreaDeny；保留 5min tFloor 兜底真摔）
+//     ☑ Enter / Door (未画出口)             ↳ 直接 → 追加 Enter object（reload→AreaEnter）
 //     ☑ Electric / AC Interference         → GhostCount++（ghost 学习，非 lying）
 //     ☑ Error Pose Detection / Out of Detection Range → 不进任何 counter（传感误差，非空间属性）
 //     ☑ Unknown / 无勾选                    → FakeAlarmCount++（兜底容忍）
@@ -74,7 +77,8 @@ func NewAlarmFeedbackIngester(db *sql.DB, engine *Engine, logger *zap.Logger) *A
 const (
 	faSitChairShortSofa = "Sit on Chair / Short Sofa"
 	faLoungeLongSofa    = "Lying Lounge Chair / Long Sofa"
-	faBehindChairTable  = "Behind Chair / Table"
+	faBlindAreaNoFall   = "BlindArea / No Fall"
+	faEnterDoor         = "Enter / Door"
 	faWheelchair        = "Sit in Wheelchair"
 	faMetalMirror       = "Metal / Mirror (reflection)"
 	faCurtainFanPlants  = "Curtain / Fan / Plants"
@@ -89,6 +93,8 @@ const (
 	// 永久加区 marker（owlFront alarm.ts SIT_PIN_MARKER / DENY_ZONE_MARKER）。
 	sitPinMark   = "Sit zone: pin permanently (update layout)"
 	denyZoneMark = "Interference zone: mark permanently (deny, update layout)"
+	blindAreaMark = "Blind area: mark permanently (no-fall zone, update layout)"
+	enterDoorMark = "Exit zone: add permanently (update layout)"
 )
 
 // fallSuppressTemporaryMs 躺类"临时 2H 禁报"窗口长度。
@@ -98,8 +104,10 @@ const fallSuppressTemporaryMs int64 = 2 * 3600 * 1000
 type ParsedConditions struct {
 	// 坐类（→ AreaSit 学习）
 	FASitChairShortSofa bool
-	FABehindChairTable  bool
 	FAWheelchair        bool
+	// 盲区/出口（左列良性，→ AreaDeny / AreaEnter，不进 sit 学习）
+	FABlindAreaNoFall bool
+	FAEnterDoor       bool
 	// 躺类（→ 二次问询 Lounge placement）
 	FALoungeLongSofa bool
 	// 伪迹组（无真人，不进 sit/lying 学习）
@@ -114,8 +122,10 @@ type ParsedConditions struct {
 	LoungeTemporary bool // ↳ temporary → FallSuppressUntilMs = now+2h
 
 	// 永久加区二次动作（追加 layout 对象）
-	SitPin   bool // ↳ sit zone pin → 追加 Chair object（reload→AreaSit 神圣）
-	DenyZone bool // ↳ interference zone → 追加 Interfere object（reload→AreaDeny）
+	SitPin        bool // ↳ sit zone pin → 追加 Chair object（reload→AreaSit 神圣）
+	DenyZone      bool // ↳ interference zone → 追加 Interfere object（reload→AreaDeny）
+	BlindArea     bool // ↳ blind area permanent → 追加 Furniture object（reload→AreaDeny）
+	EnterDoorZone bool // ↳ enter/door（勾 reason 即永久）→ 追加 Enter object（reload→AreaEnter）
 
 	// verified
 	StickyVeto bool // ↳ sticky veto → MarkLearnBlocked
@@ -127,14 +137,14 @@ type ParsedConditions struct {
 
 // anyFASelected 是否有任一 false_alarm 勾选。
 func (p ParsedConditions) anyFASelected() bool {
-	return p.FASitChairShortSofa || p.FABehindChairTable || p.FAWheelchair ||
+	return p.FASitChairShortSofa || p.FAWheelchair || p.FABlindAreaNoFall || p.FAEnterDoor ||
 		p.FALoungeLongSofa || p.FAMetalMirror || p.FACurtainFanPlants || p.FAPet ||
 		p.FAErrorPose || p.FAUnknown
 }
 
-// anySitClass 坐类（Chair/ShortSofa/Behind/Wheelchair → AreaSit）。
+// anySitClass 坐类（Chair/ShortSofa/Wheelchair → AreaSit）。Behind 已退役为 BlindArea(→AreaDeny)，不再进 sit。
 func (p ParsedConditions) anySitClass() bool {
-	return p.FASitChairShortSofa || p.FABehindChairTable || p.FAWheelchair
+	return p.FASitChairShortSofa || p.FAWheelchair
 }
 
 // parseConditions 从 alarm_events.notes 提取勾选/标记状态；label 严格对齐 owlFront alarm.ts。
@@ -150,7 +160,8 @@ func parseConditions(notes string) ParsedConditions {
 
 	out.FASitChairShortSofa = hasMark(faSitChairShortSofa)
 	out.FALoungeLongSofa = hasMark(faLoungeLongSofa)
-	out.FABehindChairTable = hasMark(faBehindChairTable)
+	out.FABlindAreaNoFall = hasMark(faBlindAreaNoFall)
+	out.FAEnterDoor = hasMark(faEnterDoor)
 	out.FAWheelchair = hasMark(faWheelchair)
 	out.FAMetalMirror = hasMark(faMetalMirror)
 	out.FACurtainFanPlants = hasMark(faCurtainFanPlants)
@@ -163,6 +174,8 @@ func parseConditions(notes string) ParsedConditions {
 	out.LoungeTemporary = strings.Contains(notes, loungePlacementTemporary)
 	out.SitPin = strings.Contains(notes, sitPinMark)
 	out.DenyZone = strings.Contains(notes, denyZoneMark)
+	out.BlindArea = strings.Contains(notes, blindAreaMark)
+	out.EnterDoorZone = strings.Contains(notes, enterDoorMark)
 	out.StickyVeto = strings.Contains(notes, stickyVetoMark)
 
 	return out
@@ -328,6 +341,12 @@ func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
 	if operation == "false_alarm" && pc.DenyZone {
 		i.appendFeedbackObject(ctx, deviceAddr, canvas.X, canvas.Y, eventID, feedbackInterfereObject)
 	}
+	if operation == "false_alarm" && pc.BlindArea {
+		i.appendFeedbackObject(ctx, deviceAddr, canvas.X, canvas.Y, eventID, feedbackBlindObject)
+	}
+	if operation == "false_alarm" && pc.EnterDoorZone {
+		i.appendFeedbackObject(ctx, deviceAddr, canvas.X, canvas.Y, eventID, feedbackEnterObject)
+	}
 
 	i.logger.Info("alarm_feedback_marked",
 		zap.String("event_id", eventID),
@@ -361,6 +380,8 @@ var (
 	feedbackLoungeObject    = feedbackObjectSpec{"feedback_lounge_", "Lounge (learned)", "LongSofa", "furniture", "#c19a6b", 40, "feedback_lounge_object_appended"}
 	feedbackSitObject       = feedbackObjectSpec{"feedback_sit_", "Sit zone (pinned)", "Chair", "furniture", "#a0522d", 90, "feedback_sit_object_appended"}
 	feedbackInterfereObject = feedbackObjectSpec{"feedback_deny_", "Interference (marked)", "Interfere", "interference", "#4a4a4a", 120, "feedback_interfere_object_appended"}
+	feedbackBlindObject     = feedbackObjectSpec{"feedback_blind_", "Blind area (no-fall)", "Furniture", "furniture", "#d3d3d3", 80, "feedback_blind_object_appended"}
+	feedbackEnterObject     = feedbackObjectSpec{"feedback_enter_", "Exit (learned)", "Enter", "structure", "#a9eaa9", 0, "feedback_enter_object_appended"}
 )
 
 // appendFeedbackObject 把"永久加区"动作作为 source='Feedback' object 并发安全 append 进
@@ -428,9 +449,10 @@ func (i *AlarmFeedbackIngester) appendFeedbackObject(ctx context.Context, device
 //
 // 路由规则（设计 §3.2/§3.3/§1，label 见上方常量）：
 //   operation=false_alarm:
-//     坐类(Chair/ShortSofa/Behind/Wheelchair) → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaSit)
+//     坐类(Chair/ShortSofa/Wheelchair)        → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaSit)
 //     躺类(Lounge/LongSofa) + ↳ Permanent     → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaBed)
 //     躺类 + ↳ Temporary                       → cell.FallSuppressUntilMs = nowMs + 2h
+//     BlindArea/Enter（加区动作走 handler appendFeedbackObject，非 cell counter）
 //     Electric/AC                              → GhostCount++
 //     Error Pose / Out of Range                → 不进 counter（传感误差）
 //     Unknown 或全无勾选                        → FakeAlarmCount++
