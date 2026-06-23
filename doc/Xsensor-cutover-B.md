@@ -432,3 +432,49 @@ A·R4.1/R5.2 列焊回 **5 个 API**含 `RecordGroundTruth`。B 实做发现：`
 - **请 A 复审此 fire→Publish 接线设计**（B·R8 已提，A 尚未拍）：① fired→PublishAIAlarm(category=fall) 接在 cmd 的 OnRoomFrame 回调？还是 engine.Run 消费 routeRoomFrame 的 fired 返回？② DBN_MODE 门控位置（沿用旧 dbnMode 语义包裹新 DBN）。A 拍后 B 接 S0.c-4 → 进 StageA。
 
 *—— B·R9 提交（S0 编译绿里程碑 + 复审四验收 PASS + RecordGroundTruth 偏离报备 + S0.c-4 fire→Publish 待 A 复审），90s 后查 A ——*
+
+---
+
+## [B·R10] 2026-06-23 — 收 A·R10/R11（交叉 B·R9）：落实 doc 必补 4 项 + S0.c-4 fire→Publish 设计（A·R10.3 已批方向）
+
+### B10.0 收 A·R10/R11（与 B·R9 交叉提交，结论一致）
+
+A·R10（复审 B·R8 seam）+ A·R11（先行核验编译绿）批准 S0.c 焊接方向 + fire→Publish 方向（A·R10.3），提 3 必补 + RecordGroundTruth 两尾巴。B·R9 已交编译绿里程碑 + 四验收，本轮 B·R10 补齐 A·R10/R11 的全部 doc 必补 + S0.c-4 设计。
+
+### B10.1 doc 必补落实（A·R10/R11）
+
+1. **RecordGroundTruth 清单修正（A·R11.2.1）**：B·R8.1 把 `RecordGroundTruth` 列「必须焊回」= **清单误判**。实评：它依赖已删 winner tracker（`accuracy[3]`/`winner`）+ `engine_bootstrap.go` 实证「故意不接 Phase 5、零调用点」→ **有意不焊，随 winner tracker 删**（规则 #1.2 删 dead API）。A·R11.2 已判可接受、无功能回归。✅
+2. **孤儿注释清理（A·R11.2.2）✅ 已落地 commit 4f1e913**：删 `engine_bootstrap.go:9` 引用已删 RecordGroundTruth/winner 的注释（规则 #1.5「错注释比没有更危险」+ #1.2）。Phase 5 彻底不接（API 已删）。
+3. **layout_hash ChairHeights 取舍登记（A·R10.1 必补①）**：B 删 Xsensor `layout_hash.go` 保生产 `persist.go::LayoutHash`。**语义取舍登记**：Xsensor 版把 `cfg.ChairHeights` 纳入 layout hash，生产版无 → 此后 **ChairHeights 变更不触发 grid-invalidate / snapshot 重算**。**取舍理由**：① belief/engine 子包零消费 ChairHeights（A·R10.1 grep 实证）② 生产 persist.go 是 sensor_v2 演进权威版（带 EnterTarget/RoomType）。**风险登记**：仅"改椅子高度"这一极窄 layout 变更不会刷新 grid 缓存；StageA 留意 layout 变更场景无回归。**非阻塞，已显式登记不静默。**
+4. **track_manager.go 输出腿焊接 map 补交（A·R10.2 必补②，同 engine.go map 格式）**：
+
+| 输出腿 | 流 | 处置 | 实现位置 |
+|---|---|---|---|
+| `emitGhostVerdict` | `ai:track:verdict:stream` | **KEEP**（cardagg ghost 覆盖源，守卫① informational） | track_manager_io.go（复原） |
+| `forwardFirmwareFall`（旧 RecordRadarAlarm 转发腿） | `iot:alarm:stream` | **KEEP**（固件 Fall 即时 ground floor） | track_manager_io.go（新方法）；RecordRadarAlarm 加 1 行调用 |
+| `aiPublisher` 注入 | — | **KEEP** | RegisterRoom `tm.SetAIPublisher(e)` |
+| `payloadFromTrack`/`emitAIEvent`/`emitAIAlarm` | helper | **KEEP** | track_manager_io.go（复原） |
+
+三条输出腿一根没丢（守卫① KEEP 全保）。
+
+### B10.2 S0 代码状态（commit 2a65905 + 4f1e913，go build+vet 全绿）
+
+S0.a/b/c-1/2/3/5/d/e **全部落地编译绿**；唯一剩 **S0.c-4（DBN 路由 fire→Publish 接线）** = 下一交付（A·R10.3 已批方向）。当前态 = DBN_MODE=0 静默 + 固件 Fall floor 保留（非回归）。
+
+### B10.3 S0.c-4 设计（按 A·R10.3 批准方向 + 2 补充落实）
+
+实测 `engine.Frame`（engine.Room.Tick 返回）：`Decision.Fire`/`Decision.Band`/`Probe.PFallen` + `FiredLogicIDs`/`DroppedLogicIDs`（互斥）。设计：
+
+- **接线**：仿 cmd/xsensor `dbnRouter`（冻结只读，仅参考）——cmd/wisefido-sensor 新建 `dbn_router.go`：`onRoomFrame(roomID, bases, bed, nowMs, exitLogOdds)` build `adapter.FrameInput` → `engine.Room/Unit.Tick` → `Frame`。bootstrap 每房懒建 `engine.Room` + `SetDeviceGeom`（MM 床耦合冻结注入）+ `engine.OnRoomFrame = router.onRoomFrame`。
+- **(a) category 映射（A·R10.3a，禁字面量规则 #1.1）**：DBN fire = `Fallen` 隐态过阈 → alarm category 用 `owl-common/observation`/`alarm` **常量**（非 "fall" 字面量）。DBN 自有 fire 是 Fallen 家族；firmware Fall/SittingOnGround 子型走 `forwardFirmwareFall`（已焊）。lost-fall 变体（blind 态 fire）= 同 Fallen category（Frame 不另分子型；若需区分由 Band/blind 标记，StageA 核）。
+- **(b) fired/dropped 分流（A·R10.3b，守卫① KEEP）**：
+  - `FiredLogicIDs` → 每 fired track build payload → **`PublishAIAlarm`**（category 映射）= DBN 唯一 fire 权威（守卫②）。
+  - `DroppedLogicIDs` → **`emitGhostVerdict`**（ghost/realness 抑制的 informational → cardagg ghost 覆盖源，守卫① KEEP）。**不漏 dropped 腿。**
+  - 返回 (fired, dropped) 给 routeRoomFrame：fired→复位 still-box；dropped→evict track 停 coast（churn 防护）。
+- **DBN_MODE 门控**：沿用旧 `DBN_MODE`+冷启 cap 语义（B3.2/A·R3.4 单源），包裹新 DBN self-fire；DBN_MODE=0 = onRoomFrame 算但不 PublishAIAlarm（静默对账），≥1 灰度发。
+
+### B10.4 下一步
+
+B 接 **S0.c-4 实现**（dbn_router.go + bootstrap 接线 + category 常量映射 + fired/dropped 分流 + DBN_MODE 门控），go build+vet 绿后 commit → 提 **B·R11 完整 seam**（含 S0.c-4 实现 diff）→ A 完整 seam 复审 → 放行 StageA（cd2b 重放验机制，规则 #3）。
+
+*—— B·R10 提交（doc 必补 4 项落实 + S0.c-4 设计，A·R10.3 已批方向），继续 S0.c-4 实现 ——*
