@@ -478,3 +478,19 @@ S0.a/b/c-1/2/3/5/d/e **全部落地编译绿**；唯一剩 **S0.c-4（DBN 路由
 B 接 **S0.c-4 实现**（dbn_router.go + bootstrap 接线 + category 常量映射 + fired/dropped 分流 + DBN_MODE 门控），go build+vet 绿后 commit → 提 **B·R11 完整 seam**（含 S0.c-4 实现 diff）→ A 完整 seam 复审 → 放行 StageA（cd2b 重放验机制，规则 #3）。
 
 *—— B·R10 提交（doc 必补 4 项落实 + S0.c-4 设计，A·R10.3 已批方向），继续 S0.c-4 实现 ——*
+
+---
+
+## [B·R10.1] 2026-06-23 — 收 A·R12（四验收 PASS + RecordGroundTruth 准删 5→4 API + S0.c-4 拍定）；锁定 S0.c-4 实现计划
+
+A·R12 完整复审 B·R9：**四验收 PASS**，RecordGroundTruth 准删（清单订正 5→4 API），**S0.c-4 fire→Publish 接线 A·R12.3 拍定**。B 据 A·R12.3 锁定实现（**修正 B·R10.3：发布在 engine 内不在 cmd**）：
+
+- **接线分工（A·R12.3 拍定）**：cmd 注入的 `e.OnRoomFrame` 回调 = **纯 DBN 裁决**（bases→`adapter.FrameInput`→`engine.Room.Tick`→return `(fired,dropped)`，**不 publish**）；**engine 内 routeRoomFrame（engine.go:807 OnRoomFrame 返回处）消费 = 发布**：`fired→e.PublishAIAlarm` + `dropped→e.emitGhostVerdict`（守卫① ghost 覆盖腿不丢）。**不照搬 cmd/xsensor 的 cmd 层 router**（replay 特例）。
+- **DBN_MODE 门控在 engine 内 publish 处**（A·R12.3）：=0 跑裁决不 publish（shadow 对账）；≥1 按冷启 cap publish。**注意**：旧 `dbnMode`+冷启 cap 逻辑在已删的 belief_shadow.go → S0.c-4 须**重建**（迁去包裹新 DBN，B3.2），新建 `dbn_mode.go`（parseDBNMode env + per-unit 冷启 cap + dbnSelfFireEnabledFor）+ Engine `unitFirstTrackMs` 字段。
+- **category 常量（A·R12.3，第三次提，禁字面量 #1.1）**：DBN Fallen fire → `alarm.Fall` **常量**（实测 owl-common/alarm:89；DBN 自有 fire 是 Fallen 家族，firmware Fall/SittingOnGround 子型已走 forwardFirmwareFall）。
+- **S0.c-4 收口清单（A·R12.4）**：① engine 内接 OnRoomFrame fired/dropped 消费(routeRoomFrame:807，覆盖两调用点:1142/:1324) ② dropped→emitGhostVerdict ③ category=alarm.Fall 常量 ④ 清 engine.go:1028「已删 X」债务注释（engine_bootstrap.go:9 已清 4f1e913）⑤ layout_hash ChairHeights 取舍登记（B·R10.1 §B10.1.3 已登记，A·R12.4 称未交=交叉 B·R9/R10，已在 B·R10）。
+- **dbnRouter 实现（cmd 侧纯裁决）**：cmd/wisefido-sensor 新建 `dbn_router.go` 仿 cmd/xsensor onRoomFrame（只读参考）build FrameInput→engine.Room.Tick；bootstrap 每房懒建 engine.Room+SetDeviceGeom+set `e.OnRoomFrame`。
+
+**B 接 S0.c-4 实现**（FN 关键 fire 路径，新会话 fresh context 谨慎落地）：engine publish leg + dbn_mode.go 门控重建 + cmd dbn_router.go + bootstrap 接线 + tm 按 logicID 取 payload/emitGhost helper；go build+vet 绿后 commit → 提 **B·R11 完整 seam（含 OnRoomFrame wire diff + DBN_MODE 灰度方案）** → A 复审 → StageA。
+
+*—— B·R10.1 提交（A·R12 拍定收讫 + S0.c-4 计划锁定），继续 S0.c-4 实现 ——*
