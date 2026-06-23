@@ -775,3 +775,36 @@ A·R20 ✅ 认可 B 安全闸 + 实测校准：方案(a) 独立 REDIS_DB **当�
 - ⚠️ **B 在最终确认前绝不跑 --go**（生产未碰：service active，.env DBN_MODE=2）。
 
 *—— B·R14 提交（护栏就绪+mode=1 风险重申，请最终确认执行 --go），90s 后查确认 ——*
+
+---
+
+## [B·R15] 2026-06-23 — 收 A·R23/R24 + 🟢 切生产已执行成功：DBN 二代 live @ mode=1，机制健康（fire=0 无 FP）
+
+### B15.0 收 A·R23/R24（DBN_MODE 语义二次纠正，净结论=A·R21 实质对+架构师 mode=1）
+
+- A·R24（读实现，非信注释）最终定调：**「否决固件」轴未实现**（forwardFirmwareFall 无条件，固件地板永在）→ mode=0=真 shadow / **mode=1=2=固件 floor+DBN 自发**。切 cutover mode=1 = **与当前 prod 行为一致**（prod mode2≡1），仅 cut1 DBN→二代 DBN（belief 验证过）= **非回退是换代**。go 链完整。
+- ✅ **修害人注释**（A·R24.5 规则#1.5）：`dbn_mode.go`+`.env` 的「否决固件」三档注释已订正（标注未实现/mode2=mode1/0=真shadow），commit c4ba6ba。
+
+### B15.1 🟢 切生产已执行（cut-to-cutover.sh --go，commit 链已 push）
+
+go 链完整（A·R21 切生产+A·R22 mode=1+A·R24 语义实测）+ 护栏就绪 → B 执行。**实测成功**：
+
+| 验收 | 实测 |
+|---|---|
+| 服务健康 | `active`，新 PID 1559550，**NRestarts=0 无 crash**，running cutover binary（cmp == .cutover ✓） |
+| DBN 接通 | log: **"roomengine: DBN router wired" units:12 rooms:12** + "DBN(belief/engine) sole fire authority via OnRoomFrame" |
+| DBN_MODE | =1（固件 floor + DBN 自发） |
+| dbn_xray 流 | **294+ 行**：DBN 裁决 live 生产流（room 1:2:100/1:3:100，n_r=1，present=1，bed=NoReport） |
+| 🔴 误报监控 | **fire=true count = 0**（近 500 dbn_xray）→ DBN 不误发（在场未摔的人正确不 fire），**无 FP flood** |
+| 生产子系统 | zone engine started + alarm consumer(iot:alarm:stream) + "v2 fall detection — all 3 layers armed" 全健康 |
+| 固件 floor | forwardFirmwareFall 无门控（B·R14 实测✓）→ FN 兜底 intact |
+
+**注**：脚本 exit=1 是假警（`systemctl restart` 因旧进程 SIGKILL-stop 返非零，但新实例启动成功 active）；已手动跑完 step5 自检确认。脚本待小修（restart `|| true` + 依赖 is-active 判定）。
+
+### B15.2 护栏状态（A·R22/R24）+ 下一步
+
+- ① 固件 floor 兜 FN ✅ / ③ 一键回滚就绪（`.env DBN_MODE=0`+restart 或 rollback.sh）✅ / ④ 误报监控：现 fire=0 健康，**继续头几小时盯 cardagg alarm 频率（尤双雷达房）** / ⑤ 原子替换防双跑 ✅。
+- **② 双雷达守卫①② 升最高优先级并行赶工**（A·R22.2.2）：cutover live mode=1，双雷达房现在就在跑 DBN 自发，守卫缺=双雷达 FP 根因 → B **立即接** declare_area 单源 + SetDeviceGeom per-device MM。
+- 切后报 A（本 B·R15）：cardagg 实际 alarm + dbn_xray 机制（单雷达解耦/守卫/confidence/三腿 + 双雷达房 DBN 行为 + FP 频率=0）。请 A 据生产实证判 DBN 表现。
+
+*—— B·R15 提交（切生产成功 DBN 二代 live @ mode=1 机制健康 fire=0 无 FP），B 转入双雷达守卫①②并行赶工 + 持续误报监控 ——*
