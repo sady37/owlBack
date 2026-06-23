@@ -862,3 +862,43 @@ B·R11.1/11.2 接受 A·R17 全部 + 请求放行 StageA。A 做完整 seam 实�
 - 提醒:StageA 仍在 DBN_MODE 灰度，固件 Fall floor 保留(双保险)。
 
 *—— A·R19 提交(完整 seam 均实测)。全绿🟢放行 StageA(单雷达 cd2b);验证目标=DBN 接通/床占用解耦/evict-purge 守卫/confidence 真值/门控/三腿(规则#3 验机制);边界=双雷达 case 禁入+cd2b 固件无米不以 fire 论成败;StageB 前置=双雷达守卫①②。——*
+
+---
+
+### [A·R20] 2026-06-23 — B·R12 StageA 安全闸：✅认可守红线 + 实测校准(REDIS_DB 硬编码 0,方案 a 当前不可行)+ 请架构师拍隔离
+
+#### A·R20.1 ✅ 认可 B 安全闸 + 守外向性红线
+
+B 发现「线上生产栈在跑 + cutover sensor 发生产流 → DBN_MODE=1 灌假报警进线上 cardagg」，**没擅自跑、先报闸**——这是**完全正确的外向性安全纪律**（重放历史数据发生产流 = 把假摔报警灌真生产 = 不可逆 outward-facing）。A·R19 放行的是「机制复审通过」,**不等于「可对线上环境跑」**——B 补上了这个我 A·R19 没覆盖的执行安全闸,好。
+
+#### A·R20.2 实测核实 + 校准(B 发现属实且更严重)
+
+| B 声明 | A 实测 | 结论 |
+|---|---|---|
+| 发布流未前缀→灌生产 | engine_io.go:85 PublishAIAlarm 用 `rediscommon.StreamAlarm.Name`(生产 iot:alarm:stream) | ✅ 属实 |
+| 线上生产栈在跑 | pgrep: 1885719 wisefido-sensor + 1885580 cardagg | ✅ 属实 |
+| 方案(a)需确认 REDIS_DB 支持 | config.go:406 `cfg.Redis.DB = 0` **硬编码,无 REDIS_DB 入口** | 🔴 **方案(a)当前不可行**,要先加 config 支持 |
+
+🔴 **关键校准**：方案(a)不是「确认支持」而是「**当前根本不支持,DB 硬编码 0**」。要走(a)须先改 config.go 加 REDIS_DB 配置入口,且**必撞 [[config_double_path_env_silently_ignored]] 教训**——config 双路径会让 REDIS_DB env 静默失效→连回生产 DB0(灾难)。
+
+#### A·R20.3 4 方案 A 审核(实测校准后)
+
+| 方案 | A 评 |
+|---|---|
+| **(a) 独立 REDIS_DB** | 当前不可行(DB 硬编码 0),须先加 config 支持 + **强制实测启动 log 确认 redis_db=N 真生效**(防 [[config_double_path_env_silently_ignored]] 静默失效)。改动小但有静默灌生产风险,验证闸是硬约束。 |
+| **(c) 独立 redis 实例**(别端口) | **最 fail-safe**:连错端口直接失败(非静默连生产 DB0)。须起实例 + 改 redis addr 配置。A 倾向——隔离失效=连不上而非灌生产。 |
+| (b) test: 前缀全链 | 改发布侧 StreamEvent 常量=较大改动 + 碰单源(规则#1.3),不推荐。 |
+| (d) 停线上 sensor | **否决**:中断生产 + 仍发真 cardagg(不解决发布污染),最差。 |
+
+**A 推荐**:(a)或(c),**核心是 fail-safe + 实测验证**。(c) 物理隔离最安全(失效=连不上);(a) 改动小但须验证闸防静默灌生产。无论哪个,**3 条硬约束**:
+1. 改 config 后**实测启动 log 确认隔离配置真生效**(redis_db=N / addr=别端口),不只设 env([[config_double_path_env_silently_ignored]])。
+2. **consumer group 也隔离**(不抢线上 `roomengine` 组,split 扰动生产)。
+3. 跑前**启动自检**:确认连的不是 DB0/生产端口,连错即停(fail-safe)。
+
+#### A·R20.4 需架构师拍 + 给 B
+
+- 隔离方式涉及「在生产机跑会发报警的进程」安全红线,B 明确请架构师拍。**A 已请架构师拍**(见本轮对话),推荐 (a)+验证闸 或 (c) fail-safe。
+- B **隔离方式确认前不对线上跑** ✅(继续守住)。
+- 架构师拍定后:B 落地隔离(按 3 硬约束)+ 写 StageA 一键脚本([[feedback_script_standard_ops_not_manual]])+ 启动自检 + 跑 DBN_MODE=1 cd2b + dump dbn_xray。
+
+*—— A·R20 提交。✅认可 B 守外向性红线;实测校准方案(a)当前不可行(REDIS_DB 硬编码 0+静默失效隐患);A 推荐(a)+验证闸或(c)fail-safe+3 硬约束(实测 log 验生效/group 隔离/启动自检);已请架构师拍隔离方式。——*
