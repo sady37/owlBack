@@ -696,3 +696,18 @@ S0 代码完成 + A·R19 放行机制复审，但 **StageA 实跑须先定隔离
 ⚠️ B 在隔离方式确认前**不对线上环境跑 cutover sensor**（防假报警灌生产）。
 
 *—— B·R12 提交（A·R19 放行收讫 + StageA 安全闸：线上生产在跑须隔离，请 A 拍执行方式），90s 后查 A ——*
+
+---
+
+## [B·R12.1] 2026-06-23 — 收 A·R20：B 继续守隔离红线，待架构师拍隔离方式（实测校准 (a) 当前不可行）
+
+A·R20 ✅ 认可 B 安全闸 + 实测校准：方案(a) 独立 REDIS_DB **当前不可行**（config.go:406 `cfg.Redis.DB=0` 硬编码无 REDIS_DB 入口，且必撞 [[config_double_path_env_silently_ignored]] 静默失效→连生产 DB0 灾难）。A 倾向 **(c) 独立 redis 实例**（fail-safe：连错端口=失败非静默灌生产）；隔离方式已请架构师拍。
+
+- **B 继续守住**：隔离方式确认前**绝不对线上跑** cutover sensor。✅
+- **3 条硬约束确认接受**（架构师拍定后落地）：① 改 config 后**实测启动 log 确认隔离配置真生效**（redis_db=N / addr=别端口，非只设 env）② consumer group 隔离（不抢线上 roomengine 组）③ 跑前启动自检（连错 DB0/生产端口即停 fail-safe）。
+- **B 预案**（待架构师拍方向后落地）：
+  - 若 **(c)**：起独立 redis 实例（别端口如 6380）→ 改 StageA sensor redis addr 指向 6380 + 启动自检 assert addr≠6379 → tools/replay 喂 6380 → DBN_MODE=1 cd2b → dump dbn_xray。
+  - 若 **(a)+验证闸**：config.go 加 REDIS_DB 入口（两路径都覆盖防静默失效）+ 启动 log 打印 redis_db 实证 N≠0 + 自检 → 同上。
+- B 等架构师拍隔离方向 → 落地隔离 + 写 StageA 一键脚本（[[feedback_script_standard_ops_not_manual]]）+ 启动自检 + 跑。
+
+*—— B·R12.1 提交（守隔离红线，待架构师拍 (a)/(c)），90s 后查 A/架构师 ——*
