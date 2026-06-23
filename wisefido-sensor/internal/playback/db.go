@@ -41,20 +41,23 @@ func LookupDeviceAddr(ctx context.Context, db *sql.DB, deviceUID string) (string
 // playback 按单 device 回放（只喂该 device 的 monitor_stream track），故只用该 /128 canvas；
 // 不合并同房其他雷达——多雷达房各 device-local 帧未配准，合并会把别台的家具/床错位叠进来。
 func LoadDeviceRoomConfig(ctx context.Context, db *sql.DB, deviceUID string) (string, roomengine.RoomConfig, error) {
-	var roomID, canvas string
+	var roomID, canvas, roomName string
 	row := db.QueryRowContext(ctx, `
-		SELECT network(set_masklen(rvl.spatial_prefix, 88))::text, rvl.canvas::text
+		SELECT network(set_masklen(rvl.spatial_prefix, 88))::text, rvl.canvas::text,
+		       COALESCE(r.room_name, '')
 		FROM room_visual_layout rvl
 		JOIN devices d ON d.device_addr = rvl.spatial_prefix
+		LEFT JOIN rooms r ON r.room_id = network(set_masklen(rvl.spatial_prefix, 88))
 		WHERE d.device_uid = $1 AND masklen(rvl.spatial_prefix) = 128
 		LIMIT 1`, deviceUID)
-	if err := row.Scan(&roomID, &canvas); err != nil {
+	if err := row.Scan(&roomID, &canvas, &roomName); err != nil {
 		return "", roomengine.RoomConfig{}, err
 	}
 	cfg, err := roomengine.ParseLayoutConfig(roomID, []byte(canvas))
 	if err != nil {
 		return roomID, roomengine.RoomConfig{}, err
 	}
+	cfg.RoomName = roomName // 标题用 room_name(如 "Bedroom")替代 /88 prefix；空则 BuildRoomSVG fallback roomID
 	return roomID, cfg, nil
 }
 
