@@ -79,43 +79,44 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 			allObjectPoints = append(allObjectPoints, pts...)
 
 		case "Enter", "Door":
-			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
+			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Enters = append(cfg.Enters, *rect)
 				cfg.EnterHeights = append(cfg.EnterHeights, objHeight)
 				cfg.EnterTargets = append(cfg.EnterTargets, hdr.EnterTarget) // sensor_v2 决定 15
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
-		case "Bed", "MonitorBed":
-			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
+		case "Bed", "MonitorBed", "LongSofa":
+			// LongSofa = 无 sleepad 的床：可长躺排 fall、占用/vital 走 radar，与床同处理。
+			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Beds = append(cfg.Beds, *rect)
 				cfg.BedHeights = append(cfg.BedHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
 		case "Toilet":
-			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
+			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Toilets = append(cfg.Toilets, *rect)
 				cfg.ToiletHeights = append(cfg.ToiletHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
 		case "Shower":
-			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
+			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Showers = append(cfg.Showers, *rect)
 				cfg.ShowerHeights = append(cfg.ShowerHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
 		case "Chair":
-			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
+			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Chairs = append(cfg.Chairs, *rect)
 				cfg.ChairHeights = append(cfg.ChairHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
 		case "Furniture", "Table", "Other":
-			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
+			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Furnitures = append(cfg.Furnitures, *rect)
 				cfg.FurnitureHeights = append(cfg.FurnitureHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
@@ -124,7 +125,7 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 		case "Interfere", "MetalCan", "WheelChair", "GlassTV", "Curtain":
 			// 干扰/反射/金属 → AreaDeny
 			// 注意：吊灯也走 Interfere，但 height>200 表示空中不阻挡通行（未来 RoomEngine 用）
-			if rect := parseRectFromGeometry(hdr.Geometry); rect != nil {
+			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Interferes = append(cfg.Interferes, *rect)
 				cfg.InterfereHeights = append(cfg.InterfereHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
@@ -191,6 +192,8 @@ func defaultHeightForType(typeName string) int {
 	switch typeName {
 	case "Bed", "MonitorBed":
 		return 60
+	case "LongSofa":
+		return 40
 	case "Interfere":
 		return 120 // 默认洗手台/镜子；空中吊灯由前端 Toolbar 改 240+
 	case "Enter", "Door":
@@ -307,8 +310,9 @@ func parseInstallModel(s string) radarutils.InstallModel {
 // ------------------------------------------------------------------------
 
 // parseRectFromGeometry 从 geometry = rectangle 的 data.vertices 构造 Rect。
-// 前端 vertices 是 4 点，可能非轴对齐（旋转矩形），这里取 Bounding Box。
-func parseRectFromGeometry(geom json.RawMessage) *radarutils.Rect {
+// canvas 存的是 PRE-rotation 轴对齐顶点 + 单独 angle（FE 画图时 ctx.rotate(-angle) 才转），
+// 故必须按 angle 旋转顶点再取 AABB；否则旋转矩形（90/270 长宽互换、任意角朝向错）会贴歪先验。
+func parseRectFromGeometry(geom json.RawMessage, angle *float64) *radarutils.Rect {
 	var g struct {
 		Type string `json:"type"`
 		Data struct {
@@ -340,6 +344,7 @@ func parseRectFromGeometry(geom json.RawMessage) *radarutils.Rect {
 				Y: int(math.Round(v.Y)),
 			})
 		}
+		pts = rotatePointsAroundCenter(pts, angle)
 		r := radarutils.FromVertices(pts)
 		return &r
 
@@ -353,6 +358,34 @@ func parseRectFromGeometry(geom json.RawMessage) *radarutils.Rect {
 		}
 	}
 	return nil
+}
+
+// rotatePointsAroundCenter 把顶点绕其几何中心旋转 angle 度（画布坐标系，与 FE drawObjects 对齐）。
+// nil/0 不转。旋转矩形的 AABB 与旋转方向无关（宽=w|cosθ|+h|sinθ|），故 angle 正负不影响 FromVertices 结果。
+func rotatePointsAroundCenter(pts []radarutils.Point, angle *float64) []radarutils.Point {
+	if angle == nil || len(pts) == 0 || math.Mod(*angle, 360) == 0 {
+		return pts
+	}
+	var cx, cy float64
+	for _, p := range pts {
+		cx += float64(p.X)
+		cy += float64(p.Y)
+	}
+	n := float64(len(pts))
+	cx /= n
+	cy /= n
+	rad := *angle * math.Pi / 180
+	c, s := math.Cos(rad), math.Sin(rad)
+	out := make([]radarutils.Point, len(pts))
+	for i, p := range pts {
+		dx := float64(p.X) - cx
+		dy := float64(p.Y) - cy
+		out[i] = radarutils.Point{
+			X: int(math.Round(cx + dx*c - dy*s)),
+			Y: int(math.Round(cy + dx*s + dy*c)),
+		}
+	}
+	return out
 }
 
 // parsePointFromGeometry 解析 geometry.type=point 的 (x,y,z)

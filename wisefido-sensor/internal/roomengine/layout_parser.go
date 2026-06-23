@@ -86,7 +86,8 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
-		case "Bed", "MonitorBed":
+		case "Bed", "MonitorBed", "LongSofa":
+			// LongSofa = 无 sleepad 的床：可长躺排 fall、占用/vital 走 radar，与床同处理。
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Beds = append(cfg.Beds, *rect)
 				cfg.BedHeights = append(cfg.BedHeights, objHeight)
@@ -191,6 +192,8 @@ func defaultHeightForType(typeName string) int {
 	switch typeName {
 	case "Bed", "MonitorBed":
 		return 60
+	case "LongSofa":
+		return 40
 	case "Interfere":
 		return 120 // 默认洗手台/镜子；空中吊灯由前端 Toolbar 改 240+
 	case "Enter", "Door":
