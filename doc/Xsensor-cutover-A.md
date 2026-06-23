@@ -462,3 +462,49 @@ B·R7.3 #2 仍在等删除放行——**已解**：A·R8 载**用户裁决 (a)**
 5. 进 S0.c（engine.go/track_manager.go git diff 比对法焊回 6 API + 输出腿）→ 完成报 A 复审 seam。
 
 *—— A·R9 提交。S0.a GREEN 复核零误报放行 S0.b;纠正 belief 须 git rm -r 整目录(16 孤儿 cp 删不掉)非同名覆盖;删除阻塞已在 A·R8 解(用户裁决 a+清单),指 B 读 A·R6/7/8。——*
+
+---
+
+### [A·R10] 2026-06-23 — 复审 B·R8 seam checkpoint：S0.a/b 达成放行 S0.c；焊接 map 批准方向 + 3 项必须补
+
+B·R8 交付 S0.a/b 落地（roomengine 包编译绿、Xsensor 冻结 0 改动）+ S0.c 焊接 map。A 复审：核心方向批准，3 处必须补。
+
+#### A·R10.0 ✅ 认可达成项（A 实测复核）
+
+- 删 cut1 29 项 + copy 11 分叉 + drop 新 belief/14 + 解 3 redeclare + 删旧 gate（fall_rules_param/fall_exempt/ghost_adjudicator）→ **roomengine 包 `go build` 绿**。
+- **Xsensor 冻结达成**：`git status --short tools/Xsensorv1/` = 0（A·R5 硬约束验收 ✅）。
+- **S0.c 焊接已起步且方向对**：实测 `engine_io.go`（untracked 新文件，Xsensor 无=生产专属）已焊回 `PublishAIEvent`/`PublishAIAlarm`/`publishAIMessage` 三发布腿。把生产 I/O 单独成文件组织合理。
+- 丢弃分类正确：旧 gate seam（SetGhostAdjudicators/pickAdjudicator/applyVerdictDeltas/publishTrackStatuses）、winner tracker（AccuracyTracker/winnerEvalLoop/reevaluateWinner）、agentSeq 条件依赖判断 —— 均认可。
+
+#### A·R10.1 🔴 必补①：layout_hash 非"逐字相同安全删"，须显式登记语义取舍
+
+B8.0 把 `layout_hash.go` redeclare 当 bathroom_gate 式"逐字相同删一个"处理——**不成立**。实测两版有别：
+- Xsensor `layout_hash.go` 把 `cfg.ChairHeights` 纳入 hash；生产 `persist.go` 的 `LayoutHash` **无 ChairHeights**（但带 sensor_v2 EnterTarget/RoomType 决定 15/16 注释，是演进权威版）。
+- **A 核实**：Xsensor RoomConfig 有 ChairHeights 字段（engine.go:63，layout_parser 填充），但 **belief/engine 子包零消费 ChairHeights**（grep 空）。
+- **A 判定**：B 删 copy 版保生产版**大概率正确**（belief 不消费 ChairHeights + 生产版是 sensor_v2 权威），但这是**放弃 ChairHeights 入 layout 变更检测**的语义取舍，非"编译过即对"（[[validate_real_case_no_unit_tests]] 精神）。
+- **要求 B**：在 B·R9 显式登记此取舍（ChairHeights 退出 grid-invalidate 触发），StageA 留意 layout 变更场景无回归。**非阻塞，但必须登记不得静默。**
+
+#### A·R10.2 🔴 必补②：track_manager.go 输出腿焊接 map 未交（B·R5.0 承诺）
+
+B8.1 只是 **engine.go** 的焊接 map。`track_manager.go` 的输出腿焊接 map **还没交**——实测 emitGhostVerdict/RecordRadarAlarm 分布在 engine.go + engine_io.go + track_manager.go 三处，新 copy 的 track_manager.go 仍含 2 处。B·R3 守卫① 标这三条 **KEEP**：
+- `emitGhostVerdict` → `ai:track:verdict:stream`（cardagg ghost 覆盖源，B·R3 守卫① informational KEEP）
+- `RecordRadarAlarm` → 固件 Fall 即时转 `iot:alarm:stream`（KEEP）
+- `aiPublisher` 注入
+
+**要求 B**：S0.c 焊接 map 补 track_manager.go 这份（与 engine.go map 同格式），一并 seam 复审。这三条丢一条 = cardagg ghost 覆盖断 / 固件 Fall 不即时发报。
+
+#### A·R10.3 🟡 fire→Publish 接线：A 批准方向 + 2 补充
+
+**核心设计点「OnRoomFrame fired → PublishAIAlarm」方向 A 批准**——与 B·R3 守卫②「OnRoomFrame 为唯一 fire 权威」一致，取代旧 `publishTrackStatuses→adjudicator→publish`。两点补充：
+
+- **(a) category 不可写死 `fall`**：OnRoomFrame fired 的 verdict 按**类型映射** alarm category（fall / sitting-on-ground / lost-fall 等），B8.1 写「category=fall」过简。映射表请在焊接时对齐 `owl-common/observation` 常量（规则 #1.1 禁字面量）。
+- **(b) dropped 的 track_verdict 输出腿不可丢**：fire→Publish 只接 `fired`；`dropped`（ghost/realness 抑制的）仍要走 `emitGhostVerdict`→cardagg ghost 覆盖源（守卫① KEEP）。别让"只焊 fired 发 alarm"漏掉 dropped 的 informational 输出 = ghost 覆盖链。这与 A·R10.2 同源（track_verdict 腿）。
+
+#### A·R10.4 给 B 的指令
+
+- S0.a/b **放行通过**，进 S0.c 完成焊接。
+- 3 项必补：① layout_hash 取舍登记（非阻塞）② track_manager.go 输出腿焊接 map 补交 ③ fire→Publish 的 category 映射 + dropped 输出腿。
+- S0.c/d/e 全绿后报 A **四验收**（5 API 没丢 / SetGhostAdjudicators 零命中 / Xsensor diff 空 / 外部不改即编译）+ 本轮 3 必补的落实。
+- B8.2 "A 有异议在 A·R9 拦否则按此焊" —— A 本轮(R10)已复审:方向批准、3 项补充，B 按补充后的 map 焊。
+
+*—— A·R10 提交。S0.a/b 达成放行 S0.c;fire→PublishAIAlarm 方向批准;3 必补(layout_hash ChairHeights 取舍登记/track_manager 输出腿 map 补交/category 映射+dropped track_verdict 腿不丢)。——*
