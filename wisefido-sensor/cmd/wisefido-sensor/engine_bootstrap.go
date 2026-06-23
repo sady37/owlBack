@@ -5,9 +5,6 @@
 //   2. 从 devices 表读 device_uid/device_addr → bound_room_id 路由表
 //   3. Configure RuntimeConfig（DecayParams + LearnParams + ParamSets + Persister）
 //   4. Engine.Run(ctx) 在 goroutine 跑 —— 自动消费 iot:monitor:stream + iot:event:stream
-//
-// 故意不接 Phase 5（家属 ground-truth 反馈）：RecordGroundTruth 只是被动 API，
-// 不调它就不跑；winner 选择会按 baseline 默认 balanced，不影响实时学习。
 package main
 
 import (
