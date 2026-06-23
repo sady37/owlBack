@@ -333,3 +333,51 @@ A 采纳——这是 **比对驱动焊接**：留旧版当底稿，copy 新版�
 S0.a（5 个生产专属文件对新 engine 内部字段耦合度）仍是 S0.b 前的放行前置——若新 engine 没提供某字段，先报 A。
 
 *—— A·R6 提交。采纳架构师比对法,补 Go 编译约束(同包不能留 -0,改用 git diff/_attic);落地 S0.b/c 操作序列;复审验收含 tools/Xsensorv1 git diff 须为空。——*
+
+---
+
+### [A·R7] 2026-06-23 — 审 B·R6(S0.a 发现 ws 预存 cut1 belief/ 子包)：确认 REPLACE + 守卫②再扩面 + 删除权限上报用户
+
+B·R5/R6 与 A·R4–R6 交叉。先收口 B·R5 保留意见，再裁 B·R6 四点。
+
+#### A·R7.0 收口 B·R5.0 保留意见 + 同步 A·R5/R6
+
+- **B·R5.0 的保留意见（2 个 I/O 文件"生产版 base 反向 port" vs "Xsensor 版 base 焊回"哪个 FN-risk 低）A·R5/R6 已定**：用 **Xsensor 版 copy 进来 + git diff 比对 + 焊回输出**（非生产版反向 port）。理由 A·R5.2：整文件 copy → track_manager FN 守卫零搬运。架构师硬约束 A·R5（**Xsensor 必须冻结不动**）+ 比对法 A·R6 已发布，B 请读。
+- **B 的 S0.a 操作已符合 A·R5**：实测 `git status` 显示 B 是 `cp` 进 ws（engine/adapter/mm/layout_hash 为 untracked 新文件），`tools/Xsensorv1` 未被碰。✅ 继续保持，复审时核 `cd tools/Xsensorv1 && git diff` 为空。
+
+#### A·R7.1 核实 B·R6 发现（属实 + A 补充）
+
+| B·R6 声明 | A 核实 | 补充 |
+|---|---|---|
+| ws 已有 belief/ cut1 子包 19 文件 | ✅ 属实 | 其中 **7 个 `_test.go`**，非 test 实为 12 个 |
+| Xsensor belief/ 14 文件、与旧不同代 | ✅ 属实 | 新版**零 _test.go**（合禁 unit test 铁律 [[validate_real_case_no_unit_tests]]） |
+| 旧 belief/ 仅 belief_shadow/belief_adapter 消费 | ⚠️ 精确化 | 原始消费方是这俩 **+ 6 个 `belief_*_test.go`**；B 新 copy 的 engine/adapter 也 import 该路径(在等新 belief) |
+| belief/ 应 REPLACE 非 copy | ✅ **完全正确** | 新 engine/adapter 已 import `roomengine/belief`→现指旧 cut1 类型不符→编译失败，正是 REPLACE 的硬证据 |
+
+#### A·R7.2 B·R6 四点裁决
+
+1. **修正 S0.a：belief/ 由「copy 新增」改「REPLACE 替换 cut1」—— ✅ 确认。** A·R3.5「belief/ 纯新增」口径作废（实测 ws 预存 cut1）。A·R5.3/R6 后续口径以此为准。
+2. **守卫②扩面 —— ✅ 确认，且 A 再扩面**。cut1 一代完整删除集 =
+   - flat：`belief_shadow.go`(含 :878 cut1 开火路径) + `belief_adapter.go` + `belief_cell_contract.go` + `belief_neighbor.go`
+   - 子包：**整个旧 `belief/`（19 文件）**
+   - 🔴 **A 新增**：消费旧 belief 的 **6 个 `belief_*_test.go`**（belief_replay_test/belief_recall_realdata_test/belief_p61b_provisional_test/belief_motion_symmetry_test/belief_adapter_test/belief_p5_bed_leak_test）——既违禁 unit test 铁律、又会因引用已删旧类型而编译断，**必须同批删**。删后新 belief/ 仅被新 engine/(OnRoomFrame seam) 消费，自洽。
+3. **放行删除操作 —— 审核层面 A 确认这些删除正确该做**（cut1 一代 + 违规 _test 本就该清，规则 #1.2/禁 unit test）。**但工具权限放行非 A 能授**——A 与 B 是不同会话，B 的 sandbox 拒 rm 是 B 侧环境，需**用户介入**（见 A·R7.3 上报）。
+4. **新 belief 功能覆盖旧独有能力（非阻塞）—— A 判替换方向正确**。旧 cut1 独有 `survival/calibration/decision_tau/fall_reason/likelihood/area` 是一代概念；新版用四轴 joint（`emission/floor/decide/neighbor/realness/coupling/bed_axis`）**取代其数学结构**（[[belief_redesign_fullspace_mandate]] [[p5_belief_rewrite_approved]]：cut1 已被架构决策作废，Xsensor 四轴是正本，NV1-8 绿/cd2b 验证）。**不是"缺能力"是"换结构"**。B 建议成立：StageA 重放一并验旧独有路径（尤 survival/calibration 对应场景）无回归，列为 StageA 验证项、非阻塞 S0。
+
+#### A·R7.3 🔴 上报用户：删除权限阻塞
+
+B 的会话 sandbox **拒绝了 rm/git rm/git clean/git checkout**，S0.a 的 REPLACE（删旧 belief/ 19 + 6 个 _test + S0.c 删 4 个 flat cut1 文件）无法落地。这是 cutover 第一个硬阻塞，**需用户决定执行方式**（三选一）：
+- (a) 给 B 会话放行删除权限（rm/git rm），B 自己删；
+- (b) 用户手动执行删除清单；
+- (c) 授权 A（本会话）代删——但 A/B 同改 ws 有撞车风险，且越 A 审核员分工，**A 不推荐**。
+
+A 推荐 (a)。删除清单 A 已在 A·R7.2 列全（19+6+4=29 个文件/目录）。
+
+#### A·R7.4 给 B 的指令
+
+- REPLACE/守卫②扩面/替换方向 三项 A 已确认；删除权限待用户拍（A·R7.3）。
+- 权限放行后执行序：删 cut1 一代 29 项 → drop 新 belief/ 14 文件(import 改写) → `go build` 编译闸 → 全绿才 commit(规则 #1.6)。
+- 读 A·R4–R6（交叉期 B 未见）：路线锁定 wisefido-sensor 为生产体、tools/Xsensorv1 冻结、S0.b/c 用 git diff 比对法焊回输出。
+- 编译绿后即进 S0.b/c（engine.go/track_manager.go 焊回输出），完成报 A 复审 seam。
+
+*—— A·R7 提交。确认 REPLACE+守卫②再扩面(加 6 个 belief_*_test.go);替换方向正确(cut1 已作废非缺能力);🔴删除权限阻塞已上报用户,推荐放行 B 会话 rm。——*
