@@ -58,7 +58,7 @@ func startRoomEngine(ctx context.Context, cfg *config.Config, db *sql.DB,
 	engine.SetSuiteCensus(census)
 
 	// 2. 注册所有有 layout 的房间（PR-7：IsPublicBathroom=true 自动 MarkPublicBathroom）
-	registered, err := registerAllRooms(ctx, engine, db, logger, router)
+	registered, err := registerAllRooms(ctx, engine, db, logger, router, cfg.DataBaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("register rooms: %w", err)
 	}
@@ -179,15 +179,16 @@ func buildRuntimeConfig(cfg *config.Config, db *sql.DB) roomengine.RuntimeConfig
 // engineReloader 把 registerAllRooms + mapDevicesToRooms 包装成 consumer.ConfigChangedReloader。
 // 用于 config_card_consumer 收到 config.changed 时触发 sensor 端 incremental reload。
 type engineReloader struct {
-	ctx    context.Context
-	engine *roomengine.Engine
-	db     *sql.DB
-	logger *zap.Logger
+	ctx         context.Context
+	engine      *roomengine.Engine
+	db          *sql.DB
+	logger      *zap.Logger
+	dataBaseURL string
 }
 
 func (r *engineReloader) ReloadRooms(ctx context.Context) error {
 	// reload 只刷 layout/cell 重学；DBN router geom 不在 reload 重建（router=nil 跳过），由进程重启重建。
-	_, err := registerAllRooms(ctx, r.engine, r.db, r.logger, nil)
+	_, err := registerAllRooms(ctx, r.engine, r.db, r.logger, nil, r.dataBaseURL)
 	return err
 }
 
@@ -213,7 +214,7 @@ func (r *engineReloader) ReloadDevices(ctx context.Context) error {
 //     LPM order by masklen DESC 取最 specific 绑定（/96 bed > /88 room > /80 unit）
 //     multi-resident 场景下返回任意一个（决定 19 留 PR-X，详 sensor_v2.md §10.4 注释）。
 func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB,
-	logger *zap.Logger, router *dbnRouter) (int, error) {
+	logger *zap.Logger, router *dbnRouter, dataBaseURL string) (int, error) {
 
 	// SQL 注：multi-resident bedroom 场景（同 /80 多 resident 各绑 /96 bed）下，
 	// LIMIT 1 返回任意一个 — 决定 19 留 PR-X，需要 sleepad device_uid → resident.id 静态映射。
@@ -253,6 +254,27 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 		return 0, err
 	}
 
+	// 每房雷达 device uid（hex）→ 取固件活体 declare_area 算床区 area_id（area_type∈{2,5}）。
+	// 床 area_id 单源=固件活体（与上报 track FwAreaID 同源），非 canvas/baseline。
+	radarUIDsByRoom := map[string][]string{}
+	rdrows, err := db.QueryContext(ctx, `
+		SELECT r.room_id::text, dfm.device_uid
+		FROM rooms r
+		JOIN devices d                ON r.room_id >>= d.device_addr
+		JOIN device_factory_meta dfm  ON dfm.device_uid = d.device_uid
+		WHERE dfm.device_type::text = 'Radar'`)
+	if err != nil {
+		return 0, err
+	}
+	for rdrows.Next() {
+		var rid, uid string
+		if rdrows.Scan(&rid, &uid) == nil && uid != "" {
+			radarUIDsByRoom[rid] = append(radarUIDsByRoom[rid], uid)
+		}
+	}
+	rdrows.Close()
+	dac := newDeclareAreaClient(dataBaseURL, logger)
+
 	count := 0
 	placeholderCount := 0
 	for rows.Next() {
@@ -286,6 +308,27 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 		cfg.IsPublicBathroom = isPublicBathroom
 		cfg.SuiteID = suiteID
 		cfg.ResidentID = residentID
+
+		// 床区 area_id 单源=固件活体 declare_area（type∈{2,5}）→ cfg.BedAreaIDs，让
+		// TrackManager.fwIsBed（NewTrackManager 在 RegisterRoom 内建）与 DBN bedHitMask 同源。
+		// per-radar 容错：某台拉不到只丢这台床区贡献，不跳整房（其余在线雷达+sleepad 照常监控）。
+		if hasLayout {
+			var fwBeds []int
+			for _, uid := range radarUIDsByRoom[roomID] {
+				ids, ferr := dac.bedAreaIDs(ctx, uid)
+				if ferr != nil {
+					logger.Error("declare_area 拉取失败 → 跳过该雷达床区（不跳整房；该台 N 不命中，房用其余在线雷达+sleepad 监控）",
+						zap.String("room", roomID), zap.String("radar", uid), zap.Error(ferr))
+					continue
+				}
+				fwBeds = append(fwBeds, ids...)
+			}
+			cfg.BedAreaIDs = fwBeds
+			if len(fwBeds) == 0 {
+				logger.Warn("declare_area: no firmware bed area for layout room (fwIsBed never hits → no bed-occupancy SFallen suppression)",
+					zap.String("room", roomID))
+			}
+		}
 
 		engine.RegisterRoom(cfg)
 		engine.SetRoomTenant(roomID, tenantID)

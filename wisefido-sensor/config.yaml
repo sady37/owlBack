@@ -33,6 +33,9 @@ database:
   database: "owl_v2"
   sslmode: "disable"
 
+# wisefido-data HTTP base：取固件活体 declare_area 算床区 area_id（GET /internal/radar/device/{uid}/declare-area）
+data_base_url: "http://127.0.0.1:8080"
+
 redis:
   addr: "localhost:6379"
   password: "TeLunSu-36kr"

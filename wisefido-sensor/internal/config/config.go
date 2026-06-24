@@ -48,6 +48,11 @@ type Config struct {
 	AIPublish AIPublishConfig `yaml:"ai_publish"`
 
 	Identity IdentityConfig `yaml:"identity"`
+
+	// DataBaseURL wisefido-data 的 HTTP base（取固件活体 declare_area 算床区 area_id）。
+	// 床 area_id 单源=固件活体：GET {base}/internal/radar/device/{uid}/declare-area（cmd=read），
+	// 与上报 track FwAreaID 同源，治 canvas 下发区域 vs 固件几何漂移。
+	DataBaseURL string `yaml:"data_base_url"`
 }
 
 // IdentityConfig — wisefido-sensor 进程的 platform agent IPv6 身份（v2 第一次落地）。
@@ -186,6 +191,12 @@ func Load() (*Config, error) {
 func (c *Config) setDefaults() {
 	if c.Database.SSLMode == "" {
 		c.Database.SSLMode = "disable"
+	}
+	if v := os.Getenv("SENSOR_DATA_URL"); v != "" {
+		c.DataBaseURL = v
+	}
+	if c.DataBaseURL == "" {
+		c.DataBaseURL = "http://127.0.0.1:8080"
 	}
 	if c.Alarm.Cache.RealtimeKeyPrefix == "" {
 		c.Alarm.Cache.RealtimeKeyPrefix = "vital-focus:card:"

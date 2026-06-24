@@ -190,7 +190,7 @@ func main() {
 	// 5.2.3 config:card:stream 订阅：wisefido-data PublishConfigChanged 后失效 + reload。
 	// 替代旧 60s SetRoutesReloader 轮询；事件驱动，monitor toggle 1s 内同步到 spatial cache。
 	configCardConsumer := consumer.NewConfigCardConsumer(engineRedis,
-		&engineReloader{ctx: ctx, engine: engine, db: engineDB, logger: logger},
+		&engineReloader{ctx: ctx, engine: engine, db: engineDB, logger: logger, dataBaseURL: cfg.DataBaseURL},
 		zone.Spatial,
 		logger)
 	configCardConsumer.SetMatrixInvalidator(matrixCache) // layout/bind 的 config:card commit 同时失效 MM 方阵
