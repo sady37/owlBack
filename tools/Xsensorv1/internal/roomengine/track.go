@@ -99,12 +99,6 @@ type TrackState struct {
 	LongStillReported bool // 防 LongStill 重复上报
 	StillFallReported bool // 防 still-fall 重复上报（bathroom + pose=Stand + 15/18min）
 
-	// ---- PR-7.2 stand-static 自学习 → AreaSit 强化 ----
-	// StandStaticSince：pose=Stand 且静止的起点 ms（0 = 不在 stand-static 状态）。
-	// AreaSitAutoLearned：track 生命周期内已触发过 AreaSit 自学习（防重复）。
-	StandStaticSince   int64
-	AreaSitAutoLearned bool
-
 	// ---- PR-11 持续观测刷新（防 Belief 衰退后 layout 标记被吃掉）----
 	// LyingOnBedSinceMs：pose=Lie on AreaBed cell 持续起点；累计 ≥4h → MarkRestZoneByFeedback(AreaBed) refresh
 	// SitOnToiletSinceMs：pose=Sit on AreaToilet cell 持续起点；累计 ≥5min → MarkRestZoneByFeedback(AreaToilet) refresh

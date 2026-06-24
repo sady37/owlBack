@@ -218,7 +218,7 @@ type Cell struct {
 	LastStaticReflectorMs int64
 
 	// SitScore: AreaSit 4 通道 log-odds 累积（sit_learning.go；每条自走长坐 episode 加 sitEpisodeLLR）。
-	// ≥ sitPromoteTau 升 AreaSit(SourceLearned)；HL sitScoreHalfLifeSec 指数衰减（隔离 episode 自然褪）。
+	// ≥ sitPromoteTau 升 AreaSit(SourceLearned)；HL DecayParams.SitScoreSec(默认 4d,config 可调) 指数衰减（隔离 episode 自然褪）。
 	SitScore float64
 
 	// ---- 信念（3 组并行参数，独立演化）----
