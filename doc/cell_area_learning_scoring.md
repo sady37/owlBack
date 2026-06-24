@@ -71,7 +71,7 @@ Sit 与 curtain/绿植杂波**都"静止+易重复"** → 必须第三轴区分�
 |---|---|---|---|
 | **resolution（硬判据）** | walk-away → +a；lost/coast/无exit → **否决（不计/负大）** | a 大 | 倒地者不会自己走开；这是 sit↔fall 的硬分割 |
 | **z（纯正向平滑，缺失中性）** | `m(z)=exp(−(z−zSitCenter)²/(2·zSitSigma²))`，episode 内取 max；**z=0→0(中性,不扣分)**；**无负分支** | `zSitCenter=80`,`zSitSigma=12`,权 +0.4 | 高斯隶属度替硬框：峰=实测 Sitting z>0 中位 80，σ=12 使 [73,87] 近满、~105 自然趋零。**中心可调**（165cm 实测→80；175cm 均值→~83–85；老人偏矮 80 代表性好；per-deployment 可标）。z=0 占 70%=缺失，绝不用 z 反向否定 |
-| **dwell（对数正态）** | <5min→Active(不计sit)；峰~14min；10–30 强；30–90 偏Bed | 峰 ln(14min)，核心[10,30] | MBD 12–16min（PMC8679788/9166254） |
+| **dwell（平滑 bump）** | `σ((t−8)/3)·σ((55−t)/10)`；<5min→Active；峰~20min；30+渐降置 bedLean；~90→0 | rise-mid 8 / fall-mid 55min | MBD 12–16min（PMC8679788/9166254）；升降双 sigmoid 替分段 |
 | **firmware-sit** | `g=clamp(k·(dur−Tmin),0,Gmax)·min(1, contigSit_s/3)` | Tmin≈3min, Dcap≈30min, 3s软平滑 | pose=Sitting(3) 直证；3s 连续软门滤闪烁；封顶防失控（治旧 PR-15 禁因） |
 
 > **z 实测标定（2026-06-23 monitor_stream 24h，track_id≤7）**：青澜固件静态姿态 z 多为 0（Sitting 70%、Standing 93% 帧 z=0=缺失）。**z>0 时**各姿态中位：Lying 69 < Standing 72 < **Sitting 80** < Walking 89；Sitting z>0 又紧又居中（IQR 73–87，90% 落 [62,100]，91% 在 60–100 两档）。故 z 作**纯正向弱佐证**：z∈[65,100] 时小幅加分（episode 内已排除 Walking），缺失/区间外不扣分。原 [40,70] 已按实测改 [65,100]。厂家 TI/Infineon 用 centroid 高度，定义≠position_z，不可借。
@@ -139,7 +139,7 @@ Cell 增：SitScore/ActiveScore/BedScore（log-odds 累加，沿用 Confidence �
 
 | 参数 | 初值 | 来源 |
 |---|---|---|
-| dwell 峰 / 核心 | 14min / [10,30] | MBD 12–16min |
+| dwell rise-mid/fall-mid (slope) | 8 / 55 min (3 / 10) | 平滑 bump 峰~20min;MBD 12–16 |
 | **z 中心 zSitCenter / σ / 权重** | **80 / 12 / +0.4**（高斯隶属度，中心可调） | 实测 Sitting z>0 中位80 IQR73–87（2026-06-23）；纯正向缺失中性；175cm 人群→~83–85 |
 | Active 下闸 | <5min | 短 bout<10min，保守 |
 | firmware-sit Tmin/Dcap/软门 | 3min / 30min / 3s | 防闪烁+封顶 |
@@ -181,16 +181,27 @@ sitZBest               float64  // episode 内 z 隶属度 m(z)=exp(−(z−zSit
 3. **d > 50cm（移动）**：`classifyBreak()` → 若 walk-away 且 `dwell≥5min` → `emitEpisode()`；随后 re-anchor 到新 xy（开新 episode）。
 4. **track 消失帧**：`classifyBreak()`（lost/exit）→ emit 或 veto；清 episode。
 
-### 11.2 Break 分类（复用现有信号 lostExitInfo / ExitLogOdds / recentRadarEvents）
-- **lost**（无 ExitRoom + lostExitInfo 非离房趋势 + track_id 失锁且 logic_id 未在别 track 续）→ **veto（不 emit）**：这是 fall 域，告警要留。
-- **exit-room**（recentRadarEvents 有 ExitRoom / ExitLogOdds 翻转）→ walk-away。
-- **resume-move**（同 track_id 续、位移 >50cm、速度恢复）→ walk-away。
+### 11.2 Break 分类（= 现有"人走 vs 人摔"判定，同信号同阈，FN-safe）
+
+```
+classifyBreak(ts):
+  present 本帧?
+   ├─ 是 + 位移>50cm(同 track_id)                       → walk-away   (resume-move:人起身走)
+   └─ 否(track 消失):
+        recentRadarEvents 有 ExitRoom(本 tid/lid, ≤12s)   → walk-away
+        ExitLogOdds(lid) ≥ exitFlipLogOdds(=logit(0.85))   → walk-away  (离房对数几率翻转)
+        logic_id 仍活在别 track_id(renumber 守恒)           → 不算 break(重关联续 episode)
+        else (凭空消失 + lostExitInfo 非朝门趋势)            → lost → VETO(不 emit;fall 域,告警留)
+```
+- **walk-away = 任一正向离场/移动证据**（resume-move / ExitRoom / ExitLogOdds 翻转）→ emit。
+- **lost = 无离场证据的消失**（真摔特征）→ veto。含糊一律当 lost（FN-safe）。
+- 信号全来自 `track_manager.go` 现成：`recentRadarEvents`(12s buffer) / `ExitLogOdds`(12s claim) / `exitFlipLogOdds=logit(0.85)`([belief/engine.go]) / `lostExitInfo`(末2s朝门强度) / logic_id 守恒（[[logicid_unified_census_refs_tm]]）。
 
 ### 11.3 4 通道 LLR（emit 时算一次；仅 dwell≥5min ∧ walk-away 才到这）
 ```
 LLR_resolution = +2.0
 LLR_z          = 0.4 · sitZBest                 // 平滑高斯隶属度（峰 zSitCenter=80, σ=12），纯正向；z=0 不更新=中性，绝不扣分、无负分支
-LLR_dwell      = dwellLLR(dwellMin)             // <5 不到此 / 5–10:+0.3 / 10–30:+1.0 / 30–90:+0.5(置 bedLean) / >90:0
+LLR_dwell      = σ((dwellMin−8)/3)·σ((55−dwellMin)/10)   // 平滑 bump:峰~20min≈0.95,14min≈0.86,45→0.73,60→0.38,~90→0;<5min 不到此(→Active);t>30∧Lying主导→置 bedLean(建议 Bed,不自升)
 g_fwSit        = clamp(0.0556·(fwMaxMin−3), 0, 1.5)
 ΔL_sit         = LLR_resolution + LLR_z + LLR_dwell + g_fwSit
 ```
