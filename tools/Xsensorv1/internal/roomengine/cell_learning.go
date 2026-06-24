@@ -164,14 +164,10 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams, nowMs int64) {
 			continue
 		}
 
-		// PR-15: AreaSit 升格已禁用此简单规则。
-		// 旧规则 ActiveType[Sit] >= 15s 触发 → 雷达近场常误判 pose=Sit 累积；
-		// 实测在 D523 bookroom 雷达下方 (~1.5m 近场) 学出假的 Sit 区。
-		// 现在 AreaSit 仅由两条更严格路径产生：
-		//   - PR-13 RegionStatic A 路径：region static ≥2min + |dz| ≥10cm（双方 z>0）
-		//   - PR-13 RegionStatic B 路径：region static ≥8-12min + 90% 静止帧比
-		//   - PR-7.2 stand-static：pose=Stand 静止 ≥8-12min + 非 still-fall 作用域
-		// 三条都直接调 MarkRestZoneByFeedback，无需走此 LearnCellAreas 路径。
+		// AreaSit 自动学习已单源到 StillBox log-odds 4 通道（emitSitEpisode + sit_learning.go §11）：
+		//   walk-away 收场(硬判据) + dwell + z(高斯) + firmware-sit → 累 cell.SitScore ≥ τ 升格。
+		// 旧 PR-15 简单规则(ActiveType[Sit]≥15s,近场误判假 Sit)/ PR-13 RegionStatic A/B / PR-7.2 stand-static 均已删
+		//   （位置门控被角装抖动打散 + 无 walk-away 闸会把真摔躺点误学成 Sit 的 FN）。本 LearnCellAreas 不产 AreaSit。
 
 		// Walk 直升：直接走过 ≥ WalkTraverse 次（默认 2）
 		t := c.Belief[0].Type

@@ -117,6 +117,7 @@ func buildRuntimeConfig(cfg *config.Config, db *sql.DB) roomengine.RuntimeConfig
 			SitSec:       float64(r.Decay.SitSec),
 			LieSec:       float64(r.Decay.LieSec),
 			EventSec:     float64(r.Decay.EventSec),
+			SitScoreSec:  float64(r.Decay.SitScoreSec),
 		},
 		Learn: roomengine.LearnParams{
 			WalkActiveX10:     r.Learn.WalkActiveX10,

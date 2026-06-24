@@ -99,12 +99,6 @@ type TrackState struct {
 	LongStillReported bool // 防 LongStill 重复上报
 	StillFallReported bool // 防 still-fall 重复上报（bathroom + pose=Stand + 15/18min）
 
-	// ---- PR-7.2 stand-static 自学习 → AreaSit 强化 ----
-	// StandStaticSince：pose=Stand 且静止的起点 ms（0 = 不在 stand-static 状态）。
-	// AreaSitAutoLearned：track 生命周期内已触发过 AreaSit 自学习（防重复）。
-	StandStaticSince   int64
-	AreaSitAutoLearned bool
-
 	// ---- PR-11 持续观测刷新（防 Belief 衰退后 layout 标记被吃掉）----
 	// LyingOnBedSinceMs：pose=Lie on AreaBed cell 持续起点；累计 ≥4h → MarkRestZoneByFeedback(AreaBed) refresh
 	// SitZoneSinceMs：pose=Sit on AreaSit cell 持续起点；累计 ≥5min → MarkRestZoneByFeedback(AreaSit) refresh
@@ -114,16 +108,6 @@ type TrackState struct {
 	AreaBedRefreshed  bool
 	SitZoneRefreshed  bool
 
-	// ---- PR-13 region static 自学习 → AreaSit（双 cell 加分 + 90% 容忍累积）----
-	// RegionStaticStartedMs：进入 region static（|dx|≤15 AND |dy|≤15）的起点 ms；0 = 不在 region。
-	// RegionStaticFrames / RegionTotalFrames：用于计算 ratio = static / total，要求 ≥0.90。
-	// RegionStartZ：region 起点的 z 值（A 路径检测 |dz|≥10 用）。
-	// AreaSitLearnedRegion：per-track 一次性 flag。
-	RegionStaticStartedMs int64
-	RegionStaticFrames    int
-	RegionTotalFrames     int
-	RegionStartZ          int
-	AreaSitLearnedRegion  bool
 
 	// ---- 异常 ----
 	CurrentAnomaly Anomaly
@@ -159,6 +143,11 @@ type TrackState struct {
 	// still-box 单源派生（updateContinuousIndicators 同步算，cell engine 久静量读，替代旧 StillSince/StillX/StillY）：
 	StillBoxStartX, StillBoxStartY int   // box run 起点位置（=History[0] 回填点）→ MarkDwell/MarkToleratedStill 灌入 cell
 	StillBoxBreakDurMs             int64 // 本帧 still-box 刚 break 的 dwell 时长（0=未 break）→ 移动块 MarkDwell 消费
+
+	// ---- AreaSit 4 通道学习累加器（sit_learning.go；StillBox run = episode，box-break = walk-away emit）----
+	sitFwContigStartMs int64   // 当前连续 pose=Sitting 段起点（断则 0；用于 3s 软门 + fwMax）
+	sitFwMaxMs         int64   // 本 episode 内最长连续 Sitting 时长（ms）
+	sitZBest           float64 // 本 episode 内 max sitZMembership（仅 z>0 帧更新；缺失中性）
 
 	// ---- Birth-coherence Kalman 域（每帧 O(1) 维护）----
 	// MaxKalmanResidual：track 生命周期内的峰值残差（Mahalanobis-like）。

@@ -219,6 +219,10 @@ type Cell struct {
 	StaticReflectorCount  int
 	LastStaticReflectorMs int64
 
+	// SitScore: AreaSit 4 通道 log-odds 累积（sit_learning.go；每条自走长坐 episode 加 sitEpisodeLLR）。
+	// ≥ sitPromoteTau 升 AreaSit(SourceLearned)；HL DecayParams.SitScoreSec(默认 4d,config 可调) 指数衰减（隔离 episode 自然褪）。
+	SitScore float64
+
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
 
@@ -245,6 +249,7 @@ type DecayParams struct {
 	SitSec       float64 // ActiveType[Sit]
 	LieSec       float64 // ActiveType[Lie]
 	EventSec     float64 // Traverse/Fall/Retract/Sleepad/Door/LongStill/LieAnomaly
+	SitScoreSec  float64 // AreaSit 4 通道 log-odds SitScore（默认 4d；孤立 episode 自然褪，需近日 2-3 次累过 τ）
 
 	// PR-11: Belief[0].Confidence 按 AreaType 分档半衰期（秒）。索引 = AreaType 值。
 	// 设计：T_half = days_to_10 / log2(10) ≈ days_to_10 / 3.32
@@ -263,6 +268,7 @@ func DefaultDecayParams() DecayParams {
 		SitSec:       24 * 3600,
 		LieSec:       7 * 24 * 3600,
 		EventSec:     7 * 24 * 3600,
+		SitScoreSec:  4 * 24 * 3600, // SitScore HL 4d
 
 		// PR-11: 按 AreaType 分档 Belief 衰退（半衰期，秒）。区域重编号后：
 		//   AreaSit/AreaLying (椅/沙发坐躺)：  7 天衰到 10  HL=2.1d  — 可移动家具
@@ -591,6 +597,9 @@ func (c *Cell) Decay(dtSec float64, p DecayParams) {
 	c.MirrorBounceCount = scaleInt(c.MirrorBounceCount, fEv)
 	// 静止反射体同半衰期：偶发一次静止伪迹自然衰退，需跨多次独立 episode 才累到 promote。
 	c.StaticReflectorCount = scaleInt(c.StaticReflectorCount, fEv)
+
+	// SitScore（log-odds）按 SitScoreSec（默认 4d，config 可调）指数衰减：孤立 episode 自然褪，需 2–3 次近日自走长坐才够 τ。
+	c.SitScore *= factor(dtSec, p.SitScoreSec)
 
 	// PR-11: Belief[0].Confidence 按 AreaType 分档衰减（半衰期 BeliefHalfLifeByType[type]）
 	// 衰减后 Confidence < 10 → 降级 AreaUnknown + Source=Unset（不再贡献 IsRestZone 等判定）。

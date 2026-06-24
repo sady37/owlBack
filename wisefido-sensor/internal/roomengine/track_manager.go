@@ -1813,136 +1813,11 @@ func positionAtMsAgo(ts *TrackState, nowMs int64, windowMs int64) (TimedPoint, b
 // （§82 单源：belief/engine 侧不持 12min 字面量，由 bootstrap 注入 Room）。
 const ThresholdNonRestMs = 12 * 60 * 1000
 
-// updateRegionStatic PR-13：region static 累积器 + A/B 路径触发判定。
-//
-// 区域定义：连续帧间 |dx|≤15 AND |dy|≤15（D523 实测 ~96% 帧满足；single-axis 跳变 ≤5%）。
-// 容忍机制：累积期内允许 ≤10% 帧打断（≥90% 静止）；解决 PR-7.2 严格累积被噪声打断 (4e-12 概率) 的问题。
-// 触发条件 OR：
-//
-//	A 路径（z 突变 = 坐→站）：region static ≥2min AND |z - RegionStartZ| ≥10cm AND 双方 z>0
-//	B 路径（持续累积）：region static ≥ threshold （RestZone cell 8min；其它 12min）AND ratio ≥0.90
-//
-// 触发后双 cell 加分：prev cell + cur cell 同时 MarkRestZoneFeedback(AreaSit)。
-// per-track 一次性（AreaSitLearnedRegion flag）。
-//
-// 调用方持锁；nowMs/cell 已由 scoreMovement 计算。
-func (tm *TrackManager) updateRegionStatic(ts *TrackState, prev TimedPoint, x, y int, nowMs int64, cell *Cell) {
-	const (
-		regionDxDyMaxCm  = 15 // |dx|≤15 AND |dy|≤15 = 同区域
-		regionResetCm    = 50 // |dx|>50 或 |dy|>50 = 大跨步，立即 reset
-		ratioMin         = 0.90
-		ratioResetMin    = 0.85 // ratio 跌破此值 → region 失效 reset
-		zJumpMinCm       = 10
-		zJumpMinElapse   = 2 * 60 * 1000      // 2 min
-		thresholdRest    = 8 * 60 * 1000      // RestZone cell: 8min
-		thresholdNonRest = ThresholdNonRestMs // 其它 12min（= 导出 ThresholdNonRestMs，§82 neighbor D 锚单源）
-	)
-
-	dx := x - prev.X
-	if dx < 0 {
-		dx = -dx
-	}
-	dy := y - prev.Y
-	if dy < 0 {
-		dy = -dy
-	}
-
-	// 大跨步：立即 reset region
-	if dx > regionResetCm || dy > regionResetCm {
-		ts.RegionStaticStartedMs = 0
-		ts.RegionStaticFrames = 0
-		ts.RegionTotalFrames = 0
-		return
-	}
-
-	// 维护 region 帧计数
-	staticFrame := dx <= regionDxDyMaxCm && dy <= regionDxDyMaxCm
-	if ts.RegionStaticStartedMs == 0 {
-		// 启动 region；要求当前是 static 帧
-		if !staticFrame {
-			return
-		}
-		ts.RegionStaticStartedMs = nowMs
-		ts.RegionStartZ = prev.Z
-		ts.RegionStaticFrames = 1
-		ts.RegionTotalFrames = 1
-		return
-	}
-
-	ts.RegionTotalFrames++
-	if staticFrame {
-		ts.RegionStaticFrames++
-	}
-
-	// ratio 跌破 0.85 → 区域失效，reset
-	if ts.RegionTotalFrames >= 10 {
-		ratio := float64(ts.RegionStaticFrames) / float64(ts.RegionTotalFrames)
-		if ratio < ratioResetMin {
-			ts.RegionStaticStartedMs = 0
-			ts.RegionStaticFrames = 0
-			ts.RegionTotalFrames = 0
-			return
-		}
-	}
-
-	// 已学习过 → 不重复触发
-	if ts.AreaSitLearnedRegion {
-		return
-	}
-
-	// PR-13: 与 PR-7.2 一致 — still-fall 触发场景（toilet/shower/bathroom-room/Stay-alarm）
-	// 不学 AreaSit；让 still-fall 处理。否则浴室长时间静止会被误学成坐位。
-	if cell != nil && tm.stillFallTimeoutSec(cell, false) > 0 {
-		return
-	}
-
-	elapsed := nowMs - ts.RegionStaticStartedMs
-
-	// A 路径：region static ≥2min + z 突变 ≥10cm（双方 z 有效）
-	if elapsed >= int64(zJumpMinElapse) && ts.RegionStartZ > 0 && prev.Z > 0 {
-		dz := prev.Z - ts.RegionStartZ
-		if dz < 0 {
-			dz = -dz
-		}
-		if dz >= zJumpMinCm {
-			tm.markBothCellsAreaSit(ts, prev, x, y, nowMs, "zjump")
-			ts.AreaSitLearnedRegion = true
-			return
-		}
-	}
-
-	// B 路径：累积时长 + ratio ≥0.90
-	threshold := int64(thresholdNonRest)
-	if cell != nil && cell.IsRestZone() {
-		threshold = int64(thresholdRest)
-	}
-	if elapsed >= threshold {
-		ratio := float64(ts.RegionStaticFrames) / float64(ts.RegionTotalFrames)
-		if ratio >= ratioMin {
-			tm.markBothCellsAreaSit(ts, prev, x, y, nowMs, "static_accum")
-			ts.AreaSitLearnedRegion = true
-		}
-	}
-}
-
-// markBothCellsAreaSit PR-13：双 cell 加分。prev cell + cur cell 同时 MarkRestZoneFeedback(AreaSit)。
-// 内部各自调 boostNeighborSameType（PR-10）；cell1↔cell2 邻居时互相 boost cap 100。
-func (tm *TrackManager) markBothCellsAreaSit(ts *TrackState, prev TimedPoint, x, y int, nowMs int64, trigger string) {
-	tm.grid.MarkRestZoneFeedback(prev.X, prev.Y, AreaSit, nowMs)
-	tm.grid.MarkRestZoneFeedback(x, y, AreaSit, nowMs)
-	tm.logger.Info("area_sit_auto_learned_region",
-		zap.String("device_uid", ts.DeviceAddr),
-		zap.Int("track_id", ts.TrackID),
-		zap.String("trigger", trigger),
-		zap.Int("region_total_frames", ts.RegionTotalFrames),
-		zap.Int("region_static_frames", ts.RegionStaticFrames),
-		zap.Int64("region_elapsed_ms", nowMs-ts.RegionStaticStartedMs),
-		zap.Int("prev_x", prev.X), zap.Int("prev_y", prev.Y), zap.Int("prev_z", prev.Z),
-		zap.Int("cur_x", x), zap.Int("cur_y", y),
-		zap.Int("region_start_z", ts.RegionStartZ),
-		zap.Int64("ts_ms", nowMs),
-	)
-}
+// AreaSit 自动学习已单源到 StillBox 驱动的 log-odds 4 通道（emitSitEpisode + sit_learning.go §11）。
+// 旧 PR-13 updateRegionStatic（位置-region A/B 路径）+ markBothCellsAreaSit 已删：
+//   ① 位置-region（连续帧 |dx|,|dy|≤15cm）被角装 ±30~50 抖动反复打散，D523 久坐学不到；
+//   ② 无 walk-away 收场闸 → 真摔在不抖点躺满 12min 会被误学成 Sit（FN）。新路径 stillbox 抗抖 + 必须自走才学。
+// ThresholdNonRestMs（上方）保留：§82 neighbor D 窗仍锚此。
 
 // nearestEnterRoomMs 在 [tMs - windowMs, tMs + windowMs] 内查最近 EnterRoom 事件。
 // 返回最接近 tMs 的事件时间戳。调用方持锁。
@@ -2083,19 +1958,11 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 	cell := tm.grid.CellAt(x, y)
 	isRest := cell != nil && cell.IsRestZone()
 
-	// PR-13: region static 维护 — |dx|≤15 AND |dy|≤15 视为同区域；累积期 ≥90% 容忍单帧噪声
-	tm.updateRegionStatic(ts, prev, x, y, nowMs, cell)
+	// AreaSit 学习已单源到 StillBox 驱动的 log-odds（emitSitEpisode，sit_learning.go）——
+	// 旧 PR-13 位置-region（updateRegionStatic）已删：位置门控被角装 ±30~50 抖动打散，且无 walk-away 闸会把真摔点误学成 Sit。
 
 	// ── 即时态（d 帧间位移判据）：score / refresh / stand-static 计时（不变；不碰久静量）──
 	if d < StillThreshCm {
-		// PR-7.2: 跟踪 pose=Stand 静止专用计时（用于自学习升 AreaSit）
-		if RadarPoseToCore(pose) == CorePoseStand {
-			if ts.StandStaticSince == 0 {
-				ts.StandStaticSince = nowMs
-			}
-		} else {
-			ts.StandStaticSince = 0
-		}
 		// PR-11: pose=Lie on AreaBed 持续刷新 — 4h 累计 → 重锁 confidence=95
 		if cell != nil && RadarPoseToCore(pose) == CorePoseLie && cell.Belief[0].Type == AreaBed {
 			if ts.LyingOnBedSinceMs == 0 {
@@ -2138,48 +2005,8 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 			ts.AdjustScore(-3)
 		}
 		// 静止超时 LongStill（久静量）已迁到下方 box 判据块（单源 StillBoxRunStart，见函数末）。
-		if cell != nil {
-			isRiskTime := IsNightTime(nowMs, tm.timezone)
-
-			// PR-Bootstrap: v1 TrackManager still-fall fire path 已删除，由 PR-10 BathroomStillFall
-			// (§6.A.1) 在 bathroom room.kind 分支替代。stillFallTimeoutSec 谓词保留作"bathroom-like
-			// 位置过滤器"（line 1971 + 2294 AreaSit 学习 gate），不再驱动 alarm 发射。
-
-			// PR-7.2: stand-static 自学习 → AreaSit
-			// 触发条件:
-			//   pose=Stand 静止 ≥ 12min (cell 非 AreaSit) 或 ≥ 8min (已是 AreaSit 强化)
-			//   且 cell 不在 still-fall 触发场景（toilet/shower/bathroom-room/Stay-alarm）
-			// 物理意义: 人很难 stand-static 超过 12min 在非 bathroom 场景；如果 track 在此
-			// 静止这么久且没消失/没报警 = 该位置实际是个站立工作/坐位（如水池前/化妆台/电脑桌）
-			// 阈值 < 15min 避免与 still-fall 冲突。
-			if ts.StandStaticSince > 0 && !ts.AreaSitAutoLearned && cell != nil {
-				if tm.stillFallTimeoutSec(cell, isRiskTime) == 0 {
-					// 非 still-fall 触发场景；可学习
-					// PR-9.2: 任何已是 RestZone（AreaSit / AreaBed）都用 8min（强化）；其它 12min
-					threshold := int64(12 * 60 * 1000)
-					if cell.IsRestZone() {
-						threshold = int64(8 * 60 * 1000)
-					}
-					if nowMs-ts.StandStaticSince >= threshold {
-						locked := cell.MarkRestZoneByFeedback(AreaSit)
-						cell.IncrToleratedStill()
-						// PR-10: 自学习也触发邻居增强（与人工反馈一致）
-						tm.grid.boostNeighborSameType(x, y, AreaSit, nowMs)
-						ts.AreaSitAutoLearned = true
-						tm.logger.Info("area_sit_auto_learned",
-							zap.String("device_uid", ts.DeviceAddr),
-							zap.Int("track_id", ts.TrackID),
-							zap.Int("stand_static_sec", int((nowMs-ts.StandStaticSince)/1000)),
-							zap.Int("threshold_sec", int(threshold/1000)),
-							zap.Bool("area_sit_locked", locked),
-							zap.Int("cell_area_before", int(cell.Belief[0].Type)),
-							zap.Int("x", x), zap.Int("y", y),
-							zap.Int64("ts_ms", nowMs),
-						)
-					}
-				}
-			}
-		}
+		// PR-7.2 stand-static 自学习 → AreaSit 已删：位置门控被角装抖动打散 + 无 walk-away 闸会把真摔躺点误学成 Sit；
+		// AreaSit 自动学习单源到 StillBox log-odds（emitSitEpisode，sit_learning.go）。
 
 		// PR-9: v1 R4 bedside_fall 触发块整段删除（依赖 lastLeftBedAt）。
 		// PR-10/11 BathroomBedsideFall + bedroom bedside_fall 将以 SuiteCensus + BedSession 重写，
@@ -2188,7 +2015,6 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 		// 即时态移动：reset 即时态计时（StandStatic/Lying/Sit/StillFall）；速度合理性。
 		// 久静量（Dwell/ToleratedStill/LongStill/Anomaly/LongStillReported）走下方 box 判据块。
 		ts.StillFallReported = false
-		ts.StandStaticSince = 0 // PR-7.2: track 移动 → reset stand-static 计时
 		ts.LyingOnBedSinceMs = 0
 		ts.SitZoneSinceMs = 0 // PR-11: track 移动 → reset 持续观测计时
 		// 速度合理性
@@ -2461,6 +2287,8 @@ func (tm *TrackManager) ResetStillBox(logicID string) {
 		ts.StillBoxStartX = 0
 		ts.StillBoxStartY = 0
 		ts.History = ts.History[:0]
+		// lost = fall 域，不 emit Sit episode；只清姿态累加器（与 box break 区别开）。
+		ts.sitFwMaxMs, ts.sitFwContigStartMs, ts.sitZBest = 0, 0, 0
 		return
 	}
 	// 已被 lost-reap 驱逐 → firmware 再发即 NewTrackState，本就从 0
@@ -2509,6 +2337,63 @@ func (tm *TrackManager) EvictTrack(logicID string) {
 //  2. MaxKalmanResidual：track 生命周期峰值残差。
 //  3. MaxImpliedSpeedFromBirth：max(dist(current, birth) / age) cm/s；
 //     > ImpossibleSpeedCm 判硬 ghost；> SuspectSpeedCm + 无 EnterRoom 判软 ghost。
+// emitSitEpisode StillBox break（移动导致=walk-away）时结算一条 Sit episode（sit_learning.go §11）。
+// 4 通道 log-odds → cell.SitScore；过 τ 升 AreaSit(SourceLearned)。dur=本次 box 时长(dwell)。
+// lost（ResetStillBox）不调本函数（fall 域，告警留）。结算后清姿态累加器（下条 episode 从 0）。
+func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
+	defer func() { ts.sitFwMaxMs, ts.sitFwContigStartMs, ts.sitZBest = 0, 0, 0 }()
+	if tm.grid == nil {
+		return
+	}
+	dwellMin := float64(durMs) / 60000.0
+	if dwellMin < sitActiveCutoffMin { // <5min = Active 过路，不计 Sit
+		return
+	}
+	fwMaxMin := float64(ts.sitFwMaxMs) / 60000.0
+	deltaL := sitEpisodeLLR(dwellMin, ts.sitZBest, fwMaxMin)
+	x, y := ts.StillBoxStartX, ts.StillBoxStartY
+	// 加到锚 cell + ±30cm 邻域，按切比雪夫距离分层衰减（±10→1.0/±20→0.5/±30→0.3）：
+	// 覆盖坐姿足迹 + 让锚漂 30cm 内 episode 合并；SourceHuman（人画的已知区）跳过不污染。
+	promoted := false
+	for dx := -30; dx <= 30; dx += 10 {
+		for dy := -30; dy <= 30; dy += 10 {
+			ring := dx
+			if ring < 0 {
+				ring = -ring
+			}
+			if ay := dy; ay < 0 && -ay > ring {
+				ring = -ay
+			} else if ay > ring {
+				ring = ay
+			}
+			w := sitSpreadWeight(ring)
+			if w == 0 {
+				continue
+			}
+			c := tm.grid.CellAt(x+dx, y+dy)
+			if c == nil || c.Belief[0].Source == SourceHuman { // 人工画的已知区不污染
+				continue
+			}
+			c.SitScore += deltaL * w
+			if c.SitScore >= sitPromoteTau {
+				tm.grid.MarkRestZoneFeedback(x+dx, y+dy, AreaSit, nowMs)
+				promoted = true
+			}
+		}
+	}
+	if tm.logger != nil {
+		tm.logger.Info("sit_episode_logodds",
+			zap.String("logic_id", ts.LogicID),
+			zap.Float64("dwell_min", dwellMin),
+			zap.Float64("fw_max_min", fwMaxMin),
+			zap.Float64("z_best", ts.sitZBest),
+			zap.Float64("delta_l", deltaL),
+			zap.Bool("promoted_area_sit", promoted),
+			zap.Int("anchor_x", x), zap.Int("anchor_y", y),
+			zap.Int64("now_ms", nowMs))
+	}
+}
+
 //
 // 调用位置：processFrameAt 已有 track 分支，Kalman.Update 之后。
 func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame, nowMs int64, residualF float64) {
@@ -2527,10 +2412,26 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			ts.StillBoxStartX = ts.History[0].X
 			ts.StillBoxStartY = ts.History[0].Y
 		}
+		// AreaSit 学习：box running = episode 进行中，累姿态相关两通道（fwMax/zBest，sit_learning.go）。
+		if RadarPoseToCore(f.Pose) == CorePoseSit {
+			if ts.sitFwContigStartMs == 0 {
+				ts.sitFwContigStartMs = nowMs
+			} else if contig := nowMs - ts.sitFwContigStartMs; contig >= sitFwContigGateMs && contig > ts.sitFwMaxMs {
+				ts.sitFwMaxMs = contig // 3s 软门后才计入最长连续 Sitting
+			}
+		} else {
+			ts.sitFwContigStartMs = 0 // 断 contig
+		}
+		if f.Z > 0 {
+			if m := sitZMembership(float64(f.Z)); m > ts.sitZBest {
+				ts.sitZBest = m
+			}
+		}
 	} else if ts.StillBoxRunStart > 0 {
 		dur := nowMs - ts.StillBoxRunStart
 		ts.StillBoxBreakDurMs = dur // 暂存刚结束的 dwell 时长，供 scoreMovement 移动块 MarkDwell
 		ts.StillBoxRunStart = 0
+		tm.emitSitEpisode(ts, dur, nowMs) // box-break=移动导致=walk-away → emit Sit episode（lost 走 ResetStillBox 不 emit）
 		if tm.logger != nil {
 			tm.logger.Info("still_box_break",
 				zap.Int("track_id", f.TrackID),
