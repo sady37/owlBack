@@ -14,8 +14,9 @@ import "math"
 
 const (
 	// episode / 升格（SitScore 衰减半衰期已移 DecayParams.SitScoreSec，config 可调）
-	sitActiveCutoffMin = 5.0 // dwell <5min → Active，不计 Sit
-	sitPromoteTau      = 6.0 // cell.SitScore ≥ τ → 升 AreaSit
+	sitActiveCutoffMin = 5.0                // dwell <5min → Active，不计 Sit
+	sitPromoteTau      = 6.0                // cell.SitScore ≥ τ → 升 AreaSit
+	sitScoreCap        = sitPromoteTau * 1.5 // SitScore 上限(=9)：防反学习滞后——家具搬走后约 2.3d(而非 6.3d)衰回 τ 以下
 
 	// resolution（硬判据；lost → veto 不调本函数）
 	sitLLRWalkAway = 2.0

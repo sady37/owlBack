@@ -2372,6 +2372,9 @@ func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
 				continue
 			}
 			c.SitScore += deltaL * w
+			if c.SitScore > sitScoreCap {
+				c.SitScore = sitScoreCap // 上限,防反学习滞后(家具搬走后更快衰回 τ 以下)
+			}
 			if c.SitScore >= sitPromoteTau {
 				tm.grid.MarkRestZoneFeedback(x+dx, y+dy, AreaSit, nowMs)
 				promoted = true
