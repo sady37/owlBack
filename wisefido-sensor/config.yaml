@@ -77,6 +77,7 @@ roomengine:
     sit_sec:        86400     # 24 h    — ActiveType[Sit]
     lie_sec:        604800    # 7 d     — ActiveType[Lie]
     event_sec:      604800    # 7 d     — Traverse/Fall/Retract/Sleepad/Door/LongStill/LieAnomaly
+    sit_score_sec:  345600    # 4 d     — AreaSit 4 通道 SitScore log-odds（孤立 episode 自然褪，需近日 2-3 次累过 τ）
   learn:
     walk_active_x10:     20    # 2 s × 10  — Move 单帧门槛
     walk_traverse:       2     # 单 cell 累计穿越次数（配合 speed 兜底，2 次走过即升格）
@@ -88,6 +89,8 @@ roomengine:
     move_speed_cms:      20    # Kalman 速度阈值（cm/s）；> 此速度即使 pose=Stand 也算 Move（救慢走老人 pose 不准）
     near_traverse_walk:  5     # 邻居被穿越 ≥ 此值 + 本 cell 至少 1 次直接 Move 触碰 → 确认 Walk（"一次经过就确认"）
     near_traverse_deny:  20    # 邻居被穿越 ≥ 此值 + 本 cell 完全无直接触碰 → 反转为 Deny（"20 次都没经过 = 系统绕开 = 障碍"）
+    sit_promote_tau_x10: 60    # AreaSit 升格阈 τ×10（τ=6.0）；↓ 学得快但易误学。SitScore≥τ 升 AreaSit
+    sit_spread_cm:       30    # AreaSit episode 加分邻域半径 cm；权重 tier 按此比例缩放（30 时 ±10/20/30=1.0/0.5/0.3）
   belief:
     decay_interval_sec:  3600    # 每小时跑一次衰减
     scan_interval_sec:   300     # 每 5min 跑一次 LearnCellAreas + UpdateBelief

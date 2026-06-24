@@ -27,11 +27,10 @@ const (
 	sitZWeight = 0.4
 
 	// dwell（升降双 sigmoid 平滑 bump，分钟）
-	sitDwellRiseMid    = 8.0
-	sitDwellRiseSlope  = 3.0
-	sitDwellFallMid    = 55.0
-	sitDwellFallSlope  = 10.0
-	sitDwellBedLeanMin = 30.0 // dwell>此 ∧ Lying 主导 → bedLean（建议 Bed，不自升）
+	sitDwellRiseMid   = 8.0
+	sitDwellRiseSlope = 3.0
+	sitDwellFallMid   = 55.0
+	sitDwellFallSlope = 10.0
 
 	// firmware-sit（pose=Sitting；base>z 故 pose>z；安全靠 episode walk-away 门控，非高 Tmin）
 	sitFwBase         = 0.6
