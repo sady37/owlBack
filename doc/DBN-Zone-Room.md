@@ -633,3 +633,24 @@ episode 结束烘进残余：$R \leftarrow R_{\text{prior}}+\text{credit}$，并
 - （早前一版误把它当 2.5s track 周期算成 0.6 m/s 判"偏紧"——错；实际 1Hz，150 充分。）
 - 用处：`track_manager.go:1585`（出生配对加分）/ `:2013`（出生宽限跳过）。全仓无其它 0.6 m/s / 60 cm/s 速度假设。
 - 影响面仅出生 Real/ghost 评分 → N_r 人数（不门控 fire，realness 绝不否决摔，[[realness_never_vetoes_fall]]）= FN-safe。
+
+### §N AreaSit 学习 — log-odds 4 通道（2026-06-23，用户定；全文 [doc/cell_area_learning_scoring.md](cell_area_learning_scoring.md)）
+
+**定位**：cell-learn（慢/批/持久，每 5min dump 28=`roomengine_grid_snapshot`）学 `AreaSit`，作 **DBN 先验**单向喂入——AreaSit cell → `tFloor` 取 90min（§H/§I）+ emission 正向压制。**不进 DBN 推断环**（Option A：时标分离，cell→DBN 只读）。治本 case：D523 角落用户常坐却学成 AreaActive（12min floor）→ 假摔，根因 = 固件角装把坐误读 pose=Standing/z=0 + 位置-region 被 ±30~50 抖动打散。
+
+**Episode（锚-停留，stillbox 驱动，替 `updateRegionStatic` 的位置-region）**：track present 帧，±50cm 内算同锚累 `dwell`；移动 >50cm / exit / lost 时 `classifyBreak`。**键控 stillbox（StillSec）非位置-region**（抗角装抖动，与 floor 同源）。
+
+**每条自走 episode 累 log-odds（4 通道相加）**：
+
+$$\Delta L_{sit} = \underbrace{+2.0}_{\text{resolution}} + \underbrace{0.4\,\max_t e^{-(z_t-z_C)^2/2\sigma^2}}_{\text{z 纯正向}} + \underbrace{\text{dwellLLR}}_{\text{时长}} + \underbrace{\text{clamp}(0.0556(d_{fw}{-}3),0,1.5)}_{\text{firmware-sit}}$$
+
+| 通道 | 取值 | 标定/依据 |
+|---|---|---|
+| **resolution（硬判据）** | walk-away→+2.0；**lost/coast/无exit→veto 不计**（fall 域，告警留） | 倒地者不会自己走开 = sit↔fall 硬分割 |
+| **z（纯正向平滑，缺失中性）** | 高斯隶属度峰 $z_C{=}80$、$\sigma{=}12$、权 0.4；**z=0 不更新=中性，无负分支** | 2026-06-23 实测 monitor_stream：pose=Sitting **z>0 中位 80**（IQR 73–87，90% 在 [62,100]），z=0 占 70%。$z_C$ 可调（165cm→80 / 175cm→~83–85）。厂家 centroid≠position_z 不可借 |
+| **dwell（对数正态）** | <5min→Active 不计；5–10:+0.3；10–30:+1.0；30–90:+0.5(bedLean)；>90:0 | 老人久坐 MBD 12–16min（PMC8679788/9166254）；<5min 为过路 |
+| **firmware-sit** | $d_{fw}$=最长连续 Sitting 分钟；Tmin=3 / Dcap=30 / Gmax=1.5；3s 连续软门滤闪烁 | pose=Sitting 直证；封顶+最小时间治旧 PR-15 近场误学禁因 |
+
+**升格**：cell `SitScore`（log-odds 累加，HL≈4d 衰减）`≥ τ=6.0` → `MarkRestZoneByFeedback(AreaSit, SourceLearned)`。N 隐含：角落 episode（z=0、固件非 Sitting）ΔL≈+3.0 → **~2 次自走长坐**升格；正常椅子 ΔL≈+4.0。
+
+**Sit/Active/Unknown 同框竞争**，Sit 权重 > Active（治"走过 2 次 Active 直升赢"）；**Bed/Lying 算-但-哑**（Source=Shadow，DBN 当 Unknown，人 handle 永久 pin AreaBed 才生效，无 2H）；curtain/绿植杂波靠 realness 并存测试（§G）→ AreaDeny，不误入 Sit。红线：lost-break 永不 emit、dwell<5min 不计 Sit、z 只正向、Bed 永远 human。

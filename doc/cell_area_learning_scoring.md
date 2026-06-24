@@ -67,12 +67,14 @@ Sit 与 curtain/绿植杂波**都"静止+易重复"** → 必须第三轴区分�
 ΔL_sit(episode) = LLR_resolution  +  LLR_z  +  LLR_dwell  +  g_fwSit
 ```
 
-| 通道 | 公式 | 参数（oracle，文献支撑） | 备注 |
+| 通道 | 公式 | 参数（oracle，文献/实测支撑） | 备注 |
 |---|---|---|---|
 | **resolution（硬判据）** | walk-away → +a；lost/coast/无exit → **否决（不计/负大）** | a 大 | 倒地者不会自己走开；这是 sit↔fall 的硬分割 |
-| **z（缺失门控）** | z∈[40,70]→正；z≥80→负（合法高读数）；**z=0/缺失→0(中性)** | μz=55 | 绝不用低 z 反向否定（[[geom_abandoned_use_roomtype_areatype]] z 单向原则） |
+| **z（纯正向平滑，缺失中性）** | `m(z)=exp(−(z−zSitCenter)²/(2·zSitSigma²))`，episode 内取 max；**z=0→0(中性,不扣分)**；**无负分支** | `zSitCenter=80`,`zSitSigma=12`,权 +0.4 | 高斯隶属度替硬框：峰=实测 Sitting z>0 中位 80，σ=12 使 [73,87] 近满、~105 自然趋零。**中心可调**（165cm 实测→80；175cm 均值→~83–85；老人偏矮 80 代表性好；per-deployment 可标）。z=0 占 70%=缺失，绝不用 z 反向否定 |
 | **dwell（对数正态）** | <5min→Active(不计sit)；峰~14min；10–30 强；30–90 偏Bed | 峰 ln(14min)，核心[10,30] | MBD 12–16min（PMC8679788/9166254） |
 | **firmware-sit** | `g=clamp(k·(dur−Tmin),0,Gmax)·min(1, contigSit_s/3)` | Tmin≈3min, Dcap≈30min, 3s软平滑 | pose=Sitting(3) 直证；3s 连续软门滤闪烁；封顶防失控（治旧 PR-15 禁因） |
+
+> **z 实测标定（2026-06-23 monitor_stream 24h，track_id≤7）**：青澜固件静态姿态 z 多为 0（Sitting 70%、Standing 93% 帧 z=0=缺失）。**z>0 时**各姿态中位：Lying 69 < Standing 72 < **Sitting 80** < Walking 89；Sitting z>0 又紧又居中（IQR 73–87，90% 落 [62,100]，91% 在 60–100 两档）。故 z 作**纯正向弱佐证**：z∈[65,100] 时小幅加分（episode 内已排除 Walking），缺失/区间外不扣分。原 [40,70] 已按实测改 [65,100]。厂家 TI/Infineon 用 centroid 高度，定义≠position_z，不可借。
 
 **键控用 stillbox（StillSec），不用位置-region**（治本：抗 ±30~50 角装抖动；与 floor 同源）。空间聚合用 cell±50cm，不用 ±15。
 
@@ -138,14 +140,77 @@ Cell 增：SitScore/ActiveScore/BedScore（log-odds 累加，沿用 Confidence �
 | 参数 | 初值 | 来源 |
 |---|---|---|
 | dwell 峰 / 核心 | 14min / [10,30] | MBD 12–16min |
+| **z 中心 zSitCenter / σ / 权重** | **80 / 12 / +0.4**（高斯隶属度，中心可调） | 实测 Sitting z>0 中位80 IQR73–87（2026-06-23）；纯正向缺失中性；175cm 人群→~83–85 |
 | Active 下闸 | <5min | 短 bout<10min，保守 |
 | firmware-sit Tmin/Dcap/软门 | 3min / 30min / 3s | 防闪烁+封顶 |
 | floor μ/σ（复用 floor.go 单源） | Default 8/2.67min；Sit 60/20min；Bath 12/4min | 已在库 |
-| 升格 τ / N episode | 待标 / 2~3 | oracle |
+| 升格 τ / N episode | **6.0 / ≈2**（见 §11.4，oracle） | log-odds 累积 |
+| LLR 权重 resolution/z/dwell-peak | **+2.0 / +1.0 / +1.0** | §11.3 oracle |
+| firmware-sit Gmax/k | **1.5 / 0.0556 per-min** | Gmax/(Dcap−Tmin) |
+| SitScore 衰减 HL | **≈4d** | 隔离 episode 自然褪 |
+| 锚半径 / activeCutoff | 50cm / 5min | 抗角装抖动 / 短 bout |
 
-## 10. 待评审决策点
+## 10. 待评审决策点（§11 已给 oracle 初值，红字处待你拍）
 
-1. SitScore 升格 τ 与 N（几次 self-resolved episode 升 Sit）。
-2. firmware-sit `Gmax`/`k` 标定（与 dwell/z 通道权重平衡）。
+1. ~~SitScore τ/N~~ → §11 定 τ=6.0 / ≈2 episode（可调）。
+2. ~~firmware-sit Gmax/k~~ → §11 定 1.5 / 0.0556（可调）。
 3. SourceShadow 是否独立持久列 vs 复用 Source 值。
 4. 升级催办的载体/权限模型：furniture-lying 持续 fire → 定向管理者 → 一键永久 pin AreaBed（走哪条通知/审批链待定）。
+5. **SitScore 是否落 28 payload 持久化**（建议是：重启不丢累积，与 cell-learn 持久化一致）。
+6. 升格 Source 用 `SourceLearned`（auto 可被 human 覆盖）vs 现有 RegionStatic 写的 `SourceFeedback`——建议统一为 Learned。
+
+## 11. Sit 4 通道实现细化（episode 状态机 + LLR 数值）
+
+替换现有 `updateRegionStatic` 的「位置-region（|dx|,|dy|≤15cm + 帧比）」为「**锚-停留（stillbox 驱动 + ±50cm 锚 + break 分类）**」——治本：位置-region 被 ±30~50cm 角装抖动反复 reset，而 stillbox 抗抖动。
+
+### 11.1 Episode 生命周期（挂 TrackState，每 present 帧驱动）
+
+TrackState 新增字段（删旧 `RegionStatic*`）：
+```
+sitAnchorX, sitAnchorY int     // 当前停留锚（±50cm 内算同锚）
+sitAnchorMs            int64    // 锚建立时刻 = dwell 起点
+sitFwContigMs          int64    // 当前 pose=Sitting 连续段起点（断则重置 = 3s 软门载体）
+sitFwMaxMs             int64    // 本 episode 内最长连续 Sitting
+sitZBest               float64  // episode 内 z 隶属度 m(z)=exp(−(z−zSitCenter)²/(2·zSitSigma²)) 的最大值（纯正向；z=0 不更新 = 缺失中性）
+```
+常量：`zSitCenter=80`（坐姿 z 中心，oracle 可调）、`zSitSigma=12`。
+
+每帧（取 x,y,z,pose,StillSec）：
+1. `d = |xy − anchor|`
+2. **d ≤ 50cm（同锚）**：`dwell = now − sitAnchorMs`；`pose==Sitting(3)` → 延 `sitFwContigMs`、`sitFwMax=max`；否则断 contig；z：`z>0 → sitZBest = max(sitZBest, exp(−(z−zSitCenter)²/(2·zSitSigma²)))`（z=0 不更新 = 中性）。
+3. **d > 50cm（移动）**：`classifyBreak()` → 若 walk-away 且 `dwell≥5min` → `emitEpisode()`；随后 re-anchor 到新 xy（开新 episode）。
+4. **track 消失帧**：`classifyBreak()`（lost/exit）→ emit 或 veto；清 episode。
+
+### 11.2 Break 分类（复用现有信号 lostExitInfo / ExitLogOdds / recentRadarEvents）
+- **lost**（无 ExitRoom + lostExitInfo 非离房趋势 + track_id 失锁且 logic_id 未在别 track 续）→ **veto（不 emit）**：这是 fall 域，告警要留。
+- **exit-room**（recentRadarEvents 有 ExitRoom / ExitLogOdds 翻转）→ walk-away。
+- **resume-move**（同 track_id 续、位移 >50cm、速度恢复）→ walk-away。
+
+### 11.3 4 通道 LLR（emit 时算一次；仅 dwell≥5min ∧ walk-away 才到这）
+```
+LLR_resolution = +2.0
+LLR_z          = 0.4 · sitZBest                 // 平滑高斯隶属度（峰 zSitCenter=80, σ=12），纯正向；z=0 不更新=中性，绝不扣分、无负分支
+LLR_dwell      = dwellLLR(dwellMin)             // <5 不到此 / 5–10:+0.3 / 10–30:+1.0 / 30–90:+0.5(置 bedLean) / >90:0
+g_fwSit        = clamp(0.0556·(fwMaxMin−3), 0, 1.5)
+ΔL_sit         = LLR_resolution + LLR_z + LLR_dwell + g_fwSit
+```
+3s 软门由累积期 `sitFwContigMs` 实现：连续 Sitting 须 ≥3s 才计入 `sitFwMax`，sub-3s 段被 contig 重置丢弃（等价 `min(1, contig/3)`）。
+
+### 11.4 cell 累积 + 升格 + 衰减
+- emit → 把 `ΔL_sit` 加到**锚 cell + 50cm 内邻 cell** 的 `Cell.SitScore`（float log-odds）。
+- 衰减：`SitScore` 每 decay tick 按 HL≈4d 指数衰减（隔离 episode 自然褪；2–3 次近日 episode 才够 τ）。
+- 升格：`SitScore ≥ τ(=6.0)` → `MarkRestZoneByFeedback(AreaSit)` 传 **SourceLearned**（auto，可被 human feedback 覆盖）。
+- N 隐含：角落 episode（resolution+2.0, z=0→0, dwell+1.0, fwSit=0[固件报 Standing 非 Sitting]）ΔL≈**+3.0** → τ=6 ≈ **2 次**自走长坐升格；正常椅子（z∈[65,100]+0.4, dwell+1.0, fwSit+0.61）ΔL≈**+4.0** → ~2 次（更快）。
+
+### 11.5 接口（最小爆炸半径）
+| 点 | 改动 |
+|---|---|
+| `track_manager.go` TrackState | 加 §11.1 字段；删 `RegionStatic*` 旧字段 |
+| `track_manager.go::updateRegionStatic` | 重写为锚-停留+break+emit；A 路径(z-jump,z>0)并入 LLR_z 正向加速 |
+| `cell.go` Cell | 加 `SitScore float64`；建议落 28 payload 持久化 |
+| `classifyBreak`（新） | 复用 lostExitInfo / ExitLogOdds / recentRadarEvents |
+| `cell.go::MarkRestZoneByFeedback` | 升格调用传 `SourceLearned` |
+| `cell.go Decay` | 加 SitScore 指数衰减分支 |
+
+### 11.6 红线
+- **lost-break 永不 emit**（fall 域）；dwell<5min 永不计 Sit（→Active）；z 只正向（z=0 中性）；Bed-lean（dwell 30–90 / pose=Lying 主导）只**建议**不 auto 升 Bed（Bed 永远 human）。
