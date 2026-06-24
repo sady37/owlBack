@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"owl-common/radarutils"
 )
@@ -64,21 +65,23 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 			objHeight = *hdr.Height
 		}
 
-		switch hdr.TypeName {
-		case "Radar":
+		// typeName 大小写不敏感（统一 ToLower）：Bed/bed/BED、MonitorBed/monitorbed 等
+		// 都正确归类 → floor 豁免/区域判据不因大小写漏判。
+		switch strings.ToLower(hdr.TypeName) {
+		case "radar":
 			m, err := parseRadarMount(hdr.Geometry, hdr.Angle, hdr.Device)
 			if err == nil {
 				cfg.Radar = m
 			}
 
-		case "Wall":
+		case "wall":
 			// Wall 可能是 line 段或 rectangle —— 把所有涉及的顶点收进来
 			// （Wall 自身有高度但当前 RoomEngine 不消费，先不存）
 			pts := parseWallPoints(hdr.Geometry)
 			wallPoints = append(wallPoints, pts...)
 			allObjectPoints = append(allObjectPoints, pts...)
 
-		case "Enter", "Door":
+		case "enter", "door":
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Enters = append(cfg.Enters, *rect)
 				cfg.EnterHeights = append(cfg.EnterHeights, objHeight)
@@ -86,67 +89,67 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
-		case "Bed", "MonitorBed", "LongSofa":
-			// 都进 cfg.Beds 供 covers/MM 几何；cell 区域按 typeName 分（单点判据 name⊇bed → 豁免）：
+		case "bed", "monitorbed", "longsofa":
+			// 都进 cfg.Beds 供 covers/MM 几何；cell 区域按 typeName 分（大小写不敏感）：
 			//   Bed→AreaBed(豁免) / MonitorBed→AreaMonitorBed(豁免+vital) / LongSofa→AreaLying(90min,非床躺)。
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Beds = append(cfg.Beds, *rect)
 				cfg.BedHeights = append(cfg.BedHeights, objHeight)
 				at := AreaLying // LongSofa / 不含 bed
-				switch hdr.TypeName {
-				case "Bed":
+				switch strings.ToLower(hdr.TypeName) {
+				case "bed":
 					at = AreaBed
-				case "MonitorBed":
+				case "monitorbed":
 					at = AreaMonitorBed
 				}
 				cfg.BedAreaTypes = append(cfg.BedAreaTypes, at)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
-		case "Toilet":
+		case "toilet":
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Toilets = append(cfg.Toilets, *rect)
 				cfg.ToiletHeights = append(cfg.ToiletHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
-		case "Shower":
+		case "shower":
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Showers = append(cfg.Showers, *rect)
 				cfg.ShowerHeights = append(cfg.ShowerHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
-		case "Chair":
+		case "chair":
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Chairs = append(cfg.Chairs, *rect)
 				cfg.ChairHeights = append(cfg.ChairHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
-		case "Furniture", "Table", "Other":
+		case "furniture", "table", "other":
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Furnitures = append(cfg.Furnitures, *rect)
 				cfg.FurnitureHeights = append(cfg.FurnitureHeights, objHeight)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
-		case "Interfere", "MetalCan", "WheelChair", "GlassTV", "Curtain":
+		case "interfere", "metalcan", "wheelchair", "glasstv", "curtain":
 			// 反射体(金属/玻璃 → AreaReflector,豁免) vs 运动干扰(帘/轮椅/泛 → AreaInterfer,90min)。
 			// 下发固件都走 masking(3)；内部分开=floor 豁免 vs 兜底。注意：吊灯走 Interfere，height>200 空中不阻挡。
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Interferes = append(cfg.Interferes, *rect)
 				cfg.InterfereHeights = append(cfg.InterfereHeights, objHeight)
 				at := AreaInterfer
-				switch hdr.TypeName {
-				case "MetalCan", "GlassTV":
+				switch strings.ToLower(hdr.TypeName) {
+				case "metalcan", "glasstv":
 					at = AreaReflector
 				}
 				cfg.InterfereAreaTypes = append(cfg.InterfereAreaTypes, at)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
-		case "Sleepad":
+		case "sleepad":
 			// Sleepad 是 point 几何，记位置供事件路由 + 可视化
 			if pt := parsePointFromGeometry(hdr.Geometry); pt != nil {
 				cfg.Sleepads = append(cfg.Sleepads, *pt)
@@ -204,30 +207,30 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 // defaultHeightForType 与前端 owlFront/src/utils/radar/types.ts::FURNITURE_CONFIGS[type].defaultHeight 对齐。
 // layout JSON 缺 height 字段时（老数据 / 前端没填）的兜底。
 func defaultHeightForType(typeName string) int {
-	switch typeName {
-	case "Bed", "MonitorBed":
+	switch strings.ToLower(typeName) {
+	case "bed", "monitorbed":
 		return 60
-	case "LongSofa":
+	case "longsofa":
 		return 40
-	case "Interfere":
+	case "interfere":
 		return 120 // 默认洗手台/镜子；空中吊灯由前端 Toolbar 改 240+
-	case "Enter", "Door":
+	case "enter", "door":
 		return 0 // 门洞地面到顶，不阻挡通行
-	case "Wall":
+	case "wall":
 		return 240
-	case "Furniture", "Other", "MetalCan":
+	case "furniture", "other", "metalcan":
 		return 80
-	case "GlassTV":
+	case "glasstv":
 		return 120
-	case "Table":
+	case "table":
 		return 75
-	case "Chair":
+	case "chair":
 		return 90
-	case "Curtain":
+	case "curtain":
 		return 240
-	case "WheelChair":
+	case "wheelchair":
 		return 100
-	case "Toilet", "Shower":
+	case "toilet", "shower":
 		return 0 // 当前未在 typescript 配置中；保守取地面
 	}
 	return 0
