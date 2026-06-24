@@ -876,6 +876,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm := NewTrackManager(cfg.RoomID, grid, cfg.BedAreaIDs)
 	tm.bedCount = len(cfg.Beds) // 同房多雷达占用对账单床闸（仅 ==1 启用）
 	tm.SetMoveSpeedCms(e.learnParams.MoveSpeedCms)
+	tm.SetSitLearnParams(e.learnParams.SitPromoteTau, e.learnParams.SitSpreadCm)
 	tm.SetBedsideFallConfig(e.bedsideFallCfg)
 	tm.SetLogger(e.logger)
 	tm.SetRoomName(cfg.RoomName)

@@ -62,6 +62,10 @@ type LearnParams struct {
 	NearTraverseWalk int
 	NearTraverseDeny int
 
+	// AreaSit log-odds 学习（sit_learning.go）：
+	SitPromoteTau float64 // cell.SitScore ≥ τ → 升 AreaSit（默认 6.0；↓ 学得快但易误学）
+	SitSpreadCm   int     // episode 加分邻域半径 cm（默认 30；权重 tier 按此比例缩放）
+
 	// PR-15.3 Auto-Deny 时间门控（与 cell.AutoDenyQualifiedSinceMs 配合）。
 	//
 	// 双阈值滞后设计（防抖 + 抗噪声）：
@@ -104,6 +108,8 @@ func DefaultLearnParams() LearnParams {
 		MoveSpeedCms:             20,
 		NearTraverseWalk:         5,
 		NearTraverseDeny:         20,
+		SitPromoteTau:            6.0,
+		SitSpreadCm:              30,
 		AutoDenyMinPersistDays:   10, // PR-15.5: 10 天持续门控（实测 vs 15d 加速 5 天，结果一致）
 		AutoDenyTraverseTolerate: 3,  // 软共识：TraverseCount<3 算未走过（容忍背景噪声 ~0.3/天）
 		AutoDenyTraverseReset:    5,  // 重置：TraverseCount>=5 视为真走过 → 重置计时

@@ -13,10 +13,10 @@ import "math"
 // 治本：dwell/resolution 姿态无关，固件把坐误读 Standing/z=0（D523 角装）也能学成 Sit。
 
 const (
-	// episode / 升格（SitScore 衰减半衰期已移 DecayParams.SitScoreSec，config 可调）
-	sitActiveCutoffMin = 5.0                // dwell <5min → Active，不计 Sit
-	sitPromoteTau      = 6.0                // cell.SitScore ≥ τ → 升 AreaSit
-	sitScoreCap        = sitPromoteTau * 1.5 // SitScore 上限(=9)：防反学习滞后——家具搬走后约 2.3d(而非 6.3d)衰回 τ 以下
+	// episode / 升格（τ=sitPromoteTau / spread 半径已移 LearnParams，config 可调，经 TrackManager 注入；
+	// cap=τ×sitScoreCapRatio 防反学习滞后；SitScore 衰减半衰期 = DecayParams.SitScoreSec）
+	sitActiveCutoffMin = 5.0 // dwell <5min → Active，不计 Sit
+	sitScoreCapRatio   = 1.5 // SitScore 上限 = τ×此（家具搬走后约 2.3d 而非 6.3d 衰回 τ 以下）
 
 	// resolution（硬判据；lost → veto 不调本函数）
 	sitLLRWalkAway = 2.0
@@ -80,13 +80,16 @@ func sitEpisodeLLR(dwellMin, zBest, fwMaxMin float64) float64 {
 
 // sitSpreadWeight episode 加分按到锚的切比雪夫距离分层衰减（±10→1.0 / ±20→0.5 / ±30→0.3 / 更远→0）。
 // 让锚漂 30cm 内的 episode 合并，边缘减权不把一大片误学满额 Sit。
-func sitSpreadWeight(ringCm int) float64 {
+func sitSpreadWeight(ring, spreadCm int) float64 {
+	if spreadCm <= 0 {
+		spreadCm = 30
+	}
 	switch {
-	case ringCm <= 10:
+	case ring*3 <= spreadCm: // ≤ spreadCm/3（spreadCm=30 时 ≤10）
 		return 1.0
-	case ringCm <= 20:
+	case ring*3 <= spreadCm*2: // ≤ 2·spreadCm/3（≤20）
 		return 0.5
-	case ringCm <= 30:
+	case ring <= spreadCm: // ≤ spreadCm（≤30）
 		return 0.3
 	}
 	return 0

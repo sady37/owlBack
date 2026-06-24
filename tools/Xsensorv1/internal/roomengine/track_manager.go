@@ -108,6 +108,10 @@ type TrackManager struct {
 	// 默认 20（≈2 cells/s）；由 engine.Configure / playback.Run 从 yaml 注入。
 	moveSpeedCms int
 
+	// AreaSit log-odds 学习参数（config 注入，SetSitLearnParams）：
+	sitPromoteTau float64 // SitScore 升格阈 τ（默认 6.0）
+	sitSpreadCm   int     // episode 加分邻域半径 cm（默认 30）
+
 	// PR-11: 双方一致 InBed 时间窗判定 — sleepad 与 radar 各自最近 InBed 事件 ts。
 	// 仅当 |sleepadInBed - radarInBed| ≤ 15s 时，sleepad HR/RR 视作可信，触发 AreaBed cell refresh。
 	lastSleepadInBedMs int64
@@ -229,6 +233,8 @@ func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackMana
 		bedSessions:             make(map[string]*BedSession),
 		sleepadStates:           make(map[string]*SleepadObservation),
 		moveSpeedCms:            20, // 默认值（与 DefaultLearnParams.MoveSpeedCms 一致）
+		sitPromoteTau:           6.0,
+		sitSpreadCm:             30,
 		bedsideFallCfg:          defaultBedsideFallCfg,
 		recentRadarAlarms:       make(map[int64]*RadarFallAlarm),
 		recentRadarEvents:       make(map[int64]*RadarTrackEvent),
@@ -687,6 +693,18 @@ func (tm *TrackManager) BedOccupancyState(nowMs int64) card.BedState {
 		conf = bedConfSleepad - bedConfRadar // radar-only InBed 降档
 	}
 	return card.BedState{BedStatus: 0, BedStatusTs: latestInBed, BedConfidence: conf}
+}
+
+// SetSitLearnParams 注入 AreaSit log-odds 学习参数（τ / spread 半径）。<=0 保留默认。
+func (tm *TrackManager) SetSitLearnParams(tau float64, spreadCm int) {
+	tm.mu.Lock()
+	if tau > 0 {
+		tm.sitPromoteTau = tau
+	}
+	if spreadCm > 0 {
+		tm.sitSpreadCm = spreadCm
+	}
+	tm.mu.Unlock()
 }
 
 // SetMoveSpeedCms 注入"在动"速度阈值。<=0 保留默认。
@@ -2349,11 +2367,12 @@ func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
 	fwMaxMin := float64(ts.sitFwMaxMs) / 60000.0
 	deltaL := sitEpisodeLLR(dwellMin, ts.sitZBest, fwMaxMin)
 	x, y := ts.StillBoxStartX, ts.StillBoxStartY
-	// 加到锚 cell + ±30cm 邻域，按切比雪夫距离分层衰减（±10→1.0/±20→0.5/±30→0.3）：
-	// 覆盖坐姿足迹 + 让锚漂 30cm 内 episode 合并；SourceHuman（人画的已知区）跳过不污染。
+	scoreCap := tm.sitPromoteTau * sitScoreCapRatio
+	// 加到锚 cell + ±sitSpreadCm 邻域，按切比雪夫距离分层衰减（tier 按半径比例缩放，30 时=±10→1.0/±20→0.5/±30→0.3）：
+	// 覆盖坐姿足迹 + 让锚漂内 episode 合并；SourceHuman（人画的已知区）跳过不污染。
 	promoted := false
-	for dx := -30; dx <= 30; dx += 10 {
-		for dy := -30; dy <= 30; dy += 10 {
+	for dx := -tm.sitSpreadCm; dx <= tm.sitSpreadCm; dx += 10 {
+		for dy := -tm.sitSpreadCm; dy <= tm.sitSpreadCm; dy += 10 {
 			ring := dx
 			if ring < 0 {
 				ring = -ring
@@ -2363,7 +2382,7 @@ func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
 			} else if ay > ring {
 				ring = ay
 			}
-			w := sitSpreadWeight(ring)
+			w := sitSpreadWeight(ring, tm.sitSpreadCm)
 			if w == 0 {
 				continue
 			}
@@ -2372,10 +2391,10 @@ func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
 				continue
 			}
 			c.SitScore += deltaL * w
-			if c.SitScore > sitScoreCap {
-				c.SitScore = sitScoreCap // 上限,防反学习滞后(家具搬走后更快衰回 τ 以下)
+			if c.SitScore > scoreCap {
+				c.SitScore = scoreCap // 上限,防反学习滞后(家具搬走后更快衰回 τ 以下)
 			}
-			if c.SitScore >= sitPromoteTau {
+			if c.SitScore >= tm.sitPromoteTau {
 				tm.grid.MarkRestZoneFeedback(x+dx, y+dy, AreaSit, nowMs)
 				promoted = true
 			}

@@ -132,6 +132,8 @@ func buildRuntimeConfig(cfg *config.Config, db *sql.DB) roomengine.RuntimeConfig
 			MoveSpeedCms:      r.Learn.MoveSpeedCms,
 			NearTraverseWalk:  r.Learn.NearTraverseWalk,
 			NearTraverseDeny:  r.Learn.NearTraverseDeny,
+			SitPromoteTau:     float64(r.Learn.SitPromoteTauX10) / 10,
+			SitSpreadCm:       r.Learn.SitSpreadCm,
 		},
 		DecayInterval:      time.Duration(r.Belief.DecayIntervalSec) * time.Second,
 		BeliefScanInterval: time.Duration(r.Belief.ScanIntervalSec) * time.Second,

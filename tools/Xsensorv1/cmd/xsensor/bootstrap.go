@@ -125,6 +125,8 @@ func buildRuntimeConfig(cfg *config.Config) roomengine.RuntimeConfig {
 			MoveSpeedCms:      r.Learn.MoveSpeedCms,
 			NearTraverseWalk:  r.Learn.NearTraverseWalk,
 			NearTraverseDeny:  r.Learn.NearTraverseDeny,
+			SitPromoteTau:     float64(r.Learn.SitPromoteTauX10) / 10,
+			SitSpreadCm:       r.Learn.SitSpreadCm,
 		},
 		RiskTime: roomengine.RiskTimeConfig{
 			NightStartH: r.RiskTime.NightStartH,

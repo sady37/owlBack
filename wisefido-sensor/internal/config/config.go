@@ -121,6 +121,8 @@ type RoomEngineConfig struct {
 		MoveSpeedCms      int `yaml:"move_speed_cms"`      // 默认 20  Kalman 速度阈值，pose 不准时兜底判 Move
 		NearTraverseWalk  int `yaml:"near_traverse_walk"`  // 默认 5   邻居穿越阈值，本 cell 推断为 Walk（沿路径涂厚）
 		NearTraverseDeny  int `yaml:"near_traverse_deny"`  // 默认 10  邻居穿越阈值，本 cell 完全无触碰时反转 Deny
+		SitPromoteTauX10  int `yaml:"sit_promote_tau_x10"` // 默认 60  AreaSit 升格阈 τ×10（τ=6.0）
+		SitSpreadCm       int `yaml:"sit_spread_cm"`       // 默认 30  episode 加分邻域半径 cm
 	} `yaml:"learn"`
 	Belief struct {
 		DecayIntervalSec int  `yaml:"decay_interval_sec"` // 默认 3600 (1h)
@@ -327,6 +329,12 @@ func (c *Config) setRoomEngineDefaults() {
 	}
 	if r.Learn.NearTraverseDeny == 0 {
 		r.Learn.NearTraverseDeny = 20
+	}
+	if r.Learn.SitPromoteTauX10 == 0 {
+		r.Learn.SitPromoteTauX10 = 60
+	}
+	if r.Learn.SitSpreadCm == 0 {
+		r.Learn.SitSpreadCm = 30
 	}
 	if r.Belief.DecayIntervalSec == 0 {
 		r.Belief.DecayIntervalSec = 3600
