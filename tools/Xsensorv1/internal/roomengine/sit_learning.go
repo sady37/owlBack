@@ -13,10 +13,9 @@ import "math"
 // 治本：dwell/resolution 姿态无关，固件把坐误读 Standing/z=0（D523 角装）也能学成 Sit。
 
 const (
-	// episode / 升格 / 衰减
-	sitActiveCutoffMin  = 5.0               // dwell <5min → Active，不计 Sit
-	sitPromoteTau       = 6.0               // cell.SitScore ≥ τ → 升 AreaSit
-	sitScoreHalfLifeSec = 4 * 24 * 3600.0   // SitScore 指数衰减半衰期（4d，隔离 episode 自然褪）
+	// episode / 升格（SitScore 衰减半衰期已移 DecayParams.SitScoreSec，config 可调）
+	sitActiveCutoffMin = 5.0 // dwell <5min → Active，不计 Sit
+	sitPromoteTau      = 6.0 // cell.SitScore ≥ τ → 升 AreaSit
 
 	// resolution（硬判据；lost → veto 不调本函数）
 	sitLLRWalkAway = 2.0

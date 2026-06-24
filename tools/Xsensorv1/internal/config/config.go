@@ -113,6 +113,7 @@ type RoomEngineConfig struct {
 		SitSec       int `yaml:"sit_sec"`       // ActiveType[Sit]                  默认 24 h
 		LieSec       int `yaml:"lie_sec"`       // ActiveType[Lie]                  默认 7 d
 		EventSec     int `yaml:"event_sec"`     // Traverse/Fall/Retract/Sleepad/Door/LongStill/LieAnomaly  默认 7 d
+		SitScoreSec  int `yaml:"sit_score_sec"` // AreaSit 4 通道 SitScore log-odds             默认 4 d
 	} `yaml:"decay"`
 	Learn struct {
 		WalkActiveX10     int `yaml:"walk_active_x10"`     // 默认 20  (2s × 10)
@@ -310,6 +311,9 @@ func (c *Config) setRoomEngineDefaults() {
 	}
 	if r.Decay.EventSec == 0 {
 		r.Decay.EventSec = 7 * 24 * 3600
+	}
+	if r.Decay.SitScoreSec == 0 {
+		r.Decay.SitScoreSec = 4 * 24 * 3600
 	}
 	if r.Learn.WalkActiveX10 == 0 {
 		r.Learn.WalkActiveX10 = 20
