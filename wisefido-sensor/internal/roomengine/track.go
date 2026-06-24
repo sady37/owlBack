@@ -118,6 +118,9 @@ type TrackState struct {
 	// LastFwAreaID firmware 直发的 area_id（present 帧更新；miss tick 不更新 = 冻结末值）。
 	// 床判定 N：命中某床 areaId → 该床占用。255=声明区外/0=无区。
 	LastFwAreaID int
+	// LastCellArea 最近一次 SnapshotTrackStatuses 在画布坐标查到的 cell 区域类型（单源）。
+	// 发布层 area_type 复用此值，禁用 raw 坐标重新 CellAt（帧错 + 双写 drift）。
+	LastCellArea AreaType
 	// firmware 直发的最后一帧 raw 雷达本地坐标。仅用于 alarm/event publish 时作 parent track 原样上抛；
 	// 内部算法（grid/cell/fall）一律读 Kalman 后的画布坐标，不读这里。
 	LastRawH, LastRawV, LastRawZ int

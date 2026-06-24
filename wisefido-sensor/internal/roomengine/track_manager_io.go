@@ -18,6 +18,10 @@ type AIPayload struct {
 	// AI 只填它要表达的字段，其它留零值 = "AI 对此无意见"。
 	Track observation.Track
 
+	// CellArea 发布层 area_type 的单源：决策层在画布坐标算好的 cell 区域（ts.LastCellArea）。
+	// 禁止发布层用 raw 坐标重新 CellAt（帧错→none + 双写 drift，违反规则 1.3）。
+	CellArea AreaType
+
 	// Source 数据生产者节点身份（WHO）。当前 TrackManager 全部派生自护工角色，
 	// engine.publishAIMessage 默认填 cfg.AIPublish.Source（如 "AI.Caregiver01"）。
 	// 本字段保留作未来多角色 override 钩子（例：同一 TrackManager 内派生健康风险
@@ -121,6 +125,7 @@ func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
 	return AIPayload{
 		DeviceAddr: ts.DeviceAddr,
 		RoomID:     ts.RoomID,
+		CellArea:   ts.LastCellArea,
 		Track: observation.Track{
 			BedStatus:       observation.BedStatusUnchanged,
 			TrackID:         ts.TrackID,

@@ -74,7 +74,7 @@ type TrackManager struct {
 	grid        *RoomGrid
 	aiPublisher AIPublisher              // 生产发布腿（S0.c 焊回）：AI event/alarm + ghost verdict + 固件 Fall 转发；nil=replay 道静默
 	confEmitMs  map[trackKey]int64       // per-track DBN confidence 最近发布 ts（EmitTrackConfidence 节流，刷 cardagg override 60s TTL → FE 透明度）
-	bedAreaIDs  []int                    // firmware 床区 area_id（baseline type2/5）→ radar InBed 判定用 area_id 非 cell（排 sofa）
+	bedAreaIDs  []int                    // firmware 活体 declare_area 床区 area_id（type∈{2床,5监护床}；含 LongSofa type2）→ radar 床占用判定用 area_id 非 cell
 	tracks      map[trackKey]*TrackState // 键=（设备,firmware track_id）：多雷达同房各台从 0 编号，不带设备会撞键互相覆盖
 	outputs     map[trackKey]*TrackOutput
 
@@ -627,7 +627,7 @@ func (tm *TrackManager) sleepadOffBed(nowMs int64) bool {
 // BedConfidence=90(sleepad 接触式)/20(radar-only 降档=90-70)/0(无床数据→bedAdapter Fresh=false 不喂)。
 // 供 belief shadow P5:bedAdapter→ObsBedOccupied 占用概率压 SFallen(无 radar-on-bed 要求,R5-clean 接触占用非 pose/z)。
 // 自锁(beliefShadowTick 不持 tm.mu)。
-// fwIsBed firmware area_id 命中声明的床区（baseline type2/5,设备真值）。0/255=声明区外。
+// fwIsBed firmware area_id 命中活体 declare_area 床区（type∈{2,5},设备真值）。0/255=声明区外。
 func (tm *TrackManager) fwIsBed(areaID int) bool {
 	if areaID == 0 || areaID == 255 {
 		return false
@@ -976,6 +976,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		}
 		if c := tm.grid.CellAt(px, py); c != nil {
 			base.CellAreaType = c.Belief[0].Type // cell 仍喂 tFloor 阈 + sit/bath/active redirect（含 sofa 的 lying 区，故不换 baseline）
+			ts.LastCellArea = c.Belief[0].Type   // 单源:发布层 area_type 复用,免 raw 重算
 			if c.Belief[0].Type == AreaEnter {
 				base.EnterTarget = c.EnterTarget
 			}

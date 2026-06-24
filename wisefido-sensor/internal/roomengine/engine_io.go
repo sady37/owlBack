@@ -96,7 +96,6 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	baseType := e.deviceAddrToType[p.DeviceAddr]
 	defaultSource := e.aiSource
 	mode := e.aiPublishMode
-	g := e.grids[p.RoomID]
 	e.mu.RUnlock()
 	// SubjectEntity 留空：sensor 不做 device→card 反查（非其职责）；
 	// cardagg alarm_router 在 SubjectEntity 空时调 metaCache.LookupCardByDeviceAddr LPM 兜底。
@@ -162,19 +161,9 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	if p.Track.BedStatus != observation.BedStatusUnchanged {
 		fields[observation.FieldBedStatus] = p.Track.BedStatus
 	}
-	// area_type engine 自己算（observation.Track 的 AreaType 是字符串，engine 这边类型不同）
-	if g != nil {
-		px, py := 0, 0
-		if p.Track.PositionX != nil {
-			px = *p.Track.PositionX
-		}
-		if p.Track.PositionY != nil {
-			py = *p.Track.PositionY
-		}
-		if cell := g.CellAt(px, py); cell != nil {
-			fields["area_type"] = areaTypeProtocolStr(cell.Belief[0].Type)
-		}
-	}
+	// area_type 单源复用决策层在画布坐标算好的 p.CellArea（ts.LastCellArea）。
+	// 禁用 p.Track.Position（契约=raw 雷达帧）对画布帧 grid 重新 CellAt——帧错→none + 双写 drift。
+	fields["area_type"] = areaTypeProtocolStr(p.CellArea)
 	// PR5b: Source（一等公民）+ Reason / Evidence（审计元数据）
 	// Source 默认 = e.aiSource（来自 cfg.AIPublish.Source，如 "AI.Caregiver01"）。
 	// p.Source 非空时尊重 caller override（未来多角色场景，如健康风险模块发 verdict）

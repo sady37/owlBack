@@ -87,7 +87,7 @@ type PadAbsorption struct {
 //	取 0.8（同 unit_matrix.go bedResolveConf：单床确定吸、几何歧义不吸）。
 const SamebedAbsorbThresh float32 = 0.8
 
-// fwAreaIsBed MN：FwAreaID 命中声明床区（baseline type2/5）。0/255=区外。
+// fwAreaIsBed MN：FwAreaID 命中活体 declare_area 床区（type∈{2,5}）。0/255=区外。
 func fwAreaIsBed(areaID int, bedAreaIDs []int) bool {
 	if areaID == 0 || areaID == 255 {
 		return false
