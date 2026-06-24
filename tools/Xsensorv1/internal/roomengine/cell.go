@@ -270,10 +270,11 @@ func DefaultDecayParams() DecayParams {
 		EventSec:     7 * 24 * 3600,
 		SitScoreSec:  4 * 24 * 3600, // SitScore HL 4d
 
-		// PR-11: 按 AreaType 分档 Belief 衰退（半衰期，秒）
-		//   AreaSit (沙发/椅子)：    7 天衰到 10  HL=2.1d  — 可移动家具
-		//   AreaBed (床/lying)：     9 天衰到 10  HL=2.71d — 防周末移床方向；与 sleep 4h+ 刷新机制配合
-		//   AreaToilet/Shower：      60 天衰到 10 HL=18d   — 固定家具/管道连接，几乎不变
+		// PR-11: 按 AreaType 分档 Belief 衰退（半衰期，秒）。区域重编号后：
+		//   AreaSit/AreaLying (椅/沙发坐躺)：  7 天衰到 10  HL=2.1d  — 可移动家具
+		//   AreaBed/AreaMonitorBed (床)：      9 天衰到 10  HL=2.71d — 防周末移床方向；与 sleep 4h+ 刷新配合
+		//   AreaInterfer (帘/扇/植物)：        14 天衰到 10 HL=4.2d  — 可移动
+		//   AreaReflector (镜/金属)：          30 天衰到 10 HL=9d    — 固定
 		//   AreaActive (walk path)：  14 天衰到 10 HL=4.2d  — 走道路径稳定，但易被新家具污染
 		//   AreaEnter (门洞)：        30 天衰到 10 HL=9d    — 几何固定但 layout 可能改
 		//   AreaDeny (墙/家具/镜子)： 30 天衰到 10 HL=9d    — 同上
@@ -320,14 +321,11 @@ func (c *Cell) IsEntry() bool {
 	return c.Belief[0].Type == AreaEnter
 }
 
-// IsRestZone 是否为「可长时间停留」的休息区。仅 Bed / Sit。
+// IsRestZone 是否为「可长时间停留」的休息区。
 //
-// 语义（用户 2026-04-29 对齐）：
-//   - Bed / Sit (沙发/椅子)：人可长时间坐/躺；still-fall / silent-fall 都应排除
-//   - Toilet / Shower：**人不应久留**（>15-20min 异常）；属于 still-fall 触发场景，不在此集合
-//
-// 旧版本曾包含 AreaToilet，是 bug：toilet 上消失/久留应触发告警，不应被
-// "rest zone exempt" 跳过。
+// 语义（用户 2026-04-29 对齐；区域重编号后同步 isSuppressiveArea）：
+//   - Bed / MonitorBed / Sit / Lying：人可长时间坐/躺（含监护床、沙发坐与沙发躺）；still/silent-fall 都应排除
+//   - 浴室区不靠 cell 类型排除（马桶=Sit、淋浴=Active），久留异常由 floor 的房级 bathroom 20min 阈兜
 func (c *Cell) IsRestZone() bool {
 	t := c.Belief[0].Type
 	return t == AreaBed || t == AreaMonitorBed || t == AreaSit || t == AreaLying
@@ -348,13 +346,13 @@ func (c *Cell) IsLikelyRestZone() bool {
 
 // still-fall-area 分类阈（cell-learning 用）：按 cell areaType 分的"久静多久算 fall-relevant"。
 // **这不是 fall 决策阈**——DBN silent-fall 阈权威 = belief/floor.go（契约 6A 其十五）。本组只供
-// cell-learning 判"哪些区不学 AreaSit（toilet/shower/deny）"(track_manager stillFallTimeoutSec) +
+// cell-learning 判"哪些区不学 AreaSit（bathroom 房名/deny）"(track_manager stillFallTimeoutSec) +
 // LongStill grid 标记(EffectiveStillTimeoutSec)。
 const (
-	stillAreaToiletShowerSec = 15 * 60 // AreaToilet/AreaShower
-	stillAreaDenySec         = 5 * 60  // AreaDeny
-	stillAreaDefaultSec      = 8 * 60  // 其它（Enter/Active/Unknown）
-	stillAreaNonRiskFactor   = 1.2     // 非风险时段放宽因子
+	stillAreaBathroomSec   = 15 * 60 // bathroom 房名兜底（cell 未学到时；floor 另有房级 20min override）
+	stillAreaDenySec       = 5 * 60  // AreaDeny
+	stillAreaDefaultSec    = 8 * 60  // 其它（Enter/Active/Unknown）
+	stillAreaNonRiskFactor = 1.2     // 非风险时段放宽因子
 )
 
 // cell history 自适应容忍：反复假报/长静自然离开 → 放宽 EffectiveStillTimeoutSec，上限 MaxTolerance。
@@ -462,19 +460,16 @@ func (c *Cell) IncrRealFallCount() {
 }
 
 // MarkRestZoneByFeedback PR-7.1 / PR-9.2 / PR-11：依据反馈/持续观测即时锁定 cell.AreaType。
-// target ∈ {AreaSit, AreaBed, AreaToilet, AreaShower}：
+// target ∈ {AreaSit, AreaBed}（区域重编号后；马桶=Sit、淋浴=Active，不再单独锁卫浴类型）：
 //
-//	AreaSit     — Chair / Wheelchair（橙色坐姿）
-//	AreaBed     — Sofa / Lounge chair（蓝色躺姿）+ lying ≥4h on bed 持续观测刷新
-//	AreaToilet  — sit ≥5min on toilet 持续观测刷新
-//	AreaShower  — 待加（暂同 toilet）
+//	AreaSit — Chair / Wheelchair / 马桶坐姿（橙色坐姿）+ sit ≥5min 持续观测刷新
+//	AreaBed — Sofa / Lounge / lying ≥4h on bed 持续观测刷新（沙发躺归 AreaLying 时另走 SetPrior）
 //
 // Confidence=95, Source=SourceFeedback（非 FE 画，verified 真摔可擦；FE 画的走 SetPrior+SourceHuman 神圣）。
 //
 // 保护规则（不覆盖；防止降级）：
 //   - AreaDeny / AreaEnter  layout 锁定（墙/门洞）
-//   - AreaBed 不被 AreaSit 降级（lying 信息更精确）
-//   - AreaToilet/Shower 不被 AreaBed/Sit 降级（卫浴更具体）
+//   - AreaBed/AreaMonitorBed 不被 AreaSit 降级（lying 信息更精确）
 //   - 已是 SourceHuman（FE 画）不被 feedback 覆盖
 //   - 已是 SourceFeedback + 同 target  幂等不 reset
 func (c *Cell) MarkRestZoneByFeedback(target AreaType) bool {
@@ -605,6 +600,9 @@ func (c *Cell) Decay(dtSec float64, p DecayParams) {
 	c.StaticReflectorCount = scaleInt(c.StaticReflectorCount, fEv)
 
 	// SitScore（log-odds）按 SitScoreSec（默认 4d，config 可调）指数衰减：孤立 episode 自然褪，需 2–3 次近日自走长坐才够 τ。
+	// 两层模型，别拿 HL 直接比：SitScore=学习层（升格前"证据够不够"），cap9→τ6 实际仅 ~2.3d；
+	//   Belief 置信=状态层（升格后"现在还算不算"，喂 IsRestZone/floor），95→10 实际 ~6.8d。
+	//   状态(~7d) > 记忆(~2.3d) 良序：Belief 扛状态、SitScore 先褪，无"SitScore≥τ 但 Belief 没了"矛盾窗。
 	c.SitScore *= factor(dtSec, p.SitScoreSec)
 
 	// PR-11: Belief[0].Confidence 按 AreaType 分档衰减（半衰期 BeliefHalfLifeByType[type]）

@@ -2217,7 +2217,7 @@ func (tm *TrackManager) occupancyFactor() float64 {
 // 不应被误学为坐位。
 //
 //	cell.AreaSit/AreaActive → cell.EffectiveStillTimeoutSec
-//	cell 未学到但 room.name 是 bathroom → cell.go::stillAreaToiletShowerSec × stillAreaNonRiskFactor
+//	cell 未学到但 room.name 是 bathroom → cell.go::stillAreaBathroomSec × stillAreaNonRiskFactor
 //	都不匹配 → 0
 //
 // PR-Bootstrap：删除 stayAlarmEnabled 分支（loadStayAlarmEnablement 已删，stayAlarmEnabled 永 false）。
@@ -2231,7 +2231,7 @@ func (tm *TrackManager) stillFallTimeoutSec(cell *Cell, isRiskTime bool) int {
 		return cell.EffectiveStillTimeoutSec(isRiskTime)
 	}
 	if roomutil.IsBathroom(tm.roomName) {
-		base := stillAreaToiletShowerSec
+		base := stillAreaBathroomSec
 		if !isRiskTime {
 			base = int(float64(base) * stillAreaNonRiskFactor)
 		}

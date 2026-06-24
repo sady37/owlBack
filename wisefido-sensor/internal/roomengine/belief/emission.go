@@ -69,10 +69,9 @@ func defaultEmissionParams() emissionParams {
 // roomBathroom = card.RoomTypeBathroom（belief 不 import card，本地常量对齐）。
 const roomBathroom = 1
 
-// stillMuSigma 正常停留 (μ,σ) 秒 = cell area 与 room **保守合并**（取 μ 更大 = 更晚报 = 低 FP，§H）。
+// stillMuSigma 正常停留 (μ,σ) 秒：浴室房一律 20min 房级 override，否则按 cell area（cellMuSigma）。
 //
-//	解决「bathroom 房未画 toilet → cell 落 unknown → 用激进 default 过早误报」：bathroom 房至少按 bathsec 兜。
-//	bed 区(床, areaType=2)的 cell 走 default(unknown)——床边跌倒靠接触轴(sleepad InBed 压/LeftBed 放行)区分，不改 areaType。
+//	bed/monitorbed/reflector 已在 floor.Step 豁免、到不了这里；sit/lying/deny/interfer→90min；其余→12min。
 func stillMuSigma(areaType, roomType int) (mu, sigma float64) {
 	if roomType == roomBathroom {
 		// 浴室一律 ~20min（占用区）：压过 cell 姿态阈——马桶/淋浴久留医学上 ~20min 即异常，

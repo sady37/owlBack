@@ -345,13 +345,13 @@ func (c *Cell) IsLikelyRestZone() bool {
 
 // still-fall-area 分类阈（cell-learning 用）：按 cell areaType 分的"久静多久算 fall-relevant"。
 // **这不是 fall 决策阈**——DBN silent-fall 阈权威 = belief/floor.go（契约 6A 其十五）。本组只供
-// cell-learning 判"哪些区不学 AreaSit（toilet/shower/deny）"(track_manager stillFallTimeoutSec) +
+// cell-learning 判"哪些区不学 AreaSit（bathroom 房名/deny）"(track_manager stillFallTimeoutSec) +
 // LongStill grid 标记(EffectiveStillTimeoutSec)。
 const (
-	stillAreaToiletShowerSec = 15 * 60 // AreaToilet/AreaShower
-	stillAreaDenySec         = 5 * 60  // AreaDeny
-	stillAreaDefaultSec      = 8 * 60  // 其它（Enter/Active/Unknown）
-	stillAreaNonRiskFactor   = 1.2     // 非风险时段放宽因子
+	stillAreaBathroomSec   = 15 * 60 // bathroom 房名兜底（cell 未学到时；floor 另有房级 20min override）
+	stillAreaDenySec       = 5 * 60  // AreaDeny
+	stillAreaDefaultSec    = 8 * 60  // 其它（Enter/Active/Unknown）
+	stillAreaNonRiskFactor = 1.2     // 非风险时段放宽因子
 )
 
 // cell history 自适应容忍：反复假报/长静自然离开 → 放宽 EffectiveStillTimeoutSec，上限 MaxTolerance。
@@ -599,6 +599,9 @@ func (c *Cell) Decay(dtSec float64, p DecayParams) {
 	c.StaticReflectorCount = scaleInt(c.StaticReflectorCount, fEv)
 
 	// SitScore（log-odds）按 SitScoreSec（默认 4d，config 可调）指数衰减：孤立 episode 自然褪，需 2–3 次近日自走长坐才够 τ。
+	// 两层模型，别拿 HL 直接比：SitScore=学习层（升格前"证据够不够"），cap9→τ6 实际仅 ~2.3d；
+	//   Belief 置信=状态层（升格后"现在还算不算"，喂 IsRestZone/floor），95→10 实际 ~6.8d。
+	//   状态(~7d) > 记忆(~2.3d) 良序：Belief 扛状态、SitScore 先褪，无"SitScore≥τ 但 Belief 没了"矛盾窗。
 	c.SitScore *= factor(dtSec, p.SitScoreSec)
 
 	// PR-11: Belief[0].Confidence 按 AreaType 分档衰减（半衰期 BeliefHalfLifeByType[type]）

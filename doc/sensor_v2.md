@@ -1766,4 +1766,5 @@ git commit -m "cleanup: remove wisefido-sensor-v1 after 1mo prod validation"
 **Rollback 窗口**：PR-15（cardagg 退订 event stream）之前 = rollback 安全；PR-15 之后 = 需要 cardagg 也回滚。建议 PR-15 在 v2 prod 验证 2 周后再 merge。
 
 ---
-#d2987a   #dcb894) 
+
+
