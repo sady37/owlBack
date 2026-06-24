@@ -30,6 +30,8 @@ go.work
 # Environment variables
 .env
 .env.local
+.env.precut-backup
+.env.*-backup
 
 # Logs
 *.log
@@ -101,3 +103,7 @@ wisefido-data/cmd/wisefido-data/wisefido-data
 # wisefido-cardaggv1: v2 重写前的本地备份，不入远程（2026-05-17）
 wisefido-cardaggv1/
 tools/replay/replay
+
+# 本地 replay fixture（含大 window.json/Xsensor.log，仅本地排查用，不入远程）
+doc/cases/case-D523-0623-11001132/
+doc/cases/case-d523-0623-08550926/
