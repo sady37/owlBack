@@ -34,12 +34,12 @@ type KalmanFilter2D struct {
 // NewKalmanFilter2D 初始化：位置 (x0,y0)，速度为 0。
 func NewKalmanFilter2D(x0, y0 float64) *KalmanFilter2D {
 	kf := &KalmanFilter2D{
-		QAccel: 30,  // cm/s² — 老人正常加速度上限
-		RStd:   20,  // cm   — 雷达观测噪声
+		QAccel: 30, // cm/s² — 老人正常加速度上限
+		RStd:   20, // cm   — 雷达观测噪声
 	}
 	kf.X = [4]float64{x0, y0, 0, 0}
 	// 初始协方差：位置不确定性大，速度更大
-	kf.P[0][0] = 400  // 20cm² 位置
+	kf.P[0][0] = 400 // 20cm² 位置
 	kf.P[1][1] = 400
 	kf.P[2][2] = 2500 // 50cm/s² 速度
 	kf.P[3][3] = 2500

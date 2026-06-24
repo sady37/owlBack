@@ -257,22 +257,19 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	}
 }
 
+// areaTypeProtocolStr cell 区域 → 固件 declare_area 协议字符串（下发映射）。
 func areaTypeProtocolStr(t AreaType) string {
 	switch t {
-	case AreaBed:
-		return "bed"
-	case AreaSit:
-		return "custom" // 沙发/椅子归 custom（协议没单独 sit 类）
-	case AreaToilet, AreaShower:
-		return "monitor_bed" // 卫浴归 monitor_bed（最接近的 high-risk 区）
+	case AreaBed, AreaMonitorBed:
+		return "bed" // 固件 Bed(2)，中心在雷达下方自动升 monitor_bed
 	case AreaEnter:
 		return "door"
+	case AreaReflector, AreaInterfer:
+		return "interfer" // 固件 masking(3)：反射/运动干扰都屏蔽
 	case AreaDeny:
-		return "interfer"
-	case AreaActive:
-		return "sensing"
+		return "custom" // 固件 custom(1)：家具装饰，雷达不处理
 	}
-	return "none"
+	return "none" // sit/lying/active/unknown 不下发
 }
 
 func (e *Engine) hydrateRoom(roomID string, grid *RoomGrid, expectedHash string) {
@@ -614,4 +611,3 @@ func (e *Engine) runDailyLayoutReload(ctx context.Context) {
 		e.saveAllRooms(ctx)
 	}
 }
-

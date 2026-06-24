@@ -86,7 +86,7 @@ func BuildRoomConfigFromCanvases(roomID string, canvases []DeviceCanvas, logger 
 		merged.EnterHeights = append(merged.EnterHeights, cfg.EnterHeights...)
 		merged.Beds = append(merged.Beds, cfg.Beds...)
 		merged.BedHeights = append(merged.BedHeights, cfg.BedHeights...)
-		merged.BedFloorExempt = append(merged.BedFloorExempt, cfg.BedFloorExempt...)
+		merged.BedAreaTypes = append(merged.BedAreaTypes, cfg.BedAreaTypes...)
 		merged.Toilets = append(merged.Toilets, cfg.Toilets...)
 		merged.ToiletHeights = append(merged.ToiletHeights, cfg.ToiletHeights...)
 		merged.Showers = append(merged.Showers, cfg.Showers...)
@@ -97,6 +97,7 @@ func BuildRoomConfigFromCanvases(roomID string, canvases []DeviceCanvas, logger 
 		merged.FurnitureHeights = append(merged.FurnitureHeights, cfg.FurnitureHeights...)
 		merged.Interferes = append(merged.Interferes, cfg.Interferes...)
 		merged.InterfereHeights = append(merged.InterfereHeights, cfg.InterfereHeights...)
+		merged.InterfereAreaTypes = append(merged.InterfereAreaTypes, cfg.InterfereAreaTypes...)
 		merged.Sleepads = append(merged.Sleepads, cfg.Sleepads...)
 	}
 	if parsed == 0 {

@@ -3,10 +3,14 @@ package decode
 import (
 	"encoding/base64"
 	"fmt"
+	"log"
+	"sort"
 	"strconv"
 	"strings"
 
 	"owl-common/alarm"
+	"owl-common/observation"
+	"owl-common/radar"
 )
 
 // RadarEncoder 编码 Radar 数据（Server → 设备）
@@ -245,11 +249,12 @@ func EncodeV1ConfigToDeviceProps(config map[string]interface{}) map[string]inter
 		properties["rectangle"] = rect
 	}
 
-	// 区域：前端可传 declare_area 字符串（qinglan 格式），直接透传；否则从 area_{i}_* 构建
+	// 区域：FE 可传 declare_area 字符串（qinglan dm 格式）透传，或从 area_{i}_* 构建。
+	// 统一在此按保留优先级排序 + 16-槽 cap（下发咽喉单源；FE 也排，此处兜底强制，防漏排/超限/绕过透传）。
 	if s, ok := config["declare_area"].(string); ok && s != "" {
-		properties["declare_area"] = s
+		properties["declare_area"] = sortCapDeclareAreaString(s)
 	} else if decl := buildDeclareAreaFromConfigCm(config); len(decl) > 0 {
-		properties["declare_area"] = decl
+		properties["declare_area"] = sortCapDeclareAreaMaps(decl)
 	}
 
 	// 3.4.6 角度校准：run_Horizontal（HC2 支持，TK2 不支持），数字均为字符型
@@ -346,6 +351,101 @@ func buildDeclareAreaFromConfigCm(config map[string]interface{}) []interface{} {
 		out = append(out, el)
 	}
 	return out
+}
+
+// ── declare_area 槽位治理：16-cap + 保留优先级排序（下发咽喉单源；FE 也排，此处兜底强制）──
+
+// maxDeclareAreas 设备最多 16 个区域（厂家 3.4.3）。超出按保留优先级丢尾部。
+const maxDeclareAreas = 16
+
+// declareAreaKeepPriority 保留优先级（小=优先占槽，越不被 16-cap 丢）：
+//
+//	删除(0,housekeeping) → 床/监护床(2/5,vitals+床事件不可替代) → 门(4,进离房/hand-off) →
+//	干扰(3,去噪;软件 realness 有兜底,超限先丢) → 自定义(1,雷达 no-op,最先丢) → 其余。
+func declareAreaKeepPriority(areaType int) int {
+	switch areaType {
+	case observation.DeclareAreaInvalid: // 0 删除/清空
+		return 0
+	case observation.DeclareAreaBed, observation.DeclareAreaMonitorBed: // 2,5
+		return 1
+	case observation.DeclareAreaDoor: // 4
+		return 2
+	case observation.DeclareAreaNoise: // 3 干扰
+		return 3
+	case observation.DeclareAreaCustom: // 1
+		return 4
+	default:
+		return 5
+	}
+}
+
+// sortCapDeclareAreaMaps 对 builder 产出（[]interface{}，每项 map 含字符串 "type"）排序 + 截 16。
+func sortCapDeclareAreaMaps(decl []interface{}) []interface{} {
+	typeOf := func(m interface{}) int {
+		mm, _ := m.(map[string]interface{})
+		return int(extractFloat64Value(mm["type"]))
+	}
+	sort.SliceStable(decl, func(i, j int) bool {
+		return declareAreaKeepPriority(typeOf(decl[i])) < declareAreaKeepPriority(typeOf(decl[j]))
+	})
+	if len(decl) > maxDeclareAreas {
+		log.Printf("declare_area over %d-slot limit: keep %d drop %d (lowest prio custom/interfere dropped first)",
+			maxDeclareAreas, maxDeclareAreas, len(decl)-maxDeclareAreas)
+		decl = decl[:maxDeclareAreas]
+	}
+	return decl
+}
+
+// sortCapDeclareAreaString FE 直传 dm 串（{..},{..}）同样排序 + 截 16；任一段解析失败则原样透传（不冒险丢区）。
+func sortCapDeclareAreaString(s string) string {
+	areas, ok := parseDeclareAreaMultiDM(s)
+	if !ok || len(areas) == 0 {
+		return s
+	}
+	sort.SliceStable(areas, func(i, j int) bool {
+		return declareAreaKeepPriority(areas[i].AreaType) < declareAreaKeepPriority(areas[j].AreaType)
+	})
+	if len(areas) > maxDeclareAreas {
+		log.Printf("declare_area passthrough over %d-slot limit: keep %d drop %d",
+			maxDeclareAreas, maxDeclareAreas, len(areas)-maxDeclareAreas)
+		areas = areas[:maxDeclareAreas]
+	}
+	parts := make([]string, len(areas))
+	for i := range areas {
+		parts[i] = areas[i].ToDMString()
+	}
+	return strings.Join(parts, ",")
+}
+
+// parseDeclareAreaMultiDM 拆多区域 dm 串 {..},{..} → []DeclareAreaData（cm）。任一段解析失败返回 ok=false（调用方原样透传）。
+func parseDeclareAreaMultiDM(s string) ([]radar.DeclareAreaData, bool) {
+	s = strings.TrimSpace(s)
+	for len(s) > 0 && (s[len(s)-1] == ',' || s[len(s)-1] == ';') {
+		s = s[:len(s)-1]
+	}
+	if s == "" {
+		return nil, false
+	}
+	parts := strings.Split(s, "},{")
+	out := make([]radar.DeclareAreaData, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if !strings.HasPrefix(p, "{") {
+			p = "{" + p
+		}
+		if !strings.HasSuffix(p, "}") {
+			p = p + "}"
+		}
+		d, okp := radar.ParseDeclareAreaFromDM(p)
+		if !okp {
+			return nil, false
+		}
+		out = append(out, *d)
+	}
+	return out, true
 }
 
 // rectangleCMToDM 将规范 rectangle 字符串（cm）转为设备格式（dm）。格式 {x1,y1;x2,y2;x3,y3;x4,y4}，解析失败返回空串。

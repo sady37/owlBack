@@ -35,7 +35,7 @@ import (
 //   - event_name=InBed → bed_status=0；event_name=LeftBed → bed_status=1
 //   - 故 InBed = (bed_status == 0)
 type SleepadObservation struct {
-	DeviceAddr        string
+	DeviceAddr      string
 	DeviceUID       string
 	TMs             int64
 	TrackID         int  // sleepad 板号(0/1)；2 板归 1 人，透传进 lid 作信息（[[validate_real_case_no_unit_tests]] 单人床）
@@ -71,7 +71,7 @@ type RadarBedState struct {
 
 // PadAbsorption 一张垫的吸纳裁决（forensic + uncovered 计数）。
 type PadAbsorption struct {
-	LogicID      string  // pad lid
+	LogicID      string // pad lid
 	InBed        bool
 	Fresh        bool
 	Stale        bool
@@ -173,8 +173,9 @@ func AbsorbSleepads(pads []SleepadStatus, radars []RadarBedState, mm *RoomMM, th
 }
 
 // SleepadLogicID sleepad 占用身份 lid = uid_last4 + "S" + bedHex2 + track_id。
-//   uid_last4 取自终身稳定的 UID（DevKey，[[event_log_monitor_stream_device_uid]]）；bedHex2 取自会变的 addr=跟踪当前绑床；
-//   全本地派生零 data 取数。详 doc/fusion-absorption-B-sleepad.md §2。
+//
+//	uid_last4 取自终身稳定的 UID（DevKey，[[event_log_monitor_stream_device_uid]]）；bedHex2 取自会变的 addr=跟踪当前绑床；
+//	全本地派生零 data 取数。详 doc/fusion-absorption-B-sleepad.md §2。
 func SleepadLogicID(uidHex, deviceAddr string, trackID int) string {
 	last4 := uidHex
 	if len(uidHex) > 4 {
@@ -184,7 +185,8 @@ func SleepadLogicID(uidHex, deviceAddr string, trackID int) string {
 }
 
 // bedSlotHex device /128 addr 掩到 /96 的床槽 byte[11]（DeriveBedPrefix slot 字节，room/88→bed/96），渲 2 位 hex。
-//   deviceAddr 是 firmware 上报的边界值；解析失败→"00"（forensic 路径不崩，异常自显形）。
+//
+//	deviceAddr 是 firmware 上报的边界值；解析失败→"00"（forensic 路径不崩，异常自显形）。
 func bedSlotHex(deviceAddr string) string {
 	a, err := netip.ParseAddr(deviceAddr)
 	if err != nil {
@@ -221,9 +223,9 @@ func ParseSleepadObservations(dv interface{}, deviceAddr, deviceUID string, fall
 	out := make([]SleepadObservation, 0, len(arr))
 	for _, m := range arr {
 		obs := SleepadObservation{
-			DeviceAddr:  deviceAddr,
-			DeviceUID: deviceUID,
-			TMs:       fallbackTs,
+			DeviceAddr: deviceAddr,
+			DeviceUID:  deviceUID,
+			TMs:        fallbackTs,
 		}
 		if v, ok := m["track_id"]; ok {
 			obs.TrackID = jsonInt(v)
@@ -256,7 +258,7 @@ func ParseSleepadObservations(dv interface{}, deviceAddr, deviceUID string, fall
 type SleepadBedEvent struct {
 	DeviceUID string
 	TMs       int64
-	IsInBed   bool // event_name="InBed" → true；"LeftBed" → false
+	IsInBed   bool   // event_name="InBed" → true；"LeftBed" → false
 	Status    string // "instant" / "start"（去重用，只取 instant）
 }
 

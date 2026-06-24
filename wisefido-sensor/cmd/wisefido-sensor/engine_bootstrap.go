@@ -1,10 +1,10 @@
 // engine_bootstrap.go
 //
 // 把 RoomEngine 接入 wisefido-sensor 实时流：
-//   1. 从 rooms 表加载所有 layout_config，注册到 Engine（自动 ApplyOptimizedExtent）
-//   2. 从 devices 表读 device_uid/device_addr → bound_room_id 路由表
-//   3. Configure RuntimeConfig（DecayParams + LearnParams + ParamSets + Persister）
-//   4. Engine.Run(ctx) 在 goroutine 跑 —— 自动消费 iot:monitor:stream + iot:event:stream
+//  1. 从 rooms 表加载所有 layout_config，注册到 Engine（自动 ApplyOptimizedExtent）
+//  2. 从 devices 表读 device_uid/device_addr → bound_room_id 路由表
+//  3. Configure RuntimeConfig（DecayParams + LearnParams + ParamSets + Persister）
+//  4. Engine.Run(ctx) 在 goroutine 跑 —— 自动消费 iot:monitor:stream + iot:event:stream
 package main
 
 import (
@@ -204,8 +204,8 @@ func (r *engineReloader) ReloadDevices(ctx context.Context) error {
 //   - room_type → RoomKind（决定 16 复用 PG 列；空串 = 默认 bedroom）
 //   - is_public_bathroom → IsPublicBathroom（PR-7 决定 24 / migration 2026-05-17）
 //   - SuiteID 计算（PR-7 SuiteID 取值约定）：
-//       public bathroom (room_type=bathroom + is_public_bathroom=true) → 自身 /128
-//       其他（含 suite bathroom） → unit /80
+//     public bathroom (room_type=bathroom + is_public_bathroom=true) → 自身 /128
+//     其他（含 suite bathroom） → unit /80
 //   - ResidentID LPM 查询：resident_unit valid_to IS NULL + spatial_prefix 与 room_id 重叠
 //     LPM order by masklen DESC 取最 specific 绑定（/96 bed > /88 room > /80 unit）
 //     multi-resident 场景下返回任意一个（决定 19 留 PR-X，详 sensor_v2.md §10.4 注释）。
@@ -398,4 +398,3 @@ func mapDevicesToRooms(ctx context.Context, engine *roomengine.Engine, db *sql.D
 	}
 	return count, rows.Err()
 }
-

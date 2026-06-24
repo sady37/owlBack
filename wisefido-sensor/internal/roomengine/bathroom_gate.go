@@ -39,7 +39,8 @@ const gateMemberTimeoutMs int64 = 60_000
 // BathroomGate 单 bathroom 房间的入口流量计数器。
 //
 // 状态：
-//   members[trackID] = lastSeenMs   该 track 上次在 bathroom 帧中出现的时刻
+//
+//	members[trackID] = lastSeenMs   该 track 上次在 bathroom 帧中出现的时刻
 //
 // 并发：Process 由 Engine.publishTrackStatuses 单 goroutine 调用，无锁需要。
 type BathroomGate struct {
@@ -71,8 +72,8 @@ func NewBathroomGate(roomID, suiteID string, census *SuiteCensusManager, logger 
 // bases 已含 PR-3 cell area type / EnterTarget 投影。
 //
 // 算法：
-//   1) 扫 bases：新 trackID（非 members）→ onEntry；已知 trackID → 更新 lastSeenMs
-//   2) 扫 members：lastSeenMs < nowMs - gateMemberTimeoutMs 且未在 bases → onExit
+//  1. 扫 bases：新 trackID（非 members）→ onEntry；已知 trackID → 更新 lastSeenMs
+//  2. 扫 members：lastSeenMs < nowMs - gateMemberTimeoutMs 且未在 bases → onExit
 //
 // 不变量：
 //   - census.BathroomCount = Σ over all gates in suite (len(gate.members))

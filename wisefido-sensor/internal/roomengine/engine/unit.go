@@ -35,13 +35,14 @@ type Unit struct {
 	gains         []gainEvent        // 近期跨房新现真人（窗内 pruned）
 	lostAt        map[string]int64   // 每房最近丢真人的 **last-observed 时戳**（非 coast LostReal 帧；centering）
 	lastHandoffL  map[string]float64 // 末次喂各房的 hand-off 注入对数似然（forensic / 测试可观测）
-	roomPresent map[string]bool  // roomID → 末 tick 是否在场（PresentCount>0；UnitState forensic）
-	roomTickMs  map[string]int64 // roomID → 末 tick 时戳（新鲜度）
+	roomPresent   map[string]bool    // roomID → 末 tick 是否在场（PresentCount>0；UnitState forensic）
+	roomTickMs    map[string]int64   // roomID → 末 tick 时戳（新鲜度）
 }
 
 // NewUnit 建多房编排器。residentCount = unit 住户数（η 用）。
-//   radar hand-off 核（τpeak=15s/W=90s）不随公共度缩放（DefaultNeighborParams 固定）：elder-care 套房无陌生人、
-//   多住户已 hard-gate、单住户无巧合 → 宽窗零 FN 更优，公共度收紧无意义（详 neighbor.go 注释）。
+//
+//	radar hand-off 核（τpeak=15s/W=90s）不随公共度缩放（DefaultNeighborParams 固定）：elder-care 套房无陌生人、
+//	多住户已 hard-gate、单住户无巧合 → 宽窗零 FN 更优，公共度收紧无意义（详 neighbor.go 注释）。
 func NewUnit(rooms map[string]*Room, residentCount int) *Unit {
 	if residentCount < 1 {
 		residentCount = 1
@@ -137,8 +138,9 @@ func (u *Unit) handoffLFor(roomID string, nowMs int64) float64 {
 }
 
 // pruneGains 丢弃超 hand-off 窗的旧 gain（stale 证不了此刻在哪，[[partial_monitoring_fall_suppression_law]]）。
-//   保留窗取 radar/sleepad 两核较大者（sleepad 慢核窗 150s > radar W）：sleepad gain 须存活到慢核窗满，
-//   否则被 radar 窗（90s）先剪掉 → 慢接力还没解析就丢账。per-gain 是否真在窗内由 HandoffLogOdds 矩形窗各自判。
+//
+//	保留窗取 radar/sleepad 两核较大者（sleepad 慢核窗 150s > radar W）：sleepad gain 须存活到慢核窗满，
+//	否则被 radar 窗（90s）先剪掉 → 慢接力还没解析就丢账。per-gain 是否真在窗内由 HandoffLogOdds 矩形窗各自判。
 func (u *Unit) pruneGains(nowMs int64) {
 	keepMs := u.np.HandoffWindowMs
 	if u.np.SleepadWindowMs > keepMs {

@@ -38,9 +38,9 @@ package belief
 // ============================================================================
 const (
 	// 各区正常停留 (μ, σ) 秒——emission 高斯 CDF 与 floor 异常阈(tFloorFor=μ+1.5σ, room×cell 保守)共用单源(§H/§I)
-	MuDefaultSec, SigmaDefaultSec = 480, 160   // 8min, 2.67min
-	MuSitSec, SigmaSitSec         = 3600, 1200 // 60min, 20min
-	MuBathSec, SigmaBathSec       = 720, 240   // 12min, 4min
+	MuDefaultSec, SigmaDefaultSec = 480, 160   // 8min, 2.67min → 异常 12min
+	MuSitSec, SigmaSitSec         = 3600, 1200 // 60min, 20min → 异常 90min
+	MuBathSec, SigmaBathSec       = 800, 267   // 浴室一律 → 异常 20min（占用区，马桶/淋浴久留紧阈）
 )
 
 // FloorGuard 单 logicID 兜底守门（§I stillbox 计时器；异常阈 tFloorFor=μ+1.5σ room×cell 保守，无跨帧状态）。
@@ -64,12 +64,12 @@ func (g *FloorGuard) Step(obs Observation) bool {
 	}
 	contactInBed := nearCount == 1 && nearJ < len(obs.Sleepad) && obs.Sleepad[nearJ] == BedInBed
 	switch {
-	case obs.AreaType == areaDeny:
-		return false // 静态反射 → realness 管
+	case obs.AreaType == areaBed || obs.AreaType == areaMonitorBed:
+		return false // 真床/监护床：名字含 bed 的接触床区豁免（无 sleepad 时几何分不清在床/床边摔，宁漏边缘 FN 不让睡眠误报）
+	case obs.AreaType == areaReflector:
+		return false // 镜/金属静态反射 → 无真人，realness 管
 	case contactInBed:
 		return false // 真在床
-	case obs.AreaType == areaBed && obs.BedExempt:
-		return false // 真床区(名字含 bed)无条件豁免：无 sleepad 时几何分不清在床/床边摔，宁漏边缘 FN 不让睡眠误报
 	}
 	return obs.StillSec >= tFloorFor(obs.AreaType, obs.RoomType, obs.IsRiskTime)
 }

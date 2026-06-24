@@ -89,8 +89,8 @@ const (
 	stickyVetoMark           = "Sticky veto: never auto-learn fall suppression here"
 
 	// 永久加区 marker（owlFront alarm.ts SIT_PIN_MARKER / DENY_ZONE_MARKER）。
-	sitPinMark   = "Sit zone: pin permanently (update layout)"
-	denyZoneMark = "Interference zone: mark permanently (deny, update layout)"
+	sitPinMark    = "Sit zone: pin permanently (update layout)"
+	denyZoneMark  = "Interference zone: mark permanently (deny, update layout)"
 	blindAreaMark = "Blind area: mark permanently (no-fall zone, update layout)"
 	enterDoorMark = "Exit zone: add permanently (update layout)"
 )
@@ -441,15 +441,16 @@ func (i *AlarmFeedbackIngester) appendFeedbackObject(ctx context.Context, device
 // 返回触发的 route 名称列表（用于日志可观测）。nowMs = hand_time（人处理时刻），临时禁报窗以此为锚。
 //
 // 路由规则（设计 §3.2/§3.3/§1，label 见上方常量）：
-//   operation=false_alarm:
-//     坐类(Chair/ShortSofa/Wheelchair)        → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaSit)
-//     躺类(Lounge/LongSofa) + ↳ Permanent     → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaBed)
-//     BlindArea/Enter（加区动作走 handler appendFeedbackObject，非 cell counter）
-//     Electric/AC                              → GhostCount++
-//     Error Pose / Out of Range                → 不进 counter（传感误差）
-//     Unknown 或全无勾选                        → FakeAlarmCount++
-//   operation=verified:                         → RealFallCount++ + ClearNonHumanLearnedZone
-//     + ↳ Sticky veto                          → MarkLearnBlocked（永久封自动/反馈学抑制）
+//
+//	operation=false_alarm:
+//	  坐类(Chair/ShortSofa/Wheelchair)        → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaSit)
+//	  躺类(Lounge/LongSofa) + ↳ Permanent     → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaBed)
+//	  BlindArea/Enter（加区动作走 handler appendFeedbackObject，非 cell counter）
+//	  Electric/AC                              → GhostCount++
+//	  Error Pose / Out of Range                → 不进 counter（传感误差）
+//	  Unknown 或全无勾选                        → FakeAlarmCount++
+//	operation=verified:                         → RealFallCount++ + ClearNonHumanLearnedZone
+//	  + ↳ Sticky veto                          → MarkLearnBlocked（永久封自动/反馈学抑制）
 func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int64,
 	operation string, pc ParsedConditions) []string {
 

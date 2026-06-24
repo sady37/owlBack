@@ -372,7 +372,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 			//   emission still 高斯 CDF 在消失态仍喂(人摔进盲区/爬出后持续静止的异常度)。
 			obs = adapter.BuildObservation(adapter.RadarTrack{
 				Online: false, StillSec: ts.Obs.RadarTrack.StillSec,
-				AreaType: ts.Obs.RadarTrack.AreaType, BedExempt: ts.Obs.RadarTrack.BedExempt, RoomType: ts.Obs.RadarTrack.RoomType,
+				AreaType: ts.Obs.RadarTrack.AreaType, RoomType: ts.Obs.RadarTrack.RoomType,
 			}, fi.Sleepads, fi.Beds, fi.BedAreaIDs, r.p, fi.Census.Night)
 			logPhi = em.LogPhi(r.js, obs)
 			r.applyLeftBedOpen(cp, logPhi, obs, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p), false) // ③ lost → SBlindRest（gxy 用冻结末位）

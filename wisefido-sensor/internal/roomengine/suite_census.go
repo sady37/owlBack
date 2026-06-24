@@ -39,15 +39,15 @@ import (
 
 // SuitePerson 单个 suite 内识别出的人（resident 或 visitor）。
 type SuitePerson struct {
-	PersonID            string `json:"person_id"`             // resident.id (UUID/INET) 或 "visitor_<unix_ms>"
-	Role                string `json:"role"`                  // "resident" / "visitor"
-	AnchorTrackID       int    `json:"anchor_track_id"`       // 当前 anchor 的 radar track id（bedroom 内）
-	AnchorRoomType      int    `json:"anchor_room_type"`      // owl-common/card.RoomType* — 当前 anchor 所在 room 的类型
-	AnchorSinceMs       int64  `json:"anchor_since_ms"`       // anchor 起点 unix ms
-	LastActiveMs        int64  `json:"last_active_ms"`        // 最近"非静止"帧 ms；决定 8 lost 判据
+	PersonID            string `json:"person_id"`        // resident.id (UUID/INET) 或 "visitor_<unix_ms>"
+	Role                string `json:"role"`             // "resident" / "visitor"
+	AnchorTrackID       int    `json:"anchor_track_id"`  // 当前 anchor 的 radar track id（bedroom 内）
+	AnchorRoomType      int    `json:"anchor_room_type"` // owl-common/card.RoomType* — 当前 anchor 所在 room 的类型
+	AnchorSinceMs       int64  `json:"anchor_since_ms"`  // anchor 起点 unix ms
+	LastActiveMs        int64  `json:"last_active_ms"`   // 最近"非静止"帧 ms；决定 8 lost 判据
 	LastBathroomEntryMs int64  `json:"last_bathroom_entry_ms,omitempty"`
-	SleepadAnchored     bool   `json:"sleepad_anchored"`      // 床压双源锚定（仅 resident 可能为 true）
-	TraverseCount       int    `json:"traverse_count"`        // 累计 traverse cells（升格判据）
+	SleepadAnchored     bool   `json:"sleepad_anchored"` // 床压双源锚定（仅 resident 可能为 true）
+	TraverseCount       int    `json:"traverse_count"`   // 累计 traverse cells（升格判据）
 }
 
 // SuitePersonRole 取值
@@ -76,19 +76,19 @@ type SuiteBedroomCensus struct {
 // SuiteCensusConfig 参数（每 suite 配置；可由 spatial_config / cardagg 传入）。
 type SuiteCensusConfig struct {
 	// Resident 升格阈值
-	ResidentRadarAnchorMs   int64 // radar anchor 时长，默认 5min
+	ResidentRadarAnchorMs    int64 // radar anchor 时长，默认 5min
 	ResidentRadarTraverseMin int   // radar traverse cells 最小值，默认 10
 
 	// Visitor 升格阈值（决定 13 时序假设：≥2min）
-	VisitorAnchorMs   int64 // 默认 2min
+	VisitorAnchorMs    int64 // 默认 2min
 	VisitorTraverseMin int   // 默认 5
 
 	// Visitor 衰退（决定 24 注解：离开 suite ≥ 10min 后移出 census）
 	VisitorIdleRemoveMs int64 // 默认 10min
 
 	// Resident 衰退（决定 8：全 unit 无活动 ≥ 60min → stale；≥ 6h → 移出）
-	ResidentStaleMs   int64
-	ResidentRemoveMs  int64
+	ResidentStaleMs  int64
+	ResidentRemoveMs int64
 }
 
 // DefaultSuiteCensusConfig 默认参数（sensor_v2 文档 §4.A.1 + 决定 13）。
@@ -179,22 +179,24 @@ func (m *SuiteCensusManager) MarkPublicBathroom(suiteID string) {
 //   - moveActive 表示本帧是否"非静止"（用于 LastActiveMs 更新）
 //
 // 返回值语义（review Doc-4 完整文档化）：
+//
 //   - (person, true):
-//       本次调用导致 candidate → resident/visitor 升格；
-//       或 sleepad 强升格命中已存在 person；
-//       或更新了已升格 person 的 traverse / LastActiveMs / SleepadAnchored。
-//       caller 可消费 person.PersonID 写入下游（TrackStatus.PersonID 等）。
+//     本次调用导致 candidate → resident/visitor 升格；
+//     或 sleepad 强升格命中已存在 person；
+//     或更新了已升格 person 的 traverse / LastActiveMs / SleepadAnchored。
+//     caller 可消费 person.PersonID 写入下游（TrackStatus.PersonID 等）。
 //
 //   - (nil, false):
-//       仍是 candidate 未升格 / public mode 不识别 / suiteID 不存在；
-//       **caller 不应**使用任何 PersonID 关联下游 — candidate 阶段 PersonID 是临时 key
-//       （格式 "__cand_track_<id>"），写入下游会污染 TrackStatus / alarm_events。
+//     仍是 candidate 未升格 / public mode 不识别 / suiteID 不存在；
+//     **caller 不应**使用任何 PersonID 关联下游 — candidate 阶段 PersonID 是临时 key
+//     （格式 "__cand_track_<id>"），写入下游会污染 TrackStatus / alarm_events。
 //
 // caller 检查惯例：
-//   if person, ok := mgr.UpdatePersonFromTrack(...); ok {
-//       // 安全使用 person.PersonID / Role / ...
-//   }
-//   // ok=false 时跳过 PersonID 关联，仅保留 raw track frames
+//
+//	if person, ok := mgr.UpdatePersonFromTrack(...); ok {
+//	    // 安全使用 person.PersonID / Role / ...
+//	}
+//	// ok=false 时跳过 PersonID 关联，仅保留 raw track frames
 func (m *SuiteCensusManager) UpdatePersonFromTrack(
 	suiteID, residentID string,
 	trackID int,
@@ -434,8 +436,8 @@ func (m *SuiteCensusManager) GetBathroomCount(suiteID string) int {
 // 与 MarkPersonExitToBathroom/Return 的关系：
 //   - 已升格 SuitePerson 进/出 bathroom：上层调 MarkPersonExitToBathroom/Return（PR-2 helper，含 count++ + anchor flip）
 //   - 匿名 track（candidate / visitor 未升格 / anchor 已 clear）：上层调本函数仅调整 count
-//   BathroomGate 当前对 bathroom 内 track 一律走"匿名"路径（v2 PR-3 决策：bathroom 不跑
-//   UpdatePersonFromTrack），anchor flip 由 TryFlipSoleResidentRoomType 在 count 跨 0 边界时单独触发。
+//     BathroomGate 当前对 bathroom 内 track 一律走"匿名"路径（v2 PR-3 决策：bathroom 不跑
+//     UpdatePersonFromTrack），anchor flip 由 TryFlipSoleResidentRoomType 在 count 跨 0 边界时单独触发。
 //
 // 返回值 (oldCount, newCount)：caller 据此判断"是否跨 0 边界"决定是否触发 anchor flip。
 // suiteID 不存在或 IsPublicBathroom 时返回 (-1, -1) 表示 noop（caller 自行判定不联动 anchor）。
@@ -518,8 +520,8 @@ func (m *SuiteCensusManager) TryFlipSoleResidentRoomType(suiteID string, targetR
 //     理由：跨界判定 — resident 6h 不动几乎肯定是设备健康问题（sleepad 故障 / radar 失联），
 //     不是 fall 告警语义。更适合走系统健康检查链路（§6.A.0 决定 9）。
 //   - **prod 验证策略**：先跑 1 周看频率
-//       - 若罕见（每月几次）→ 升级为系统健康告警（producer=sensor，category=device）
-//       - 若频繁（每天多次）→ 6h 阈值可能过严或衰退判据本身有问题，调阈值不发告警
+//   - 若罕见（每月几次）→ 升级为系统健康告警（producer=sensor，category=device）
+//   - 若频繁（每天多次）→ 6h 阈值可能过严或衰退判据本身有问题，调阈值不发告警
 func (m *SuiteCensusManager) DecayInactive(nowMs int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -217,6 +217,10 @@ type Cell struct {
 	StaticReflectorCount  int
 	LastStaticReflectorMs int64
 
+	// SitScore: AreaSit 4 通道 log-odds 累积（sit_learning.go；每条自走长坐 episode 加 sitEpisodeLLR）。
+	// ≥ sitPromoteTau 升 AreaSit(SourceLearned)；HL sitScoreHalfLifeSec 指数衰减（隔离 episode 自然褪）。
+	SitScore float64
+
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
 
@@ -599,6 +603,9 @@ func (c *Cell) Decay(dtSec float64, p DecayParams) {
 	c.MirrorBounceCount = scaleInt(c.MirrorBounceCount, fEv)
 	// 静止反射体同半衰期：偶发一次静止伪迹自然衰退，需跨多次独立 episode 才累到 promote。
 	c.StaticReflectorCount = scaleInt(c.StaticReflectorCount, fEv)
+
+	// SitScore（log-odds）按 4d 半衰期指数衰减：孤立 episode 自然褪，需 2–3 次近日自走长坐才够 τ。
+	c.SitScore *= factor(dtSec, sitScoreHalfLifeSec)
 
 	// PR-11: Belief[0].Confidence 按 AreaType 分档衰减（半衰期 BeliefHalfLifeByType[type]）
 	// 衰减后 Confidence < 10 → 降级 AreaUnknown + Source=Unset（不再贡献 IsRestZone 等判定）。

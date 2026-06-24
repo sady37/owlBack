@@ -2458,6 +2458,8 @@ func (tm *TrackManager) ResetStillBox(logicID string) {
 		ts.StillBoxStartX = 0
 		ts.StillBoxStartY = 0
 		ts.History = ts.History[:0]
+		// lost = fall 域，不 emit Sit episode；只清姿态累加器（与 box break 区别开）。
+		ts.sitFwMaxMs, ts.sitFwContigStartMs, ts.sitZBest = 0, 0, 0
 		return
 	}
 	// 已被 lost-reap 驱逐 → firmware 再发即 NewTrackState，本就从 0
@@ -2506,6 +2508,49 @@ func (tm *TrackManager) EvictTrack(logicID string) {
 //  2. MaxKalmanResidual：track 生命周期峰值残差。
 //  3. MaxImpliedSpeedFromBirth：max(dist(current, birth) / age) cm/s；
 //     > ImpossibleSpeedCm 判硬 ghost；> SuspectSpeedCm + 无 EnterRoom 判软 ghost。
+// emitSitEpisode StillBox break（移动导致=walk-away）时结算一条 Sit episode（sit_learning.go §11）。
+// 4 通道 log-odds → cell.SitScore；过 τ 升 AreaSit(SourceLearned)。dur=本次 box 时长(dwell)。
+// lost（ResetStillBox）不调本函数（fall 域，告警留）。结算后清姿态累加器（下条 episode 从 0）。
+func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
+	defer func() { ts.sitFwMaxMs, ts.sitFwContigStartMs, ts.sitZBest = 0, 0, 0 }()
+	if tm.grid == nil {
+		return
+	}
+	dwellMin := float64(durMs) / 60000.0
+	if dwellMin < sitActiveCutoffMin { // <5min = Active 过路，不计 Sit
+		return
+	}
+	fwMaxMin := float64(ts.sitFwMaxMs) / 60000.0
+	deltaL := sitEpisodeLLR(dwellMin, ts.sitZBest, fwMaxMin)
+	x, y := ts.StillBoxStartX, ts.StillBoxStartY
+	// 加到锚 cell + 3×3(±10cm) 邻域：覆盖坐姿足迹，近邻 episode 相互印证。
+	promoted := false
+	for dx := -10; dx <= 10; dx += 10 {
+		for dy := -10; dy <= 10; dy += 10 {
+			c := tm.grid.CellAt(x+dx, y+dy)
+			if c == nil {
+				continue
+			}
+			c.SitScore += deltaL
+			if c.SitScore >= sitPromoteTau {
+				tm.grid.MarkRestZoneFeedback(x+dx, y+dy, AreaSit, nowMs)
+				promoted = true
+			}
+		}
+	}
+	if tm.logger != nil {
+		tm.logger.Info("sit_episode_logodds",
+			zap.String("logic_id", ts.LogicID),
+			zap.Float64("dwell_min", dwellMin),
+			zap.Float64("fw_max_min", fwMaxMin),
+			zap.Float64("z_best", ts.sitZBest),
+			zap.Float64("delta_l", deltaL),
+			zap.Bool("promoted_area_sit", promoted),
+			zap.Int("anchor_x", x), zap.Int("anchor_y", y),
+			zap.Int64("now_ms", nowMs))
+	}
+}
+
 //
 // 调用位置：processFrameAt 已有 track 分支，Kalman.Update 之后。
 func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame, nowMs int64, residualF float64) {
@@ -2524,10 +2569,26 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			ts.StillBoxStartX = ts.History[0].X
 			ts.StillBoxStartY = ts.History[0].Y
 		}
+		// AreaSit 学习：box running = episode 进行中，累姿态相关两通道（fwMax/zBest，sit_learning.go）。
+		if RadarPoseToCore(f.Pose) == CorePoseSit {
+			if ts.sitFwContigStartMs == 0 {
+				ts.sitFwContigStartMs = nowMs
+			} else if contig := nowMs - ts.sitFwContigStartMs; contig >= sitFwContigGateMs && contig > ts.sitFwMaxMs {
+				ts.sitFwMaxMs = contig // 3s 软门后才计入最长连续 Sitting
+			}
+		} else {
+			ts.sitFwContigStartMs = 0 // 断 contig
+		}
+		if f.Z > 0 {
+			if m := sitZMembership(float64(f.Z)); m > ts.sitZBest {
+				ts.sitZBest = m
+			}
+		}
 	} else if ts.StillBoxRunStart > 0 {
 		dur := nowMs - ts.StillBoxRunStart
 		ts.StillBoxBreakDurMs = dur // 暂存刚结束的 dwell 时长，供 scoreMovement 移动块 MarkDwell
 		ts.StillBoxRunStart = 0
+		tm.emitSitEpisode(ts, dur, nowMs) // box-break=移动导致=walk-away → emit Sit episode（lost 走 ResetStillBox 不 emit）
 		if tm.logger != nil {
 			tm.logger.Info("still_box_break",
 				zap.Int("track_id", f.TrackID),

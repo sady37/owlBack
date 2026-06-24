@@ -94,11 +94,10 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, RadarTrack: adapter.RadarTrack{
 			TrackID: b.TrackID,
 			Online:  b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
-			StillSec:  float64(b.StillBoxSec),
-			AreaType:  int(b.CellAreaType),
-			BedExempt: b.CellBedExempt,
-			RoomType:  d.roomType[roomID],
-			FwAreaID:  b.FwAreaID,
+			StillSec: float64(b.StillBoxSec),
+			AreaType: int(b.CellAreaType),
+			RoomType: d.roomType[roomID],
+			FwAreaID: b.FwAreaID,
 		}})
 	}
 	// sleepad-only 房：InBed 合成一条 bed-track 作 B 轴载体（engine.Room track-centric）。

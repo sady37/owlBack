@@ -178,14 +178,14 @@ func cellSVGFill(c *Cell) string {
 	switch c.Belief[0].Type {
 	case AreaEnter:
 		return "#44cc66" // 绿
-	case AreaBed:
-		return "#4488dd" // 蓝（Lying）
-	case AreaSit, AreaToilet:
-		return "#ff9933" // 橙（Sit；马桶也归 Sit）
+	case AreaBed, AreaMonitorBed:
+		return "#4488dd" // 蓝（床）
+	case AreaSit, AreaLying:
+		return "#ff9933" // 橙（坐/非床躺）
 	case AreaActive:
-		return "#ffffff" // 白（Walk）
-	case AreaShower:
-		return "#ffffff" // 白（暂归 Walk，后期可独立色）
+		return "#ffffff" // 白（走道/淋浴）
+	case AreaInterfer:
+		return "#aa8c6e" // 棕（运动干扰）
 	case AreaDeny:
 		// Source 区分：AI 学的用斜线，人标用实色
 		if c.Belief[0].Source == SourceLearned {
@@ -306,8 +306,8 @@ func drawTitleAndLegend(sb *strings.Builder, roomID, roomName string, grid *Room
 		{"#ff9933", "Sit", "#222", false},
 		{"#4488dd", "Lying", "#fff", false},
 		{"#44cc66", "Enter", "#222", false},
-		{"#2a2a2a", "Out", "#fff", false},        // !InRoom
-		{"#4a4a4a", "Deny(layout)", "#fff", false}, // SourceHuman
+		{"#2a2a2a", "Out", "#fff", false},           // !InRoom
+		{"#4a4a4a", "Deny(layout)", "#fff", false},  // SourceHuman
 		{"url(#aiDeny)", "Deny(AI)", "#fff", false}, // SourceLearned 斜线
 		{"#7c3aed", "Fall(AI)", "#222", true},       // RealFallCount overlay 紫圆点
 	}
@@ -342,7 +342,7 @@ func drawTitleAndLegend(sb *strings.Builder, roomID, roomName string, grid *Room
 // 这里按安装模式各自重排为闭合多边形顺序（避免渲染时自交成 X / 蝴蝶结）：
 //   - Ceiling/Wall 矩形：[右上, 左上, 左下, 右下] = [0,1,3,2]
 //   - Corn 菱形：       [雷达顶, R, 底, L]      = [1,0,2,3]
-//   （与前端 RadarCanvas.vue 的 [v1, v0, v2, v3, v1] 渲染顺序一致）
+//     （与前端 RadarCanvas.vue 的 [v1, v0, v2, v3, v1] 渲染顺序一致）
 func drawFOVOutline(sb *strings.Builder, m radarutils.RadarMount) {
 	poly := radarutils.BoundaryVertices(m)
 	if len(poly) < 3 {
@@ -384,14 +384,14 @@ func drawSleepad(sb *strings.Builder, p radarutils.Point, label string) {
 // drawLiveTrack 实时 track 小人图标（前端 P0 风格的绿色立人）
 // trackPathColors 8 种半透明色循环（按 trackID 取模）
 var trackPathColors = []string{
-	"rgba(255, 70, 70, 0.55)",  // 红
-	"rgba(70, 130, 255, 0.55)", // 蓝
-	"rgba(170, 70, 200, 0.55)", // 紫
-	"rgba(70, 180, 170, 0.55)", // 青
-	"rgba(255, 140, 50, 0.55)", // 橙
-	"rgba(80, 180, 80, 0.55)",  // 绿
-	"rgba(200, 140, 60, 0.55)", // 棕
-	"rgba(120, 120, 120, 0.55)",// 灰
+	"rgba(255, 70, 70, 0.55)",   // 红
+	"rgba(70, 130, 255, 0.55)",  // 蓝
+	"rgba(170, 70, 200, 0.55)",  // 紫
+	"rgba(70, 180, 170, 0.55)",  // 青
+	"rgba(255, 140, 50, 0.55)",  // 橙
+	"rgba(80, 180, 80, 0.55)",   // 绿
+	"rgba(200, 140, 60, 0.55)",  // 棕
+	"rgba(120, 120, 120, 0.55)", // 灰
 }
 
 func drawTrackPath(sb *strings.Builder, tp TrackPath) {

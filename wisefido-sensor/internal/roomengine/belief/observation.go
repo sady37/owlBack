@@ -40,11 +40,6 @@ type Observation struct {
 	// Sit=3/Active=4/Deny=5/Shower=6/Toilet=7（同 roomengine.AreaType）。床(Bed)这一支已移出 → RadarBedHitMask 驱动。
 	AreaType int
 
-	// BedExempt 当前 cell 是"真床区"（layout typeName 含 bed：Bed/MonitorBed，非 LongSofa）。FloorGuard 无条件豁免：
-	// 真床无 sleepad 时雷达几何分不清"在床/床边摔"，宁可漏这类边缘 FN 也不让正常睡眠在长阈被反复误报（无接触
-	// 传感器下 FN 换 FP 可用性，根治靠接 sleepad）。LongSofa/feedback 学的 lying 区 = false → 走 90min 长阈。
-	BedExempt bool
-
 	// RadarBedHitMask 逐床 N：firmware area_id 命中该床声明的 areaId（= 雷达判"人在该床上"）。长 numBeds。
 	// 替代旧 cell-area 床判定：cell 几何随 canvas drift 误判，firmware area_id 是雷达地面真值。
 	// emission 床 boost = lArea × 该床 covers(M) × N（命中才抬 SBed）。离线 = 全 false。

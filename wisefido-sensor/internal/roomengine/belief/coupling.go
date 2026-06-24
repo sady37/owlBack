@@ -8,10 +8,10 @@ package belief
 
 // couplingParams §3/§4 形态参数。开发阶段锚方向/符号，标定见 feedback-p6C（γ 遗忘率 / c_∅ / ε_art §C3）。
 type couplingParams struct {
-	gammaEvt  float64 // 强化腿:同向共跳 EMA（强,稀疏触发,15s 窗;建立绑同人）
-	gammaHold float64 // 维持腿:持续共态 per-frame EMA（弱,抗衰减;熟睡托）
-	cEmpty    float64 // a_∅ 的 c_∅（无床归属质量；远离床时 Ψ→中性的载体）
-	epsArt    float64 // ψ_phys(F,occ) 被子残留极小（§E/§C3：用在床段 pose=Lying 占比反推，非凭空 1e-3）
+	gammaEvt       float64 // 强化腿:同向共跳 EMA（强,稀疏触发,15s 窗;建立绑同人）
+	gammaHold      float64 // 维持腿:持续共态 per-frame EMA（弱,抗衰减;熟睡托）
+	cEmpty         float64 // a_∅ 的 c_∅（无床归属质量；远离床时 Ψ→中性的载体）
+	epsArt         float64 // ψ_phys(F,occ) 被子残留极小（§E/§C3：用在床段 pose=Lying 占比反推，非凭空 1e-3）
 	lLeftSup       float64 // sleepad 接触 LeftBed 直接压 SBed（onbed 权重,不门控 g^xy；果断清,残留~0.02；oracle）
 	lLeftSupRadar  float64 // radar 几何 LeftBed 压 SBed（<50% 可信,弱清,残留~0.10），<lLeftSup
 	lLeftOpen      float64 // ③ LeftBed→SOpenFloor 抬升（near-bed,按 a[j]；radar 接质量主力靠 emission redOpen）
@@ -83,9 +83,11 @@ func (c *Coupling) attachment(gxy []float64) (a []float64, aEmpty float64) {
 }
 
 // psiPhys §4 物理相容表 ψ_phys(S, B^j)（固定）：
-//   AtBed: occ=1（人在床→垫占）, vac=1-o_j（床内头/脚端错位）
-//   F:     occ=ε_art（摔倒却垫占只能是被子残留）, vac=1（摔倒→离垫→垫空，F 通道全开）
-//   else:  1, 1（开阔地跌倒不牵涉床垫，靠 g^xy 门控非显式势惩罚）
+//
+//	AtBed: occ=1（人在床→垫占）, vac=1-o_j（床内头/脚端错位）
+//	F:     occ=ε_art（摔倒却垫占只能是被子残留）, vac=1（摔倒→离垫→垫空，F 通道全开）
+//	else:  1, 1（开阔地跌倒不牵涉床垫，靠 g^xy 门控非显式势惩罚）
+//
 // Fallen 行物理常量不被 κ 覆盖（覆盖在 psiTilde 的退火，非这里）。
 func (c *Coupling) psiPhys(s State, b BedState, j int) float64 {
 	switch s {
@@ -105,8 +107,9 @@ func (c *Coupling) psiPhys(s State, b BedState, j int) float64 {
 }
 
 // LogPsi §4 相容势 Ψ → log 域 JointVector（喂 filter.Correct 的 logPsi）。
-//   ψ̃_j(S,B^j)=κ_j ψ_phys(S,B^j)+(1-κ_j)   （κ→0 退火中性=诚实无知；κ→1 全物理表）
-//   Ψ_t(S,bmask)=Σ_j a_j ψ̃_j(S, bit_j(bmask)) + a_∅   （§E mixture，非 product，FN-safe）
+//
+//	ψ̃_j(S,B^j)=κ_j ψ_phys(S,B^j)+(1-κ_j)   （κ→0 退火中性=诚实无知；κ→1 全物理表）
+//	Ψ_t(S,bmask)=Σ_j a_j ψ̃_j(S, bit_j(bmask)) + a_∅   （§E mixture，非 product，FN-safe）
 func (c *Coupling) LogPsi(js *JointSpace, gxy []float64) JointVector {
 	a, aEmpty := c.attachment(gxy)
 	out := js.NewJointVector()

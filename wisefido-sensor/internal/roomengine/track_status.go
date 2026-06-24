@@ -33,9 +33,9 @@ import (
 // TrackStatus Layer 1 → Layer 2 契约。
 // 详 sensor_v2 §10.1.1。
 type TrackStatus struct {
-	TrackID  int    `json:"track_id"`
+	TrackID    int    `json:"track_id"`
 	DeviceAddr string `json:"device_addr"` // radar IPv6 /128
-	RoomID   string `json:"room_id"`   // room spatial_prefix
+	RoomID     string `json:"room_id"`     // room spatial_prefix
 
 	Verdict      TrackVerdict `json:"-"`             // 内部 int，wire 用 verdict 字段（字符串）
 	GhostPenalty int          `json:"ghost_penalty"` // 0-100；≥80 → Ghost
@@ -76,26 +76,31 @@ func areaTypeWireName(t AreaType) string {
 		return "enter"
 	case AreaBed:
 		return "bed"
+	case AreaMonitorBed:
+		return "monitor_bed"
+	case AreaReflector:
+		return "reflector"
+	case AreaInterfer:
+		return "interfer"
 	case AreaSit:
 		return "sit"
+	case AreaLying:
+		return "lying"
 	case AreaActive:
 		return "active"
 	case AreaDeny:
 		return "deny"
-	case AreaShower:
-		return "shower"
-	case AreaToilet:
-		return "toilet"
 	}
 	return "unknown"
 }
 
 // ToStreamMap 序列化为 Redis stream values。
 // wire schema 稳定字段：
-//   verdict / ghost_penalty / track_id / device_addr / room_id /
-//   x / y / z / pose / still_sec / cell_area_type / enter_target /
-//   in_bed_zone_id / in_room_zone_id / in_bathroom_zone_id /
-//   person_id / person_role / updated_at_ms
+//
+//	verdict / ghost_penalty / track_id / device_addr / room_id /
+//	x / y / z / pose / still_sec / cell_area_type / enter_target /
+//	in_bed_zone_id / in_room_zone_id / in_bathroom_zone_id /
+//	person_id / person_role / updated_at_ms
 //
 // 数值字段保持 int 原型；ZoneID/PersonID 为 ""（零值）时省略以降低 stream payload 体积。
 func (ts *TrackStatus) ToStreamMap() map[string]interface{} {
@@ -103,7 +108,7 @@ func (ts *TrackStatus) ToStreamMap() map[string]interface{} {
 		"verdict":        VerdictName(ts.Verdict),
 		"ghost_penalty":  ts.GhostPenalty,
 		"track_id":       ts.TrackID,
-		"device_addr":      ts.DeviceAddr,
+		"device_addr":    ts.DeviceAddr,
 		"room_id":        ts.RoomID,
 		"x":              ts.X,
 		"y":              ts.Y,

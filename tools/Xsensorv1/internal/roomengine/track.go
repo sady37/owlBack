@@ -160,6 +160,11 @@ type TrackState struct {
 	StillBoxStartX, StillBoxStartY int   // box run 起点位置（=History[0] 回填点）→ MarkDwell/MarkToleratedStill 灌入 cell
 	StillBoxBreakDurMs             int64 // 本帧 still-box 刚 break 的 dwell 时长（0=未 break）→ 移动块 MarkDwell 消费
 
+	// ---- AreaSit 4 通道学习累加器（sit_learning.go；StillBox run = episode，box-break = walk-away emit）----
+	sitFwContigStartMs int64   // 当前连续 pose=Sitting 段起点（断则 0；用于 3s 软门 + fwMax）
+	sitFwMaxMs         int64   // 本 episode 内最长连续 Sitting 时长（ms）
+	sitZBest           float64 // 本 episode 内 max sitZMembership（仅 z>0 帧更新；缺失中性）
+
 	// ---- Birth-coherence Kalman 域（每帧 O(1) 维护）----
 	// MaxKalmanResidual：track 生命周期内的峰值残差（Mahalanobis-like）。
 	// MaxImpliedSpeedFromBirth：max over life of dist(current, birth) / age（cm/s）。

@@ -72,7 +72,7 @@ Sit 与 curtain/绿植杂波**都"静止+易重复"** → 必须第三轴区分�
 | **resolution（硬判据）** | walk-away → +a；lost/coast/无exit → **否决（不计/负大）** | a 大 | 倒地者不会自己走开；这是 sit↔fall 的硬分割 |
 | **z（纯正向平滑，缺失中性）** | `m(z)=exp(−(z−zSitCenter)²/(2·zSitSigma²))`，episode 内取 max；**z=0→0(中性,不扣分)**；**无负分支** | `zSitCenter=80`,`zSitSigma=12`,权 +0.4 | 高斯隶属度替硬框：峰=实测 Sitting z>0 中位 80，σ=12 使 [73,87] 近满、~105 自然趋零。**中心可调**（165cm 实测→80；175cm 均值→~83–85；老人偏矮 80 代表性好；per-deployment 可标）。z=0 占 70%=缺失，绝不用 z 反向否定 |
 | **dwell（平滑 bump）** | `σ((t−8)/3)·σ((55−t)/10)`；<5min→Active；峰~20min；30+渐降置 bedLean；~90→0 | rise-mid 8 / fall-mid 55min | MBD 12–16min（PMC8679788/9166254）；升降双 sigmoid 替分段 |
-| **firmware-sit** | `g=clamp(k·(dur−Tmin),0,Gmax)·min(1, contigSit_s/3)` | Tmin≈3min, Dcap≈30min, 3s软平滑 | pose=Sitting(3) 直证；3s 连续软门滤闪烁；封顶防失控（治旧 PR-15 禁因） |
+| **firmware-sit（pose=3，权重>z）** | `g=fwMax≥1?clamp(0.6+0.04(fwMaxMin−1),0,1.5):0`，×3s软门 | base 0.6, Tmin 1min, Gmax 1.5 | pose=3 = 固件融合「z+质心变化幅度」比 z 富 → **base 0.6 恒 > z 的 0.4(pose>z)**；与 z **各算各的(独立相加,不互门控)**；安全靠 episode walk-away 门控(near-field 假 sit 不自走→veto)，非高 Tmin |
 
 > **z 实测标定（2026-06-23 monitor_stream 24h，track_id≤7）**：青澜固件静态姿态 z 多为 0（Sitting 70%、Standing 93% 帧 z=0=缺失）。**z>0 时**各姿态中位：Lying 69 < Standing 72 < **Sitting 80** < Walking 89；Sitting z>0 又紧又居中（IQR 73–87，90% 落 [62,100]，91% 在 60–100 两档）。故 z 作**纯正向弱佐证**：z∈[65,100] 时小幅加分（episode 内已排除 Walking），缺失/区间外不扣分。原 [40,70] 已按实测改 [65,100]。厂家 TI/Infineon 用 centroid 高度，定义≠position_z，不可借。
 
@@ -142,7 +142,7 @@ Cell 增：SitScore/ActiveScore/BedScore（log-odds 累加，沿用 Confidence �
 | dwell rise-mid/fall-mid (slope) | 8 / 55 min (3 / 10) | 平滑 bump 峰~20min;MBD 12–16 |
 | **z 中心 zSitCenter / σ / 权重** | **80 / 12 / +0.4**（高斯隶属度，中心可调） | 实测 Sitting z>0 中位80 IQR73–87（2026-06-23）；纯正向缺失中性；175cm 人群→~83–85 |
 | Active 下闸 | <5min | 短 bout<10min，保守 |
-| firmware-sit Tmin/Dcap/软门 | 3min / 30min / 3s | 防闪烁+封顶 |
+| firmware-sit base/slope/Tmin/Gmax/软门 | 0.6 / 0.04·min / 1min / 1.5 / 3s | pose=3 含质心变化幅度,base>z(0.4)即 pose>z;与 z 独立相加 |
 | floor μ/σ（复用 floor.go 单源） | Default 8/2.67min；Sit 60/20min；Bath 12/4min | 已在库 |
 | 升格 τ / N episode | **6.0 / ≈2**（见 §11.4，oracle） | log-odds 累积 |
 | LLR 权重 resolution/z/dwell-peak | **+2.0 / +1.0 / +1.0** | §11.3 oracle |
@@ -202,7 +202,7 @@ classifyBreak(ts):
 LLR_resolution = +2.0
 LLR_z          = 0.4 · sitZBest                 // 平滑高斯隶属度（峰 zSitCenter=80, σ=12），纯正向；z=0 不更新=中性，绝不扣分、无负分支
 LLR_dwell      = σ((dwellMin−8)/3)·σ((55−dwellMin)/10)   // 平滑 bump:峰~20min≈0.95,14min≈0.86,45→0.73,60→0.38,~90→0;<5min 不到此(→Active);t>30∧Lying主导→置 bedLean(建议 Bed,不自升)
-g_fwSit        = clamp(0.0556·(fwMaxMin−3), 0, 1.5)
+g_fwSit        = fwMaxMin≥1 ? clamp(0.6 + 0.04·(fwMaxMin−1), 0, 1.5) : 0   // base 0.6（pose=3 出现即 >z 的 0.4,恒 pose>z）+ 时长加成,封顶 1.5;3s 软门滤闪烁;Tmin=1min（安全靠 episode walk-away 门控,非高 Tmin）
 ΔL_sit         = LLR_resolution + LLR_z + LLR_dwell + g_fwSit
 ```
 3s 软门由累积期 `sitFwContigMs` 实现：连续 Sitting 须 ≥3s 才计入 `sitFwMax`，sub-3s 段被 contig 重置丢弃（等价 `min(1, contig/3)`）。
@@ -211,7 +211,7 @@ g_fwSit        = clamp(0.0556·(fwMaxMin−3), 0, 1.5)
 - emit → 把 `ΔL_sit` 加到**锚 cell + 50cm 内邻 cell** 的 `Cell.SitScore`（float log-odds）。
 - 衰减：`SitScore` 每 decay tick 按 HL≈4d 指数衰减（隔离 episode 自然褪；2–3 次近日 episode 才够 τ）。
 - 升格：`SitScore ≥ τ(=6.0)` → `MarkRestZoneByFeedback(AreaSit)` 传 **SourceLearned**（auto，可被 human feedback 覆盖）。
-- N 隐含：角落 episode（resolution+2.0, z=0→0, dwell+1.0, fwSit=0[固件报 Standing 非 Sitting]）ΔL≈**+3.0** → τ=6 ≈ **2 次**自走长坐升格；正常椅子（z∈[65,100]+0.4, dwell+1.0, fwSit+0.61）ΔL≈**+4.0** → ~2 次（更快）。
+- N 隐含（dwell≈0.9 取 ~18min）：**角落 episode**（resolution+2.0, z=0, dwell+0.9, fwSit=0[固件报 Standing 非 Sitting]）ΔL≈**+2.9** → τ=6 ≈ **2~3 次**自走长坐升格（纯姿态无关两通道）；**正常椅子**（+z 0.4, fwSit ~1.1[pose=3 14–18min]）ΔL≈**+4.4** → ~2 次（pose 报对则更快）。τ 可调以定 N。
 
 ### 11.5 接口（最小爆炸半径）
 | 点 | 改动 |

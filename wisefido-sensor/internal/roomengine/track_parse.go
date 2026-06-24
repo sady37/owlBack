@@ -8,10 +8,11 @@ import (
 // 调用者：engine.parseTrackFrames（流式消费）+ cmd/roomengine-playback（DB 回放）。
 //
 // 输入：
-//   dv          可能是 []interface{}（多 track 一帧）或 map[string]interface{}（单 track）
-//   deviceAddr    设备 ID（写入 TrackFrame.DeviceAddr）
-//   mount       雷达安装参数（坐标转换用）
-//   fallbackTs  本帧 timestamp 缺失时的兜底
+//
+//	dv          可能是 []interface{}（多 track 一帧）或 map[string]interface{}（单 track）
+//	deviceAddr    设备 ID（写入 TrackFrame.DeviceAddr）
+//	mount       雷达安装参数（坐标转换用）
+//	fallbackTs  本帧 timestamp 缺失时的兜底
 //
 // 行为：
 //   - 过滤无效帧（track_id 越界 / area_id=255+全 0 / 全 0）
@@ -75,7 +76,7 @@ func ParseRadarTracks(dv interface{}, deviceAddr string, mount radarutils.RadarM
 
 		frames = append(frames, TrackFrame{
 			TrackID:         trackID,
-			DeviceAddr:        deviceAddr,
+			DeviceAddr:      deviceAddr,
 			X:               canvas.X,
 			Y:               canvas.Y,
 			Z:               canvas.Z,

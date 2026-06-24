@@ -14,15 +14,18 @@ import (
 // 替代原 CellType 10 种 → 5 种功能分类。
 type AreaType uint8
 
+// 值与厂家 declare_area 概念对齐（仅概念，下发走 layout typeName 不读本值）。语义=该区"正常姿态/占用"。
 const (
-	AreaUnknown AreaType = iota // 0 未知
-	AreaEnter                   // 1 进入区（门）
-	AreaBed                     // 2 可躺区
-	AreaSit                     // 3 允许坐姿（沙发/椅子）
-	AreaActive                  // 4 活动区（走廊、开放空间）
-	AreaDeny                    // 5 禁止 track（墙/家具/Metal，track 出现 = Fake）
-	AreaShower                  // 6 淋浴区（高风险：潮湿+跌倒）
-	AreaToilet                  // 7 马桶（高风险：起身晕眩/坐姿突倒）
+	AreaUnknown    AreaType = iota // 0 未知
+	AreaDeny                       // 1 家具不可走（无人占用，留 90min 背板，非豁免）
+	AreaBed                        // 2 接触真床（sleepad/vital → 豁免）
+	AreaReflector                  // 3 镜/金属静态反射（无真人 → realness 豁免）
+	AreaEnter                      // 4 门/进入区
+	AreaMonitorBed                 // 5 监护床（同 Bed 行为 + 呼吸心率监测）
+	AreaInterfer                   // 6 帘/扇/植物运动干扰（noisy，人可能在 → 90min）
+	AreaSit                        // 7 坐区（椅/马桶）
+	AreaLying                      // 8 非床躺区（沙发，无 sleepad → 90min）
+	AreaActive                     // 9 活动区（走道/淋浴/开阔）
 	NumAreaTypes
 )
 
@@ -129,7 +132,6 @@ type Cell struct {
 	TraverseCount     uint16    // Move 状态下穿越本 cell 的次数（Walk 升格用）
 	NearTraverseCount uint16    // 邻居被 Move 穿越的累计次数（auto-Deny 推断用 —— 兵家必争之地的"绕开"证据）
 	AreaType          AreaType  // 推断属性，与 Belief[0].Type 镜像（query 加速）
-	BedFloorExempt    bool      // RegisterRoom 时按 layout typeName 含 bed(Bed/MonitorBed,非 LongSofa)盖；真床区 floor 无条件豁免。不持久化(SetPrior 每次重灌)
 
 	// ---- 访问可信度（track 层按本帧 quality 分桶喂）----
 	RealDecay  int
@@ -271,14 +273,16 @@ func DefaultDecayParams() DecayParams {
 		//   AreaDeny (墙/家具/镜子)： 30 天衰到 10 HL=9d    — 同上
 		//   AreaUnknown：             0（不衰退；本来就是 0）
 		BeliefHalfLifeByType: [NumAreaTypes]float64{
-			AreaUnknown: 0,
-			AreaEnter:   9 * 24 * 3600,    // 30天
-			AreaBed:     2.71 * 24 * 3600, // 9天
-			AreaSit:     2.1 * 24 * 3600,  // 7天
-			AreaActive:  4.2 * 24 * 3600,  // 14天
-			AreaDeny:    9 * 24 * 3600,    // 30天
-			AreaShower:  18 * 24 * 3600,   // 60天
-			AreaToilet:  18 * 24 * 3600,   // 60天
+			AreaUnknown:    0,
+			AreaEnter:      9 * 24 * 3600,    // 30天
+			AreaBed:        2.71 * 24 * 3600, // 9天
+			AreaMonitorBed: 2.71 * 24 * 3600, // 9天（同 Bed）
+			AreaSit:        2.1 * 24 * 3600,  // 7天
+			AreaLying:      2.1 * 24 * 3600,  // 7天（沙发可移动，同 Sit）
+			AreaActive:     4.2 * 24 * 3600,  // 14天
+			AreaDeny:       9 * 24 * 3600,    // 30天（家具固定）
+			AreaReflector:  9 * 24 * 3600,    // 30天（镜/金属固定）
+			AreaInterfer:   4.2 * 24 * 3600,  // 14天（帘/扇可移动）
 		},
 	}
 }
@@ -371,11 +375,9 @@ func (c *Cell) StillTimeoutSec(isRiskTime bool) int {
 // 床/沙发：不限（休息合理）；马桶/淋浴：15min；Deny: 5min；其它：8min。
 func (c *Cell) stillTimeoutBase() int {
 	switch c.Belief[0].Type {
-	case AreaBed, AreaSit:
+	case AreaBed, AreaMonitorBed, AreaSit, AreaLying:
 		return 0
-	case AreaToilet, AreaShower:
-		return stillAreaToiletShowerSec
-	case AreaDeny:
+	case AreaDeny, AreaInterfer:
 		return stillAreaDenySec
 	}
 	return stillAreaDefaultSec
@@ -479,12 +481,8 @@ func (c *Cell) MarkRestZoneByFeedback(target AreaType) bool {
 	if cur == AreaDeny || cur == AreaEnter {
 		return false
 	}
-	// AreaBed 不被 AreaSit 降级（lying 信息更精确）
-	if cur == AreaBed && target == AreaSit {
-		return false
-	}
-	// 卫浴更具体，不被 sit/bed 降级
-	if (cur == AreaToilet || cur == AreaShower) && (target == AreaSit || target == AreaBed) {
+	// AreaBed/MonitorBed 不被 AreaSit 降级（lying 信息更精确）
+	if (cur == AreaBed || cur == AreaMonitorBed) && target == AreaSit {
 		return false
 	}
 	// FE 画的（SourceHuman）神圣，feedback 不覆盖
@@ -509,7 +507,7 @@ func (c *Cell) ClearNonHumanLearnedZone() bool {
 		return false
 	}
 	switch b.Type {
-	case AreaBed, AreaSit, AreaToilet, AreaShower, AreaDeny:
+	case AreaBed, AreaMonitorBed, AreaSit, AreaLying, AreaDeny, AreaInterfer:
 	default:
 		return false
 	}
@@ -534,7 +532,7 @@ func (c *Cell) MarkLearnBlocked() bool {
 // isSuppressiveArea 该 AreaType 是否会抑制/拒绝跌倒报警（rest/卫浴/deny）。sticky 否决用。
 func isSuppressiveArea(t AreaType) bool {
 	switch t {
-	case AreaBed, AreaSit, AreaToilet, AreaShower, AreaDeny:
+	case AreaBed, AreaMonitorBed, AreaSit, AreaLying, AreaDeny, AreaInterfer, AreaReflector:
 		return true
 	}
 	return false

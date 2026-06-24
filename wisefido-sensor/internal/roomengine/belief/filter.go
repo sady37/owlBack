@@ -14,12 +14,12 @@ import (
 
 // Filter 联合滤波器。numBeds 进字段（B1 闭合：床数随 Filter 显式持有）。
 type Filter struct {
-	space   *JointSpace
-	model   *Model        // S 轴转移 T_S（复用 state.go/model.go）
-	bedP    bedAxisParams // B 轴 T_B 参数
-	logA    [numStates][numStates]float64 // 预存 log T_S
-	alpha   JointVector   // 当前联合后验（log 域）
-	lastTs  int64
+	space  *JointSpace
+	model  *Model                        // S 轴转移 T_S（复用 state.go/model.go）
+	bedP   bedAxisParams                 // B 轴 T_B 参数
+	logA   [numStates][numStates]float64 // 预存 log T_S
+	alpha  JointVector                   // 当前联合后验（log 域）
+	lastTs int64
 }
 
 // NewFilter 建滤波器。numBeds 经 NewJointSpace 做 P-5 超界断言。
@@ -58,7 +58,9 @@ type BedOnline []bool
 // Predict 联合时间转移（因子化 T_S ⊗ T_B，log 域）。
 // online[j] = 第 j 床 ρ_t（决定 T_B 用 K^obs/K^unobs）。
 // 静态 logA（无转移塑形）：跨房 hand-off 改走 engine 层 SLeft 对数似然注入（§7.7 v2 矩形核），
-//   取代旧 GateBlindRow 转移整流（只搬 ρ×Fallen-seed 不够用、已退役）。
+//
+//	取代旧 GateBlindRow 转移整流（只搬 ρ×Fallen-seed 不够用、已退役）。
+//
 // B1 契约：len(online) 须 == numBeds（床在线标志逐床显式）；不符 = 上游 wiring 错 → panic（规则 1.4）。
 func (f *Filter) Predict(online BedOnline) {
 	js := f.space

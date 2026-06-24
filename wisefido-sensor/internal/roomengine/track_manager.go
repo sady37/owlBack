@@ -438,7 +438,7 @@ func (tm *TrackManager) NeighborBedHandoff(nowMs int64) (statusTs int64, inBed b
 }
 
 // IsBathroomByRoomName 用 owl-common/roomutil.ClassifyRoomType 判定本房间是否 bathroom。
-// 与 cell.Belief[0].Type ∈ {AreaToilet, AreaShower} 取并集驱动 still fall。
+// 与 cell.Belief[0].Type ∈ {AreaSit, AreaActive} 取并集驱动 still fall。
 func (tm *TrackManager) IsBathroomByRoomName() bool {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -858,7 +858,6 @@ type TrackStatusBase struct {
 	Pose                int
 	StillBoxSec         int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动）→ FloorGuard 纯计时器（直立折扣已移 emission）
 	CellAreaType        AreaType
-	CellBedExempt       bool   // 当前 cell 是真床区(layout 名字含 bed)→ FloorGuard 无条件豁免（透传 cell.BedFloorExempt）
 	FwAreaID            int    // firmware area_id（present=本帧；lost=冻结末值）→ adapter N 床判定
 	EnterTarget         string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
 	MoveActive          bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
@@ -958,8 +957,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			base.Verdict = VerdictAnchored
 		}
 		if c := tm.grid.CellAt(px, py); c != nil {
-			base.CellAreaType = c.Belief[0].Type  // cell 仍喂 tFloor 阈 + sit/bath/active redirect（含 sofa 的 lying 区，故不换 baseline）
-			base.CellBedExempt = c.BedFloorExempt // 真床区(名字含 bed)→ floor 豁免；LongSofa=false→90min
+			base.CellAreaType = c.Belief[0].Type // cell 仍喂 tFloor 阈 + sit/bath/active redirect（含 sofa 的 lying 区，故不换 baseline）
 			if c.Belief[0].Type == AreaEnter {
 				base.EnterTarget = c.EnterTarget
 			}
@@ -1485,7 +1483,7 @@ func (tm *TrackManager) GetOutputs() []TrackOutput {
 //      - D=0（室外但 InFOV）: 0
 //      - speed >= 100 cm/s: -60；50-100 线性；< 50: 0
 //   2. 出生 cell 类型                  -10
-//      - AreaDeny / AreaSit / AreaBed / AreaToilet / AreaShower: -10
+//      - AreaDeny / AreaSit / AreaBed / AreaSit / AreaActive: -10
 //   4. 已有 ≥1 个 verdict=Real track：    -10  (后出现的 ID)
 //   6. cell.GhostRatio > 0.3：              -10  (历史 ghost 多发区)
 //
@@ -1557,7 +1555,7 @@ func (tm *TrackManager) birthScore(x, y int, tMs int64) birthScoreResult {
 			if reason == "" {
 				reason = "born_in_deny"
 			}
-		case AreaSit, AreaBed, AreaToilet, AreaShower:
+		case AreaSit, AreaLying, AreaBed, AreaMonitorBed:
 			penalty += 10
 			if reason == "" {
 				reason = "born_in_rest_or_shower"
@@ -2117,14 +2115,14 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 		} else {
 			ts.LyingOnBedSinceMs = 0
 		}
-		// PR-11: pose=Sit on AreaToilet 持续刷新 — 5min 累计 → 重锁
-		if cell != nil && RadarPoseToCore(pose) == CorePoseSit && cell.Belief[0].Type == AreaToilet {
+		// PR-11: pose=Sit on AreaSit 持续刷新 — 5min 累计 → 重锁
+		if cell != nil && RadarPoseToCore(pose) == CorePoseSit && cell.Belief[0].Type == AreaSit {
 			if ts.SitOnToiletSinceMs == 0 {
 				ts.SitOnToiletSinceMs = nowMs
 			}
 			if !ts.AreaToiletRefreshed && nowMs-ts.SitOnToiletSinceMs >= 5*60*1000 {
-				cell.MarkRestZoneByFeedback(AreaToilet)
-				tm.grid.boostNeighborSameType(x, y, AreaToilet, nowMs)
+				cell.MarkRestZoneByFeedback(AreaSit)
+				tm.grid.boostNeighborSameType(x, y, AreaSit, nowMs)
 				ts.AreaToiletRefreshed = true
 				tm.logger.Info("area_toilet_refreshed_by_sit5min",
 					zap.String("device_uid", ts.DeviceAddr),
@@ -2379,7 +2377,7 @@ func (tm *TrackManager) occupancyFactor() float64 {
 // belief/floor.go，契约其十五）；仅作 cell-learning AreaSit 自学习 gate：bathroom 内长时间 stand
 // 不应被误学为坐位。
 //
-//	cell.AreaToilet/AreaShower → cell.EffectiveStillTimeoutSec
+//	cell.AreaSit/AreaActive → cell.EffectiveStillTimeoutSec
 //	cell 未学到但 room.name 是 bathroom → cell.go::stillAreaToiletShowerSec × stillAreaNonRiskFactor
 //	都不匹配 → 0
 //
@@ -2390,7 +2388,7 @@ func (tm *TrackManager) stillFallTimeoutSec(cell *Cell, isRiskTime bool) int {
 		return 0
 	}
 	cellType := cell.Belief[0].Type
-	if cellType == AreaToilet || cellType == AreaShower {
+	if cellType == AreaSit || cellType == AreaActive {
 		return cell.EffectiveStillTimeoutSec(isRiskTime)
 	}
 	if roomutil.IsBathroom(tm.roomName) {

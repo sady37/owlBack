@@ -30,12 +30,14 @@ import (
 // v3 (2026-04-27): Counters 加 FakeAlarmCount（FA）+ ToleratedStillCount（TS）— cell history integral 自适应阈值
 // v4 (2026-04-27): Counters 加 BlindSpotRecoveryCount（BSR）— 盲区返回端点累计（lost-fall recovery 反馈）
 // v5 (2026-04-29): Counters 加 GhostCount（GC）+ RestZoneConfirmed（RZC）+ RealFallCount（RFC）—
-//                  PR-6 结构化人类反馈（False Alarm Reason / Observed Conditions checkbox）
+//
+//	PR-6 结构化人类反馈（False Alarm Reason / Observed Conditions checkbox）
+//
 // v6 (2026-04-29): Counters 加 AutoDenyQualifiedSinceMs（ADS）— PR-15.3 Auto-Deny 15 天时间门控状态
 // v7 (2026-05-18): sensor_v2 决定 15+20 — Cell 加 EnterTarget 字符串 + InsideEnterEvidenceN + InsideEnterLearned
 // v8 (2026-05-19): L1 mirror pair 自学习 — Cell 加 MirrorBounceCount + LastMirrorMs
 // v9 (2026-06-04): sticky 否决 — Cell 加 LearnBlocked（verified 真摔人勾"永不在此自动学抑制"，跨重启保留）
-const SnapshotSchemaVersion = 9
+const SnapshotSchemaVersion = 10 // v10: AreaType 重编号(deny/reflector/monitorbed/interfer/lying，删 shower/toilet)，旧快照 area 值失效须冷启
 
 // CellSnapshot 单 cell 的可持久化字段（紧凑 JSON，short keys 节省空间）
 type CellSnapshot struct {
@@ -70,9 +72,9 @@ type Counters struct {
 	ADS int64     `json:"ads,omitempty"` // AutoDenyQualifiedSinceMs (schema_v ≥ 6)
 
 	// sensor_v2 v7 (决定 15+20):
-	ET  string    `json:"et,omitempty"`  // EnterTarget ""/"outside"/"bathroom" (schema_v ≥ 7)
-	IEN int       `json:"ien,omitempty"` // InsideEnterEvidenceN (schema_v ≥ 7)
-	IEL bool      `json:"iel,omitempty"` // InsideEnterLearned (schema_v ≥ 7)
+	ET  string `json:"et,omitempty"`  // EnterTarget ""/"outside"/"bathroom" (schema_v ≥ 7)
+	IEN int    `json:"ien,omitempty"` // InsideEnterEvidenceN (schema_v ≥ 7)
+	IEL bool   `json:"iel,omitempty"` // InsideEnterLearned (schema_v ≥ 7)
 
 	// L1 mirror pair 自学习 (schema_v ≥ 8):
 	MBC int   `json:"mbc,omitempty"` // MirrorBounceCount
@@ -213,8 +215,8 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 	if snap.SchemaVer > SnapshotSchemaVersion {
 		return fmt.Errorf("snapshot schema_v=%d > current %d (downgrade unsupported)", snap.SchemaVer, SnapshotSchemaVersion)
 	}
-	if snap.SchemaVer < 3 {
-		return fmt.Errorf("snapshot schema_v=%d too old (min supported = 3)", snap.SchemaVer)
+	if snap.SchemaVer < 10 {
+		return fmt.Errorf("snapshot schema_v=%d too old (min supported = 10; AreaType 重编号前的快照 area 值失效)", snap.SchemaVer)
 	}
 	if snap.Grid.W != g.Width || snap.Grid.H != g.Height ||
 		snap.Grid.OX != g.OriginX || snap.Grid.OY != g.OriginY {

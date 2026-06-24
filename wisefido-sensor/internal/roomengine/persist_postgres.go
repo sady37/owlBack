@@ -90,8 +90,9 @@ func NewPostgresHistoryPersister(db *sql.DB, table string) *PostgresHistoryPersi
 // snapshotDate 通常用 nowLocal.Truncate(24h)（仅取日期部分，时区由调用方决定）。
 //
 // v2 schema: roomengine_grid_snapshot_history 列名变化:
-//   room_id UUID → spatial_prefix INET; snapshot_date → archive_date; taken_at → snapshot_at;
-//   PK 仍是 (snapshot_id UUID auto)；UNIQUE/UPSERT 改 (spatial_prefix, archive_date)
+//
+//	room_id UUID → spatial_prefix INET; snapshot_date → archive_date; taken_at → snapshot_at;
+//	PK 仍是 (snapshot_id UUID auto)；UNIQUE/UPSERT 改 (spatial_prefix, archive_date)
 func (p *PostgresHistoryPersister) SaveDaily(ctx context.Context, roomID, layoutHash string,
 	snapshotDate time.Time, cellCount int, payload []byte, retainDays int) error {
 	q := fmt.Sprintf(`

@@ -161,10 +161,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		grid.SetPrior(r, roomengine.AreaBed, 99, roomengine.SourceHuman)
 	}
 	for _, r := range cfg.Toilets {
-		grid.SetPrior(r, roomengine.AreaToilet, 99, roomengine.SourceHuman)
+		grid.SetPrior(r, roomengine.AreaSit, 99, roomengine.SourceHuman)
 	}
 	for _, r := range cfg.Showers {
-		grid.SetPrior(r, roomengine.AreaShower, 99, roomengine.SourceHuman)
+		grid.SetPrior(r, roomengine.AreaActive, 99, roomengine.SourceHuman)
 	}
 	for _, r := range cfg.Chairs {
 		grid.SetPrior(r, roomengine.AreaSit, 80, roomengine.SourceHuman)
