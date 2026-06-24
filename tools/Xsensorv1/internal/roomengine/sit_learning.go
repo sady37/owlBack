@@ -77,3 +77,17 @@ func sitGFw(fwMaxMin float64) float64 {
 func sitEpisodeLLR(dwellMin, zBest, fwMaxMin float64) float64 {
 	return sitLLRWalkAway + sitZWeight*zBest + sitDwellLLR(dwellMin) + sitGFw(fwMaxMin)
 }
+
+// sitSpreadWeight episode 加分按到锚的切比雪夫距离分层衰减（±10→1.0 / ±20→0.5 / ±30→0.3 / 更远→0）。
+// 让锚漂 30cm 内的 episode 合并，边缘减权不把一大片误学满额 Sit。
+func sitSpreadWeight(ringCm int) float64 {
+	switch {
+	case ringCm <= 10:
+		return 1.0
+	case ringCm <= 20:
+		return 0.5
+	case ringCm <= 30:
+		return 0.3
+	}
+	return 0
+}

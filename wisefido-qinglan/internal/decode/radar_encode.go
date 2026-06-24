@@ -362,7 +362,7 @@ const maxDeclareAreas = 16
 //
 //	删除(0,housekeeping) → 床/监护床(2/5,vitals+床事件不可替代) → 门(4,进离房/hand-off) →
 //	干扰(3,去噪;软件 realness 有兜底,超限先丢) → 自定义(1,雷达 no-op,最先丢) → 其余。
-func declareAreaKeepPriority(areaType int) int {
+func declareAreaKeepPriority(areaType observation.DeclareAreaType) int {
 	switch areaType {
 	case observation.DeclareAreaInvalid: // 0 删除/清空
 		return 0
@@ -381,9 +381,9 @@ func declareAreaKeepPriority(areaType int) int {
 
 // sortCapDeclareAreaMaps 对 builder 产出（[]interface{}，每项 map 含字符串 "type"）排序 + 截 16。
 func sortCapDeclareAreaMaps(decl []interface{}) []interface{} {
-	typeOf := func(m interface{}) int {
+	typeOf := func(m interface{}) observation.DeclareAreaType {
 		mm, _ := m.(map[string]interface{})
-		return int(extractFloat64Value(mm["type"]))
+		return observation.DeclareAreaType(extractFloat64Value(mm["type"]))
 	}
 	sort.SliceStable(decl, func(i, j int) bool {
 		return declareAreaKeepPriority(typeOf(decl[i])) < declareAreaKeepPriority(typeOf(decl[j]))
@@ -403,7 +403,7 @@ func sortCapDeclareAreaString(s string) string {
 		return s
 	}
 	sort.SliceStable(areas, func(i, j int) bool {
-		return declareAreaKeepPriority(areas[i].AreaType) < declareAreaKeepPriority(areas[j].AreaType)
+		return declareAreaKeepPriority(observation.DeclareAreaType(areas[i].AreaType)) < declareAreaKeepPriority(observation.DeclareAreaType(areas[j].AreaType))
 	})
 	if len(areas) > maxDeclareAreas {
 		log.Printf("declare_area passthrough over %d-slot limit: keep %d drop %d",

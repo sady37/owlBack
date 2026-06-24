@@ -115,16 +115,6 @@ type TrackState struct {
 	AreaToiletRefreshed bool
 
 	// ---- PR-13 region static 自学习 → AreaSit（双 cell 加分 + 90% 容忍累积）----
-	// RegionStaticStartedMs：进入 region static（|dx|≤15 AND |dy|≤15）的起点 ms；0 = 不在 region。
-	// RegionStaticFrames / RegionTotalFrames：用于计算 ratio = static / total，要求 ≥0.90。
-	// RegionStartZ：region 起点的 z 值（A 路径检测 |dz|≥10 用）。
-	// AreaSitLearnedRegion：per-track 一次性 flag。
-	RegionStaticStartedMs int64
-	RegionStaticFrames    int
-	RegionTotalFrames     int
-	RegionStartZ          int
-	AreaSitLearnedRegion  bool
-
 	// ---- 异常 ----
 	CurrentAnomaly Anomaly
 

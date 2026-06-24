@@ -60,7 +60,6 @@ const (
 	// CategorySleep stat 解码的 sleep 块 data_category 值（睡眠/生命体征统计）
 	CategorySleep = "sleep"
 
-
 	// ---- Confidence (置信度, 0-100) ----
 
 	// ---- Device (设备质量) ----
@@ -78,7 +77,7 @@ const (
 	FieldAngleAbnormal       = "angle_abnormal"        // 倾角异常 (雷达)
 	FieldSignalPoor          = "signal_poor"           // 信号差 (bool, 区别于 signal_quality %)
 	FieldWeakBiometricSignal = "weak_biometric_signal" // 生命体征信号弱风险度 0-100 百分制；设备原始 0-3 转为 raw*20（3→60）；30 分钟大周期内可与 hr/rr 报警次数相加
-	FieldActivity = "activity" // 老人活动性统计：walk_distance, walk_duration, lie_duration, stand_duration 等	
+	FieldActivity            = "activity"              // 老人活动性统计：walk_distance, walk_duration, lie_duration, stand_duration 等
 
 	// ---- Event (事件与报警统一模型, 5W要素) ----
 	// Who  = Header.CardID
@@ -86,17 +85,17 @@ const (
 	// What = event_name  (语义标签: Fall, InBed, HeartRateHigh, ...)
 	// Status = event_status (生命周期: instant/start/end)
 	// Level  = event_level  (严重等级: INFO → CRITICAL)
-	FieldTopic       = "topic"
-	FieldCategory    = "category"
+	FieldTopic        = "topic"
+	FieldCategory     = "category"
 	FieldDataCategory = "data_category"
-	FieldEventID     = "event_id"     // 唯一标识 (关联/闭环用)
-	FieldEventName   = "event_name"   // What: 事件语义名称
-	FieldEventSince  = "event_since"  // When: 发生时间戳 (毫秒)
-	FieldEventStatus = "event_status" // Status: 生命周期阶段
-	FieldEventLevel  = "event_level"  // Level: 严重等级
-	FieldEventValue  = "event_value"  // 触发时的测量值 (如 heart_rate=135)
-	FieldEventEnd    = "event_end"    // 结束时间戳 (毫秒, 仅 status=end 时填)
-	FieldEventReason = "event_reason" // 解除/触发原因 (auto_resolved, manual, timeout)
+	FieldEventID      = "event_id"     // 唯一标识 (关联/闭环用)
+	FieldEventName    = "event_name"   // What: 事件语义名称
+	FieldEventSince   = "event_since"  // When: 发生时间戳 (毫秒)
+	FieldEventStatus  = "event_status" // Status: 生命周期阶段
+	FieldEventLevel   = "event_level"  // Level: 严重等级
+	FieldEventValue   = "event_value"  // 触发时的测量值 (如 heart_rate=135)
+	FieldEventEnd     = "event_end"    // 结束时间戳 (毫秒, 仅 status=end 时填)
+	FieldEventReason  = "event_reason" // 解除/触发原因 (auto_resolved, manual, timeout)
 
 	// ---- Command (控制面ACK) ----
 	FieldCommandID       = "cmd_id"       // 指令唯一ID (关联下发记录)
@@ -106,12 +105,10 @@ const (
 	FieldCommandProgress = "cmd_progress" // 执行进度 0-100% (如固件升级)
 )
 
-
-
 // Enum value lists
 var (
-	EnumLeftRight  = []string{"none", "left", "right"}
-	EnumBedStatus  = []string{"out", "in"}
+	EnumLeftRight = []string{"none", "left", "right"}
+	EnumBedStatus = []string{"out", "in"}
 	// Sleepad 标准：取值 1=清醒, 2=浅睡, 4=深睡, 8=未知；Enum 下标=取值，用于展示
 	EnumSleepStage = []string{"", "awake", "light", "", "deep", "", "", "", "unknown"}
 	EnumInitStatus = []string{"uninit", "initializing", "ready", "error"}
@@ -148,8 +145,8 @@ var Registry = map[string]*FieldDef{
 	FieldTemperature:     {Key: FieldTemperature, Type: TFloat, Unit: "°C", Persist: false, Min: 34, Max: 42},
 
 	// ---- Motion（body_move/turn_over 为次数 int，非动作枚举） ----
-	FieldBodyMove:  {Key: FieldBodyMove, Type: TInt, Persist: false},  // 体动次数，适用于 BM8701-2 固件≥5.x 及 M901L
-	FieldTurnOver:  {Key: FieldTurnOver, Type: TInt, Persist: false},  // 翻身次数，适用于 BM8701-2 固件≤2.x
+	FieldBodyMove:  {Key: FieldBodyMove, Type: TInt, Persist: false}, // 体动次数，适用于 BM8701-2 固件≥5.x 及 M901L
+	FieldTurnOver:  {Key: FieldTurnOver, Type: TInt, Persist: false}, // 翻身次数，适用于 BM8701-2 固件≤2.x
 	FieldSitUp:     {Key: FieldSitUp, Type: TBool, Persist: false},
 	FieldLeftRight: {Key: FieldLeftRight, Type: TEnum, Persist: false, Enum: EnumLeftRight},
 
@@ -189,12 +186,12 @@ var Registry = map[string]*FieldDef{
 	FieldWeakBiometricSignal: {Key: FieldWeakBiometricSignal, Type: TInt, Persist: true, Max: 100}, // 0-100 百分制
 
 	// ---- Status（bed_status/sleep_stage 周期上报时在 monitor/track 中作为实时量） ----
-	FieldOffline:     {Key: FieldOffline, Type: TBool, Persist: true},
-	FieldBedStatus:   {Key: FieldBedStatus, Type: TInt, Persist: true}, // 0=在床, 1=离床, 8=未改变
-	FieldSleepStage:  {Key: FieldSleepStage, Type: TEnum, Persist: true, Enum: EnumSleepStage},
-	FieldInitStatus:  {Key: FieldInitStatus, Type: TEnum, Persist: true, Enum: EnumInitStatus},
-	FieldTopic:	  {Key: FieldTopic, Type: TStr, Persist: true},
-	FieldCategory:   {Key: FieldCategory, Type: TStr, Persist: true},
+	FieldOffline:      {Key: FieldOffline, Type: TBool, Persist: true},
+	FieldBedStatus:    {Key: FieldBedStatus, Type: TInt, Persist: true}, // 0=在床, 1=离床, 8=未改变
+	FieldSleepStage:   {Key: FieldSleepStage, Type: TEnum, Persist: true, Enum: EnumSleepStage},
+	FieldInitStatus:   {Key: FieldInitStatus, Type: TEnum, Persist: true, Enum: EnumInitStatus},
+	FieldTopic:        {Key: FieldTopic, Type: TStr, Persist: true},
+	FieldCategory:     {Key: FieldCategory, Type: TStr, Persist: true},
 	FieldDataCategory: {Key: FieldDataCategory, Type: TStr, Persist: true},
 
 	FieldEventID:     {Key: FieldEventID, Type: TStr, Persist: true},
@@ -237,19 +234,19 @@ func IsDevice(id int) bool        { return id == TrackDevice }
 
 // Pose 数值 0-12：0-11=雷达姿态，12=跑步（body_move/turn_over 为独立次数字段）
 const (
-	PoseUnknown = iota      // 0: 初始化
-	PoseWalking             // 1: 行走
-	PoseSuspectedFall       // 2: 疑似跌倒
-	PoseSitting             // 3: 蹲坐
-	PoseStanding            // 4: 站立
-	PoseFallen              // 5: 跌倒确认
-	PoseLying               // 6: 卧床
-	PoseSuspectedSitGround  // 7: 疑似坐地
-	PoseSitGround           // 8: 确认坐地
-	PoseBedSitUp            // 9: 普通床上坐起，Sleepad sit_up 可映射到此
-	PoseSuspectedBedSitUp   // 10: 疑似床上坐起
-	PoseConfirmedBedSitUp   // 11: 确认床上坐起
-	PoseRunning             // 12: 跑步
+	PoseUnknown            = iota // 0: 初始化
+	PoseWalking                   // 1: 行走
+	PoseSuspectedFall             // 2: 疑似跌倒
+	PoseSitting                   // 3: 蹲坐
+	PoseStanding                  // 4: 站立
+	PoseFallen                    // 5: 跌倒确认
+	PoseLying                     // 6: 卧床
+	PoseSuspectedSitGround        // 7: 疑似坐地
+	PoseSitGround                 // 8: 确认坐地
+	PoseBedSitUp                  // 9: 普通床上坐起，Sleepad sit_up 可映射到此
+	PoseSuspectedBedSitUp         // 10: 疑似床上坐起
+	PoseConfirmedBedSitUp         // 11: 确认床上坐起
+	PoseRunning                   // 12: 跑步
 )
 
 // PoseToLabel 根据厂家 pose 数值 (0-11) 返回 EnumPose 语义标签，如 5 → "fallen"。越界返回空串。
@@ -294,14 +291,26 @@ const (
 	AreaTypeSensing    = 6
 )
 
-// DeclareAreaType 区域类型（declare_area 0-5），与协议 3.4.3 一致
+// DeclareAreaType 固件 declare_area 区域类型（0-5，协议 3.4.3）——**distinct named type**，
+// 防与内部 roomengine.AreaType（cell 推断语义）裸 int 串味。两套同号不同义，绝不可混用：
+//
+//	值 | 固件 declare（本类型）     | 内部 roomengine.AreaType（重编号后）
+//	1  | Custom（装饰，雷达不处理） | AreaDeny（家具）
+//	2  | Bed（进/离床事件）         | AreaBed（接触真床）
+//	3  | Noise（运动屏蔽）          | AreaReflector（镜/金属反射）
+//	4  | Door（进/离房事件）        | AreaEnter（门）
+//	5  | MonitorBed（呼吸心率）     | AreaMonitorBed（监护床）
+//
+// 内部→固件下发映射在 roomengine.areaTypeProtocolStr / FE FURNITURE_CONFIGS，非本类型直转。
+type DeclareAreaType uint8
+
 const (
-	DeclareAreaInvalid    = 0
-	DeclareAreaCustom     = 1
-	DeclareAreaBed        = 2
-	DeclareAreaNoise      = 3
-	DeclareAreaDoor       = 4
-	DeclareAreaMonitorBed = 5
+	DeclareAreaInvalid    DeclareAreaType = 0
+	DeclareAreaCustom     DeclareAreaType = 1
+	DeclareAreaBed        DeclareAreaType = 2
+	DeclareAreaNoise      DeclareAreaType = 3
+	DeclareAreaDoor       DeclareAreaType = 4
+	DeclareAreaMonitorBed DeclareAreaType = 5
 )
 
 // Event 进出事件字段值（type=1 track 字节 14），与协议 3.5 一致

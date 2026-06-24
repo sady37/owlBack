@@ -247,6 +247,7 @@ type DecayParams struct {
 	SitSec       float64 // ActiveType[Sit]
 	LieSec       float64 // ActiveType[Lie]
 	EventSec     float64 // Traverse/Fall/Retract/Sleepad/Door/LongStill/LieAnomaly
+	SitScoreSec  float64 // AreaSit 4 通道 log-odds SitScore（默认 4d；孤立 episode 自然褪，需近日 2-3 次累过 τ）
 
 	// PR-11: Belief[0].Confidence 按 AreaType 分档半衰期（秒）。索引 = AreaType 值。
 	// 设计：T_half = days_to_10 / log2(10) ≈ days_to_10 / 3.32
