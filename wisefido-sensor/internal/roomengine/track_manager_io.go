@@ -220,6 +220,8 @@ func (tm *TrackManager) PublishDBNFall(lid string, nowMs int64) {
 	var p AIPayload
 	if ts != nil {
 		p = tm.payloadFromTrack(ts)
+		// Occurred = still-box 起点（= nowMs − stillSec·1000）；moving-collapse 无 still run 时留 0 退化 incident==alerted。
+		p.IncidentMs = ts.StillBoxRunStart
 	}
 	tm.mu.Unlock()
 	if ts == nil {
