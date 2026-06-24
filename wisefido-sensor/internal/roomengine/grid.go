@@ -18,9 +18,10 @@ import (
 //  5. grid.SetPrior(rect, AreaType, conf, src)    // 人标先验注入
 //
 // 运行时：
-//   CellAt / NearestEntryDist / IsEdge           // 查询
-//   MarkOccupancy / MarkPoseTime / ...           // 每帧累积（历史流）
-//   DecayAll                                     // 定时衰减
+//
+//	CellAt / NearestEntryDist / IsEdge           // 查询
+//	MarkOccupancy / MarkPoseTime / ...           // 每帧累积（历史流）
+//	DecayAll                                     // 定时衰减
 type RoomGrid struct {
 	CellSize int
 	Width    int
@@ -166,6 +167,26 @@ func (g *RoomGrid) SetPrior(rect radarutils.Rect, t AreaType, conf int, src Sour
 				c.Belief[bi].Source = src
 			}
 			c.AreaType = t // mirror
+		}
+	}
+}
+
+// SetBedFloorExempt 把 rect 内 cell 标为真床区（floor 兜底无条件豁免）。仅 layout typeName 含 bed
+// （Bed/MonitorBed）的床调；LongSofa 不调（保持 false → 走 90min 长阈）。与 SetPrior 同在 RegisterRoom
+// 重灌，故不入 snapshot。
+func (g *RoomGrid) SetBedFloorExempt(rect radarutils.Rect) {
+	rect = rect.Norm()
+	c1, r1 := g.ToIndex(rect.X1, rect.Y1)
+	c2, r2 := g.ToIndex(rect.X2, rect.Y2)
+	for row := r1; row <= r2; row++ {
+		if row < 0 || row >= g.Height {
+			continue
+		}
+		for col := c1; col <= c2; col++ {
+			if col < 0 || col >= g.Width {
+				continue
+			}
+			g.Cells[row*g.Width+col].BedFloorExempt = true
 		}
 	}
 }
@@ -470,7 +491,9 @@ func (g *RoomGrid) MarkDoorEvent(x, y int, nowMs int64) {
 // MarkInsideEnterCandidate inside_enter 自学习信号（sensor_v2 决定 20）。
 //
 // 调用位点：runEventLoop / processFrameAt 中检测到
-//   "track 在 cell_x 失锁 + Δt < 3s 内 cell_x 附近 ≤30cm 有新 track 出生"
+//
+//	"track 在 cell_x 失锁 + Δt < 3s 内 cell_x 附近 ≤30cm 有新 track 出生"
+//
 // 此时调用 g.MarkInsideEnterCandidate(cell_x.X, cell_x.Y, nowMs)
 //
 // 累计 ≥ InsideEnterLearnThreshold（默认 5）次后升格 InsideEnterLearned=true，
@@ -480,8 +503,9 @@ func (g *RoomGrid) MarkDoorEvent(x, y int, nowMs int64) {
 // 学到后：该 cell 上方的 track 出生/消失不再触发 ghost penalty / lost_fall pending。
 //
 // 与 outside_enter / bathroom_enter 学习的区别（决定 20）：
-//   v2 单 device-layout 坐标系内**只能学 inside_enter**；跨 device 没有公共坐标系，
-//   outside / bathroom 必须人工标（layout 编辑器 EnterTarget dropdown）。
+//
+//	v2 单 device-layout 坐标系内**只能学 inside_enter**；跨 device 没有公共坐标系，
+//	outside / bathroom 必须人工标（layout 编辑器 EnterTarget dropdown）。
 func (g *RoomGrid) MarkInsideEnterCandidate(x, y int, nowMs int64) {
 	c := g.CellAt(x, y)
 	if c == nil {

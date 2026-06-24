@@ -37,8 +37,11 @@ type RoomConfig struct {
 	WallPolygon []radarutils.Point
 
 	// 人工标注的矩形先验
-	Enters     []radarutils.Rect // AreaEnter
-	Beds       []radarutils.Rect // AreaBed
+	Enters []radarutils.Rect // AreaEnter
+	Beds   []radarutils.Rect // AreaBed
+	// BedFloorExempt 与 Beds 一一对应：layout typeName 含 bed(Bed/MonitorBed)=true(真床 floor 豁免)，
+	// LongSofa=false(沙发,走 90min 长阈)。判据在 layout_parser 单点定，engine 只读不再判名字。
+	BedFloorExempt []bool
 
 	// BedAreaIDs 床区 area_id 集合（areaType∈{2床,5监护床}），来源=固件活体 declare_area
 	// （bootstrap 走 wisefido-data HTTP 覆盖，治 canvas 下发区域 vs 固件几何漂移）。
@@ -133,10 +136,10 @@ var DefaultParamSets = [3]ParamSet{
 // ========================================================================
 
 type Engine struct {
-	mu            sync.RWMutex
-	rooms         map[string]*TrackManager         // roomID → TrackManager
-	radarPeople   map[string]int                   // roomID → census 折叠后 radar 真人数（belief 层经 SetRoomRadarPeople 注入）；RealPeopleInRoom 优先用，未注入回退 NonGhostTrackCount
-	grids         map[string]*RoomGrid             // roomID → Grid
+	mu           sync.RWMutex
+	rooms        map[string]*TrackManager         // roomID → TrackManager
+	radarPeople  map[string]int                   // roomID → census 折叠后 radar 真人数（belief 层经 SetRoomRadarPeople 注入）；RealPeopleInRoom 优先用，未注入回退 NonGhostTrackCount
+	grids        map[string]*RoomGrid             // roomID → Grid
 	deviceMounts map[string]radarutils.RadarMount // deviceAddr(/128) → 该 radar 安装参数（坐标转换用）；多雷达房每台一份
 	deviceRoom   map[string]string                // deviceAddr → roomID (sensor 唯一物理寻址)
 	deviceBeds   map[string][]radarutils.Rect     // deviceAddr(/128) → 该设备**自己 canvas** 的 bed 矩形（MM covers 只用本台 layout，不跨系借别台床）
@@ -224,30 +227,30 @@ type RuntimeConfig struct {
 // NewEngine 创建 Room Engine（默认参数）。生产环境调用 Configure 注入 yaml 配置。
 func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 	return &Engine{
-		rooms:               make(map[string]*TrackManager),
-		radarPeople:         make(map[string]int),
-		grids:               make(map[string]*RoomGrid),
-		deviceMounts:        make(map[string]radarutils.RadarMount),
-		deviceRoom:          make(map[string]string),
-		deviceBeds:          make(map[string][]radarutils.Rect),
-		deviceBedHs:         make(map[string][]int),
-		deviceAddrToUID:     make(map[string]string),
-		deviceAddrToType:    make(map[string]string),
-		roomTenants:         make(map[string]string),
-		layoutHashes:        make(map[string]string),
-		paramSets:           DefaultParamSets,
-		decayParams:         DefaultDecayParams(),
-		learnParams:         DefaultLearnParams(),
-		decayInterval:       1 * time.Hour,
-		unrouted:            make(map[string]int64),
-		redisClient:         redisClient,
-		logger:              logger,
-		roomSuiteID:         make(map[string]string),
-		roomResidentID:      make(map[string]string),
-		roomType:            make(map[string]int),
-		smallBathroom:       make(map[string]bool),
-		trackLastSeen:       make(map[string]map[int]int64),
-		bathroomGates:       make(map[string]*BathroomGate),
+		rooms:            make(map[string]*TrackManager),
+		radarPeople:      make(map[string]int),
+		grids:            make(map[string]*RoomGrid),
+		deviceMounts:     make(map[string]radarutils.RadarMount),
+		deviceRoom:       make(map[string]string),
+		deviceBeds:       make(map[string][]radarutils.Rect),
+		deviceBedHs:      make(map[string][]int),
+		deviceAddrToUID:  make(map[string]string),
+		deviceAddrToType: make(map[string]string),
+		roomTenants:      make(map[string]string),
+		layoutHashes:     make(map[string]string),
+		paramSets:        DefaultParamSets,
+		decayParams:      DefaultDecayParams(),
+		learnParams:      DefaultLearnParams(),
+		decayInterval:    1 * time.Hour,
+		unrouted:         make(map[string]int64),
+		redisClient:      redisClient,
+		logger:           logger,
+		roomSuiteID:      make(map[string]string),
+		roomResidentID:   make(map[string]string),
+		roomType:         make(map[string]int),
+		smallBathroom:    make(map[string]bool),
+		trackLastSeen:    make(map[string]map[int]int64),
+		bathroomGates:    make(map[string]*BathroomGate),
 	}
 }
 
@@ -654,7 +657,6 @@ func (e *Engine) SuiteHasOtherDevice(suiteID, excludeDevice string) bool {
 	return false
 }
 
-
 // trackLostAnchorMs 失锁判定阈值：snapshot 未含某 trackID 持续 ≥ 60s → 视为真失锁，
 // 调 SuiteCensusManager.ClearAnchorOnLostTrack。偏保守的取值（MaxMissCount=10 帧 coast
 // 期之外再加足够 buffer），避免 firmware track coast 期间误清。
@@ -833,8 +835,11 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	for _, r := range cfg.Enters {
 		grid.SetPrior(r, AreaEnter, 99, SourceHuman)
 	}
-	for _, r := range cfg.Beds {
+	for i, r := range cfg.Beds {
 		grid.SetPrior(r, AreaBed, 99, SourceHuman)
+		if i < len(cfg.BedFloorExempt) && cfg.BedFloorExempt[i] {
+			grid.SetBedFloorExempt(r) // 真床区 floor 豁免；LongSofa(false)走 90min
+		}
 	}
 	for _, r := range cfg.Toilets {
 		grid.SetPrior(r, AreaToilet, 99, SourceHuman)

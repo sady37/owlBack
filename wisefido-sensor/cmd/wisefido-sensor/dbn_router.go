@@ -62,7 +62,8 @@ func newDBNRouter(logger *zap.Logger) *dbnRouter {
 }
 
 // onRoomFrame = Engine.OnRoomFrame 回调（纯裁决）。返回三腿：
-//   fired→PublishAIAlarm（engine 内门控发布）/ dropped→emitGhostVerdict / confidence→TrackConfidence 写回。
+//
+//	fired→PublishAIAlarm（engine 内门控发布）/ dropped→emitGhostVerdict / confidence→TrackConfidence 写回。
 func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string, confidence map[string]int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -91,12 +92,13 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	tracks := make([]adapter.TrackObs, 0, len(bases)+1)
 	for _, b := range bases {
 		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, RadarTrack: adapter.RadarTrack{
-			TrackID:  b.TrackID,
-			Online:   b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
-			StillSec: float64(b.StillBoxSec),
-			AreaType: int(b.CellAreaType),
-			RoomType: d.roomType[roomID],
-			FwAreaID: b.FwAreaID,
+			TrackID: b.TrackID,
+			Online:  b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
+			StillSec:  float64(b.StillBoxSec),
+			AreaType:  int(b.CellAreaType),
+			BedExempt: b.CellBedExempt,
+			RoomType:  d.roomType[roomID],
+			FwAreaID:  b.FwAreaID,
 		}})
 	}
 	// sleepad-only 房：InBed 合成一条 bed-track 作 B 轴载体（engine.Room track-centric）。

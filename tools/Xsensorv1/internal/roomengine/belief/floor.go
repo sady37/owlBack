@@ -16,22 +16,25 @@ package belief
 
 // ============================================================================
 // per-area 静止时长统计模型（单源）：floor 兜底 + D/DU 保底窗(engine/unit.go)
-//   + (规划)emission 高斯 CDF 共用此锚，避免数字各漂。
+//   - (规划)emission 高斯 CDF 共用此锚，避免数字各漂。
 //
 // 标定法（用户 2026-06-18 定）：各区"正常停留时长" ~ 高斯(μ,σ)，**异常阈 = μ+1.5σ**（上侧分位）。
-//   ±1.5σ 含 86.64%；只取上侧（停留太久=疑似摔；太短=人正常离开，非异常）→ 单侧上尾 6.68%
-//   = 异常阈自带 FP 率（选 1.5σ 而非 2σ=2.3%：高危跌倒宁多扰、少漏）。
-//   emission 用法(规划)：SFallen 贡献 = Φ((StillboxSec−μ)/σ)，正常值≈0.5、异常阈≈0.93。
+//
+//	±1.5σ 含 86.64%；只取上侧（停留太久=疑似摔；太短=人正常离开，非异常）→ 单侧上尾 6.68%
+//	= 异常阈自带 FP 率（选 1.5σ 而非 2σ=2.3%：高危跌倒宁多扰、少漏）。
+//	emission 用法(规划)：SFallen 贡献 = Φ((StillboxSec−μ)/σ)，正常值≈0.5、异常阈≈0.93。
 //
 // per-area (μ,σ) 数据来源（铁律 [[fall_data_is_artificial_test]]：无真摔数据标定，留 oracle）：
-//   Bath μ=12min σ=4min 【文献硬支撑】医学建议正常 5–10min；健康人 >20min 仅 0.5%(≈μ+2σ) 反推 σ≈4；
-//        老人便秘倾向取 μ=12 → 异常 18min(μ+1.5σ) 覆盖 ~80% 便秘，severe 20min(μ+2σ)。
-//        来源：CNN 马桶<10min / anorectal PMC12669168(>20min 0.5%健康 vs 8.1%病)
-//   Sit·Lying(含 Bed) μ=60min σ=20min(μ/3) 【保守】文献久坐单次 MBD 11.7–16min、prolonged ≥30min；
-//        μ=60 取久坐久卧"容忍上限"(看电视/午睡，FN-safe 高于平均、低危别老打扰) → 异常 90min。
-//        来源：sedentary PMC8679788(MBD 11.7-16) / stroke PMC9166254(≥17min 高危)
-//   default(开阔/站立) μ=8min σ=2.67min(μ/3) 【经验】无直接文献(非标准观测场景)，类比久坐短 bout<10min
-//        → 异常 12min。oracle 待真实数据调。
+//
+//	Bath μ=12min σ=4min 【文献硬支撑】医学建议正常 5–10min；健康人 >20min 仅 0.5%(≈μ+2σ) 反推 σ≈4；
+//	     老人便秘倾向取 μ=12 → 异常 18min(μ+1.5σ) 覆盖 ~80% 便秘，severe 20min(μ+2σ)。
+//	     来源：CNN 马桶<10min / anorectal PMC12669168(>20min 0.5%健康 vs 8.1%病)
+//	Sit·Lying(含 Bed) μ=60min σ=20min(μ/3) 【保守】文献久坐单次 MBD 11.7–16min、prolonged ≥30min；
+//	     μ=60 取久坐久卧"容忍上限"(看电视/午睡，FN-safe 高于平均、低危别老打扰) → 异常 90min。
+//	     来源：sedentary PMC8679788(MBD 11.7-16) / stroke PMC9166254(≥17min 高危)
+//	default(开阔/站立) μ=8min σ=2.67min(μ/3) 【经验】无直接文献(非标准观测场景)，类比久坐短 bout<10min
+//	     → 异常 12min。oracle 待真实数据调。
+//
 // ============================================================================
 const (
 	// 各区正常停留 (μ, σ) 秒——emission 高斯 CDF 与 floor 异常阈(tFloorFor=μ+1.5σ, room×cell 保守)共用单源(§H/§I)
@@ -65,6 +68,8 @@ func (g *FloorGuard) Step(obs Observation) bool {
 		return false // 静态反射 → realness 管
 	case contactInBed:
 		return false // 真在床
+	case obs.AreaType == areaBed && obs.BedExempt:
+		return false // 真床区(名字含 bed)无条件豁免：无 sleepad 时几何分不清在床/床边摔，宁漏边缘 FN 不让睡眠误报
 	}
 	return obs.StillSec >= tFloorFor(obs.AreaType, obs.RoomType, obs.IsRiskTime)
 }

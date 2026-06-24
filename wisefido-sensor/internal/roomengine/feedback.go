@@ -8,9 +8,8 @@
 //     ☑ Sit on Chair / Short Sofa · Sit in Wheelchair
 //                                          → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaSit)
 //         ↳ Sit zone pin                   → 追加 Chair object（reload→AreaSit 神圣不衰减）
-//     ☑ Lying Lounge Chair / Long Sofa     → 二次问询 ↳ Lounge placement:
+//     ☑ Lying Lounge Chair / Long Sofa     → ↳ Lounge placement（与 Sit pin 一致，只永久无 2H）:
 //         "Permanent (update layout)"      → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaBed) 永久学 lying
-//         "Temporary (suppress 2h)"        → cell.FallSuppressUntilMs = handTime + 2h
 //         (无 ↳ 行)                         → 不动 layout
 //     ☑ BlindArea / No Fall (家具后遮挡盲区) ↳ permanent → 追加 Furniture object（reload→AreaDeny；保留 5min tFloor 兜底真摔）
 //     ☑ Enter / Door (未画出口)             ↳ 直接 → 追加 Enter object（reload→AreaEnter）
@@ -87,7 +86,6 @@ const (
 	faUnknown           = "Unknown"
 
 	loungePlacementPermanent = "Lounge placement: Permanent (update layout)"
-	loungePlacementTemporary = "Lounge placement: Temporary (suppress 2h)"
 	stickyVetoMark           = "Sticky veto: never auto-learn fall suppression here"
 
 	// 永久加区 marker（owlFront alarm.ts SIT_PIN_MARKER / DENY_ZONE_MARKER）。
@@ -96,9 +94,6 @@ const (
 	blindAreaMark = "Blind area: mark permanently (no-fall zone, update layout)"
 	enterDoorMark = "Exit zone: add permanently (update layout)"
 )
-
-// fallSuppressTemporaryMs 躺类"临时 2H 禁报"窗口长度。
-const fallSuppressTemporaryMs int64 = 2 * 3600 * 1000
 
 // ParsedConditions 从 notes 解析的勾选/标记状态（label 见上方常量）。
 type ParsedConditions struct {
@@ -117,9 +112,8 @@ type ParsedConditions struct {
 	FAErrorPose        bool // 姿态误判 → 不进 counter
 	FAUnknown          bool // 兜底 → fake
 
-	// Lounge placement 二次问询（仅 FALoungeLongSofa 勾选时有意义）
+	// Lounge placement（仅 FALoungeLongSofa 勾选时有意义；与 Sit pin 一致只永久，无 2H）
 	LoungePermanent bool // ↳ permanent → MarkRestZoneByFeedback(AreaBed)
-	LoungeTemporary bool // ↳ temporary → FallSuppressUntilMs = now+2h
 
 	// 永久加区二次动作（追加 layout 对象）
 	SitPin        bool // ↳ sit zone pin → 追加 Chair object（reload→AreaSit 神圣）
@@ -171,7 +165,6 @@ func parseConditions(notes string) ParsedConditions {
 
 	// 二次问询 / veto 是 "↳ <marker>" 子行（非 ☑），直接 substring
 	out.LoungePermanent = strings.Contains(notes, loungePlacementPermanent)
-	out.LoungeTemporary = strings.Contains(notes, loungePlacementTemporary)
 	out.SitPin = strings.Contains(notes, sitPinMark)
 	out.DenyZone = strings.Contains(notes, denyZoneMark)
 	out.BlindArea = strings.Contains(notes, blindAreaMark)
@@ -451,7 +444,6 @@ func (i *AlarmFeedbackIngester) appendFeedbackObject(ctx context.Context, device
 //   operation=false_alarm:
 //     坐类(Chair/ShortSofa/Wheelchair)        → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaSit)
 //     躺类(Lounge/LongSofa) + ↳ Permanent     → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaBed)
-//     躺类 + ↳ Temporary                       → cell.FallSuppressUntilMs = nowMs + 2h
 //     BlindArea/Enter（加区动作走 handler appendFeedbackObject，非 cell counter）
 //     Electric/AC                              → GhostCount++
 //     Error Pose / Out of Range                → 不进 counter（传感误差）
@@ -485,10 +477,9 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 				}
 			}
 		}
-		// 躺类 → 二次问询：permanent 永久学 lying / temporary 临时 2H 禁报 / 无选不动
+		// 躺类 → permanent 永久学 lying（AreaBed，与 Sit pin 一致只永久，无 2H）/ 无选不动
 		if pc.FALoungeLongSofa {
-			switch {
-			case pc.LoungePermanent:
+			if pc.LoungePermanent {
 				locked := false
 				if apply(func(c *Cell) {
 					c.IncrRestZoneConfirmed()
@@ -501,15 +492,7 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 						routes = append(routes, "locked_AreaBed")
 					}
 				}
-			case pc.LoungeTemporary:
-				if apply(func(c *Cell) {
-					if until := nowMs + fallSuppressTemporaryMs; until > c.FallSuppressUntilMs {
-						c.FallSuppressUntilMs = until
-					}
-				}) {
-					routes = append(routes, "lounge_temporary_2h_suppress")
-				}
-			default:
+			} else {
 				routes = append(routes, "lounge_no_action")
 			}
 		}

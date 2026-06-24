@@ -72,9 +72,9 @@ type TrackManager struct {
 	mu         sync.Mutex
 	roomID     string
 	grid       *RoomGrid
-	bedAreaIDs []int // firmware 床区 area_id（baseline type2/5）→ radar InBed 判定用 area_id 非 cell（排 sofa）
+	bedAreaIDs []int                    // firmware 床区 area_id（baseline type2/5）→ radar InBed 判定用 area_id 非 cell（排 sofa）
 	tracks     map[trackKey]*TrackState // 键=（设备,firmware track_id）：多雷达同房各台从 0 编号，不带设备会撞键互相覆盖
-	outputs map[trackKey]*TrackOutput
+	outputs    map[trackKey]*TrackOutput
 
 	// lastRealTrackByDevice：每雷达设备最近一次本房观测到"真 track"的 ms（key=源 device_addr）。
 	// 同房多雷达占用对账：lost-fall fire 前若**另一台**雷达近期仍见真人 → 人还在房里被别台看着 → 抑制。
@@ -372,9 +372,11 @@ func makeLogicID(uidHex string, trackID int, birthMs int64) string {
 // **排并发 track**：继承只对"renumber/分裂"（旧 track_id 已不报、新号顶上同一目标）；并发上报的另一目标
 // （如静止反射 ghost 与摔倒真人各占一号、两台雷达交叉）不可被继承，否则两条并发 track 并成一个 logicID →
 // census 同号互相覆盖（faller pose5 被 ghost pose4 盖掉）→ 漏报。两道判据（任一命中即跳过候选）：
-//   ① frameKeys：候选在本批 frames 里（同一条消息同时报）；
-//   ② 新鲜度：候选末次观测距今 < presenceCoastMs（一个雷达周期内仍在报）= 并存，非"旧号已静默"的 renumber。
-//      （分批到达时 frameKeys 看不到对台/异步消息，靠新鲜度兜住。）
+//
+//	① frameKeys：候选在本批 frames 里（同一条消息同时报）；
+//	② 新鲜度：候选末次观测距今 < presenceCoastMs（一个雷达周期内仍在报）= 并存，非"旧号已静默"的 renumber。
+//	   （分批到达时 frameKeys 看不到对台/异步消息，靠新鲜度兜住。）
+//
 // 无候选返回 nil。调用时新 track 尚未加入 tm.tracks。
 func (tm *TrackManager) nearestAliveTrack(x, y int, deviceAddr string, nowMs int64, frameKeys map[trackKey]bool) *TrackState {
 	var best *TrackState
@@ -417,7 +419,6 @@ func (tm *TrackManager) HasOtherLiveTrackWithLogicID(logicID string, exceptKey t
 	defer tm.mu.Unlock()
 	return tm.hasOtherLiveTrackWithLogicID(logicID, exceptKey)
 }
-
 
 // NeighborRoomEnterMs 跨房 hand-off：最近一次 EnterRoom 的 ts + 当前是否仍占用（未被 ExitRoom 翻掉）。
 // 自锁（与 RecordRadarEvent 写 lastEnterMs 持的 tm.mu 一致；仅 beliefShadowTick 跨房读，无重入）。
@@ -841,24 +842,25 @@ func (tm *TrackManager) SetSleepadInBedCount(count int) {
 // TrackStatusBase 单 track 的 Layer 1 原始投影（不含 PersonID / Zone enrichment）。
 // SnapshotTrackStatuses 返回 base 列表，engine 层进一步 enrich 成 TrackStatus 再 publish。
 type TrackStatusBase struct {
-	TrackID          int
-	LogicID          string // tm 出生锚定唯一逻辑身份（透传给 census/engine 作身份键，下游不再按位置重造）
-	DeviceAddr       string
-	RoomID           string
-	Verdict          TrackVerdict
-	GhostPenalty     int
-	X, Y, Z          int // 画布坐标（grid/cell 算法用；Kalman 输出）
-	RawH, RawV, RawZ int // firmware raw 雷达本地坐标 — alarm publish 用，对外契约不变
-	Pose             int
-	StillBoxSec      int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动）→ FloorGuard 纯计时器（直立折扣已移 emission）
-	CellAreaType     AreaType
-	FwAreaID         int // firmware area_id（present=本帧；lost=冻结末值）→ adapter N 床判定
-	EnterTarget      string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
-	MoveActive       bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
-	Present          bool   // 本帧是否被真实观测（LastObservedMs == nowMs）；false=漏帧/丢轨 → DBN 走 blind 续存
-	TraverseDelta    int    // 自上次 SnapshotTrackStatuses 累计的 traverse cells（用于 SuiteCensus 升格判定）
-	SleepadInBed     bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
-	SleepadVitalPresent bool // 任一 sleepad 在床 + HR/RR fresh(TTL 内)→ 活体在垫,喂 belief 抬 SBed
+	TrackID             int
+	LogicID             string // tm 出生锚定唯一逻辑身份（透传给 census/engine 作身份键，下游不再按位置重造）
+	DeviceAddr          string
+	RoomID              string
+	Verdict             TrackVerdict
+	GhostPenalty        int
+	X, Y, Z             int // 画布坐标（grid/cell 算法用；Kalman 输出）
+	RawH, RawV, RawZ    int // firmware raw 雷达本地坐标 — alarm publish 用，对外契约不变
+	Pose                int
+	StillBoxSec         int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动）→ FloorGuard 纯计时器（直立折扣已移 emission）
+	CellAreaType        AreaType
+	CellBedExempt       bool   // 当前 cell 是真床区(layout 名字含 bed)→ FloorGuard 无条件豁免（透传 cell.BedFloorExempt）
+	FwAreaID            int    // firmware area_id（present=本帧；lost=冻结末值）→ adapter N 床判定
+	EnterTarget         string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
+	MoveActive          bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
+	Present             bool   // 本帧是否被真实观测（LastObservedMs == nowMs）；false=漏帧/丢轨 → DBN 走 blind 续存
+	TraverseDelta       int    // 自上次 SnapshotTrackStatuses 累计的 traverse cells（用于 SuiteCensus 升格判定）
+	SleepadInBed        bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
+	SleepadVitalPresent bool   // 任一 sleepad 在床 + HR/RR fresh(TTL 内)→ 活体在垫,喂 belief 抬 SBed
 	// 离房（ExitRoom 硬 + trend+np 软）已改为丢轨时按 track_id 算 SLeft 对数几率（见 ExitLogOdds/lostExitInfo），
 	//   喂 blind track 的 logPhi[SLeft]，不再走 base 级 ExitTrend bool（事件无坐标 + 丢轨 base 空）。
 }
@@ -923,24 +925,24 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		py := int(math.Round(pyF))
 
 		base := TrackStatusBase{
-			TrackID:      ts.TrackID,
-			LogicID:      ts.LogicID,
-			DeviceAddr:   ts.DeviceAddr,
-			RoomID:       ts.RoomID,
-			Verdict:      ts.Verdict,
-			GhostPenalty: ts.GhostPenalty,
-			X:            px,
-			Y:            py,
-			Z:            ts.LastZ,
-			RawH:         ts.LastRawH,
-			RawV:         ts.LastRawV,
-			RawZ:         ts.LastRawZ,
-			Pose:         ts.LastPose,
-			MoveActive:   ts.StillBoxRunStart == 0 || ts.LastObservedMs == nowMs,
-			Present:      nowMs-ts.LastObservedMs < presenceCoastMs,
+			TrackID:             ts.TrackID,
+			LogicID:             ts.LogicID,
+			DeviceAddr:          ts.DeviceAddr,
+			RoomID:              ts.RoomID,
+			Verdict:             ts.Verdict,
+			GhostPenalty:        ts.GhostPenalty,
+			X:                   px,
+			Y:                   py,
+			Z:                   ts.LastZ,
+			RawH:                ts.LastRawH,
+			RawV:                ts.LastRawV,
+			RawZ:                ts.LastRawZ,
+			Pose:                ts.LastPose,
+			MoveActive:          ts.StillBoxRunStart == 0 || ts.LastObservedMs == nowMs,
+			Present:             nowMs-ts.LastObservedMs < presenceCoastMs,
 			SleepadInBed:        sleepadInBed,
 			SleepadVitalPresent: sleepadVitalPresent,
-			FwAreaID:     ts.LastFwAreaID,
+			FwAreaID:            ts.LastFwAreaID,
 		}
 		// StillBoxSec=raw box run 秒（30s 滚动 50×50 抗抖动）→ FloorGuard 纯计时器。直立折扣已移 emission（压 SFallen）。
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
@@ -951,7 +953,8 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			base.Verdict = VerdictAnchored
 		}
 		if c := tm.grid.CellAt(px, py); c != nil {
-			base.CellAreaType = c.Belief[0].Type // cell 仍喂 tFloor 阈 + sit/bath/active redirect（含 sofa 的 lying 区，故不换 baseline）
+			base.CellAreaType = c.Belief[0].Type  // cell 仍喂 tFloor 阈 + sit/bath/active redirect（含 sofa 的 lying 区，故不换 baseline）
+			base.CellBedExempt = c.BedFloorExempt // 真床区(名字含 bed)→ floor 豁免；LongSofa=false→90min
 			if c.Belief[0].Type == AreaEnter {
 				base.EnterTarget = c.EnterTarget
 			}
@@ -1084,15 +1087,15 @@ func (tm *TrackManager) ExitLogOdds(logicID string, nowMs int64) float64 {
 }
 
 const (
-	exitLookbackMs   = 1000 // d2 回看（末 2s 中倒数第 2s）
-	exitMarginCm     = 10   // d1<d2 余量：抗 1s 两点采样的 XY 抖动
-	exitNearScaleCm  = 150  // 朝门强度归一：d1+d2=150 → ratio=1（标称）
-	exitRatioCap     = 3.0  // trendRatio 封顶
-	exitRoomLogOdds  = 8.0  // ExitRoom 硬证据 log-odds（单发顶过 absorbedThresh）
-	exitNpRefSec     = 30.0 // np gap 参照：gap=30s → npFactor=1（标称）
-	exitNpCap        = 3.0  // npFactor 封顶
-	exitBase         = 0.85 // V 标称基（trend=1 ∧ np=1 → V=0.85）
-	exitVMax         = 0.95 // V 封顶（永留余地，到不了 1）
+	exitLookbackMs  = 1000 // d2 回看（末 2s 中倒数第 2s）
+	exitMarginCm    = 10   // d1<d2 余量：抗 1s 两点采样的 XY 抖动
+	exitNearScaleCm = 150  // 朝门强度归一：d1+d2=150 → ratio=1（标称）
+	exitRatioCap    = 3.0  // trendRatio 封顶
+	exitRoomLogOdds = 8.0  // ExitRoom 硬证据 log-odds（单发顶过 absorbedThresh）
+	exitNpRefSec    = 30.0 // np gap 参照：gap=30s → npFactor=1（标称）
+	exitNpCap       = 3.0  // npFactor 封顶
+	exitBase        = 0.85 // V 标称基（trend=1 ∧ np=1 → V=0.85）
+	exitVMax        = 0.95 // V 封顶（永留余地，到不了 1）
 )
 
 // ========================================================================

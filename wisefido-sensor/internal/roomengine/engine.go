@@ -38,8 +38,11 @@ type RoomConfig struct {
 	WallPolygon []radarutils.Point
 
 	// 人工标注的矩形先验
-	Enters     []radarutils.Rect // AreaEnter
-	Beds       []radarutils.Rect // AreaBed
+	Enters []radarutils.Rect // AreaEnter
+	Beds   []radarutils.Rect // AreaBed
+	// BedFloorExempt 与 Beds 一一对应：layout typeName 含 bed(Bed/MonitorBed)=true(真床 floor 豁免)，
+	// LongSofa=false(沙发,走 90min 长阈)。判据在 layout_parser 单点定，engine 只读不再判名字。
+	BedFloorExempt []bool
 
 	// BedAreaIDs 床区 area_id 集合（areaType∈{2床,5监护床}），来源=固件活体 declare_area
 	// （bootstrap 走 wisefido-data HTTP 覆盖，治 canvas 下发区域 vs 固件几何漂移）。
@@ -134,10 +137,10 @@ var DefaultParamSets = [3]ParamSet{
 // ========================================================================
 
 type Engine struct {
-	mu            sync.RWMutex
-	rooms         map[string]*TrackManager         // roomID → TrackManager
-	radarPeople   map[string]int                   // roomID → census 折叠后 radar 真人数（belief 层经 SetRoomRadarPeople 注入）；RealPeopleInRoom 优先用，未注入回退 NonGhostTrackCount
-	grids         map[string]*RoomGrid             // roomID → Grid
+	mu           sync.RWMutex
+	rooms        map[string]*TrackManager         // roomID → TrackManager
+	radarPeople  map[string]int                   // roomID → census 折叠后 radar 真人数（belief 层经 SetRoomRadarPeople 注入）；RealPeopleInRoom 优先用，未注入回退 NonGhostTrackCount
+	grids        map[string]*RoomGrid             // roomID → Grid
 	deviceMounts map[string]radarutils.RadarMount // deviceAddr(/128) → 该 radar 安装参数（坐标转换用）；多雷达房每台一份
 	deviceRoom   map[string]string                // deviceAddr → roomID (sensor 唯一物理寻址)
 	deviceBeds   map[string][]radarutils.Rect     // deviceAddr(/128) → 该设备**自己 canvas** 的 bed 矩形（MM covers 只用本台 layout，不跨系借别台床）
@@ -208,24 +211,24 @@ type Engine struct {
 	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string, confidence map[string]int)
 
 	// ── 生产 I/O（从旧 ws engine 焊回；Xsensor replay 道裁掉，生产必需）──
-	srcSeqMu   sync.RWMutex
-	lastSrcSeq map[string]uint64
-	aiSource      string
-	aiPublishMode string
-	beliefScanInterval time.Duration
-	snapshotInterval   time.Duration
+	srcSeqMu            sync.RWMutex
+	lastSrcSeq          map[string]uint64
+	aiSource            string
+	aiPublishMode       string
+	beliefScanInterval  time.Duration
+	snapshotInterval    time.Duration
 	persister           Persister
 	historyPersister    HistoryPersister
 	dailySnapshotHour   int
 	dailySnapshotMinute int
 	historyRetainDays   int
-	feedbackDB       *sql.DB
-	feedbackInterval time.Duration
-	feedbackIngester *AlarmFeedbackIngester
-	dailyReloadHour int
-	dailyReloadDB   *sql.DB
-	unitFirstTrackMs map[string]int64 // suiteID → 首见 track 时戳（DBN_MODE 冷启 cap，dbn_mode.go）
-	coldStartMu      sync.Mutex
+	feedbackDB          *sql.DB
+	feedbackInterval    time.Duration
+	feedbackIngester    *AlarmFeedbackIngester
+	dailyReloadHour     int
+	dailyReloadDB       *sql.DB
+	unitFirstTrackMs    map[string]int64 // suiteID → 首见 track 时戳（DBN_MODE 冷启 cap，dbn_mode.go）
+	coldStartMu         sync.Mutex
 }
 
 // RuntimeConfig 与 owlBack/tools/Xsensorv1/internal/config::RoomEngineConfig 一一对应；
@@ -244,16 +247,16 @@ type RuntimeConfig struct {
 	BedsideFall BedsideFallConfig
 
 	// ── 生产 I/O 运行时参数（S0.c 焊回；Xsensor replay 道无）──
-	DecayInterval      time.Duration
-	BeliefScanInterval time.Duration
-	SnapshotInterval   time.Duration // 0 = 关闭持久化定时器
-	Persister          Persister     // nil = 不持久化
+	DecayInterval       time.Duration
+	BeliefScanInterval  time.Duration
+	SnapshotInterval    time.Duration // 0 = 关闭持久化定时器
+	Persister           Persister     // nil = 不持久化
 	HistoryPersister    HistoryPersister
 	DailySnapshotHour   int
 	DailySnapshotMinute int
 	HistoryRetainDays   int
-	FeedbackDB       *sql.DB
-	FeedbackInterval time.Duration
+	FeedbackDB          *sql.DB
+	FeedbackInterval    time.Duration
 }
 
 // NewEngine 创建 Room Engine（默认参数）。生产环境调用 Configure 注入 yaml 配置。
@@ -729,7 +732,6 @@ func (e *Engine) SuiteHasOtherDevice(suiteID, excludeDevice string) bool {
 	return false
 }
 
-
 // trackLostAnchorMs 失锁判定阈值：snapshot 未含某 trackID 持续 ≥ 60s → 视为真失锁，
 // 调 SuiteCensusManager.ClearAnchorOnLostTrack。偏保守的取值（MaxMissCount=10 帧 coast
 // 期之外再加足够 buffer），避免 firmware track coast 期间误清。
@@ -926,8 +928,11 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	for _, r := range cfg.Enters {
 		grid.SetPrior(r, AreaEnter, 99, SourceHuman)
 	}
-	for _, r := range cfg.Beds {
+	for i, r := range cfg.Beds {
 		grid.SetPrior(r, AreaBed, 99, SourceHuman)
+		if i < len(cfg.BedFloorExempt) && cfg.BedFloorExempt[i] {
+			grid.SetBedFloorExempt(r) // 真床区 floor 豁免；LongSofa(false)走 90min
+		}
 	}
 	for _, r := range cfg.Toilets {
 		grid.SetPrior(r, AreaToilet, 99, SourceHuman)
@@ -943,6 +948,14 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	}
 	for _, r := range cfg.Interferes {
 		grid.SetPrior(r, AreaDeny, 99, SourceHuman)
+	}
+
+	// 6. 暖启：从 28 snapshot 灌回机器学到的 cell area（learned sit/interfer/active → 喂 floor 阈，避免
+	//    每次重启冷启 unknown→12min 误报）。放在 SetPrior 之后：DecodeSnapshot 跳过 SourceHuman，
+	//    人标恒在上、28 学值只填未人标的 unknown 格子之下。BedFloorExempt 不在 snapshot（只 layout 人标 stamp）
+	//    → learned bed 拿不到豁免、最多 90min，符合"firmware-fire 仅人工授权"分层。
+	if e.persister != nil {
+		e.hydrateRoom(cfg.RoomID, grid, newHash)
 	}
 
 	e.grids[cfg.RoomID] = grid

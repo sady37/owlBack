@@ -288,22 +288,22 @@ func (e *Engine) hydrateRoom(roomID string, grid *RoomGrid, expectedHash string)
 		e.logger.Info("no snapshot found, fresh start", zap.String("room_id", roomID))
 		return
 	}
-	if storedHash != expectedHash {
-		e.logger.Warn("snapshot layout_hash mismatch, discarding (layout edited?)",
-			zap.String("room_id", roomID),
-			zap.String("stored", storedHash[:12]),
-			zap.String("expected", expectedHash[:12]),
-		)
-		return
-	}
 
 	snap, err := UnmarshalSnapshot(payload)
 	if err != nil {
 		e.logger.Warn("snapshot unmarshal failed", zap.String("room_id", roomID), zap.Error(err))
 		return
 	}
+	// layout_hash 仅作观测：不一致=layout 内容改过，但只要 grid extent(W/H/OX/OY)未变，cell index↔物理
+	// 稳定 → 仍可按 index 复用 learned cell（SourceHuman 在 DecodeSnapshot 内被跳过，人标恒在上）。
+	// extent 变了（layout 编辑触发 ApplyOptimizedExtent 缩放）→ DecodeSnapshot 报 dimension mismatch → 冷启。
+	if storedHash != expectedHash {
+		e.logger.Info("snapshot layout_hash differs (layout edited); reuse learned cells if grid extent unchanged",
+			zap.String("room_id", roomID))
+	}
 	if err := DecodeSnapshot(snap, grid); err != nil {
-		e.logger.Warn("snapshot decode failed", zap.String("room_id", roomID), zap.Error(err))
+		e.logger.Info("snapshot not reusable, fresh start (likely grid resized by layout edit)",
+			zap.String("room_id", roomID), zap.Error(err))
 		return
 	}
 	e.logger.Info("snapshot hydrated",

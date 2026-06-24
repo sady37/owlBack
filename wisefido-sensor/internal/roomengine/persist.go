@@ -234,7 +234,10 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 		// 是错误的，因为人标神圣。所以加保护：仅当 baseline 不是 Human 时才覆盖。
 		for bi := 0; bi < 3; bi++ {
 			if c.Belief[bi].Source == SourceHuman {
-				continue // 人标不可被 snapshot 覆盖
+				continue // 当前人标不可被 snapshot 覆盖
+			}
+			if Source(cs.B[bi][2]) == SourceHuman {
+				continue // snapshot 里的人标不灌回：人标权威只活在 layout(SetPrior)，防 layout 改后旧人标区从 28 复活
 			}
 			c.Belief[bi].Type = AreaType(cs.B[bi][0])
 			c.Belief[bi].Confidence = cs.B[bi][1]

@@ -25,15 +25,16 @@ type Point struct{ X, Y int }
 
 // RadarTrack 单 track raw 量（observation.Track 投影）。
 type RadarTrack struct {
-	TrackID  int     // firmware track_id（透传供 logicID↔track_id 反查：ExitRoom 事件只带 track_id 无坐标，须按号反查丢轨人）
-	Online   bool    // 本 tick 在 radar TTL 内有上报
-	Pose     int     // observation pose 枚举（6=Lying）
-	X, Y, Z  int     // canvas cm
-	HR, RR   int     // 0=无信号
-	StillSec float64 // 连续静止秒（still-box 总时长）
-	AreaType int     // track 当前 cell.Belief[0].Type（CellAreaType 透传）→ emission 正向压制 + floor per-area 阈
-	RoomType int     // 房型(card.RoomType: 1=Bathroom)透传 → emission still CDF (μ,σ) room×cell 保守合并
-	FwAreaID int     // firmware area_id（地面真值，不随 canvas drift）→ 命中床 areaId = N（在床）→ 驱动 emission SBed
+	TrackID   int     // firmware track_id（透传供 logicID↔track_id 反查：ExitRoom 事件只带 track_id 无坐标，须按号反查丢轨人）
+	Online    bool    // 本 tick 在 radar TTL 内有上报
+	Pose      int     // observation pose 枚举（6=Lying）
+	X, Y, Z   int     // canvas cm
+	HR, RR    int     // 0=无信号
+	StillSec  float64 // 连续静止秒（still-box 总时长）
+	AreaType  int     // track 当前 cell.Belief[0].Type（CellAreaType 透传）→ emission 正向压制 + floor per-area 阈
+	BedExempt bool    // 当前 cell 是真床区(layout 名字含 bed)→ FloorGuard 无条件豁免（透传 cell.BedFloorExempt）
+	RoomType  int     // 房型(card.RoomType: 1=Bathroom)透传 → emission still CDF (μ,σ) room×cell 保守合并
+	FwAreaID  int     // firmware area_id（地面真值，不随 canvas drift）→ 命中床 areaId = N（在床）→ 驱动 emission SBed
 }
 
 // SleepadFrame 单床 sleepad raw 量（§32 二态：设备在线 OR 没有，不建模中途掉线）。
@@ -224,6 +225,7 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, bedAre
 		VitalSourceOnline:   vitalSrc,
 		SleepadVitalPresent: sleepadVital,
 		AreaType:            t.AreaType,
+		BedExempt:           t.BedExempt,
 		RoomType:            t.RoomType,
 		IsRiskTime:          isRiskTime, // risktime 只缩短 floor tFloor(纯时间轴),不进 C_FN
 		RadarBedHitMask:     bedHitMask(t, bedAreaIDs),

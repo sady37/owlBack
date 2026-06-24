@@ -19,13 +19,13 @@ type emissionParams struct {
 	lIn        float64 // ℓ_sj(InBed|occ)=L_in≫1
 	lLeft      float64 // ℓ_sj(LeftBed|vac)=L_left≫1（sleepad 接触 LeftBed：果断清，残留~0.02）
 	lLeftRadar float64 // radar 几何 LeftBed：弱清（<50% 可信，残留~0.10），lLeftRadar<lLeft
-	lPose float64 // ℓ_pose(lying|AtBed)=ℓ_pose(lying|F)>1（二义，刻意）
+	lPose      float64 // ℓ_pose(lying|AtBed)=ℓ_pose(lying|F)>1（二义，刻意）
 	// 固件已分类跌倒（pose=5/2）→ SFallen。confirmed≫suspect（非对称）；form-anchor（铁律 fall_data_is_artificial_test
 	// 单 case 不刻精确量级，只定可判侧：confirmed 决定性压过 area redirect，suspect 弱到要靠累积/floor 兜底）。
 	lFall        float64 // ℓ(pose=5 confirmed|F)：强 boost SFallen
 	lFallSuspect float64 // ℓ(pose=2 suspect|F)：弱 boost SFallen
-	lHR   float64 // L_hr：present|AtBed 倍数（absent|AtBed=1/L_hr）
-	lArea float64 // area_type 正向压制倍数（bed/sit/toilet→抬对应静止态）。area 误学(如假 Sit)的真摔
+	lHR          float64 // L_hr：present|AtBed 倍数（absent|AtBed=1/L_hr）
+	lArea        float64 // area_type 正向压制倍数（bed/sit/toilet→抬对应静止态）。area 误学(如假 Sit)的真摔
 	//                  由 FloorGuard 非累加总时长兜底（still 不进 emission，避免前向滤波累积），故 lArea 仅作 redirect 偏置
 	// 直立证据（移自 floor stillDiscount，单一归 emission）：分两类施加，取最强(min) 压。
 	//   **压 SFallen（<1）⟺ 与"倒地静止"物理互斥**：z≥zStandCm（身高硬测，质心高≠贴地）∨ walk（运动⊥倒地静止：
@@ -46,6 +46,7 @@ const zStandCm = 80
 
 // roomengine.AreaType 枚举值（belief 不 import roomengine，本地常量对齐）。
 const (
+	areaBed    = 2
 	areaSit    = 3
 	areaActive = 4
 	areaEnter  = 1
@@ -81,11 +82,13 @@ func stillMuSigma(areaType, roomType int) (mu, sigma float64) {
 
 func cellMuSigma(areaType int) (mu, sigma float64) {
 	switch areaType {
-	case areaSit:
+	case areaSit, areaBed:
+		// Bed = LongSofa(无 sleepad 可长躺)：与 Sit 同走 90min 长阈。真床(名字含 bed)在 floor.Step
+		// 被 BedExempt 提前豁免、到不了这里；故落此分支的 areaBed 只剩 sofa/feedback 学的 lying 区。
 		return MuSitSec, SigmaSitSec
 	case areaToilet, areaShower:
 		return MuBathSec, SigmaBathSec
-	default: // unknown/active/enter/bed → default(unknown)
+	default: // unknown/active/enter → default(unknown)
 		return MuDefaultSec, SigmaDefaultSec
 	}
 }

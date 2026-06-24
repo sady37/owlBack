@@ -129,6 +129,7 @@ type Cell struct {
 	TraverseCount     uint16    // Move 状态下穿越本 cell 的次数（Walk 升格用）
 	NearTraverseCount uint16    // 邻居被 Move 穿越的累计次数（auto-Deny 推断用 —— 兵家必争之地的"绕开"证据）
 	AreaType          AreaType  // 推断属性，与 Belief[0].Type 镜像（query 加速）
+	BedFloorExempt    bool      // RegisterRoom 时按 layout typeName 含 bed(Bed/MonitorBed,非 LongSofa)盖；真床区 floor 无条件豁免。不持久化(SetPrior 每次重灌)
 
 	// ---- 访问可信度（track 层按本帧 quality 分桶喂）----
 	RealDecay  int
@@ -193,15 +194,9 @@ type Cell struct {
 	//                    强力学习成 AreaSit / AreaBed；wheelchair 反馈乘 0.3 防 mobile 污染
 	// RealFallCount: verified 勾 "Fall / Sitting on the Ground" → 该 cell 是真 fall 高发点
 	//                未来可用于反向调整 still-fall 灵敏度
-	GhostCount         int
-	RestZoneConfirmed  int
-	RealFallCount      int
-
-	// FallSuppressUntilMs: FE false_alarm 反馈勾"Lying Area" 时由 cardagg/RPC 写入的临时禁报窗。
-	// fall verifier (fall_verify.go) 在 nowMs < FallSuppressUntilMs 期间将 firmware Fall 直接判 ghost。
-	// 设计：未标注的 long-sofa / 临时躺区由人工 handle 时打"2H 禁报"窗，覆盖 layout 漏标场景。
-	// 写入路径 PR 接线后实施；当前仅 verifier 拦截点已就绪。
-	FallSuppressUntilMs int64
+	GhostCount        int
+	RestZoneConfirmed int
+	RealFallCount     int
 
 	// LearnBlocked: sticky 否决（[[feedback_lying_learning_and_layout_authority]] §1）——
 	// verified 真摔时人勾"永不在此自动学跌倒抑制"。置位后该 cell 的自动/反馈抑制学习
@@ -460,10 +455,12 @@ func (c *Cell) IncrRealFallCount() {
 
 // MarkRestZoneByFeedback PR-7.1 / PR-9.2 / PR-11：依据反馈/持续观测即时锁定 cell.AreaType。
 // target ∈ {AreaSit, AreaBed, AreaToilet, AreaShower}：
-//   AreaSit     — Chair / Wheelchair（橙色坐姿）
-//   AreaBed     — Sofa / Lounge chair（蓝色躺姿）+ lying ≥4h on bed 持续观测刷新
-//   AreaToilet  — sit ≥5min on toilet 持续观测刷新
-//   AreaShower  — 待加（暂同 toilet）
+//
+//	AreaSit     — Chair / Wheelchair（橙色坐姿）
+//	AreaBed     — Sofa / Lounge chair（蓝色躺姿）+ lying ≥4h on bed 持续观测刷新
+//	AreaToilet  — sit ≥5min on toilet 持续观测刷新
+//	AreaShower  — 待加（暂同 toilet）
+//
 // Confidence=95, Source=SourceFeedback（非 FE 画，verified 真摔可擦；FE 画的走 SetPrior+SourceHuman 神圣）。
 //
 // 保护规则（不覆盖；防止降级）：

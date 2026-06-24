@@ -135,13 +135,13 @@ type roomGeom struct {
 type dbnRouter struct {
 	mu       sync.Mutex
 	geom     map[string]*roomGeom
-	rooms    map[string]*engine.Room          // roomID → Room（bootstrap 建，供 NewUnit 分组）
-	units    map[string]*engine.Unit          // unitKey(suiteID) → 多房编排器（跨房 hand-off）
-	roomUnit map[string]string                // roomID → unitKey
-	roomType map[string]int                   // roomID → card.RoomType（1=Bathroom）→ UD timer deadline
-	roomTZ   map[string]*time.Location        // roomID → 时区（IsNightTime 算 risktime，缩短 floor tFloor）
-	mm       map[string]*roomengine.RoomMM    // roomID → 房级静态 MM（samebed prior 权威，吸纳读）；nil=无床/无设备
-	eng      *roomengine.Engine               // 回注 radar 折叠减量给 P1 占用人数（RealPeopleInRoom，cutover 后服务 zoneengine）
+	rooms    map[string]*engine.Room       // roomID → Room（bootstrap 建，供 NewUnit 分组）
+	units    map[string]*engine.Unit       // unitKey(suiteID) → 多房编排器（跨房 hand-off）
+	roomUnit map[string]string             // roomID → unitKey
+	roomType map[string]int                // roomID → card.RoomType（1=Bathroom）→ UD timer deadline
+	roomTZ   map[string]*time.Location     // roomID → 时区（IsNightTime 算 risktime，缩短 floor tFloor）
+	mm       map[string]*roomengine.RoomMM // roomID → 房级静态 MM（samebed prior 权威，吸纳读）；nil=无床/无设备
+	eng      *roomengine.Engine            // 回注 radar 折叠减量给 P1 占用人数（RealPeopleInRoom，cutover 后服务 zoneengine）
 	logger   *zap.Logger
 }
 
@@ -179,9 +179,10 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			Online:  b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
 			StillSec: float64(b.StillBoxSec), // still-box raw 时长 → FloorGuard 纯计时器（直立折扣已移 emission 压 SFallen）
 
-			AreaType: int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
-			RoomType: d.roomType[roomID],  // 房型 → still CDF room×cell 保守合并(bathroom 未画 toilet 也用 bathsec)
-			FwAreaID: b.FwAreaID,          // firmware area_id（present=本帧/lost=冻结）→ 命中床 areaId = N（在床）
+			AreaType:  int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
+			BedExempt: b.CellBedExempt,     // 真床区(名字含 bed)→ floor 无条件豁免
+			RoomType:  d.roomType[roomID],  // 房型 → still CDF room×cell 保守合并(bathroom 未画 toilet 也用 bathsec)
+			FwAreaID:  b.FwAreaID,          // firmware area_id（present=本帧/lost=冻结）→ 命中床 areaId = N（在床）
 		}})
 	}
 	// sleepad-only 房(无雷达 track)：InBed 合成一条 bed-track 作 B 轴载体(engine.Room track-centric，
@@ -238,7 +239,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	realPeople := -1
 	var padAbs []roomengine.PadAbsorption
 	if d.eng != nil {
-		pads := d.eng.SnapshotSleepads(roomID, nowMs)           // sleepad 占用身份（addr/InBed/Fresh/Stale）
+		pads := d.eng.SnapshotSleepads(roomID, nowMs)            // sleepad 占用身份（addr/InBed/Fresh/Stale）
 		radars := roomengine.RadarBedStates(bases, g.bedAreaIDs) // 每台 radar N-in-bed（MN/FwAreaID，§9.1 raw）
 		var uncovered int
 		uncovered, padAbs = roomengine.AbsorbSleepads(pads, radars, d.mm[roomID], roomengine.SamebedAbsorbThresh)
@@ -273,7 +274,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			"x": b.X, "y": b.Y, "z": b.Z, "stillbox": b.StillBoxSec,
 			"area": int(b.CellAreaType), "verdict": int(b.Verdict),
 			"fw_area": b.FwAreaID, "fw_bed": fwBed(b.FwAreaID, g.bedAreaIDs), // 固件 area_id + 是否命中床区(N,抬 SBed 那条腿)
-			"vital": b.SleepadVitalPresent,                                  // 该轨 sleepad 接触 vital(InBed+HR/RR fresh)→ couplesAnyBed 时抬 SBed
+			"vital": b.SleepadVitalPresent, // 该轨 sleepad 接触 vital(InBed+HR/RR fresh)→ couplesAnyBed 时抬 SBed
 		})
 	}
 	dbn := make([]map[string]interface{}, 0, len(fr.Tracks))
@@ -315,16 +316,16 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Float64("p_fallen", fr.Probe.PFallen), zap.String("band", fr.Decision.Band),
 		zap.Bool("fire", fr.Decision.Fire), zap.Float64("lambda", fr.Probe.Lambda),
 		zap.String("top_s", sName(int(top))), zap.Float64("top_p", tp),
-		zap.Float64("handoff_logodds", handoffL), // §7.7 v2 hand-off SLeft 注入对数似然（0=无接力；>0=矩形核命中）
-		zap.Bool("lost_real", fr.LostReal),         // 本帧 confirmed 真人 track 消失 = hand-off 源候选（lostAt 将被设）
-		zap.Float64("gained_real", fr.GainedReal),  // 本帧新现真人后验 = hand-off 宿候选（守恒重现）
+		zap.Float64("handoff_logodds", handoffL),              // §7.7 v2 hand-off SLeft 注入对数似然（0=无接力；>0=矩形核命中）
+		zap.Bool("lost_real", fr.LostReal),                    // 本帧 confirmed 真人 track 消失 = hand-off 源候选（lostAt 将被设）
+		zap.Float64("gained_real", fr.GainedReal),             // 本帧新现真人后验 = hand-off 宿候选（守恒重现）
 		zap.Int64("pending_lost_ms", u.PendingLostMs(roomID)), // 本房待解析 lost 时戳（>0=已注册,handoffLFor 在找接力）
 		zap.Int("sibling_gains", u.SiblingGainCount()),        // unit 内当前窗口跨房 gain 数（0=无人在别房现身）
 		zap.Bool("unit_has_track", unitHasTrack), zap.Bool("has_neighbor", hasNeighbor),
 		zap.Bool("lost_exited", fr.LostExited),
 		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("bed_present", g.sleepadPresent),
 		zap.Bool("vital_present", vitalPresent), // 房级 sleepad 接触 vital(HR/RR fresh)→ covers=1 设备抬 SBed
-		zap.Bool("risktime", isRiskTime), // 夜间风险时段(缩短 floor tFloor;不进 C_FN)
+		zap.Bool("risktime", isRiskTime),        // 夜间风险时段(缩短 floor tFloor;不进 C_FN)
 		zap.Any("s_dist", sDist), zap.Any("target", raw), zap.Any("dbn", dbn), zap.Any("pad", pad),
 		zap.Any("fuse", fuse), // 双雷达同人运动同步对(agree/same/moves)
 		zap.Any("walls", walls), zap.Int("radar_x", g.radarPos.X), zap.Int("radar_y", g.radarPos.Y))

@@ -41,14 +41,14 @@ type Frame struct {
 	Probe    belief.FrameProbe
 	Decision belief.Decision
 	// 步4 跨设备 hand-off 信号（Unit 编排器消费，§A 守恒+时间窗）：
-	LostReal   bool    // 本帧一条真人 track 消失（上帧在场真人、本帧不在）= hand-off 源候选
-	LostAtMs   int64   // 消失轨的 **last-observed 时戳**（非本帧 coast 判定时刻）→ Unit Δ centering（gain−LostAtMs）
-	LostExited bool    // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）= Unit D/UD timer cancel（人走了无人会摔）
-	GainedReal float64 // 本帧新现真人 track 的去 ghost 后验（0=无）= hand-off 宿候选（守恒重现）
-	GainedFromSleepad bool // 该 gain 来自 sleepad-only 房合成 track（走+躺慢接力）→ rho 用 sleepad 慢核
+	LostReal          bool    // 本帧一条真人 track 消失（上帧在场真人、本帧不在）= hand-off 源候选
+	LostAtMs          int64   // 消失轨的 **last-observed 时戳**（非本帧 coast 判定时刻）→ Unit Δ centering（gain−LostAtMs）
+	LostExited        bool    // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）= Unit D/UD timer cancel（人走了无人会摔）
+	GainedReal        float64 // 本帧新现真人 track 的去 ghost 后验（0=无）= hand-off 宿候选（守恒重现）
+	GainedFromSleepad bool    // 该 gain 来自 sleepad-only 房合成 track（走+躺慢接力）→ rho 用 sleepad 慢核
 	// forensic（全切片观测，不参与裁决）：
-	PresentCount int             // 本帧在场 track 数（§61 共存源/消费门控判据）
-	Tracks       []TrackForensic // 每 track 内部量（realness/ghost/消费门控/per-track 裁决）
+	PresentCount int                  // 本帧在场 track 数（§61 共存源/消费门控判据）
+	Tracks       []TrackForensic      // 每 track 内部量（realness/ghost/消费门控/per-track 裁决）
 	FuseSync     []adapter.FuseStatus // forensic：跨雷达同人运动同步对（agree/same/moves，可见双雷达同步检查）
 	// FiredLogicIDs 本帧 fall fire 的 LogicID：回传 track_manager 复位 still-box（跨层 StillSec 在 tm），
 	//   与本帧已就地复位的 belief 配套——fall fire = 该 track 推断 episode 结束 → 从 0 热机重判。
@@ -102,7 +102,7 @@ type Room struct {
 	escalators    map[string]*RepeatFallEscalator // 每 logicID 一份重复摔残余器（§J；第一次归 firmware，只提前重复摔）
 	nb            int
 	p             adapter.Params
-	lastMarg      belief.Vector   // 末帧房间代表 track 的 S 边缘（MarginalS 读出）
+	lastMarg      belief.Vector    // 末帧房间代表 track 的 S 边缘（MarginalS 读出）
 	realStreak    map[string]int   // 每 logicID 连续在场真人帧数（步4 hand-off：confirmed=streak≥K，抗噪声 churn）
 	prevConfirmed map[string]bool  // 上 tick 已确认真人(streak≥K)的 logicID 集（算 lost）
 	lastSeenMs    map[string]int64 // 每 logicID 末次 fresh-present 时戳（census Present=本 tick 匹配）→ lost 的 last-observed centering
@@ -142,7 +142,6 @@ func NewRoom(geom []belief.BedGeom, nb int) *Room {
 // SetDeviceGeom bootstrap 注入某雷达设备(uid_last4)的 per-bed 几何（covers 从 MM：画了该床=1 否则 0）。
 // 未注入的设备/合成 track 走 defGeom（covers=1=改造前行为）。须在任何 Tick 前调用。
 func (r *Room) SetDeviceGeom(uid4 string, geom []belief.BedGeom) { r.geoms[uid4] = geom }
-
 
 // geomOf uid4 对应几何，无注入→defGeom。
 func (r *Room) geomOf(uid4 string) []belief.BedGeom {
@@ -373,7 +372,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 			//   emission still 高斯 CDF 在消失态仍喂(人摔进盲区/爬出后持续静止的异常度)。
 			obs = adapter.BuildObservation(adapter.RadarTrack{
 				Online: false, StillSec: ts.Obs.RadarTrack.StillSec,
-				AreaType: ts.Obs.RadarTrack.AreaType, RoomType: ts.Obs.RadarTrack.RoomType,
+				AreaType: ts.Obs.RadarTrack.AreaType, BedExempt: ts.Obs.RadarTrack.BedExempt, RoomType: ts.Obs.RadarTrack.RoomType,
 			}, fi.Sleepads, fi.Beds, fi.BedAreaIDs, r.p, fi.Census.Night)
 			logPhi = em.LogPhi(r.js, obs)
 			r.applyLeftBedOpen(cp, logPhi, obs, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p), false) // ③ lost → SBlindRest（gxy 用冻结末位）
@@ -506,7 +505,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 	for id := range curReal {
 		newStreak[id] = r.realStreak[id] + 1 // 连续在场真人 → 累计；断了 → 不在 newStreak（归零）
 	}
-	var gained float64    // 本 tick 刚跨过确认阈（streak==K）的真人 = 确认新现（守恒重现落点）
+	var gained float64     // 本 tick 刚跨过确认阈（streak==K）的真人 = 确认新现（守恒重现落点）
 	var gainedSleepad bool // 该 gain 来自 sleepad-only 房合成 track（lid=="sleepad-bed"）= 慢核接力（走+躺,~60s）
 	for id, pr := range curReal {
 		if newStreak[id] == arrivalConfirmFrames && pr > gained {
