@@ -10,12 +10,11 @@ import (
 	"go.uber.org/zap"
 	"owl-common/alarm"
 	"owl-common/card"
-	"owl-common/observation"
 	"owl-common/radarutils"
 	"owl-common/roomutil"
 )
 
-// intPtr observation.Track 的 PositionX/Y/Z 是 *int（区分"没值"vs"=0"）。
+// intPtr：observation.Track 的 PositionX/Y/Z 是 *int（区分"没值"vs"=0"）。
 func intPtr(v int) *int { return &v }
 
 // TrackOutput Room Engine 对外输出的单条 track 评估结果
@@ -23,10 +22,6 @@ type TrackOutput struct {
 	TrackID    int
 	DeviceAddr string
 	RoomID     string
-	Verdict    TrackVerdict
-	Score      int // [0,100]
-	Risk       int // [0,100]
-	Anomaly    Anomaly
 	X, Y, Z    int // 当前估计位置（画布坐标 cm）
 	VX, VY     int // cm/s
 	StillSec   int
@@ -114,9 +109,6 @@ type TrackManager struct {
 	sitPromoteTau float64 // SitScore 升格阈 τ（默认 6.0）
 	sitSpreadCm   int     // episode 加分邻域半径 cm（默认 30）
 
-	// PR-11: 双方一致 InBed 时间窗判定 — sleepad 与 radar 各自最近 InBed 事件 ts。
-	// 仅当 |sleepadInBed - radarInBed| ≤ 15s 时，sleepad HR/RR 视作可信，触发 AreaBed cell refresh。
-	lastSleepadInBedMs int64
 	lastRadarInBedMs   int64 // radar 离散 InBed **事件** ts（状态翻转权威；非每帧几何）
 	lastRadarLeftBedMs int64 // 审查㊾:radar LeftBed ts(any-source-OR bed 占用 veto)
 	// lastRadarInBedGeomMs：way3 每帧"present track 在 firmware 床区"几何续命 ts（连续在床补 InBed 事件缺失）。
@@ -459,10 +451,6 @@ func (tm *TrackManager) ProcessSleepadBedEvent(evt SleepadBedEvent) {
 	defer tm.mu.Unlock()
 
 	if evt.IsInBed {
-		// PR-11: 记录 sleepad InBed ts 用于 radar/sleepad 一致期判定
-		if evt.TMs > tm.lastSleepadInBedMs {
-			tm.lastSleepadInBedMs = evt.TMs
-		}
 		// BedSession：首次 InBed 启动会话
 		s := tm.bedSessions[evt.DeviceUID]
 		if s == nil || s.InBedSinceMs == 0 {
@@ -495,31 +483,7 @@ func (tm *TrackManager) ProcessSleepadObservation(obs SleepadObservation) {
 		copyObs := obs
 		tm.sleepadStates[obs.DeviceUID] = &copyObs
 	}
-	// 双方一致 InBed ±15s → sleepad HR/RR 可信，把 active radar track 当前 cell 学为 AreaBed
-	// （sleepad 不知坐标,但 radar 同报 InBed 且时间一致 → radar 当前 track 位置即床位）。
-	if obs.InBed && obs.HasVitalSign() {
-		if tm.consistentBedInBed(obs.TMs) {
-			for _, ts := range tm.tracks {
-				if ts.Verdict != VerdictReal {
-					continue
-				}
-				pxF, pyF := ts.Kalman.Position()
-				px, py := int(math.Round(pxF)), int(math.Round(pyF))
-				cell := tm.grid.CellAt(px, py)
-				if cell == nil {
-					continue
-				}
-				if cell.MarkRestZoneByFeedback(AreaBed) {
-					tm.grid.boostNeighborSameType(px, py, AreaBed, obs.TMs)
-				}
-			}
-		}
-	}
 }
-
-// bedInBedConsistencyMs PR-11/PR-14：sleepad 与 radar InBed 事件视作"双源一致"的最大时差。
-// 同时用于 PR-11 HR/RR 即时锁 AreaBed 与 PR-14 BedSession 入场门控。
-const bedInBedConsistencyMs = int64(15_000)
 
 // 床态融合参数（2026-06-04，Layer-1）：sleepad 接触式为权威，radar 印证叠加，EMI 兜底地板。
 const (
@@ -539,50 +503,6 @@ const (
 	// 超此上限或固件明示无目标(88)才删 track。
 	lostStillCarryMs = int64(1_500_000)
 )
-
-// ghostJudgable ghost≥2 闸：ghost 是真 track 的镜像/反射，需 ≥2 条 track（至少 1 条作母体）才可判 ghost。
-// 仅 1 条 track 时不判 ghost——单 track 判 ghost 会压制从盲区返回的真人/真摔。调用方持锁。
-func (tm *TrackManager) ghostJudgable() bool {
-	return len(tm.tracks) >= 2
-}
-
-// markRadarInBedCell PR-14：radar 报 InBed 事件时，把对应 track 当前位置 cell 锁为 AreaBed。
-// 设计：radar 事件本身就是空间证据，不再依赖 sleepad+HR/RR 一致期；
-// 双源一致只是 BedSession 触发条件，与"标床区"独立。
-//
-// 调用方持锁。
-func (tm *TrackManager) markRadarInBedCell(e RadarTrackEvent) {
-	ts, ok := tm.tracks[trackKey{e.DeviceUID, e.TrackID}]
-	if !ok || ts.Verdict == VerdictGhost {
-		return
-	}
-	pxF, pyF := ts.Kalman.Position()
-	px, py := int(math.Round(pxF)), int(math.Round(pyF))
-	cell := tm.grid.CellAt(px, py)
-	if cell == nil {
-		return
-	}
-	if cell.MarkRestZoneByFeedback(AreaBed) {
-		tm.grid.boostNeighborSameType(px, py, AreaBed, e.TMs)
-	}
-}
-
-// consistentBedInBed PR-11：检查 sleepad 与 radar 的 InBed 事件是否在 ±15s 内一致。
-// 一致性窗口语义：双方独立确认"床上有人"，sleepad HR/RR 此刻可信，可作为 AreaBed cell ground truth。
-// 调用方持锁。
-//
-// PR-9: 删除 lastLeftBedAt 新鲜度守卫 — delta ≤ bedInBedConsistencyMs(15s) 已隐式保证
-// "两个 InBed ts 都是最近的"（陈旧 InBed 与新 InBed 不可能 delta < 15s）。
-func (tm *TrackManager) consistentBedInBed(nowMs int64) bool {
-	if tm.lastSleepadInBedMs == 0 || tm.lastRadarInBedMs == 0 {
-		return false
-	}
-	delta := tm.lastSleepadInBedMs - tm.lastRadarInBedMs
-	if delta < 0 {
-		delta = -delta
-	}
-	return delta <= bedInBedConsistencyMs
-}
 
 // sleepadInBed 检查同房间任一 sleepad 在 30s 内报告 InBed（不要求 HR/RR）。
 // 设计动机：用户明确"确认在床 = 雷达坐标在床 + sleepad InBed，不要求 HR/RR"
@@ -762,8 +682,7 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	tm.recentRadarEvents[e.TMs] = &cp
 	tm.evictOldRadarEvents(e.TMs)
 	if e.EventName == alarm.InBed && e.TMs > tm.lastRadarInBedMs {
-		tm.lastRadarInBedMs = e.TMs
-		tm.markRadarInBedCell(e) // radar InBed → 当前 track 位置 cell 学为 AreaBed（空间证据）
+		tm.lastRadarInBedMs = e.TMs // radar 离散 InBed 事件 ts（床占用状态翻转权威；不再写 AreaBed cell，Bed 禁自学）
 	}
 	// number_people=0：固件「屋内空」断言。只落 ts，不直接驱动任何取消——
 	// count=0 不等于人离开（可能盲区/水气丢信号），须与门区空间证据合取才采信（见 bathroom_fall）。
@@ -869,8 +788,6 @@ type TrackStatusBase struct {
 	LogicID             string // tm 出生锚定唯一逻辑身份（透传给 census/engine 作身份键，下游不再按位置重造）
 	DeviceAddr          string
 	RoomID              string
-	Verdict             TrackVerdict
-	GhostPenalty        int
 	X, Y, Z             int // 画布坐标（grid/cell 算法用；Kalman 输出）
 	RawH, RawV, RawZ    int // firmware raw 雷达本地坐标 — alarm publish 用，对外契约不变
 	Pose                int
@@ -951,8 +868,6 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			LogicID:             ts.LogicID,
 			DeviceAddr:          ts.DeviceAddr,
 			RoomID:              ts.RoomID,
-			Verdict:             ts.Verdict,
-			GhostPenalty:        ts.GhostPenalty,
 			X:                   px,
 			Y:                   py,
 			Z:                   ts.LastZ,
@@ -969,10 +884,6 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		// StillBoxSec=raw box run 秒（30s 滚动 50×50 抗抖动）→ FloorGuard 纯计时器。直立折扣已移 emission（压 SFallen）。
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
-		}
-		// LongSurvival / StartupGrace 锚定 → 升格 Anchored verdict（v2 §10.1.1）
-		if base.Verdict == VerdictReal && (ts.LongSurvivalAnchored || ts.StartupGrace) {
-			base.Verdict = VerdictAnchored
 		}
 		if c := tm.grid.CellAt(px, py); c != nil {
 			base.CellAreaType = c.Belief[0].Type // cell 仍喂 tFloor 阈 + sit/bath/active redirect（含 sofa 的 lying 区，故不换 baseline）
@@ -1183,22 +1094,6 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			}
 
 			// PR-5.3 反 ghost: service startup 5min grace 内 first-seen → 默认 Real
-			isStartupGrace := tm.startupMs > 0 && (f.TMs-tm.startupMs) < 5*60*1000
-			if isStartupGrace {
-				ts.StartupGrace = true
-				ts.Verdict = VerdictReal
-				ts.Score = ScoreConfirmTh
-				ts.BirthScore = ScoreConfirmTh
-				ts.BirthReason = "startup_grace"
-				ts.GhostPenalty = 0
-				ts.ConfirmedAtMs = f.TMs
-			} else {
-				b := tm.birthScore(f.X, f.Y, f.TMs)
-				ts.BirthScore = b.score
-				ts.BirthReason = b.reason
-				ts.Score = ts.BirthScore
-				ts.GhostPenalty = b.penalty
-			}
 			tm.tracks[key] = ts
 			ts.PrevCore = RadarPoseToCore(f.Pose)
 			ts.LastPose = f.Pose
@@ -1207,7 +1102,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			ts.LastRawV = f.RawV
 			ts.LastRawZ = f.RawZ
 			ts.LastFwAreaID = f.AreaType
-			quality = ts.Score
+			quality = ts.DBNConfidence // DBN realness 后验作占用质量(≥50→real)：替代退役 legacy Score
 			dtSec = 1
 		} else {
 			// 已有 track
@@ -1221,21 +1116,17 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			}
 
 			ts.Kalman.Predict(dt)
-			residualF := ts.Kalman.Update(float64(f.X), float64(f.Y))
+			ts.Kalman.Update(float64(f.X), float64(f.Y))
 			ts.PushPoint(f.X, f.Y, f.Z, f.TMs)
-			residual := int(math.Round(residualF))
 
-			// 连续指标（StillBox 静止 + Kalman birth-coherence），在 Kalman update 之后维护
-			tm.updateContinuousIndicators(ts, f, nowMs, residualF)
+			// 连续指标（StillBox 静止），在 Kalman update 之后维护
+			tm.updateContinuousIndicators(ts, f, nowMs)
 
-			// 维度 A: 即时流
-			tm.scoreResidual(ts, residual)
+			// 维度 A: 即时流（still-box / dwell / 久静量 + Lie 状态机）
 			tm.scoreMovement(ts, f.X, f.Y, nowMs, f.Pose)
-			tm.detectZNoise(ts, f.Z)
-			tm.detectPoseMismatch(ts, f.Pose)
 			tm.updateLieStateMachine(ts, f.Pose, f.X, f.Y, nowMs)
 
-			quality = ts.Score
+			quality = ts.DBNConfidence
 			vxF, vyF := ts.Kalman.Velocity()
 			vx = int(math.Round(vxF))
 			vy = int(math.Round(vyF))
@@ -1287,14 +1178,14 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		// lost 续 still-box：用最后已知坐标冻结续算（1Hz 固件下靠时长不靠精度，FN-safe 默认兜底）。
 		//   位移恒=0 → still 保持/新起 → StillBoxSec 续涨喂 FloorGuard（engine floor 解锁消费）。
 		//   手动 append History 不用 PushPoint（PushPoint 设 LastObservedMs 会假装在场破坏 blind）；
-		//   不碰 LastObservedMs → Present=false 仍走 blind 续存。residualF=0 不污染 MaxKalmanResidual。
+		//   不碰 LastObservedMs → Present=false 仍走 blind 续存。
 		if len(ts.History) > 0 {
 			last := ts.History[len(ts.History)-1]
 			ts.History = append(ts.History, TimedPoint{X: last.X, Y: last.Y, Z: last.Z, TMs: nowMs})
 			if len(ts.History) > HistoryLen {
 				ts.History = ts.History[len(ts.History)-HistoryLen:]
 			}
-			tm.updateContinuousIndicators(ts, TrackFrame{TrackID: ts.TrackID, X: last.X, Y: last.Y, Z: last.Z, Pose: ts.LastPose, TMs: nowMs}, nowMs, 0)
+			tm.updateContinuousIndicators(ts, TrackFrame{TrackID: ts.TrackID, X: last.X, Y: last.Y, Z: last.Z, Pose: ts.LastPose, TMs: nowMs}, nowMs)
 		}
 
 		// 驱逐：续 still-box 期间保留到 lostStillCarryMs 上限（让 still 累积到 floor 兜底）。
@@ -1303,107 +1194,8 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		unseenMs := nowMs - ts.LastObservedMs
 		if unseenMs > lostStillCarryMs {
 			// track 消失：lost-fall 判定已迁出 gate-list（DBN belief blind 续存路径）。
-			// 此处仅保留 PathBreak——非门区 Real track 突然消失的非 fall 异常标记。
-			if ts.Verdict == VerdictReal {
-				pxF, pyF := ts.Kalman.Position()
-				px := int(math.Round(pxF))
-				py := int(math.Round(pyF))
-				if !tm.grid.IsEdge(px, py, 50) {
-					ts.CurrentAnomaly = AnomalyPathBreak
-				}
-			}
 			delete(tm.tracks, id)
 			continue
-		}
-	}
-
-	// ========== 段 3: 试用期判定 ==========
-	for _, ts := range tm.tracks {
-		// PR-5.3 反 ghost：track 存活 ≥ 5min 锚定 Real（不论之前 verdict）
-		if !ts.LongSurvivalAnchored && ts.AgeSec() >= 300 {
-			ts.LongSurvivalAnchored = true
-			if ts.Verdict != VerdictReal {
-				ts.Verdict = VerdictReal
-				ts.ConfirmedAtMs = nowMs
-				ts.BirthReason = "long_survival_anchor"
-			}
-			continue
-		}
-
-		if ts.Verdict != VerdictPending {
-			// PR-5.x 持续期 ghost factor：每帧重算 lifetime 因子（30s 静止等）
-			tm.applyLifetimeGhostFactors(ts, nowMs)
-			// 即使已是 Real verdict，penalty ≥ 80 也翻 Ghost（除非 LongSurvival 锚定）。
-			// ghost≥2 闸（2026-06-05）：ghost = 真 track 的镜像/反射，无第二条 track 作母体不判 ghost
-			// （单 track 判 ghost 会压制从盲区返回的真人/真摔，见 [[longsurvival_anchor_ghost_gap]]）。
-			if ts.GhostPenalty >= GhostPenaltyThreshold && !ts.LongSurvivalAnchored && !ts.StartupGrace && tm.ghostJudgable() {
-				if ts.Verdict != VerdictGhost {
-					ts.Verdict = VerdictGhost
-				}
-			}
-			continue
-		}
-		// Birth grace recompute（方案 A）：deadline 到了再扫扩展窗，给 EnterRoom event-stream 缓冲
-		tm.tryGraceUpgrade(ts, nowMs)
-
-		// 持续期 ghost 因子（30s 静止等）
-		tm.applyLifetimeGhostFactors(ts, nowMs)
-
-		// PR-5.x 主路径：累积 GhostPenalty ≥ 80 → Ghost（独立于 ProbationFrames）
-		// ghost≥2 闸：单 track 不判 ghost（无母体可镜像；防压制盲区返回的真人/真摔）。
-		if ts.GhostPenalty >= GhostPenaltyThreshold && tm.ghostJudgable() {
-			ts.Verdict = VerdictGhost
-			reason := ts.BirthReason
-			if reason == "" {
-				reason = "ghost_penalty_accumulated"
-			}
-			if !ts.LoggedGhost {
-				pxF, pyF := ts.Kalman.Position()
-				tm.logger.Info("ghost_veto",
-					zap.String("reason", "penalty_accumulated"),
-					zap.String("birth_reason", reason),
-					zap.String("device_uid", ts.DeviceAddr),
-					zap.Int("track_id", ts.TrackID),
-					zap.String("verdict", "ghost"),
-					zap.Int("score", ts.Score),
-					zap.Int("birth_score", ts.BirthScore),
-					zap.Int("ghost_penalty", ts.GhostPenalty),
-					zap.Int("x", int(math.Round(pxF))),
-					zap.Int("y", int(math.Round(pyF))),
-					zap.Int64("ts_ms", nowMs),
-				)
-				ts.LoggedGhost = true
-			}
-			continue
-		}
-
-		if ts.FrameCount >= ProbationFrames {
-			if ts.Score >= ScoreConfirmTh {
-				ts.Verdict = VerdictReal
-				ts.ConfirmedAtMs = nowMs
-			} else if ts.Score < ScoreGhostTh {
-				ts.Verdict = VerdictGhost
-				reason := ts.BirthReason
-				if reason == "" {
-					reason = "low_score"
-				}
-				if !ts.LoggedGhost {
-					pxF, pyF := ts.Kalman.Position()
-					tm.logger.Info("ghost_veto",
-						zap.String("reason", "low_score"),
-						zap.String("birth_reason", reason),
-						zap.String("device_uid", ts.DeviceAddr),
-						zap.Int("track_id", ts.TrackID),
-						zap.String("verdict", "ghost"),
-						zap.Int("score", ts.Score),
-						zap.Int("birth_score", ts.BirthScore),
-						zap.Int("x", int(math.Round(pxF))),
-						zap.Int("y", int(math.Round(pyF))),
-						zap.Int64("ts_ms", nowMs),
-					)
-					ts.LoggedGhost = true
-				}
-			}
 		}
 	}
 
@@ -1414,7 +1206,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	if len(frames) > 0 {
 		batchDev := frames[0].DeviceAddr
 		for id := range activeIDs {
-			if t := tm.tracks[id]; t != nil && t.Verdict == VerdictReal {
+			if t := tm.tracks[id]; t != nil && t.DBNConfidence >= 50 {
 				tm.lastRealTrackByDevice[batchDev] = nowMs
 				break
 			}
@@ -1422,8 +1214,8 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	}
 
 	// ========== 段 4d: L1 mirror pair 检测 + 自学习 ==========
-	// 跨 track 几何对称检测（无 layout 镜面坐标先验），命中 → ghost 端 GhostPenalty +50
-	// + 5 帧 bounce 点 grid.MarkMirrorBounce（2×2 微块累 MBC，≥3 升 AreaDeny+SourceLearned）。
+	// 跨 track 几何对称检测（无 layout 镜面坐标先验），命中 → 5 帧 bounce 点 grid.MarkMirrorBounce
+	// （2×2 微块累 MBC，≥3 升 AreaDeny+SourceLearned）。ghost 判定单源到 census/DBN realness。
 	tm.scanMirrorGhostPairs(nowMs)
 
 	// ========== 段 4e: 静止金属反射体自学习（near-wall + 长期静止 + 游走真人共存）==========
@@ -1443,7 +1235,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		vx := int(math.Round(vxF))
 		vy := int(math.Round(vyF))
 
-		stillSec := 0 // still-box 单源（投影显示 TrackOutput.StillSec；computeRisk 不再吃此死参数）
+		stillSec := 0 // still-box 单源（投影显示 TrackOutput.StillSec）
 		if ts.StillBoxRunStart > 0 {
 			stillSec = int((nowMs - ts.StillBoxRunStart) / 1000)
 		}
@@ -1454,10 +1246,6 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			TrackID:    ts.TrackID,
 			DeviceAddr: ts.DeviceAddr,
 			RoomID:     ts.RoomID,
-			Verdict:    ts.Verdict,
-			Score:      ts.Score,
-			Risk:       tm.computeRisk(ts, nowMs),
-			Anomaly:    ts.CurrentAnomaly,
 			X:          px,
 			Y:          py,
 			Z:          ts.LastZ,
@@ -1487,346 +1275,8 @@ func (tm *TrackManager) GetOutputs() []TrackOutput {
 // PR-Bootstrap: StillFallStats + stillFallReportCount 已删除（v1 fire path 删除后无 source）。
 // PR-10 BathroomStillFall 的统计走 ai.log audit 路径，不再 per-TrackManager 计数。
 
-// ========================================================================
-// 出生打分（PR-5.1+5.2+5.3 重写：累积 GhostPenalty 模式）
-// ========================================================================
-//
-// 设计：用户 2026-04-29 对齐
-//   主路径：累积 GhostPenalty，> 80 判 Ghost；阈值高、必须多重证据合击。
-//   保留 ts.Score 双轨（baseline 50 + 加分）作向后兼容；不再 hard cut 0/100。
-//
-// 因子（出生瞬时）：
-//   1. dEntry / EnterRoom 速度反推    最多 -60
-//      - 配对窗 ±3s（实证 92% coverage）
-//      - 无配对 EnterRoom: -60
-//      - D=0（室外但 InFOV）: 0
-//      - speed >= 100 cm/s: -60；50-100 线性；< 50: 0
-//   2. 出生 cell 类型                  -10
-//      - AreaDeny / AreaSit / AreaBed / AreaSit / AreaActive: -10
-//   4. 已有 ≥1 个 verdict=Real track：    -10  (后出现的 ID)
-//   6. cell.GhostRatio > 0.3：              -10  (历史 ghost 多发区)
-//
-// 因子 3 (30s 静止) / 因子 5 (运动对称性) 在 lifetime 期间累积。
-//
-// 反 ghost 兜底（在 verdict 转换段处理）：
-//   - track 存活 ≥ 5min 锚定 Real
-//   - service startup 5min grace 内 first-seen 默认 Real
-
-const (
-	enterPairWindowMs     = 3_000 // EnterRoom 与 birth 的最大时间差（ms）
-	birthMaxRealisticCm   = 150   // 距 Enter 此值内才可能是 1 秒走入的真人
-	birthEnterPairBonus   = 20    // 有 EnterRoom 配对加分
-	GhostPenaltyThreshold = 80    // 累积 ghost penalty 阈值
-)
-
-// birthScoreResult birthScore 计算结果。
-// score: baseline 50 + 加分（用于 ts.Score 向后兼容，影响 ProbationFrames 升降）
-// penalty: ghost 累积扣分（写入 ts.GhostPenalty），≥ 80 在 verdict 转换段判 Ghost
-// reason: 主导信号（用于 ai.log）
-type birthScoreResult struct {
-	score   int
-	penalty int
-	reason  string
-}
-
-func (tm *TrackManager) birthScore(x, y int, tMs int64) birthScoreResult {
-	cell := tm.grid.CellAt(x, y)
-	score := 50
-	penalty := 0
-	reason := ""
-
-	// ===== 因子 1: dEntry / EnterRoom 速度反推（最多 -60）=====
-	dEntry := tm.grid.NearestEntryDist(x, y)
-	isOutdoorButInFOV := cell == nil || !cell.InRoom
-	switch {
-	case isOutdoorButInFOV:
-		// D=0 边界规则：在室外但仍 InFOV 的 birth 不扣
-	default:
-		enterMs, enterFound := tm.nearestEnterRoomMs(tMs, enterPairWindowMs)
-		if !enterFound {
-			penalty += 60
-			reason = "no_enter_pair"
-		} else {
-			T := math.Abs(float64(tMs-enterMs)) / 1000.0
-			if T < 1.0 {
-				T = 1.0 // 防除零；T=0 视为 1s
-			}
-			speed := float64(dEntry) / T
-			switch {
-			case speed >= 100:
-				penalty += 60
-				reason = "birth_speed_impossible"
-			case speed >= 50:
-				p := int(math.Round(60 * (speed - 50) / 50))
-				penalty += p
-				if reason == "" {
-					reason = "birth_speed_high"
-				}
-			}
-		}
-	}
-
-	// ===== 因子 2: 出生 cell 类型（-10）=====
-	if cell != nil {
-		switch cell.Belief[0].Type {
-		case AreaDeny:
-			penalty += 10
-			if reason == "" {
-				reason = "born_in_deny"
-			}
-		case AreaSit, AreaLying, AreaBed, AreaMonitorBed:
-			penalty += 10
-			if reason == "" {
-				reason = "born_in_rest_or_shower"
-			}
-		}
-	}
-
-	// ===== 因子 4: 后出现的 ID（已有 verdict=Real 的 track）-10 =====
-	nReal := 0
-	for _, t := range tm.tracks {
-		if t.Verdict == VerdictReal {
-			nReal++
-		}
-	}
-	if nReal >= 1 {
-		penalty += 10
-		if reason == "" {
-			reason = "later_born_with_real_track"
-		}
-	}
-
-	// ===== 因子 6: 历史 ghost 多发区（cell.GhostRatio > 0.3）-10 =====
-	if cell != nil && cell.GhostRatio() > 0.3 {
-		penalty += 10
-		if reason == "" {
-			reason = "ghost_history_zone"
-		}
-	}
-
-	// ===== Score baseline 加分（保持 verdict 旧路径可走 Real）=====
-	if dEntry < 50 {
-		score += 20
-	} else if dEntry <= birthMaxRealisticCm && tm.hasRecentEnterRoom(tMs) {
-		score += birthEnterPairBonus
-	}
-	if cell != nil && cell.IsEntry() {
-		score += 15
-	}
-
-	return birthScoreResult{
-		score:   clampInt(score, 0, 100),
-		penalty: penalty,
-		reason:  reason,
-	}
-}
-
-// applyLifetimeGhostFactors 在 track 生命周期内增量累积 ghost penalty。
-//
-// 因子覆盖：
-//   - 因子 3（30s 内位移很少 → 凭空出现又不动）：每 track 一次性
-//   - 因子 5/7（对称性 ghost：紧贴运动 OR 关于镜面几何对称）：并列 peer，
-//     仅在 GhostPenalty ∈ [70, 80) 边缘时启用；任一命中 +10 跨阈值判 Ghost。
-//
-// 调用方持锁；因子 3 幂等（LifetimeFactorsApplied bitmask 防重复扣）；
-// 因子 5/7 每帧检查一次，命中即跨阈值。
-func (tm *TrackManager) applyLifetimeGhostFactors(ts *TrackState, nowMs int64) {
-	const (
-		factor3Bit          = 1 << 0
-		factor3CheckAgeMs   = 30_000 // 出生后 30s 检查一次
-		factor3DispThreshCm = 50     // 位移 < 50cm 视为"凭空又不动"
-		factor3Penalty      = 10
-	)
-	// 因子 3: 30s 内位移很少
-	if ts.LifetimeFactorsApplied&factor3Bit == 0 &&
-		ts.LastUpdateMs-ts.BirthPos.TMs >= factor3CheckAgeMs {
-		px, py := ts.Kalman.Position()
-		dx := int(math.Round(px)) - ts.BirthPos.X
-		dy := int(math.Round(py)) - ts.BirthPos.Y
-		disp := int(math.Sqrt(float64(dx*dx + dy*dy)))
-		if disp < factor3DispThreshCm {
-			ts.GhostPenalty += factor3Penalty
-			if ts.BirthReason == "" || ts.BirthReason == "low_score" {
-				ts.BirthReason = "static_after_birth"
-			}
-		}
-		ts.LifetimeFactorsApplied |= factor3Bit
-	}
-
-	// 因子 5/7: 对称性 ghost 检测（peer 因子，并列结构）
-	// 仅当 GhostPenalty 已在 [70, 80) 边缘时启用 — 此时任一命中 +10 = 80 跨阈值。
-	// 之外不计算（避免每帧扫所有 track 对 / interferes，开销不必要）。
-	//   - 因子 5: 双 track 紧贴（<100cm）+ 同向移动 → 多径反射 ghost
-	//   - 因子 7: 当前 track 关于 cfg.Interferes 长轴镜像 ≤50cm 处有 Real → 镜面 ghost
-	if ts.GhostPenalty >= 70 && ts.GhostPenalty < GhostPenaltyThreshold {
-		if tm.checkMotionSymmetry(ts, nowMs) {
-			ts.GhostPenalty += 10
-			ts.BirthReason = "motion_symmetric_with_real_track"
-			tm.logger.Info("ghost_veto",
-				zap.String("reason", "motion_symmetry"),
-				zap.String("device_uid", ts.DeviceAddr),
-				zap.Int("track_id", ts.TrackID),
-				zap.Int("ghost_penalty", ts.GhostPenalty),
-				zap.Int64("ts_ms", nowMs),
-			)
-		} else if partner, mx, my, rx, ry, ok := tm.checkMirrorSymmetry(ts); ok {
-			ts.GhostPenalty += 10
-			ts.BirthReason = "mirror_image_of_real_track"
-			bxF, byF := ts.Kalman.Position()
-			tm.logger.Info("ghost_veto",
-				zap.String("reason", "mirror_symmetry"),
-				zap.String("device_uid", ts.DeviceAddr),
-				zap.Int("track_id", ts.TrackID),
-				zap.Int("partner_track_id", partner),
-				zap.Int("ghost_penalty", ts.GhostPenalty),
-				zap.Int("track_x", int(math.Round(bxF))), zap.Int("track_y", int(math.Round(byF))),
-				zap.Int("reflected_x", rx), zap.Int("reflected_y", ry),
-				zap.Int("partner_x", mx), zap.Int("partner_y", my),
-				zap.Int64("ts_ms", nowMs),
-			)
-		}
-	}
-}
-
-// checkMirrorSymmetry 因子 7：镜面对称 ghost 检测（peer to motion_symmetry）。
-//
-// 触发判定：
-//  1. 房间存在另一 verdict=Real 的 track（partner）
-//  2. 对每个 cfg.Interferes 矩形 m，求当前 track 关于 m 长轴中线的镜像 (rx, ry)
-//  3. 任一 partner 距 (rx, ry) ≤ 50cm → 当前 track 是镜像 ghost
-//
-// 物理意义：镜子/玻璃/金属反射面把人毫米波信号镜像到镜面对侧，雷达把这个二次反射
-// 当成"另一个人"在镜后等距处。motion_symmetry 抓"两 track 紧贴同向"的多径反射；
-// 镜面对称抓"两 track 关于固定物理几何镜像"的反射，互为补充。
-//
-// 返回 (partnerTrackID, partnerX, partnerY, reflectedX, reflectedY, hit)。调用方持锁。
-func (tm *TrackManager) checkMirrorSymmetry(ts *TrackState) (int, int, int, int, int, bool) {
-	const mirrorDistCm = 50
-	if len(tm.interferes) == 0 {
-		return 0, 0, 0, 0, 0, false
-	}
-	bxF, byF := ts.Kalman.Position()
-	bx, by := int(math.Round(bxF)), int(math.Round(byF))
-	for _, m := range tm.interferes {
-		rx, ry := reflectAcrossMirror(bx, by, m)
-		for _, t := range tm.tracks {
-			if t == ts || t.Verdict != VerdictReal {
-				continue
-			}
-			axF, ayF := t.Kalman.Position()
-			ax, ay := int(math.Round(axF)), int(math.Round(ayF))
-			if distInt(ax, ay, rx, ry) <= mirrorDistCm {
-				return t.TrackID, ax, ay, rx, ry, true
-			}
-		}
-	}
-	return 0, 0, 0, 0, 0, false
-}
-
-// reflectAcrossMirror 把点 (px, py) 关于矩形 m 的"长轴中线"做镜像。
-//
-//	长轴 = AABB 较长那一对边（width >= height 时为水平镜，否则垂直镜）。
-//	物理意义：mirror 通常薄长，AABB 长边方向 ≈ 镜面方向；中线 ≈ 镜面物理表面。
-//	薄镜（depth ~5-10cm）下中线与表面差几 cm，对 50cm 距离阈值无影响。
-//
-// 数学：
-//
-//	水平镜 axis Y = (Y1+Y2)/2 → 反射 (x, 2*cy - y)
-//	垂直镜 axis X = (X1+X2)/2 → 反射 (2*cx - x, y)
-//
-// 注意：当前只处理 AABB（layout 解析后的镜面均轴对齐）；旋转镜面将来 PR 再加。
-func reflectAcrossMirror(px, py int, m radarutils.Rect) (int, int) {
-	w := m.X2 - m.X1
-	h := m.Y2 - m.Y1
-	if w >= h {
-		cy := (m.Y1 + m.Y2) / 2
-		return px, 2*cy - py
-	}
-	cx := (m.X1 + m.X2) / 2
-	return 2*cx - px, py
-}
-
-// checkMotionSymmetry PR-5.4 因子 5：双 track 运动对称性检测。
-//
-// 触发判定：
-//  1. 房间存在另一 verdict=Real 的 track（partner）
-//  2. 当前位置与 partner 距离 < 100cm（紧贴 → 反射 ghost 经典模式）
-//  3. 取 2s 前两 track 的位置 → 计算位移向量 (dx, dy)
-//  4. 两向量长度都 ≥ 10cm（避免静止 noise 触发）
-//  5. 夹角 < 30°（cos > 0.866） → 同步移动 → 强 ghost 信号
-//
-// 返回 true 表示命中（应扣 -10 跨阈值）。调用方持锁。
-func (tm *TrackManager) checkMotionSymmetry(ts *TrackState, nowMs int64) bool {
-	const (
-		coexistDistMaxCm = 100          // 双 track 距离上限
-		windowMs         = int64(2_000) // 2s 滚动窗
-		minDispCm        = 10           // 单 track 最小位移（< 10 视为静止 noise）
-		cosThreshold     = 0.866        // cos(30°)
-	)
-	// 找另一个共存 Real track
-	var partner *TrackState
-	for _, t := range tm.tracks {
-		if t == ts {
-			continue
-		}
-		if t.Verdict != VerdictReal {
-			continue
-		}
-		partner = t
-		break
-	}
-	if partner == nil {
-		return false
-	}
-	// 当前位置 + 2s 前位置
-	pxA, pyA := ts.Kalman.Position()
-	pxB, pyB := partner.Kalman.Position()
-	axNow, ayNow := int(math.Round(pxA)), int(math.Round(pyA))
-	bxNow, byNow := int(math.Round(pxB)), int(math.Round(pyB))
-
-	// 距离 < 100cm
-	if distInt(axNow, ayNow, bxNow, byNow) > coexistDistMaxCm {
-		return false
-	}
-
-	// 2s 前位置（从 History 取最接近的早期点）
-	pa0, okA := positionAtMsAgo(ts, nowMs, windowMs)
-	pb0, okB := positionAtMsAgo(partner, nowMs, windowMs)
-	if !okA || !okB {
-		return false
-	}
-
-	// 位移向量
-	dxA, dyA := axNow-pa0.X, ayNow-pa0.Y
-	dxB, dyB := bxNow-pb0.X, byNow-pb0.Y
-	magA := math.Sqrt(float64(dxA*dxA + dyA*dyA))
-	magB := math.Sqrt(float64(dxB*dxB + dyB*dyB))
-	if magA < float64(minDispCm) || magB < float64(minDispCm) {
-		return false // 至少有一方没动 → 不算同步运动
-	}
-
-	// 夹角余弦
-	dot := float64(dxA*dxB + dyA*dyB)
-	cosTheta := dot / (magA * magB)
-	return cosTheta > cosThreshold
-}
-
-// positionAtMsAgo 从 ts.History 取最接近 (nowMs - windowMs) 的位置。
-// 返回 (TimedPoint, found)；ok=false 表示 history 为空或全比目标新。
-func positionAtMsAgo(ts *TrackState, nowMs int64, windowMs int64) (TimedPoint, bool) {
-	if len(ts.History) == 0 {
-		return TimedPoint{}, false
-	}
-	target := nowMs - windowMs
-	// 倒序找第一个 TMs <= target 的点
-	for i := len(ts.History) - 1; i >= 0; i-- {
-		if ts.History[i].TMs <= target {
-			return ts.History[i], true
-		}
-	}
-	// 都比 target 新 → 用最早的（不严谨但作为 fallback）
-	return ts.History[0], true
-}
+// enterPairWindowMs EnterRoom 与 birth 的最大时间差（ms）：出生 logicID 关联用（hasRecentEnterRoom）。
+const enterPairWindowMs = 3_000
 
 // ThresholdNonRestMs 非休息区 region-static 门限（12min，老人慢走容差）；neighbor D 窗锚此 + 余量
 // （§82 单源：belief/engine 侧不持 12min 字面量，由 bootstrap 注入 Room）。
@@ -1837,29 +1287,6 @@ const ThresholdNonRestMs = 12 * 60 * 1000
 //   ① 位置-region（连续帧 |dx|,|dy|≤15cm）被角装 ±30~50 抖动反复打散，D523 久坐学不到；
 //   ② 无 walk-away 收场闸 → 真摔在不抖点躺满 12min 会被误学成 Sit（FN）。新路径 stillbox 抗抖 + 必须自走才学。
 // ThresholdNonRestMs（上方）保留：§82 neighbor D 窗仍锚此。
-
-// nearestEnterRoomMs 在 [tMs - windowMs, tMs + windowMs] 内查最近 EnterRoom 事件。
-// 返回最接近 tMs 的事件时间戳。调用方持锁。
-func (tm *TrackManager) nearestEnterRoomMs(tMs int64, windowMs int64) (int64, bool) {
-	var bestMs int64
-	bestDelta := windowMs + 1
-	found := false
-	for k, e := range tm.recentRadarEvents {
-		if e.EventName != alarm.EnterRoom {
-			continue
-		}
-		delta := tMs - k
-		if delta < 0 {
-			delta = -delta
-		}
-		if delta <= windowMs && delta < bestDelta {
-			bestMs = k
-			bestDelta = delta
-			found = true
-		}
-	}
-	return bestMs, found
-}
 
 // hasRecentEnterRoom 检查 [tMs - enterPairWindowMs, tMs] 窗口内有无 EnterRoom 事件。
 // 调用方持锁（segment 1 已持锁）。
@@ -1884,86 +1311,9 @@ func (tm *TrackManager) hasRecentEnterRoomBetween(fromMs, toMs int64) bool {
 	return false
 }
 
-// tryGraceUpgrade Birth verdict 多流时序兜底（方案 A）。
-//
-// 出生时 EnterRoom event-stream 可能落后于 monitor stream 1-3s，birth score 短路为 0。
-// BirthFinalDeadlineMs 给 grace 缓冲；到点用扩展窗 [birth-3s, deadline] 再扫，
-// 如有 EnterRoom 命中 + 出生位置物理可达（≤150cm to entry）→ 抬 birth_score。
-//
-// 一次性 recompute（不论结果如何，之后清空 deadline 不再重算）。
-// 调用位置：segment 3 promote 之前；调用方持锁。
-func (tm *TrackManager) tryGraceUpgrade(ts *TrackState, nowMs int64) {
-	if ts.BirthFinalDeadlineMs == 0 {
-		return // 已 finalize
-	}
-	if nowMs < ts.BirthFinalDeadlineMs {
-		return // 还在 grace 期内
-	}
-	defer func() { ts.BirthFinalDeadlineMs = 0 }() // 不论结果，之后不再重算
-
-	// 仅当 birth 是因「找不到 EnterRoom」而被短路时才补救
-	if ts.BirthReason != "no_enter_pair" && ts.BirthReason != "far_from_enter" {
-		tm.logger.Debug("birth_grace_skip_reason",
-			zap.Int("track_id", ts.TrackID),
-			zap.String("birth_reason", ts.BirthReason))
-		return
-	}
-	// 距离判断：>150cm 物理仍不可能
-	dEntry := tm.grid.NearestEntryDist(ts.BirthPos.X, ts.BirthPos.Y)
-	if dEntry > birthMaxRealisticCm {
-		tm.logger.Info("birth_grace_skip_far_from_enter",
-			zap.Int("track_id", ts.TrackID),
-			zap.Int("d_entry", dEntry),
-			zap.Int("birth_x", ts.BirthPos.X), zap.Int("birth_y", ts.BirthPos.Y))
-		return
-	}
-	// 扩展窗 [birth-3s, deadline] 重扫
-	if !tm.hasRecentEnterRoomBetween(ts.BirthPos.TMs-enterPairWindowMs, ts.BirthFinalDeadlineMs) {
-		tm.logger.Info("birth_grace_skip_no_enter_event_in_window",
-			zap.Int("track_id", ts.TrackID),
-			zap.Int64("birth_ms", ts.BirthPos.TMs),
-			zap.Int64("deadline", ts.BirthFinalDeadlineMs),
-			zap.Int("event_count", len(tm.recentRadarEvents)))
-		return
-	}
-	// 命中：抬 birth score
-	newScore := 50 + birthEnterPairBonus // base + entry bonus
-	if dEntry < 50 {
-		newScore = 50 + 20 // 与 birthScore 因子 1 dEntry<50 加分对齐
-	}
-	if newScore > ts.BirthScore {
-		delta := newScore - ts.BirthScore
-		ts.BirthScore = newScore
-		ts.BirthReason = "grace_enter_pair_recovered"
-		ts.Score = clampInt(ts.Score+delta, 0, 100)
-		tm.logger.Info("birth_grace_upgraded",
-			zap.String("device_uid", ts.DeviceAddr),
-			zap.Int("track_id", ts.TrackID),
-			zap.Int("new_birth_score", ts.BirthScore),
-			zap.Int("d_entry_cm", dEntry),
-			zap.Int64("birth_ms", ts.BirthPos.TMs),
-			zap.Int64("nowMs", nowMs),
-		)
-	}
-}
-
 // ========================================================================
-// 即时流打分（不累计到 cell，只在 track 内部）
+// 即时流（still-box / dwell / 久静量 + Lie 状态机；不累计到 cell 打分）
 // ========================================================================
-
-// scoreResidual Kalman 残差打分
-func (tm *TrackManager) scoreResidual(ts *TrackState, residual int) {
-	switch {
-	case residual < 30:
-		ts.AdjustScore(2)
-	case residual < 80:
-		// 中等偏差
-	case residual < 200:
-		ts.AdjustScore(-5)
-	default:
-		ts.AdjustScore(-20) // 空间跳跃
-	}
-}
 
 // scoreMovement 运动/静止评分 + 累计静止时长 + Dwell 记录。
 // pose 参数为当前帧 raw pose（用于 still-fall 升级判定 stand 姿态）。
@@ -1975,57 +1325,15 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 	d := distInt(prev.X, prev.Y, x, y)
 
 	cell := tm.grid.CellAt(x, y)
-	isRest := cell != nil && cell.IsRestZone()
 
 	// AreaSit 学习已单源到 StillBox 驱动的 log-odds（emitSitEpisode，sit_learning.go）——
 	// 旧 PR-13 位置-region（updateRegionStatic）已删：位置门控被角装 ±30~50 抖动打散，且无 walk-away 闸会把真摔点误学成 Sit。
 
 	// ── 即时态（d 帧间位移判据）：score / refresh / stand-static 计时（不变；不碰久静量）──
 	if d < StillThreshCm {
-		// PR-11: pose=Lie on AreaBed 持续刷新 — 4h 累计 → 重锁 confidence=95
-		if cell != nil && RadarPoseToCore(pose) == CorePoseLie && cell.Belief[0].Type == AreaBed {
-			if ts.LyingOnBedSinceMs == 0 {
-				ts.LyingOnBedSinceMs = nowMs
-			}
-			if !ts.AreaBedRefreshed && nowMs-ts.LyingOnBedSinceMs >= 4*3600*1000 {
-				cell.MarkRestZoneByFeedback(AreaBed)
-				tm.grid.boostNeighborSameType(x, y, AreaBed, nowMs)
-				ts.AreaBedRefreshed = true
-				tm.logger.Info("area_bed_refreshed_by_lying4h",
-					zap.String("device_uid", ts.DeviceAddr),
-					zap.Int("track_id", ts.TrackID),
-					zap.Int("x", x), zap.Int("y", y),
-					zap.Int64("ts_ms", nowMs),
-				)
-			}
-		} else {
-			ts.LyingOnBedSinceMs = 0
-		}
-		// PR-11: pose=Sit on AreaSit 持续刷新 — 5min 累计 → 重锁
-		if cell != nil && RadarPoseToCore(pose) == CorePoseSit && cell.Belief[0].Type == AreaSit {
-			if ts.SitZoneSinceMs == 0 {
-				ts.SitZoneSinceMs = nowMs
-			}
-			if !ts.SitZoneRefreshed && nowMs-ts.SitZoneSinceMs >= 5*60*1000 {
-				cell.MarkRestZoneByFeedback(AreaSit)
-				tm.grid.boostNeighborSameType(x, y, AreaSit, nowMs)
-				ts.SitZoneRefreshed = true
-				tm.logger.Info("sit_zone_refreshed_by_sit5min",
-					zap.String("device_uid", ts.DeviceAddr),
-					zap.Int("track_id", ts.TrackID),
-					zap.Int("x", x), zap.Int("y", y),
-					zap.Int64("ts_ms", nowMs),
-				)
-			}
-		} else {
-			ts.SitZoneSinceMs = 0
-		}
-		if !isRest && ts.Verdict == VerdictPending {
-			ts.AdjustScore(-3)
-		}
-		// 静止超时 LongStill（久静量）已迁到下方 box 判据块（单源 StillBoxRunStart，见函数末）。
-		// PR-7.2 stand-static 自学习 → AreaSit 已删：位置门控被角装抖动打散 + 无 walk-away 闸会把真摔躺点误学成 Sit；
-		// AreaSit 自动学习单源到 StillBox log-odds（emitSitEpisode，sit_learning.go）。
+		// 区域自学单源 = StillBox log-odds（emitSitEpisode，sit_learning.go）：Bed 禁自学；AreaSit 渐进 SitScore 学，
+		// 不在此走 MarkRestZoneByFeedback 直写刷新（旧 PR-11 即时刷新会绕过 log-odds、与单源矛盾，已删）。
+		// PR-7.2 stand-static 自学习 → AreaSit 已删：位置门控被角装抖动打散 + 无 walk-away 闸会把真摔躺点误学成 Sit。
 
 		// PR-9: v1 R4 bedside_fall 触发块整段删除（依赖 lastLeftBedAt）。
 		// PR-10/11 BathroomBedsideFall + bedroom bedside_fall 将以 SuiteCensus + BedSession 重写，
@@ -2034,15 +1342,6 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 		// 即时态移动：reset 即时态计时（StandStatic/Lying/Sit/StillFall）；速度合理性。
 		// 久静量（Dwell/ToleratedStill/LongStill/Anomaly/LongStillReported）走下方 box 判据块。
 		ts.StillFallReported = false
-		ts.LyingOnBedSinceMs = 0
-		ts.SitZoneSinceMs = 0 // PR-11: track 移动 → reset 持续观测计时
-		// 速度合理性
-		speed := int(math.Round(ts.Kalman.Speed()))
-		if speed > 10 && speed < 150 {
-			ts.AdjustScore(3)
-		} else if speed >= 150 {
-			ts.AdjustScore(-2)
-		}
 	}
 
 	// ── 久静量（box 判据，单源 StillBoxRunStart/StillBoxStartXY；updateContinuousIndicators 已同步算）──
@@ -2052,7 +1351,6 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 		isRiskTime := IsNightTime(nowMs, tm.timezone)
 		if timeout := cell.EffectiveStillTimeoutSec(isRiskTime); timeout > 0 {
 			if stillSec := int((nowMs - ts.StillBoxRunStart) / 1000); stillSec > timeout {
-				ts.CurrentAnomaly = AnomalyStillTooLong
 				if !ts.LongStillReported {
 					tm.grid.MarkLongStill(x, y, nowMs)
 					ts.LongStillReported = true
@@ -2078,47 +1376,6 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 			}
 		}
 		ts.LongStillReported = false
-		if ts.CurrentAnomaly == AnomalyStillTooLong {
-			ts.CurrentAnomaly = AnomalyNone
-		}
-	}
-
-	// 因子 5: 平均速度
-	age := ts.AgeSec()
-	if age > 5 {
-		avgSpeed := ts.TotalDisplacement() / age
-		if avgSpeed < 2 && !isRest {
-			ts.AdjustScore(-2)
-		}
-	}
-}
-
-// detectZNoise Z 突变检测（本 track 内部统计，不累计到 cell）
-func (tm *TrackManager) detectZNoise(ts *TrackState, z int) {
-	if ts.LastZ == 0 {
-		return
-	}
-	dz := ts.LastZ - z
-	if dz < 0 {
-		dz = -dz
-	}
-	if dz > 50 { // Z 单帧突变 > 50cm
-		ts.ZNoiseCount++
-	}
-}
-
-// detectPoseMismatch pose 与运动学矛盾（track 内部累计）
-func (tm *TrackManager) detectPoseMismatch(ts *TrackState, pose int) {
-	speed := int(math.Round(ts.Kalman.Speed()))
-	// pose=Walking 但速度 ≈ 0
-	if pose == observation.PoseWalking && speed < 5 && ts.FrameCount > 3 {
-		ts.PoseMismatchCount++
-		ts.CurrentAnomaly = AnomalyPoseMismatch
-		ts.AdjustScore(-3)
-	}
-	// pose=Standing 但 Z < 50（在地面）
-	if pose == observation.PoseStanding && ts.LastZ > 0 && ts.LastZ < 50 {
-		ts.PoseMismatchCount++
 	}
 }
 
@@ -2155,69 +1412,6 @@ func (tm *TrackManager) updateLieStateMachine(ts *TrackState, pose, x, y int, no
 	ts.PrevCore = curCore
 }
 
-// ========================================================================
-// 综合风险分
-// ========================================================================
-
-func (tm *TrackManager) computeRisk(ts *TrackState, nowMs int64) int {
-	if ts.Verdict == VerdictGhost {
-		return 0
-	}
-	base := 0
-	switch ts.CurrentAnomaly {
-	case AnomalyFall:
-		base = 100
-	case AnomalyBedFall:
-		base = 100 // 双源矛盾确认的 bed-fall，最高风险
-	case AnomalyBedsideFall:
-		base = 100 // R4 床边晕倒（夜间 + LeftBed 后床边静止超时），最高风险
-	case AnomalyStillTooLong:
-		base = 60
-	case AnomalyPathBreak:
-		base = 80
-	case AnomalyPoseMismatch:
-		base = 70
-	}
-	if base == 0 {
-		return 0
-	}
-	tf := timeFactor(nowMs)
-	of := tm.occupancyFactor()
-	risk := float64(base) * tf * of
-	return clampInt(int(math.Round(risk)), 0, 100)
-}
-
-func timeFactor(nowMs int64) float64 {
-	hour := time.UnixMilli(nowMs).Hour()
-	switch {
-	case hour >= 5 && hour < 6:
-		return 2.0
-	case hour >= 22 || hour < 5:
-		return 1.5
-	case hour >= 6 && hour < 8:
-		return 1.3
-	default:
-		return 1.0
-	}
-}
-
-func (tm *TrackManager) occupancyFactor() float64 {
-	realCount := 0
-	for _, ts := range tm.tracks {
-		if ts.Verdict == VerdictReal {
-			realCount++
-		}
-	}
-	bedOccupied := tm.sleepadInBedCount > 0
-	if realCount <= 1 {
-		return 1.5
-	}
-	if realCount == 2 && bedOccupied {
-		return 1.2
-	}
-	return 1.0
-}
-
 // stillFallTimeoutSec "bathroom-like 位置过滤器"。**不是 fall 决策阈**（DBN silent-fall 阈权威=
 // belief/floor.go，契约其十五）；仅作 cell-learning AreaSit 自学习 gate：bathroom 内长时间 stand
 // 不应被误学为坐位。
@@ -2246,33 +1440,6 @@ func (tm *TrackManager) stillFallTimeoutSec(cell *Cell, isRiskTime bool) int {
 	return 0
 }
 
-// realTrackCount 当前 VerdictReal track 数（用于 lost-fall NumberPeople≥2 取消判定）。
-// 调用方持锁（segment 内部）。
-func (tm *TrackManager) realTrackCount() int {
-	n := 0
-	for _, t := range tm.tracks {
-		if t.Verdict == VerdictReal {
-			n++
-		}
-	}
-	return n
-}
-
-// NonGhostTrackCount 当前非 ghost track 数（排除 VerdictGhost，保留 Pending/Real/Anchored）。
-// zoneengine room total_people 用作 radar_np（替 firmware number_people，后者含 ghost）。
-// 保留 Pending：ghost 只在 ≥2 track 生效，单条新 track 不会被判 ghost，计入避免出生期少计。线程安全。
-func (tm *TrackManager) NonGhostTrackCount() int {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	n := 0
-	for _, t := range tm.tracks {
-		if t.Verdict != VerdictGhost {
-			n++
-		}
-	}
-	return n
-}
-
 // otherDeviceRealTTLMs 同房另一雷达"近期见过真 track"的有效窗（>radar 1Hz + 抖动）。
 const otherDeviceRealTTLMs = 8_000
 
@@ -2293,7 +1460,7 @@ func (tm *TrackManager) otherDeviceRealTrackRecent(excludeDevice string, nowMs i
 
 // ResetStillBox 清空一条 track 的 still-box 累积，使 StillSec 从 0 冷启重数（fall fire 后该 track 推断 episode
 // 结束 → 从 0 热机，需重新攒满 tFloor 才再发）。清 StillBoxRunStart/起点坐标 + History（History 不清则下帧
-// 会回锚到 30s 窗最早帧 → StillSec 跳回 ~30s 非真 0）。只复位 still-box；身份(LogicID)/realness(Score/Verdict)/
+// 会回锚到 30s 窗最早帧 → StillSec 跳回 ~30s 非真 0）。只复位 still-box；身份(LogicID)/realness(DBNConfidence)/
 // Kalman 跟踪连续性保留（对应 DBN 侧"不清 census"）。
 func (tm *TrackManager) ResetStillBox(logicID string) {
 	tm.mu.Lock()
@@ -2345,17 +1512,14 @@ func (tm *TrackManager) EvictTrack(logicID string) {
 	}
 }
 
-// updateContinuousIndicators 每帧维护 StillBox（静止无移动）检测 + Kalman birth-coherence 指标。
+// updateContinuousIndicators 每帧维护 StillBox（静止无移动）检测（box 判据，2026-05-03 由 byte-equal 改为 box）：
 //
-//  1. StillBox（静止无移动）检测（box 判据，2026-05-03 由 byte-equal 改为 box）：
-//     最近 30s History 滚动窗口内位移 box per-axis (max-min) ≤ StillBoxCm(50) → still。
-//     - 进入 still：起点 = History 最早帧 TMs（自然回填到 box 内最早一帧）
-//     - 持续 still：StillBoxRunStart 不变（即使 History 滚动丢早期帧）
-//     - 跳出 box：StillBoxRunStart 清零
-//     用于 lost-fall pending credit（半计入 wait）+ PR-C 流式 cancel 守卫。
-//  2. MaxKalmanResidual：track 生命周期峰值残差。
-//  3. MaxImpliedSpeedFromBirth：max(dist(current, birth) / age) cm/s；
-//     > ImpossibleSpeedCm 判硬 ghost；> SuspectSpeedCm + 无 EnterRoom 判软 ghost。
+//	最近 30s History 滚动窗口内位移 box per-axis (max-min) ≤ StillBoxCm(50) → still。
+//	- 进入 still：起点 = History 最早帧 TMs（自然回填到 box 内最早一帧）
+//	- 持续 still：StillBoxRunStart 不变（即使 History 滚动丢早期帧）
+//	- 跳出 box：StillBoxRunStart 清零
+//	用于 lost-fall pending credit（半计入 wait）+ PR-C 流式 cancel 守卫。
+//
 // emitSitEpisode StillBox break（移动导致=walk-away）时结算一条 Sit episode（sit_learning.go §11）。
 // 4 通道 log-odds → cell.SitScore；过 τ 升 AreaSit(SourceLearned)。dur=本次 box 时长(dwell)。
 // lost（ResetStillBox）不调本函数（fall 域，告警留）。结算后清姿态累加器（下条 episode 从 0）。
@@ -2419,7 +1583,7 @@ func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
 
 //
 // 调用位置：processFrameAt 已有 track 分支，Kalman.Update 之后。
-func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame, nowMs int64, residualF float64) {
+func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame, nowMs int64) {
 	// ---- StillBox（静止无移动）检测（50×50 per-axis box 判据 + 累计路程闸）----
 	// 用 BoxRangeWithinMs（max(dx,dy)）而非 DisplacementWithinMs（对角线）：50×40 倒地框
 	// 对角线 64 会被误判成"动"，per-axis 算 50（≤StillBoxCm=50）才正确判 still。
@@ -2462,22 +1626,6 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 				zap.Int("disp_cm", disp),
 				zap.Int("path_cm", path),
 				zap.Int64("now_ms", nowMs))
-		}
-	}
-
-	// ---- MaxKalmanResidual ----
-	if residualF > ts.MaxKalmanResidual {
-		ts.MaxKalmanResidual = residualF
-	}
-
-	// ---- MaxImpliedSpeedFromBirth ----
-	ageMs := nowMs - ts.BirthPos.TMs
-	if ageMs >= 1000 {
-		distFromBirth := distInt(f.X, f.Y, ts.BirthPos.X, ts.BirthPos.Y)
-		// implied = dist / ageSec = dist * 1000 / ageMs (cm/s)
-		implied := int(int64(distFromBirth) * 1000 / ageMs)
-		if implied > ts.MaxImpliedSpeedFromBirth {
-			ts.MaxImpliedSpeedFromBirth = implied
 		}
 	}
 }

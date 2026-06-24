@@ -72,7 +72,7 @@ const roomBathroom = 1
 // stillMuSigma 正常停留 (μ,σ) 秒 = cell area 与 room **保守合并**（取 μ 更大 = 更晚报 = 低 FP，§H）。
 //
 //	解决「bathroom 房未画 toilet → cell 落 unknown → 用激进 default 过早误报」：bathroom 房至少按 bathsec 兜。
-//	bed 区(areaType=2)分两支：真床(layout 名字含 bed)在 floor.Step 被 BedExempt 无条件豁免、到不了这里；
+//	bed 区分两支：真床(AreaType bed/monitorbed)在 floor.Step 按 AreaType 无条件豁免、到不了这里；
 //	LongSofa(无 sleepad 可长躺)与 Sit 同走 90min 长阈。床边跌倒仍靠接触轴(sleepad InBed 压/LeftBed 放行)细分。
 func stillMuSigma(areaType, roomType int) (mu, sigma float64) {
 	if roomType == roomBathroom {

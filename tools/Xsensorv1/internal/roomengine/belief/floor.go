@@ -65,7 +65,7 @@ func (g *FloorGuard) Step(obs Observation) bool {
 	contactInBed := nearCount == 1 && nearJ < len(obs.Sleepad) && obs.Sleepad[nearJ] == BedInBed
 	switch {
 	case obs.AreaType == areaBed || obs.AreaType == areaMonitorBed:
-		return false // 真床/监护床：名字含 bed 的接触床区豁免（无 sleepad 时几何分不清在床/床边摔，宁漏边缘 FN 不让睡眠误报）
+		return false // 真床/监护床：接触床区按 AreaType 豁免（无 sleepad 时几何分不清在床/床边摔，宁漏边缘 FN 不让睡眠误报）
 	case obs.AreaType == areaReflector:
 		return false // 镜/金属静态反射 → 无真人，realness 管
 	case contactInBed:

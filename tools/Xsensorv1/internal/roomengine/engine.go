@@ -139,7 +139,7 @@ var DefaultParamSets = [3]ParamSet{
 type Engine struct {
 	mu           sync.RWMutex
 	rooms        map[string]*TrackManager         // roomID → TrackManager
-	radarPeople  map[string]int                   // roomID → census 折叠后 radar 真人数（belief 层经 SetRoomRadarPeople 注入）；RealPeopleInRoom 优先用，未注入回退 NonGhostTrackCount
+	radarPeople  map[string]int                   // roomID → census 折叠后 radar 真人数（belief 层经 SetRoomRadarPeople 注入）；RealPeopleInRoom 唯一权威，未注入返回 -1
 	grids        map[string]*RoomGrid             // roomID → Grid
 	deviceMounts map[string]radarutils.RadarMount // deviceAddr(/128) → 该 radar 安装参数（坐标转换用）；多雷达房每台一份
 	deviceRoom   map[string]string                // deviceAddr → roomID (sensor 唯一物理寻址)
@@ -361,13 +361,12 @@ func (e *Engine) RealPeopleInRoom(roomID string) int {
 	if tm == nil {
 		return -1
 	}
-	// P1 占用人数：cutover 后用 belief 层 census 的折叠真人数（PReal 排 ghost + 同房跨雷达同人折叠，
-	//   2雷达1人→1；DBN 是权威，比 Verdict 版 NonGhostTrackCount 更准——后者会多算镜像 ghost）。
-	//   belief 未注入（未 Tick / 非 cutover）→ 回退 NonGhostTrackCount（向后兼容）。契约 §2 P1。
+	// P1 占用人数：cutover 后唯一权威 = belief 层 census 折叠真人数（PReal 排 ghost + 同房跨雷达同人折叠，
+	//   2雷达1人→1）。belief 未注入（未 Tick / 非 cutover；no-layout 房不 Tick）→ -1，caller 退回 firmware。
 	if rpOK {
 		return rp
 	}
-	return tm.NonGhostTrackCount()
+	return -1
 }
 
 // SetRoomRadarPeople belief 层每 tick 注入该房 census 折叠后的 radar 真人数（RealPeopleInRoom P1 用）。
@@ -375,6 +374,30 @@ func (e *Engine) SetRoomRadarPeople(roomID string, n int) {
 	e.mu.Lock()
 	e.radarPeople[roomID] = n
 	e.mu.Unlock()
+}
+
+// SetTrackPReal belief 层每 tick 把某轨 census realness 后验按 LogicID 回灌该房 TrackManager
+//（ghost 单源：cell 占用 / 床区学习读 TrackState.PReal）。roomID netip 归一查找同 RealPeopleInRoom。
+func (e *Engine) SetTrackPReal(roomID, logicID string, pReal float64) bool {
+	want, err := netip.ParsePrefix(roomID)
+	if err != nil {
+		return false
+	}
+	e.mu.RLock()
+	tm := e.rooms[roomID]
+	if tm == nil {
+		for k, t := range e.rooms {
+			if kp, perr := netip.ParsePrefix(k); perr == nil && kp == want {
+				tm = t
+				break
+			}
+		}
+	}
+	e.mu.RUnlock()
+	if tm == nil {
+		return false
+	}
+	return tm.SetTrackPReal(logicID, pReal)
 }
 
 // SnapshotSleepads 按 roomID 取本房在场 sleepad 占用身份快照（forensic + 后续吸纳；只读身份不进裁决）。
@@ -749,20 +772,12 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 	}
 }
 
-// GetRoomOutputs 查询某房间最新 track 输出
-func (e *Engine) GetRoomOutputs(roomID string) []TrackOutput {
-	e.mu.RLock()
-	tm := e.rooms[roomID]
-	e.mu.RUnlock()
-	if tm == nil {
-		return nil
-	}
-	return tm.GetOutputs()
-}
-
 // ========================================================================
 // RegisterRoom：构建 grid + rasterize 物理/几何/先验
 // ========================================================================
+
+// chairPriorConf = layout Chair SetPrior 成 AreaSit 的初始置信度（镜像 wisefido-sensor 正本）。
+const chairPriorConf = 80
 
 func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	e.mu.Lock()
@@ -847,7 +862,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		grid.SetPrior(r, AreaActive, 99, SourceHuman) // 淋浴=站立活动区
 	}
 	for _, r := range cfg.Chairs {
-		grid.SetPrior(r, AreaSit, 80, SourceHuman) // 粗标 Conf=80
+		grid.SetPrior(r, AreaSit, chairPriorConf, SourceHuman) // 粗标
 	}
 	for _, r := range cfg.Furnitures {
 		grid.SetPrior(r, AreaDeny, 99, SourceHuman) // 家具不可走 → 90min 背板

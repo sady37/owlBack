@@ -2,48 +2,6 @@ package roomengine
 
 import "math"
 
-// TrackVerdict track 判定结果
-//
-// sensor_v2 §10.1.1：Verdict 是 Layer 1 → Layer 2 契约字段。
-// VerdictAnchored 与 VerdictReal 平级（"真人"语义），但 LongSurvival/StartupGrace
-// 锚定后不可翻 Ghost；下游可借此区分"可信真人"与"普通真人"。
-// 数值非连续是为兼容存量（Ghost=2 已在 v1 全量使用，Anchored 追加在 3 位）；
-// 流序列化用 VerdictName 走字符串契约，避免下游耦合 int。
-type TrackVerdict uint8
-
-const (
-	VerdictPending  TrackVerdict = 0
-	VerdictReal     TrackVerdict = 1
-	VerdictGhost    TrackVerdict = 2
-	VerdictAnchored TrackVerdict = 3
-)
-
-// VerdictName 流序列化字符串契约（不暴露 int 给下游）。
-func VerdictName(v TrackVerdict) string {
-	switch v {
-	case VerdictReal:
-		return "real"
-	case VerdictGhost:
-		return "ghost"
-	case VerdictAnchored:
-		return "anchored"
-	}
-	return "pending"
-}
-
-// Anomaly track 异常类型
-type Anomaly uint8
-
-const (
-	AnomalyNone         Anomaly = 0
-	AnomalyFall         Anomaly = 1 // 跌倒（z 骤降 / Silent Fall）
-	AnomalyStillTooLong Anomaly = 2 // 静止超时
-	AnomalyPathBreak    Anomaly = 3 // 轨迹断裂（非出口消失）
-	AnomalyPoseMismatch Anomaly = 4 // pose 与运动学矛盾
-	AnomalyBedFall      Anomaly = 5 // 床下跌倒（雷达坐标仍在床 + sleepad 离床 + 仅 1 人）
-	AnomalyBedsideFall  Anomaly = 6 // 床边晕倒（夜间 LeftBed 后人未走开，床边静止超时；R4）
-)
-
 // TimedPoint 带时间戳的画布坐标（cm 整数）
 type TimedPoint struct {
 	X, Y, Z int
@@ -63,13 +21,13 @@ type TrackState struct {
 	// 关联继承上一条的 LogicID（见 assignLogicID）。下游 ghost/verdict 按 LogicID 聚合。
 	LogicID string
 
-	// ---- 出生档案 ----
-	BirthPos    TimedPoint
-	BirthScore  int    // 5 因子初始分 [0,100]
-	BirthReason string // birth filter 短路时的原因（"far_from_enter" / "no_enter_pair" / "unknown_area_multitrack" 等）
+	// PReal census/DBN realness 后验回灌（每 tick 由 belief 层经 Engine.SetTrackPReal 按 LogicID 写回）。
+	// ghost 判定的唯一权威源——cell 占用学习 / 床区学习门控读它（PReal≥0.5=真人），替代退役的 legacy Verdict/Score。
+	// 1-tick lag（Tick 后写、下帧读），与 SetRoomRadarPeople 同模式。未注入（no-layout 房不 Tick）→ 0。
+	PReal float64
 
-	// LoggedGhost：verdict 第一次升 Ghost 时已写过 ai.log，避免后续重复 log
-	LoggedGhost bool
+	// ---- 出生档案 ----
+	BirthPos TimedPoint
 
 	// ---- Kalman（内部 float，不持久化；track 死即销毁）----
 	Kalman *KalmanFilter2D
@@ -77,17 +35,6 @@ type TrackState struct {
 	// ---- 历史窗口（滚动 HistoryLen=30 帧；判定只用近 MotionWindowSec 秒）----
 	History    []TimedPoint
 	FrameCount int
-
-	// ---- Kalman 打分 ----
-	Score         int // [0,100]
-	Verdict       TrackVerdict
-	ConfirmedAtMs int64
-
-	// ---- Z 抖动判断（本 track 内部，不累计到 cell）----
-	ZNoiseCount int // Z 突变次数（单 track 内统计）
-
-	// ---- 运动学矛盾（本 track 内部）----
-	PoseMismatchCount int
 
 	// ---- 核心姿态状态机（Retract / Fall 检测用）----
 	PrevCore     CorePose
@@ -98,19 +45,6 @@ type TrackState struct {
 	// ---- 静止状态机（still-box 单源：cell engine 久静量消费 box，见 updateContinuousIndicators/scoreMovement）----
 	LongStillReported bool // 防 LongStill 重复上报
 	StillFallReported bool // 防 still-fall 重复上报（bathroom + pose=Stand + 15/18min）
-
-	// ---- PR-11 持续观测刷新（防 Belief 衰退后 layout 标记被吃掉）----
-	// LyingOnBedSinceMs：pose=Lie on AreaBed cell 持续起点；累计 ≥4h → MarkRestZoneByFeedback(AreaBed) refresh
-	// SitOnToiletSinceMs：pose=Sit on AreaSit cell 持续起点；累计 ≥5min → MarkRestZoneByFeedback(AreaSit) refresh
-	// AreaBedRefreshed / AreaToiletRefreshed：per-track 一次性 flag（防同 cell 反复触发）
-	LyingOnBedSinceMs   int64
-	SitOnToiletSinceMs  int64
-	AreaBedRefreshed    bool
-	AreaToiletRefreshed bool
-
-	// ---- PR-13 region static 自学习 → AreaSit（双 cell 加分 + 90% 容忍累积）----
-	// ---- 异常 ----
-	CurrentAnomaly Anomaly
 
 	// ---- 最后观测 ----
 	LastPose int
@@ -148,44 +82,12 @@ type TrackState struct {
 	sitFwContigStartMs int64   // 当前连续 pose=Sitting 段起点（断则 0；用于 3s 软门 + fwMax）
 	sitFwMaxMs         int64   // 本 episode 内最长连续 Sitting 时长（ms）
 	sitZBest           float64 // 本 episode 内 max sitZMembership（仅 z>0 帧更新；缺失中性）
-
-	// ---- Birth-coherence Kalman 域（每帧 O(1) 维护）----
-	// MaxKalmanResidual：track 生命周期内的峰值残差（Mahalanobis-like）。
-	// MaxImpliedSpeedFromBirth：max over life of dist(current, birth) / age（cm/s）。
-	// 用途：firmware 复用 track_id 拼接两个不相关反射时（如 D5F7 case），
-	// 出生分通过 + 即时 Kalman 残差小，但累计位移除以累计时间隐含速度爆表 → 强 ghost 信号。
-	MaxKalmanResidual        float64
-	MaxImpliedSpeedFromBirth int
-
-	// ---- Birth verdict 多流时序兜底（方案 A）----
-	// BirthFinalDeadlineMs：若 verdict 仍 Pending 且 nowMs >= 此值 → 重算 birth score
-	// （把 EnterRoom 反查窗口扩展到 [Birth-3s, deadline]），给 event-stream 缓冲 2s。
-	// 0 = 已终判过，不再重算。
-	BirthFinalDeadlineMs int64
-
-	// ---- PR-5.x Ghost penalty 累积器（与 BirthScore 互补）----
-	// GhostPenalty：track 生命周期累积的 ghost 扣分（>= 0），≥ 80 判 Ghost。
-	// 出生时由 birthScore 因子 1/2/4/6 累积；持续期由因子 3/5 增量。
-	GhostPenalty int
-
-	// LifetimeFactorsApplied：bitmask，防止 lifetime 因子（如 30s 静止）重复扣。
-	// bit 0 = factor 3 (30s static) applied
-	LifetimeFactorsApplied uint32
-
-	// LongSurvivalAnchored：track 存活 ≥ 5min 后兜底锚定 Real（不再翻 Ghost）。
-	LongSurvivalAnchored bool
-
-	// StartupGrace：service 启动 5min grace 期内 first-seen 的 track，默认 Real。
-	StartupGrace bool
 }
 
 // Track 生命周期常量
 const (
 	HistoryLen      = 30   // 滚动窗口帧数
 	MotionWindowSec = 5    // 运动学判定窗口（近 5 秒）
-	ProbationFrames = 5    // 试用期帧数
-	ScoreConfirmTh  = 50   // Score ≥ 此值 → Real
-	ScoreGhostTh    = 20   // Score < 此值 → Ghost
 	StillThreshCm   = 15   // 帧间位移 < 此值视为静止
 	MaxMissCount    = 10   // 连续丢失 > 此值 → 消失（约 10 秒）
 	LieRetractMs    = 8000 // 进入 Lie 后 < 此时长回到 Stand/Move → Retract
@@ -205,21 +107,18 @@ type BedSession struct {
 func NewTrackState(trackID int, deviceAddr, roomID string, x, y, z int, tMs int64) *TrackState {
 	birth := TimedPoint{X: x, Y: y, Z: z, TMs: tMs}
 	return &TrackState{
-		TrackID:              trackID,
-		DeviceAddr:           deviceAddr,
-		RoomID:               roomID,
-		BirthPos:             birth,
-		Kalman:               NewKalmanFilter2D(float64(x), float64(y)),
-		History:              []TimedPoint{birth},
-		FrameCount:           1,
-		Score:                50,
-		Verdict:              VerdictPending,
-		LastZ:                z,
-		LastUpdateMs:         tMs,
-		LastObservedMs:       tMs,
-		LastCellCol:          -1,
-		LastCellRow:          -1,
-		BirthFinalDeadlineMs: tMs + birthFinalGraceMs,
+		TrackID:        trackID,
+		DeviceAddr:     deviceAddr,
+		RoomID:         roomID,
+		BirthPos:       birth,
+		Kalman:         NewKalmanFilter2D(float64(x), float64(y)),
+		History:        []TimedPoint{birth},
+		FrameCount:     1,
+		LastZ:          z,
+		LastUpdateMs:   tMs,
+		LastObservedMs: tMs,
+		LastCellCol:    -1,
+		LastCellRow:    -1,
 	}
 }
 
@@ -234,9 +133,6 @@ const stillPathCm = 200
 // stillStepFloorCm：累计路程只计单段位移 ≥此 cm 的帧间步；< 此 = firmware 抖动(±5-10cm,
 // 段间距≈1.77σ≤18cm)不计。源头滤抖动 → 静止者路程恒 0 不误破盒;真挪步(≥30cm)逐段穿过。
 const stillStepFloorCm = 30
-
-// track birth 终判延迟（ms）：track 帧与 EnterRoom 分两条流，birth 时仅初步分留 Pending，此后 deadline 重算。
-const birthFinalGraceMs = 2000
 
 // PushPoint 追加一帧观测到历史窗口
 func (ts *TrackState) PushPoint(x, y, z int, tMs int64) {
@@ -409,9 +305,4 @@ func (ts *TrackState) AgeSec() int {
 	}
 	lastMs := ts.History[len(ts.History)-1].TMs
 	return int((lastMs - ts.BirthPos.TMs) / 1000)
-}
-
-// AdjustScore 调整分数，限制在 [0, 100]
-func (ts *TrackState) AdjustScore(delta int) {
-	ts.Score = clampInt(ts.Score+delta, 0, 100)
 }

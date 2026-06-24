@@ -87,7 +87,7 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 			}
 
 		case "Bed", "MonitorBed", "LongSofa":
-			// 都进 cfg.Beds 供 covers/MM 几何；cell 区域按 typeName 分（单点判据 name⊇bed → 豁免）：
+			// 都进 cfg.Beds 供 covers/MM 几何；cell 区域按 typeName 分（单点判据，bed/monitorbed → 豁免）：
 			//   Bed→AreaBed(豁免)/MonitorBed→AreaMonitorBed(豁免+vital)/LongSofa→AreaLying(90min,非床躺)。
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Beds = append(cfg.Beds, *rect)

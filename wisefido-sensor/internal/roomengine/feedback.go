@@ -9,7 +9,7 @@
 //                                          → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaSit)
 //         ↳ Sit zone pin                   → 追加 Chair object（reload→AreaSit 神圣不衰减）
 //     ☑ Lying Lounge Chair / Long Sofa     → ↳ Lounge placement（与 Sit pin 一致，只永久无 2H）:
-//         "Permanent (update layout)"      → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaBed) 永久学 lying
+//         "Permanent (update layout)"      → pinFeedbackZone：追加 LongSofa object + StampPriorRect(AreaLying,SourceHuman)
 //         (无 ↳ 行)                         → 不动 layout
 //     ☑ BlindArea / No Fall (家具后遮挡盲区) ↳ permanent → 追加 Furniture object（reload→AreaDeny；保留 5min tFloor 兜底真摔）
 //     ☑ Enter / Door (未画出口)             ↳ 直接 → 追加 Enter object（reload→AreaEnter）
@@ -113,7 +113,7 @@ type ParsedConditions struct {
 	FAUnknown          bool // 兜底 → fake
 
 	// Lounge placement（仅 FALoungeLongSofa 勾选时有意义；与 Sit pin 一致只永久，无 2H）
-	LoungePermanent bool // ↳ permanent → MarkRestZoneByFeedback(AreaBed)
+	LoungePermanent bool // ↳ permanent → pinFeedbackZone(AreaLying)：追加 LongSofa object + StampPriorRect
 
 	// 永久加区二次动作（追加 layout 对象）
 	SitPin        bool // ↳ sit zone pin → 追加 Chair object（reload→AreaSit 神圣）
@@ -322,23 +322,24 @@ func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
 		return false
 	}
 
-	// §3.3 Permanent：除 cell mark（routeFeedback 已做 AreaBed）外，再把这块躺区作为
-	// source='Feedback' object 浮到 layout canvas，让人在 RadarCanvas 看见/编辑/否决（方案 X）。
-	if operation == "false_alarm" && pc.FALoungeLongSofa && pc.LoungePermanent {
-		i.appendFeedbackObject(ctx, deviceAddr, canvas.X, canvas.Y, eventID, feedbackLoungeObject)
-	}
-	// 永久加区：护士在 Handle 勾"钉为坐区/标干扰区" → 追加对应 source=Feedback layout 对象
-	if operation == "false_alarm" && pc.SitPin {
-		i.appendFeedbackObject(ctx, deviceAddr, canvas.X, canvas.Y, eventID, feedbackSitObject)
-	}
-	if operation == "false_alarm" && pc.DenyZone {
-		i.appendFeedbackObject(ctx, deviceAddr, canvas.X, canvas.Y, eventID, feedbackInterfereObject)
-	}
-	if operation == "false_alarm" && pc.BlindArea {
-		i.appendFeedbackObject(ctx, deviceAddr, canvas.X, canvas.Y, eventID, feedbackBlindObject)
-	}
-	if operation == "false_alarm" && pc.EnterDoorZone {
-		i.appendFeedbackObject(ctx, deviceAddr, canvas.X, canvas.Y, eventID, feedbackEnterObject)
+	// 永久加区：护士勾"钉为坐/躺/干扰/盲/门区" → 追加 source=Feedback layout 对象 + 即时 live 刷 grid。
+	//   live-stamp 桥接 daily reload(22:00)/重启窗口：否则区要到下次 reload 才落 grid，期间 track 仍读 none→12min 误报。
+	if operation == "false_alarm" {
+		if pc.FALoungeLongSofa && pc.LoungePermanent {
+			i.pinFeedbackZone(ctx, deviceAddr, roomID, canvas.X, canvas.Y, eventID, feedbackLoungeObject)
+		}
+		if pc.SitPin {
+			i.pinFeedbackZone(ctx, deviceAddr, roomID, canvas.X, canvas.Y, eventID, feedbackSitObject)
+		}
+		if pc.DenyZone {
+			i.pinFeedbackZone(ctx, deviceAddr, roomID, canvas.X, canvas.Y, eventID, feedbackInterfereObject)
+		}
+		if pc.BlindArea {
+			i.pinFeedbackZone(ctx, deviceAddr, roomID, canvas.X, canvas.Y, eventID, feedbackBlindObject)
+		}
+		if pc.EnterDoorZone {
+			i.pinFeedbackZone(ctx, deviceAddr, roomID, canvas.X, canvas.Y, eventID, feedbackEnterObject)
+		}
 	}
 
 	i.logger.Info("alarm_feedback_marked",
@@ -365,17 +366,43 @@ type feedbackObjectSpec struct {
 	color    string
 	height   int
 	logKey   string
+	// liveArea/liveConf = 该 typeName 经 layout_parser→RegisterRoom 的 reload 等价 (AreaType, conf)。
+	// live-stamp 照此刷 grid 桥接 reload 窗口；必须与 layout_parser 映射逐项对齐（改 parser 须同步此处）。
+	// Lounge 用 AreaLying（非 AreaBed）：floor 纯按 AreaType 豁免，bed 型会关掉 90min 兜底 → 漏报。
+	liveArea AreaType
+	liveConf int
 }
 
-// reload 后 engine 先验：LongSofa→AreaBed（无sleepad床）/ Chair→AreaSit / Interfere→AreaDeny。
-// 三者均 source=Feedback：drawObjects 渲染虚线、updateRadarAreas 过滤不下发雷达（人确认转 Human 后才 declare）。
+// feedbackObjectHalfCm = 永久加区追加 object 的半边长（40×40cm 方块，告警点为心）；
+// 同源供 live grid 即时刷 rect 复用（与 reload parser 读同一几何）。
+const feedbackObjectHalfCm = 20
+
+// reload 后 engine 先验（liveArea，与 layout_parser typeName 映射一致）：
+//   LongSofa→AreaLying(90min,非床躺) / Chair→AreaSit / Interfere→AreaInterfer / Furniture→AreaDeny / Enter→AreaEnter。
+// 均 source=Feedback：drawObjects 渲染虚线、updateRadarAreas 过滤不下发雷达（人确认转 Human 后才 declare）。
 var (
-	feedbackLoungeObject    = feedbackObjectSpec{"feedback_lounge_", "Lounge (learned)", "LongSofa", "furniture", "#c19a6b", 40, "feedback_lounge_object_appended"}
-	feedbackSitObject       = feedbackObjectSpec{"feedback_sit_", "Sit zone (pinned)", "Chair", "furniture", "#ffff00", 90, "feedback_sit_object_appended"}
-	feedbackInterfereObject = feedbackObjectSpec{"feedback_deny_", "Interference (marked)", "Interfere", "interference", "#4a4a4a", 120, "feedback_interfere_object_appended"}
-	feedbackBlindObject     = feedbackObjectSpec{"feedback_blind_", "Blind area (no-fall)", "Furniture", "furniture", "#d3d3d3", 80, "feedback_blind_object_appended"}
-	feedbackEnterObject     = feedbackObjectSpec{"feedback_enter_", "Exit (learned)", "Enter", "structure", "#a9eaa9", 0, "feedback_enter_object_appended"}
+	feedbackLoungeObject    = feedbackObjectSpec{"feedback_lounge_", "Lounge (learned)", "LongSofa", "furniture", "#c19a6b", 40, "feedback_lounge_object_appended", AreaLying, 99}
+	feedbackSitObject       = feedbackObjectSpec{"feedback_sit_", "Sit zone (pinned)", "Chair", "furniture", "#ffff00", 90, "feedback_sit_object_appended", AreaSit, chairPriorConf}
+	feedbackInterfereObject = feedbackObjectSpec{"feedback_deny_", "Interference (marked)", "Interfere", "interference", "#4a4a4a", 120, "feedback_interfere_object_appended", AreaInterfer, 99}
+	feedbackBlindObject     = feedbackObjectSpec{"feedback_blind_", "Blind area (no-fall)", "Furniture", "furniture", "#d3d3d3", 80, "feedback_blind_object_appended", AreaDeny, 99}
+	feedbackEnterObject     = feedbackObjectSpec{"feedback_enter_", "Exit (learned)", "Enter", "structure", "#a9eaa9", 0, "feedback_enter_object_appended", AreaEnter, 99}
 )
+
+// pinFeedbackZone 永久加区单一入口：append source=Feedback layout 对象 + 即时 live 刷同一 40×40 rect。
+// live-stamp 用 spec.liveArea/liveConf(=reload 等价) + SourceHuman，与 daily reload 产出逐 cell 一致(零漂移)，
+// 且 SourceHuman 扛 verified 擦。已知小边界：reload 有 Chairs/Furnitures/Interferes 覆盖次序，live 单对象刷不复制，
+// 坐/躺点压在别类区上时暂以本类盖过，下次 reload 自愈(罕见)。
+func (i *AlarmFeedbackIngester) pinFeedbackZone(ctx context.Context, deviceAddr, roomID string, x, y int, eventID string, spec feedbackObjectSpec) {
+	i.appendFeedbackObject(ctx, deviceAddr, x, y, eventID, spec)
+	h := feedbackObjectHalfCm
+	rect := radarutils.Rect{X1: x - h, Y1: y - h, X2: x + h, Y2: y + h}
+	if i.engine.StampPriorRect(roomID, rect, spec.liveArea, spec.liveConf) {
+		i.logger.Info("feedback_zone_live_stamped",
+			zap.String("event_id", eventID), zap.String("room_id", roomID),
+			zap.String("type", spec.typeName), zap.Int("area_type", int(spec.liveArea)),
+			zap.Int("canvas_x", x), zap.Int("canvas_y", y))
+	}
+}
 
 // appendFeedbackObject 把"永久加区"动作作为 source='Feedback' object 并发安全 append 进
 // 该 /128 device 的 room_visual_layout.canvas.objects[]（[[layout_authority_ai_correction_model]]）。
@@ -387,7 +414,7 @@ func (i *AlarmFeedbackIngester) appendFeedbackObject(ctx context.Context, device
 	if i.db == nil || deviceAddr == "" {
 		return
 	}
-	const half = 20 // 40×40cm 默认标记
+	half := feedbackObjectHalfCm
 	objID := spec.idPrefix + eventID
 	obj := map[string]interface{}{
 		"id":        objID,
@@ -444,7 +471,7 @@ func (i *AlarmFeedbackIngester) appendFeedbackObject(ctx context.Context, device
 //
 //	operation=false_alarm:
 //	  坐类(Chair/ShortSofa/Wheelchair)        → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaSit)
-//	  躺类(Lounge/LongSofa) + ↳ Permanent     → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaBed)
+//	  躺类(Lounge/LongSofa) + ↳ Permanent     → 仅记 route，cell 走 pinFeedbackZone StampPriorRect(AreaLying)
 //	  BlindArea/Enter（加区动作走 handler appendFeedbackObject，非 cell counter）
 //	  Electric/AC                              → GhostCount++
 //	  Error Pose / Out of Range                → 不进 counter（传感误差）
@@ -478,21 +505,11 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 				}
 			}
 		}
-		// 躺类 → permanent 永久学 lying（AreaBed，与 Sit pin 一致只永久，无 2H）/ 无选不动
+		// 躺类 permanent：cell 由 pinFeedbackZone StampPriorRect(AreaLying,SourceHuman) 刷（lying 高风险禁软自学，
+		// 不在此走 MarkRestZoneByFeedback）；此处仅记 route 让 processOne 继续到 pin 块 / 无选不动
 		if pc.FALoungeLongSofa {
 			if pc.LoungePermanent {
-				locked := false
-				if apply(func(c *Cell) {
-					c.IncrRestZoneConfirmed()
-					if c.MarkRestZoneByFeedback(AreaBed) {
-						locked = true
-					}
-				}) {
-					routes = append(routes, "lounge_permanent_bed")
-					if locked {
-						routes = append(routes, "locked_AreaBed")
-					}
-				}
+				routes = append(routes, "lounge_permanent")
 			} else {
 				routes = append(routes, "lounge_no_action")
 			}

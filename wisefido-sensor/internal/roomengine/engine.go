@@ -41,7 +41,7 @@ type RoomConfig struct {
 	Enters []radarutils.Rect // AreaEnter
 	Beds   []radarutils.Rect // 床几何（Bed/MonitorBed/LongSofa 都进来供 covers/MM）；cell 区域走 BedAreaTypes
 	// BedAreaTypes 与 Beds 一一对应：Bed→AreaBed(2,豁免) / MonitorBed→AreaMonitorBed(5,豁免) /
-	// LongSofa→AreaLying(8,90min)。判据(name⊇bed)在 layout_parser 单点定，engine SetPrior 只读。
+	// LongSofa→AreaLying(8,90min)。判据按 typeName 在 layout_parser 单点定，engine SetPrior 只读。
 	BedAreaTypes []AreaType
 	// InterfereAreaTypes 与 Interferes 一一对应：Mirror/Metal/GlassTV→AreaReflector(3,豁免) /
 	// Curtain/Plant/Fan/WheelChair→AreaInterfer(6,90min)。同样 parser 单点定。
@@ -142,7 +142,7 @@ var DefaultParamSets = [3]ParamSet{
 type Engine struct {
 	mu           sync.RWMutex
 	rooms        map[string]*TrackManager         // roomID → TrackManager
-	radarPeople  map[string]int                   // roomID → census 折叠后 radar 真人数（belief 层经 SetRoomRadarPeople 注入）；RealPeopleInRoom 优先用，未注入回退 NonGhostTrackCount
+	radarPeople  map[string]int                   // roomID → census 折叠后 radar 真人数（belief 层经 SetRoomRadarPeople 注入）；RealPeopleInRoom 唯一权威，未注入返回 -1
 	grids        map[string]*RoomGrid             // roomID → Grid
 	deviceMounts map[string]radarutils.RadarMount // deviceAddr(/128) → 该 radar 安装参数（坐标转换用）；多雷达房每台一份
 	deviceRoom   map[string]string                // deviceAddr → roomID (sensor 唯一物理寻址)
@@ -438,13 +438,12 @@ func (e *Engine) RealPeopleInRoom(roomID string) int {
 	if tm == nil {
 		return -1
 	}
-	// P1 占用人数：cutover 后用 belief 层 census 的折叠真人数（PReal 排 ghost + 同房跨雷达同人折叠，
-	//   2雷达1人→1；DBN 是权威，比 Verdict 版 NonGhostTrackCount 更准——后者会多算镜像 ghost）。
-	//   belief 未注入（未 Tick / 非 cutover）→ 回退 NonGhostTrackCount（向后兼容）。契约 §2 P1。
+	// P1 占用人数：cutover 后唯一权威 = belief 层 census 折叠真人数（PReal 排 ghost + 同房跨雷达同人折叠，
+	//   2雷达1人→1）。belief 未注入（未 Tick / 非 cutover；no-layout 房不 Tick）→ -1，caller 退回 firmware。
 	if rpOK {
 		return rp
 	}
-	return tm.NonGhostTrackCount()
+	return -1
 }
 
 // SetRoomRadarPeople belief 层每 tick 注入该房 census 折叠后的 radar 真人数（RealPeopleInRoom P1 用）。
@@ -548,6 +547,22 @@ func (e *Engine) ApplyToCell(roomID string, x, y int, nowMs int64, fn func(*Cell
 	if nowMs > cell.LastUpdateMs {
 		cell.LastUpdateMs = nowMs
 	}
+	return true
+}
+
+// chairPriorConf = layout Chair（含 feedback 钉的 Sit 区）SetPrior 成 AreaSit 的初始置信度。
+const chairPriorConf = 80
+
+// StampPriorRect 即时把 rect 内 cell 刷成 (areaType, conf, SourceHuman)，镜像 RegisterRoom 的 SetPrior。
+// feedback 钉永久区只直写 layout，要等 daily reload(22:00)/重启才落 grid；本方法桥接该窗口，立即生效。
+func (e *Engine) StampPriorRect(roomID string, rect radarutils.Rect, areaType AreaType, conf int) bool {
+	e.mu.RLock()
+	g := e.grids[roomID]
+	e.mu.RUnlock()
+	if g == nil {
+		return false
+	}
+	g.SetPrior(rect, areaType, conf, SourceHuman)
 	return true
 }
 
@@ -830,10 +845,10 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 			}
 			fireEnabled := e.dbnSelfFireEnabledFor(suiteID, nowMs)
 			for _, lid := range fired {
-				tm.ResetStillBox(lid) // fall fire → still-box 从 0 热机（belief 已在 DBN 侧就地复位）
 				if fireEnabled {
-					tm.PublishDBNFall(lid, nowMs) // DBN Fallen fire → iot:alarm:stream（category=alarm.Fall）
+					tm.PublishDBNFall(lid, nowMs) // DBN Fallen fire → iot:alarm:stream（category=alarm.Fall）；须在 ResetStillBox 前，否则 occurred(StillBoxRunStart) 被清成 0
 				}
+				tm.ResetStillBox(lid) // fall fire 发布后 → still-box 从 0 热机（belief 已在 DBN 侧就地复位）
 			}
 			// dropped → emitGhostVerdict（守卫① ghost 覆盖源不丢；不受 DBN_MODE 门控，informational 非 alarm）。
 			for _, lid := range dropped {
@@ -842,17 +857,6 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 			}
 		}
 	}
-}
-
-// GetRoomOutputs 查询某房间最新 track 输出
-func (e *Engine) GetRoomOutputs(roomID string) []TrackOutput {
-	e.mu.RLock()
-	tm := e.rooms[roomID]
-	e.mu.RUnlock()
-	if tm == nil {
-		return nil
-	}
-	return tm.GetOutputs()
 }
 
 // ========================================================================
@@ -942,7 +946,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		grid.SetPrior(r, AreaActive, 99, SourceHuman) // 淋浴=站立活动区
 	}
 	for _, r := range cfg.Chairs {
-		grid.SetPrior(r, AreaSit, 80, SourceHuman) // 粗标 Conf=80
+		grid.SetPrior(r, AreaSit, chairPriorConf, SourceHuman) // 粗标
 	}
 	for _, r := range cfg.Furnitures {
 		grid.SetPrior(r, AreaDeny, 99, SourceHuman) // 家具不可走 → 90min 背板
@@ -954,8 +958,8 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 
 	// 6. 暖启：从 28 snapshot 灌回机器学到的 cell area（learned sit/interfer/active → 喂 floor 阈，避免
 	//    每次重启冷启 unknown→12min 误报）。放在 SetPrior 之后：DecodeSnapshot 跳过 SourceHuman，
-	//    人标恒在上、28 学值只填未人标的 unknown 格子之下。BedFloorExempt 不在 snapshot（只 layout 人标 stamp）
-	//    → learned bed 拿不到豁免、最多 90min，符合"firmware-fire 仅人工授权"分层。
+	//    人标恒在上、28 学值只填未人标的 unknown 格子之下。floor 豁免按 AreaType(bed/monitorbed)，
+	//    snapshot 只灌 learned sit/interfer/active → learned 区拿不到豁免、最多 90min，符合"firmware-fire 仅人工授权"分层。
 	if e.persister != nil {
 		e.hydrateRoom(cfg.RoomID, grid, newHash)
 	}
