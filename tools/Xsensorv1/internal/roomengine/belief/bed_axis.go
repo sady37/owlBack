@@ -49,8 +49,9 @@ func (p bedAxisParams) kObs() bedKernel {
 }
 
 // kUnobs 离线核 K^unobs_λ（ρ=0，§C 箭头记法单向泄漏，定义 B：occ 泄漏 vac 吸收）：
-//   occ→vac = λ     occ→occ = 1−λ
-//   vac→vac = 1     vac→occ = 0      ← vac 吸收（空房离线不被弛豫成伪占用，cd2b 根方向）
+//
+//	occ→vac = λ     occ→occ = 1−λ
+//	vac→vac = 1     vac→occ = 0      ← vac 吸收（空房离线不被弛豫成伪占用，cd2b 根方向）
 func (p bedAxisParams) kUnobs() bedKernel {
 	return bedKernel{
 		BOcc: {BVac: p.lambda, BOcc: 1 - p.lambda},

@@ -27,8 +27,8 @@ func RenderGridPNG(grid *RoomGrid, mount radarutils.RadarMount, enters []radarut
 	wallPoly []radarutils.Point, path string) error {
 	// 点状渲染：每 cell 占 20px 格位，但实际色块只画中央 12×12，外围 4px 留白
 	// 这样每 cell 视觉上是独立"小方块"，Unknown 大片保持背景色。
-	const gridSpan = 20 // 每 cell 格位
-	const dotSize = 12  // cell 中央色块尺寸
+	const gridSpan = 20                        // 每 cell 格位
+	const dotSize = 12                         // cell 中央色块尺寸
 	const dotOffset = (gridSpan - dotSize) / 2 // 4
 	w := grid.Width * gridSpan
 	h := grid.Height * gridSpan
@@ -124,17 +124,20 @@ func cellDotColor(c *Cell) (color.RGBA, bool) {
 		return color.RGBA{80, 200, 110, 255}, true // 绿 门
 	case AreaBed:
 		return color.RGBA{220, 200, 100, 255}, true // 黄 床
+	case AreaMonitorBed:
+		return color.RGBA{210, 190, 90, 255}, true // 深黄 监护床
 	case AreaSit:
 		return color.RGBA{230, 150, 70, 255}, true // 橙 坐
-	case AreaShower:
-		return color.RGBA{140, 200, 240, 255}, true // 浅蓝 淋浴
-	case AreaToilet:
-		return color.RGBA{230, 140, 200, 255}, true // 粉 马桶
+	case AreaLying:
+		return color.RGBA{230, 140, 200, 255}, true // 粉 非床躺（沙发）
+	case AreaReflector:
+		return color.RGBA{120, 120, 130, 255}, true // 灰 反射体
+	case AreaInterfer:
+		return color.RGBA{170, 140, 110, 255}, true // 棕 运动干扰
 	case AreaDeny:
-		return color.RGBA{150, 150, 155, 255}, true // 深灰 禁区
+		return color.RGBA{150, 150, 155, 255}, true // 深灰 家具
 	case AreaActive:
-		// Active 如果将来由学习得到（e.g. 走廊），也画；初始不赋此类则不画
-		return color.RGBA{200, 200, 240, 255}, true
+		return color.RGBA{200, 200, 240, 255}, true // 浅蓝 走道/淋浴
 	}
 	// AreaUnknown → 不画，保持背景空白
 	return color.RGBA{}, false

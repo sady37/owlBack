@@ -171,26 +171,6 @@ func (g *RoomGrid) SetPrior(rect radarutils.Rect, t AreaType, conf int, src Sour
 	}
 }
 
-// SetBedFloorExempt 把 rect 内 cell 标为真床区（floor 兜底无条件豁免）。仅 layout typeName 含 bed
-// （Bed/MonitorBed）的床调；LongSofa 不调（保持 false → 走 90min 长阈）。与 SetPrior 同在 RegisterRoom
-// 重灌，故不入 snapshot。
-func (g *RoomGrid) SetBedFloorExempt(rect radarutils.Rect) {
-	rect = rect.Norm()
-	c1, r1 := g.ToIndex(rect.X1, rect.Y1)
-	c2, r2 := g.ToIndex(rect.X2, rect.Y2)
-	for row := r1; row <= r2; row++ {
-		if row < 0 || row >= g.Height {
-			continue
-		}
-		for col := c1; col <= c2; col++ {
-			if col < 0 || col >= g.Width {
-				continue
-			}
-			g.Cells[row*g.Width+col].BedFloorExempt = true
-		}
-	}
-}
-
 // NearestEntryDist 到最近 Enter 矩形的距离（cm）
 func (g *RoomGrid) NearestEntryDist(x, y int) int {
 	if len(g.Enters) == 0 {

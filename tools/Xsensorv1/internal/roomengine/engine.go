@@ -38,17 +38,18 @@ type RoomConfig struct {
 
 	// 人工标注的矩形先验
 	Enters []radarutils.Rect // AreaEnter
-	Beds   []radarutils.Rect // AreaBed
-	// BedFloorExempt 与 Beds 一一对应：layout typeName 含 bed(Bed/MonitorBed)=true(真床 floor 豁免)，
-	// LongSofa=false(沙发,走 90min 长阈)。判据在 layout_parser 单点定，engine 只读不再判名字。
-	BedFloorExempt []bool
+	Beds   []radarutils.Rect // 床几何（Bed/MonitorBed/LongSofa 都进来供 covers/MM）；cell 区域走 BedAreaTypes
+	// BedAreaTypes 与 Beds 一一对应：Bed→AreaBed(2,豁免)/MonitorBed→AreaMonitorBed(5,豁免)/LongSofa→AreaLying(8,90min)。
+	BedAreaTypes []AreaType
+	// InterfereAreaTypes 与 Interferes 一一对应：Mirror/Metal/GlassTV→AreaReflector(3,豁免)/Curtain/Plant/Fan/WheelChair→AreaInterfer(6,90min)。
+	InterfereAreaTypes []AreaType
 
 	// BedAreaIDs 床区 area_id 集合（areaType∈{2床,5监护床}），来源=固件活体 declare_area
 	// （bootstrap 走 wisefido-data HTTP 覆盖，治 canvas 下发区域 vs 固件几何漂移）。
 	// radar track 帧的 area_id 命中此集合 → 在床（TrackManager.fwIsBed membership）→ N=1 驱动 SBed boost。
 	BedAreaIDs []int
-	Toilets    []radarutils.Rect // AreaToilet
-	Showers    []radarutils.Rect // AreaShower
+	Toilets    []radarutils.Rect // AreaSit
+	Showers    []radarutils.Rect // AreaActive
 	Chairs     []radarutils.Rect // AreaSit（粗标沙发/椅子，Conf=80）
 	Furnitures []radarutils.Rect // AreaDeny（家具/桌子）
 	Interferes []radarutils.Rect // AreaDeny（镜子/金属反射区/吊灯）
@@ -836,25 +837,24 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		grid.SetPrior(r, AreaEnter, 99, SourceHuman)
 	}
 	for i, r := range cfg.Beds {
-		grid.SetPrior(r, AreaBed, 99, SourceHuman)
-		if i < len(cfg.BedFloorExempt) && cfg.BedFloorExempt[i] {
-			grid.SetBedFloorExempt(r) // 真床区 floor 豁免；LongSofa(false)走 90min
-		}
+		// BedAreaTypes 与 Beds 1:1（parser/merge 同步 append，规则#1.4 trust caller）：Bed/MonitorBed/LongSofa → bed/monitorbed/lying
+		grid.SetPrior(r, cfg.BedAreaTypes[i], 99, SourceHuman)
 	}
 	for _, r := range cfg.Toilets {
-		grid.SetPrior(r, AreaToilet, 99, SourceHuman)
+		grid.SetPrior(r, AreaSit, 99, SourceHuman) // 马桶=坐区
 	}
 	for _, r := range cfg.Showers {
-		grid.SetPrior(r, AreaShower, 99, SourceHuman)
+		grid.SetPrior(r, AreaActive, 99, SourceHuman) // 淋浴=站立活动区
 	}
 	for _, r := range cfg.Chairs {
 		grid.SetPrior(r, AreaSit, 80, SourceHuman) // 粗标 Conf=80
 	}
 	for _, r := range cfg.Furnitures {
-		grid.SetPrior(r, AreaDeny, 99, SourceHuman)
+		grid.SetPrior(r, AreaDeny, 99, SourceHuman) // 家具不可走 → 90min 背板
 	}
-	for _, r := range cfg.Interferes {
-		grid.SetPrior(r, AreaDeny, 99, SourceHuman)
+	for i, r := range cfg.Interferes {
+		// InterfereAreaTypes 与 Interferes 1:1（规则#1.4）：Mirror/Metal→reflector(豁免)/Curtain/Plant/Fan→interfer(90min)
+		grid.SetPrior(r, cfg.InterfereAreaTypes[i], 99, SourceHuman)
 	}
 
 	e.grids[cfg.RoomID] = grid

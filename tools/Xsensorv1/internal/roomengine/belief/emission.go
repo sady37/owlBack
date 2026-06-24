@@ -44,15 +44,17 @@ type emissionParams struct {
 // zStandCm 站立身高阈：z≥此 → 与"躺地"互斥（摔倒质心 z 必低）。高 bar，单帧噪声 z<80 不误压真摔。
 const zStandCm = 80
 
-// roomengine.AreaType 枚举值（belief 不 import roomengine，本地常量对齐）。
+// roomengine.AreaType 枚举值（belief 不 import roomengine，本地常量对齐，值见 cell.go）。
 const (
-	areaBed    = 2
-	areaSit    = 3
-	areaActive = 4
-	areaEnter  = 1
-	areaDeny   = 5
-	areaShower = 6
-	areaToilet = 7
+	areaDeny       = 1
+	areaBed        = 2
+	areaReflector  = 3
+	areaEnter      = 4
+	areaMonitorBed = 5
+	areaInterfer   = 6
+	areaSit        = 7
+	areaLying      = 8
+	areaActive     = 9
 )
 
 func defaultEmissionParams() emissionParams {
@@ -73,23 +75,20 @@ const roomBathroom = 1
 //	bed 区(areaType=2)分两支：真床(layout 名字含 bed)在 floor.Step 被 BedExempt 无条件豁免、到不了这里；
 //	LongSofa(无 sleepad 可长躺)与 Sit 同走 90min 长阈。床边跌倒仍靠接触轴(sleepad InBed 压/LeftBed 放行)细分。
 func stillMuSigma(areaType, roomType int) (mu, sigma float64) {
-	cMu, cSig := cellMuSigma(areaType)
-	rMu, rSig := roomMuSigma(roomType)
-	if rMu > cMu { // 取保守（长 μ）那组
-		return rMu, rSig
+	if roomType == roomBathroom {
+		// 浴室一律 ~20min（占用区）：压过 cell 姿态阈——马桶/淋浴久留医学上 ~20min 即异常，
+		// 不用 max-merge（那会取 sit 的 90min = 丢紧阈）。bed/reflector 已在 floor.Step 豁免到不了这里。
+		return MuBathSec, SigmaBathSec
 	}
-	return cMu, cSig
+	return cellMuSigma(areaType)
 }
 
 func cellMuSigma(areaType int) (mu, sigma float64) {
 	switch areaType {
-	case areaSit, areaBed:
-		// Bed = LongSofa(无 sleepad 可长躺)：与 Sit 同走 90min 长阈。真床(名字含 bed)在 floor.Step
-		// 被 BedExempt 提前豁免、到不了这里；故落此分支的 areaBed 只剩 sofa/feedback 学的 lying 区。
+	case areaSit, areaLying, areaDeny, areaInterfer:
+		// 久留区 90min：sit(椅/沙发坐)/lying(沙发躺)/deny(家具旁)/interfer(帘扇旁噪声但人可能在)。
 		return MuSitSec, SigmaSitSec
-	case areaToilet, areaShower:
-		return MuBathSec, SigmaBathSec
-	default: // unknown/active/enter → default(unknown)
+	default: // unknown/active/enter 12min（bed/monitorbed/reflector 在 floor.Step 已豁免）
 		return MuDefaultSec, SigmaDefaultSec
 	}
 }
@@ -199,13 +198,11 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 	}
 
 	// area_type 正向压制（每帧读活的 cell）：FN-safe 默认偏 Fallen，由位置正向证据 redirect 到对应静止态。
-	//   sit→SSit / toilet·shower→SBath+SSit / active·enter→SOpenFloor；deny·unknown 中性。床走上方 firmware N。
+	//   sit/lying→SSit(休息) / active·enter→SOpenFloor；deny·interfer·reflector·unknown 中性。床走上方 firmware N。
 	//   area 误学(如假 Sit)的真摔由 FloorGuard 总时长兜底（不靠 emission still 路径翻 area）。
 	switch o.AreaType {
-	case areaSit:
+	case areaSit, areaLying:
 		addLogLk(&logS, Vector{SSit: e.p.lArea}, w, SSit)
-	case areaToilet, areaShower:
-		addLogLk(&logS, Vector{SBath: e.p.lArea, SSit: e.p.lArea}, w, SBath, SSit)
 	case areaActive, areaEnter:
 		addLogLk(&logS, Vector{SOpenFloor: e.p.lArea}, w, SOpenFloor)
 	}

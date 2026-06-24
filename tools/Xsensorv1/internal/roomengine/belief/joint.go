@@ -174,7 +174,7 @@ func logAdd(a, b float64) float64 {
 		return a
 	}
 	if a > b {
-		return a + math.Log1p(math.Exp(b - a))
+		return a + math.Log1p(math.Exp(b-a))
 	}
-	return b + math.Log1p(math.Exp(a - b))
+	return b + math.Log1p(math.Exp(a-b))
 }

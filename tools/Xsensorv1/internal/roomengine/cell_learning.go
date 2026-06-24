@@ -315,9 +315,10 @@ func fiveCellSoftConsensus(g *RoomGrid, idx int, traverseTolerate int) bool {
 // 防止 BFS 跨 island 内部）。
 //
 // 返回 dist[i]：cell i 到最近"活动" cell 的最短跳数。
-//   dist[i] = 0：cell 是 source（活动区）
-//   dist[i] >= 1：cell 是 Unknown，且 BFS 可达
-//   dist[i] == -1：cell 不可达（被 Deny 或几何隔绝）→ Auto-Deny 路径 B 也接受
+//
+//	dist[i] = 0：cell 是 source（活动区）
+//	dist[i] >= 1：cell 是 Unknown，且 BFS 可达
+//	dist[i] == -1：cell 不可达（被 Deny 或几何隔绝）→ Auto-Deny 路径 B 也接受
 //
 // 用途：Auto-Deny 路径 B：dist >= 2 或 -1 视为"远离 walk" → island 核心候选。
 // 调用方持锁；scoping in caller LearnCellAreas。
@@ -333,7 +334,7 @@ func (g *RoomGrid) computeWalkDistance() []int {
 			continue
 		}
 		switch c.Belief[0].Type {
-		case AreaActive, AreaEnter, AreaSit, AreaBed, AreaToilet, AreaShower:
+		case AreaActive, AreaEnter, AreaSit, AreaBed, AreaMonitorBed, AreaLying:
 			dist[i] = 0
 			queue = append(queue, i)
 		}
@@ -391,10 +392,10 @@ func (g *RoomGrid) LearnLyingAnomalies(p LearnParams) int {
 			if g.IsNearPriorType(x, y, AreaBed, p.BedToleranceCm) {
 				continue
 			}
-			if g.IsNearPriorType(x, y, AreaToilet, p.ToiletToleranceCm) {
+			if g.IsNearPriorType(x, y, AreaSit, p.ToiletToleranceCm) {
 				continue
 			}
-			if g.IsNearPriorType(x, y, AreaShower, p.ShowerToleranceCm) {
+			if g.IsNearPriorType(x, y, AreaActive, p.ShowerToleranceCm) {
 				continue
 			}
 			// 已知坐区也排除（沙发坐着躺下属于沙发签名，前面 LieRetract 已挡；

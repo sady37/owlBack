@@ -26,13 +26,13 @@ import (
 
 // mirror 阈值常量（实测可调）
 const (
-	mirrorMinSamples       = 5    // 满 5 帧才评估
-	mirrorVAngleStdRad     = 0.26 // ≈ 15°：v_t 角度标准差上限（rad）
-	mirrorMidpointRMSECm   = 20.0 // 中点到拟合直线 RMSE 上限（cm）
-	mirrorOrthogonalCos    = 0.20 // |cos(midline 方向, mean v)| 上限（cos 5°≈0.087；放宽到 ~78° 容忍噪声）
-	mirrorSpeedRatioMax    = 0.40 // |s_A - s_B| / max(s_A, s_B) 上限（独立行人不会这么同步）
-	mirrorMinTotalMoveCm   = 30   // 5 帧累计位移下限：静止场景跳过判定
-	mirrorGhostPenaltyAdd  = 50   // 命中 ghost 累加的 GhostPenalty
+	mirrorMinSamples      = 5    // 满 5 帧才评估
+	mirrorVAngleStdRad    = 0.26 // ≈ 15°：v_t 角度标准差上限（rad）
+	mirrorMidpointRMSECm  = 20.0 // 中点到拟合直线 RMSE 上限（cm）
+	mirrorOrthogonalCos   = 0.20 // |cos(midline 方向, mean v)| 上限（cos 5°≈0.087；放宽到 ~78° 容忍噪声）
+	mirrorSpeedRatioMax   = 0.40 // |s_A - s_B| / max(s_A, s_B) 上限（独立行人不会这么同步）
+	mirrorMinTotalMoveCm  = 30   // 5 帧累计位移下限：静止场景跳过判定
+	mirrorGhostPenaltyAdd = 50   // 命中 ghost 累加的 GhostPenalty
 )
 
 // mirrorPairKey 两 track 配对（小 ID 在前，固定 key 顺序）。ID = trackKey（设备+firmware track_id），
@@ -72,13 +72,13 @@ func (b *mirrorPairBuffer) pushSample(s mirrorPairSample) {
 
 // mirrorEvaluation evaluateMirrorPair 输出
 type mirrorEvaluation struct {
-	IsMirror      bool
-	GhostTrackID  trackKey // tiebreaker 选出的 ghost 端（A 或 B 的 trackKey）
-	RealTrackID   trackKey // 配对中的 real 端
-	BouncePoints  []radarutils.Point
-	MidlinePoint  radarutils.Point // 镜面线上锚点（中点重心）
-	MidlineDirX   float64          // 镜面线方向单位向量
-	MidlineDirY   float64
+	IsMirror     bool
+	GhostTrackID trackKey // tiebreaker 选出的 ghost 端（A 或 B 的 trackKey）
+	RealTrackID  trackKey // 配对中的 real 端
+	BouncePoints []radarutils.Point
+	MidlinePoint radarutils.Point // 镜面线上锚点（中点重心）
+	MidlineDirX  float64          // 镜面线方向单位向量
+	MidlineDirY  float64
 }
 
 // evaluateMirrorPair 给定 5 帧配对样本 + 雷达位置，跑三不变量 + tiebreaker。

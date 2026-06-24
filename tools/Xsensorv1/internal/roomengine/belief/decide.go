@@ -18,8 +18,8 @@ import "math"
 type RiskContext struct {
 	AloneContinuousMin float64 // 独居持续分钟（独处→C_FN↑，连续饱和）
 	// risktime(夜间)**不在此**：它只缩短 floor 时长兜底阈(Observation.IsRiskTime→tFloorFor)，不进报警阈 C_FN。
-	PeopleCount        int     // 房内人数（>1 有人代发现→C_FN 折扣，但有下限不归零）
-	Disabled           bool    // 失能（难自救→C_FN↑）
+	PeopleCount int  // 房内人数（>1 有人代发现→C_FN 折扣，但有下限不归零）
+	Disabled    bool // 失能（难自救→C_FN↑）
 }
 
 // decideParams §8 代价/持续形态参数（标定锚，非权威值，留 oracle）。

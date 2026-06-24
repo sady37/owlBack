@@ -73,8 +73,10 @@ func HandoffLogOdds(p NeighborParams, residentCount int, sibs []SiblingHandoff) 
 }
 
 // DelayWindowFor 规则⑤：D（延迟裁决窗）随覆盖差放长，**锚静止消失门限 + 余量**（同一物理时钟，用户裁定）。
-//   stillVanishMs = 静止消失门限（~8min，雷达降功率滤掉静止人/物的物理时标）。
-//   coverage ∈[0,1]（1=全覆盖，0=大量盲区）。覆盖差 → 二义只能靠 neighbor → 放长（上界 静止门限+余量）。
+//
+//	stillVanishMs = 静止消失门限（~8min，雷达降功率滤掉静止人/物的物理时标）。
+//	coverage ∈[0,1]（1=全覆盖，0=大量盲区）。覆盖差 → 二义只能靠 neighbor → 放长（上界 静止门限+余量）。
+//
 // D 由 decide/lost-fall 层消费（消失后等过此窗仍无 hand-off/重现 → fire），非 hand-off 注入本身。
 func DelayWindowFor(stillVanishMs int64, marginMs int64, coverage float64) int64 {
 	if coverage < 0 {

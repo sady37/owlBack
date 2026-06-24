@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"strings"
 
 	"owl-common/radarutils"
 )
@@ -88,13 +87,19 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 			}
 
 		case "Bed", "MonitorBed", "LongSofa":
-			// LongSofa = 无 sleepad 的床：可长躺排 fall、占用/vital 走 radar，与床同处理。
-			// 真床(typeName 含 bed:Bed/MonitorBed)→ floor 无条件豁免；LongSofa(不含 bed)→ floor 走 90min 长阈。
-			// 判据集中在此单点（"objectName 含 bed"的结构化形式），下游只读 cfg.BedFloorExempt。
+			// 都进 cfg.Beds 供 covers/MM 几何；cell 区域按 typeName 分（单点判据 name⊇bed → 豁免）：
+			//   Bed→AreaBed(豁免)/MonitorBed→AreaMonitorBed(豁免+vital)/LongSofa→AreaLying(90min,非床躺)。
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Beds = append(cfg.Beds, *rect)
 				cfg.BedHeights = append(cfg.BedHeights, objHeight)
-				cfg.BedFloorExempt = append(cfg.BedFloorExempt, strings.Contains(strings.ToLower(hdr.TypeName), "bed"))
+				at := AreaLying // LongSofa / 不含 bed
+				switch hdr.TypeName {
+				case "Bed":
+					at = AreaBed
+				case "MonitorBed":
+					at = AreaMonitorBed
+				}
+				cfg.BedAreaTypes = append(cfg.BedAreaTypes, at)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
@@ -127,11 +132,17 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 			}
 
 		case "Interfere", "MetalCan", "WheelChair", "GlassTV", "Curtain":
-			// 干扰/反射/金属 → AreaDeny
-			// 注意：吊灯也走 Interfere，但 height>200 表示空中不阻挡通行（未来 RoomEngine 用）
+			// 反射体(金属/玻璃 → AreaReflector,豁免) vs 运动干扰(帘/轮椅/泛 → AreaInterfer,90min)。
+			// 下发固件都走 masking(3)；内部分开=floor 豁免 vs 兜底。注意：吊灯走 Interfere，height>200 空中不阻挡。
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Interferes = append(cfg.Interferes, *rect)
 				cfg.InterfereHeights = append(cfg.InterfereHeights, objHeight)
+				at := AreaInterfer
+				switch hdr.TypeName {
+				case "MetalCan", "GlassTV":
+					at = AreaReflector
+				}
+				cfg.InterfereAreaTypes = append(cfg.InterfereAreaTypes, at)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 

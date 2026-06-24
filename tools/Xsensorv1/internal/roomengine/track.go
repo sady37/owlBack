@@ -101,7 +101,7 @@ type TrackState struct {
 
 	// ---- PR-11 持续观测刷新（防 Belief 衰退后 layout 标记被吃掉）----
 	// LyingOnBedSinceMs：pose=Lie on AreaBed cell 持续起点；累计 ≥4h → MarkRestZoneByFeedback(AreaBed) refresh
-	// SitOnToiletSinceMs：pose=Sit on AreaToilet cell 持续起点；累计 ≥5min → MarkRestZoneByFeedback(AreaToilet) refresh
+	// SitOnToiletSinceMs：pose=Sit on AreaSit cell 持续起点；累计 ≥5min → MarkRestZoneByFeedback(AreaSit) refresh
 	// AreaBedRefreshed / AreaToiletRefreshed：per-track 一次性 flag（防同 cell 反复触发）
 	LyingOnBedSinceMs   int64
 	SitOnToiletSinceMs  int64
