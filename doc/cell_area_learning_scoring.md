@@ -71,7 +71,7 @@ Sit 与 curtain/绿植杂波**都"静止+易重复"** → 必须第三轴区分�
 |---|---|---|---|
 | **resolution（硬判据）** | walk-away → +a；lost/coast/无exit → **否决（不计/负大）** | a 大 | 倒地者不会自己走开；这是 sit↔fall 的硬分割 |
 | **z（纯正向平滑，缺失中性）** | `m(z)=exp(−(z−zSitCenter)²/(2·zSitSigma²))`，episode 内取 max；**z=0→0(中性,不扣分)**；**无负分支** | `zSitCenter=80`,`zSitSigma=12`,权 +0.4 | 高斯隶属度替硬框：峰=实测 Sitting z>0 中位 80，σ=12 使 [73,87] 近满、~105 自然趋零。**中心可调**（165cm 实测→80；175cm 均值→~83–85；老人偏矮 80 代表性好；per-deployment 可标）。z=0 占 70%=缺失，绝不用 z 反向否定 |
-| **dwell（平滑 bump）** | `σ((t−8)/3)·σ((55−t)/10)`；<5min→Active；峰~20min；30+渐降置 bedLean；~90→0 | rise-mid 8 / fall-mid 55min | MBD 12–16min（PMC8679788/9166254）；升降双 sigmoid 替分段 |
+| **dwell（平滑 bump）** | `σ((t−8)/3)·σ((55−t)/10)`；<5min→Active；峰~20min；30+渐降（过久偏躺）；~90→0 | rise-mid 8 / fall-mid 55min | MBD 12–16min（PMC8679788/9166254）；升降双 sigmoid 替分段 |
 | **firmware-sit（pose=3，权重>z）** | `g=fwMax≥1?clamp(0.6+0.04(fwMaxMin−1),0,1.5):0`，×3s软门 | base 0.6, Tmin 1min, Gmax 1.5 | pose=3 = 固件融合「z+质心变化幅度」比 z 富 → **base 0.6 恒 > z 的 0.4(pose>z)**；与 z **各算各的(独立相加,不互门控)**；安全靠 episode walk-away 门控(near-field 假 sit 不自走→veto)，非高 Tmin |
 
 > **z 实测标定（2026-06-23 monitor_stream 24h，track_id≤7）**：青澜固件静态姿态 z 多为 0（Sitting 70%、Standing 93% 帧 z=0=缺失）。**z>0 时**各姿态中位：Lying 69 < Standing 72 < **Sitting 80** < Walking 89；Sitting z>0 又紧又居中（IQR 73–87，90% 落 [62,100]，91% 在 60–100 两档）。故 z 作**纯正向弱佐证**：z∈[65,100] 时小幅加分（episode 内已排除 Walking），缺失/区间外不扣分。原 [40,70] 已按实测改 [65,100]。厂家 TI/Infineon 用 centroid 高度，定义≠position_z，不可借。
@@ -161,6 +161,11 @@ Cell 增：SitScore/ActiveScore/BedScore（log-odds 累加，沿用 Confidence �
 
 ## 11. Sit 4 通道实现细化（episode 状态机 + LLR 数值）
 
+> **🟢 已实现（2026-06-23,branch 已并 main,Xsensorv1+wisefido-sensor 两引擎）**：`emitSitEpisode`（sit_learning.go + track_manager.go）。
+> - **单源 = 区域创建（LEARNING）**：仅 emitSitEpisode 从零造 AreaSit；旧 updateRegionStatic/markBothCellsAreaSit/stand-static 全删。PR-11 的 5min-sit refresh（gated on 已是 AreaSit）是**已确认区 upkeep**（与 lying-4h→AreaBed 对称），不造新区、不破坏单源。
+> - **键控用现成 `StillBoxRunStart`（30s 滚动 50×50 box，≈±50cm 锚）**：box-break(updateContinuousIndicators)=walk-away→emit；ResetStillBox(lost/evict)=不 emit（fall 域）。
+> - **config 可调**：HL=`DecayParams.SitScoreSec`(默认4d) / τ=`LearnParams.SitPromoteTau`(6.0) / 半径=`SitSpreadCm`(30)，经 `SetSitLearnParams` 注入 TrackManager；cap=τ×`sitScoreCapRatio`(1.5)。SitScore 不持久化（重启清零，低影响；要续学进 CellSnapshot+升 v11）。
+
 替换现有 `updateRegionStatic` 的「位置-region（|dx|,|dy|≤15cm + 帧比）」为「**锚-停留（stillbox 驱动 + ±50cm 锚 + break 分类）**」——治本：位置-region 被 ±30~50cm 角装抖动反复 reset，而 stillbox 抗抖动。
 
 ### 11.1 Episode 生命周期（挂 TrackState，每 present 帧驱动）
@@ -201,7 +206,7 @@ classifyBreak(ts):
 ```
 LLR_resolution = +2.0
 LLR_z          = 0.4 · sitZBest                 // 平滑高斯隶属度（峰 zSitCenter=80, σ=12），纯正向；z=0 不更新=中性，绝不扣分、无负分支
-LLR_dwell      = σ((dwellMin−8)/3)·σ((55−dwellMin)/10)   // 平滑 bump:峰~20min≈0.95,14min≈0.86,45→0.73,60→0.38,~90→0;<5min 不到此(→Active);t>30∧Lying主导→置 bedLean(建议 Bed,不自升)
+LLR_dwell      = σ((dwellMin−8)/3)·σ((55−dwellMin)/10)   // 平滑 bump:峰~20min≈0.95,14min≈0.86,45→0.73,60→0.38,~90→0;<5min 不到此(→Active)。[bedLean 已 deferred 未接线:Bed 本就 human-gated,30+ 久坐自然由 dwell 渐降表达]
 g_fwSit        = fwMaxMin≥1 ? clamp(0.6 + 0.04·(fwMaxMin−1), 0, 1.5) : 0   // base 0.6（pose=3 出现即 >z 的 0.4,恒 pose>z）+ 时长加成,封顶 1.5;3s 软门滤闪烁;Tmin=1min（安全靠 episode walk-away 门控,非高 Tmin）
 ΔL_sit         = LLR_resolution + LLR_z + LLR_dwell + g_fwSit
 ```
@@ -224,4 +229,4 @@ g_fwSit        = fwMaxMin≥1 ? clamp(0.6 + 0.04·(fwMaxMin−1), 0, 1.5) : 0   
 | `cell.go Decay` | 加 SitScore 指数衰减分支 |
 
 ### 11.6 红线
-- **lost-break 永不 emit**（fall 域）；dwell<5min 永不计 Sit（→Active）；z 只正向（z=0 中性）；Bed-lean（dwell 30–90 / pose=Lying 主导）只**建议**不 auto 升 Bed（Bed 永远 human）。
+- **lost-break 永不 emit**（fall 域）；dwell<5min 永不计 Sit（→Active）；z 只正向（z=0 中性）；**Bed 永远 human-gated**（算法绝不 auto 升 Bed；bedLean 自动建议已 deferred 未实现）。
