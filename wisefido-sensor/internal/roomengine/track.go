@@ -107,12 +107,12 @@ type TrackState struct {
 
 	// ---- PR-11 持续观测刷新（防 Belief 衰退后 layout 标记被吃掉）----
 	// LyingOnBedSinceMs：pose=Lie on AreaBed cell 持续起点；累计 ≥4h → MarkRestZoneByFeedback(AreaBed) refresh
-	// SitOnToiletSinceMs：pose=Sit on AreaSit cell 持续起点；累计 ≥5min → MarkRestZoneByFeedback(AreaSit) refresh
-	// AreaBedRefreshed / AreaToiletRefreshed：per-track 一次性 flag（防同 cell 反复触发）
-	LyingOnBedSinceMs   int64
-	SitOnToiletSinceMs  int64
-	AreaBedRefreshed    bool
-	AreaToiletRefreshed bool
+	// SitZoneSinceMs：pose=Sit on AreaSit cell 持续起点；累计 ≥5min → MarkRestZoneByFeedback(AreaSit) refresh
+	// AreaBedRefreshed / SitZoneRefreshed：per-track 一次性 flag（防同 cell 反复触发）
+	LyingOnBedSinceMs int64
+	SitZoneSinceMs    int64
+	AreaBedRefreshed  bool
+	SitZoneRefreshed  bool
 
 	// ---- PR-13 region static 自学习 → AreaSit（双 cell 加分 + 90% 容忍累积）----
 	// RegionStaticStartedMs：进入 region static（|dx|≤15 AND |dy|≤15）的起点 ms；0 = 不在 region。

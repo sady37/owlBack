@@ -36,8 +36,9 @@ type Observation struct {
 	// 在床误豁免地板上的摔者。长 numBeds，与 Sleepad 同索引。
 	NearBedMask []bool
 	// AreaType track 当前 cell.Belief[0].Type（CellAreaType 每帧读活的，经 seam）。FN-safe **正向压制**：
-	// sit/toilet 区 → 抬对应静止态压 Fallen（redirect）。权重有上限（守门1：低到 still 久静能翻，不锁死）。
-	// Sit=3/Active=4/Deny=5/Shower=6/Toilet=7（同 roomengine.AreaType）。床(Bed)这一支已移出 → RadarBedHitMask 驱动。
+	// sit/lying 区 → 抬对应静止态压 Fallen（redirect）。权重有上限（守门1：低到 still 久静能翻，不锁死）。
+	// 值同 roomengine.AreaType：deny=1/bed=2/reflector=3/enter=4/monitorbed=5/interfer=6/sit=7/lying=8/active=9。
+	// 床(bed/monitorbed)与 reflector 在 floor.Step 豁免；bed 占用走 RadarBedHitMask(firmware N) 驱动。
 	AreaType int
 
 	// RadarBedHitMask 逐床 N：firmware area_id 命中该床声明的 areaId（= 雷达判"人在该床上"）。长 numBeds。

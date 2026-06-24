@@ -932,11 +932,8 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		grid.SetPrior(r, AreaEnter, 99, SourceHuman)
 	}
 	for i, r := range cfg.Beds {
-		at := AreaBed // 缺 BedAreaTypes（老路径）兜底真床
-		if i < len(cfg.BedAreaTypes) {
-			at = cfg.BedAreaTypes[i] // Bed/MonitorBed/LongSofa → bed/monitorbed/lying
-		}
-		grid.SetPrior(r, at, 99, SourceHuman)
+		// BedAreaTypes 与 Beds 1:1（parser/merge 同步 append，规则#1.4 trust caller）：Bed/MonitorBed/LongSofa → bed/monitorbed/lying
+		grid.SetPrior(r, cfg.BedAreaTypes[i], 99, SourceHuman)
 	}
 	for _, r := range cfg.Toilets {
 		grid.SetPrior(r, AreaSit, 99, SourceHuman) // 马桶=坐区
@@ -951,11 +948,8 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		grid.SetPrior(r, AreaDeny, 99, SourceHuman) // 家具不可走 → 90min 背板
 	}
 	for i, r := range cfg.Interferes {
-		at := AreaReflector // 缺类型兜底当反射体（豁免，FN-safe 偏保守）
-		if i < len(cfg.InterfereAreaTypes) {
-			at = cfg.InterfereAreaTypes[i] // Mirror/Metal→reflector / Curtain/Plant/Fan→interfer
-		}
-		grid.SetPrior(r, at, 99, SourceHuman)
+		// InterfereAreaTypes 与 Interferes 1:1（规则#1.4）：Mirror/Metal→reflector(豁免) / Curtain/Plant/Fan→interfer(90min)
+		grid.SetPrior(r, cfg.InterfereAreaTypes[i], 99, SourceHuman)
 	}
 
 	// 6. 暖启：从 28 snapshot 灌回机器学到的 cell area（learned sit/interfer/active → 喂 floor 阈，避免

@@ -2117,14 +2117,14 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 		}
 		// PR-11: pose=Sit on AreaSit 持续刷新 — 5min 累计 → 重锁
 		if cell != nil && RadarPoseToCore(pose) == CorePoseSit && cell.Belief[0].Type == AreaSit {
-			if ts.SitOnToiletSinceMs == 0 {
-				ts.SitOnToiletSinceMs = nowMs
+			if ts.SitZoneSinceMs == 0 {
+				ts.SitZoneSinceMs = nowMs
 			}
-			if !ts.AreaToiletRefreshed && nowMs-ts.SitOnToiletSinceMs >= 5*60*1000 {
+			if !ts.SitZoneRefreshed && nowMs-ts.SitZoneSinceMs >= 5*60*1000 {
 				cell.MarkRestZoneByFeedback(AreaSit)
 				tm.grid.boostNeighborSameType(x, y, AreaSit, nowMs)
-				ts.AreaToiletRefreshed = true
-				tm.logger.Info("area_toilet_refreshed_by_sit5min",
+				ts.SitZoneRefreshed = true
+				tm.logger.Info("sit_zone_refreshed_by_sit5min",
 					zap.String("device_uid", ts.DeviceAddr),
 					zap.Int("track_id", ts.TrackID),
 					zap.Int("x", x), zap.Int("y", y),
@@ -2132,7 +2132,7 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 				)
 			}
 		} else {
-			ts.SitOnToiletSinceMs = 0
+			ts.SitZoneSinceMs = 0
 		}
 		if !isRest && ts.Verdict == VerdictPending {
 			ts.AdjustScore(-3)
@@ -2190,7 +2190,7 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 		ts.StillFallReported = false
 		ts.StandStaticSince = 0 // PR-7.2: track 移动 → reset stand-static 计时
 		ts.LyingOnBedSinceMs = 0
-		ts.SitOnToiletSinceMs = 0 // PR-11: track 移动 → reset 持续观测计时
+		ts.SitZoneSinceMs = 0 // PR-11: track 移动 → reset 持续观测计时
 		// 速度合理性
 		speed := int(math.Round(ts.Kalman.Speed()))
 		if speed > 10 && speed < 150 {
