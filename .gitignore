@@ -99,6 +99,7 @@ bind/zones/*.jnl
 # Stray compiled binaries (use go build into .bin/ not repo root)
 wisefido-data/main
 wisefido-data/cmd/wisefido-data/wisefido-data
+wisefido-sensor/wisefido-sensor
 
 # wisefido-cardaggv1: v2 重写前的本地备份，不入远程（2026-05-17）
 wisefido-cardaggv1/
