@@ -1960,14 +1960,6 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 
 	// ── 即时态（d 帧间位移判据）：score / refresh / stand-static 计时（不变；不碰久静量）──
 	if d < StillThreshCm {
-		// PR-7.2: 跟踪 pose=Stand 静止专用计时（用于自学习升 AreaSit）
-		if RadarPoseToCore(pose) == CorePoseStand {
-			if ts.StandStaticSince == 0 {
-				ts.StandStaticSince = nowMs
-			}
-		} else {
-			ts.StandStaticSince = 0
-		}
 		// PR-11: pose=Lie on AreaBed 持续刷新 — 4h 累计 → 重锁 confidence=95
 		if cell != nil && RadarPoseToCore(pose) == CorePoseLie && cell.Belief[0].Type == AreaBed {
 			if ts.LyingOnBedSinceMs == 0 {
@@ -2010,48 +2002,8 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 			ts.AdjustScore(-3)
 		}
 		// 静止超时 LongStill（久静量）已迁到下方 box 判据块（单源 StillBoxRunStart，见函数末）。
-		if cell != nil {
-			isRiskTime := IsNightTime(nowMs, tm.timezone)
-
-			// PR-Bootstrap: v1 TrackManager still-fall fire path 已删除，由 PR-10 BathroomStillFall
-			// (§6.A.1) 在 bathroom room.kind 分支替代。stillFallTimeoutSec 谓词保留作"bathroom-like
-			// 位置过滤器"（line 1971 + 2294 AreaSit 学习 gate），不再驱动 alarm 发射。
-
-			// PR-7.2: stand-static 自学习 → AreaSit
-			// 触发条件:
-			//   pose=Stand 静止 ≥ 12min (cell 非 AreaSit) 或 ≥ 8min (已是 AreaSit 强化)
-			//   且 cell 不在 still-fall 触发场景（toilet/shower/bathroom-room/Stay-alarm）
-			// 物理意义: 人很难 stand-static 超过 12min 在非 bathroom 场景；如果 track 在此
-			// 静止这么久且没消失/没报警 = 该位置实际是个站立工作/坐位（如水池前/化妆台/电脑桌）
-			// 阈值 < 15min 避免与 still-fall 冲突。
-			if ts.StandStaticSince > 0 && !ts.AreaSitAutoLearned && cell != nil {
-				if tm.stillFallTimeoutSec(cell, isRiskTime) == 0 {
-					// 非 still-fall 触发场景；可学习
-					// PR-9.2: 任何已是 RestZone（AreaSit / AreaBed）都用 8min（强化）；其它 12min
-					threshold := int64(12 * 60 * 1000)
-					if cell.IsRestZone() {
-						threshold = int64(8 * 60 * 1000)
-					}
-					if nowMs-ts.StandStaticSince >= threshold {
-						locked := cell.MarkRestZoneByFeedback(AreaSit)
-						cell.IncrToleratedStill()
-						// PR-10: 自学习也触发邻居增强（与人工反馈一致）
-						tm.grid.boostNeighborSameType(x, y, AreaSit, nowMs)
-						ts.AreaSitAutoLearned = true
-						tm.logger.Info("area_sit_auto_learned",
-							zap.String("device_uid", ts.DeviceAddr),
-							zap.Int("track_id", ts.TrackID),
-							zap.Int("stand_static_sec", int((nowMs-ts.StandStaticSince)/1000)),
-							zap.Int("threshold_sec", int(threshold/1000)),
-							zap.Bool("area_sit_locked", locked),
-							zap.Int("cell_area_before", int(cell.Belief[0].Type)),
-							zap.Int("x", x), zap.Int("y", y),
-							zap.Int64("ts_ms", nowMs),
-						)
-					}
-				}
-			}
-		}
+		// PR-7.2 stand-static 自学习 → AreaSit 已删：位置门控被角装抖动打散 + 无 walk-away 闸会把真摔躺点误学成 Sit；
+		// AreaSit 自动学习单源到 StillBox log-odds（emitSitEpisode，sit_learning.go）。
 
 		// PR-9: v1 R4 bedside_fall 触发块整段删除（依赖 lastLeftBedAt）。
 		// PR-10/11 BathroomBedsideFall + bedroom bedside_fall 将以 SuiteCensus + BedSession 重写，
@@ -2060,7 +2012,6 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 		// 即时态移动：reset 即时态计时（StandStatic/Lying/Sit/StillFall）；速度合理性。
 		// 久静量（Dwell/ToleratedStill/LongStill/Anomaly/LongStillReported）走下方 box 判据块。
 		ts.StillFallReported = false
-		ts.StandStaticSince = 0 // PR-7.2: track 移动 → reset stand-static 计时
 		ts.LyingOnBedSinceMs = 0
 		ts.SitOnToiletSinceMs = 0 // PR-11: track 移动 → reset 持续观测计时
 		// 速度合理性
