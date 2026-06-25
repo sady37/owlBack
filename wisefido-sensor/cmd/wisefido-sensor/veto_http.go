@@ -69,6 +69,29 @@ func startVetoHTTPServer(ctx context.Context, addr string, engine *roomengine.En
 		_ = json.NewEncoder(w).Encode(map[string]bool{"cleared": cleared, "learn_blocked": blocked})
 	})
 
+	// 事件触发：wisefido-data handle 完即调，即时处理单条 alarm 反馈（event_id 去重）。
+	mux.HandleFunc("/roomengine/feedback/ingest", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			EventID string `json:"event_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.EventID == "" {
+			http.Error(w, "bad request (need event_id)", http.StatusBadRequest)
+			return
+		}
+		processed, err := engine.IngestFeedback(r.Context(), req.EventID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		logger.Info("feedback_ingest_applied", zap.String("event_id", req.EventID), zap.Bool("processed", processed))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"processed": processed})
+	})
+
 	mux.HandleFunc("/roomengine/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})

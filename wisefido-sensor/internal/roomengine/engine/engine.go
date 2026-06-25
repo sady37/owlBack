@@ -53,6 +53,9 @@ type Frame struct {
 	// FiredLogicIDs 本帧 fall fire 的 LogicID：回传 track_manager 复位 still-box（跨层 StillSec 在 tm），
 	//   与本帧已就地复位的 belief 配套——fall fire = 该 track 推断 episode 结束 → 从 0 热机重判。
 	FiredLogicIDs []string
+	// FiredBands[LogicID] = 该 fire 的 band（floor/report/lost/repeat）：回传 PublishDBNFall 选坐标
+	//   （floor=久静兜底→still-box 起点坐标；report=SFall 胜出→当前坐标）。
+	FiredBands map[string]string
 	// DroppedLogicIDs 本帧 belief 状态驱动 drop（确认离场/空：!Present ∧ SLeft+SEmpty≥absorbedThresh）的 LogicID：
 	//   回传 track_manager 立即 evict，停止 12s coast 期对已离场 track 的 re-feed（否则 census 每帧重发
 	//   新 logicID = churn）。与 FiredLogicIDs 互斥（fire⇒SFallen 高⇒不进 drop）。闪失重捕的 coast 不受影响
@@ -329,6 +332,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 	curReal := map[string]float64{} // 本 tick 在场真人(PReal≥0.5) logicID→PReal（算 lost/gained）
 	var dropIDs []string            // 本帧状态驱动 drop 的 LogicID（dropTrack + 回传 tm evict，停 re-feed churn）
 	var firedLogicIDs []string      // 本帧 fall fire 的 LogicID（就地复位 belief + 回传 tm 复位 still-box）
+	firedBands := map[string]string{} // LogicID→band（floor/report/...）：回传 PublishDBNFall 选坐标
 	realOccupancy := 0              // F1 本 tick 真人占用数（PReal≥0.5 ∧ S∉{E,L}）→ 末更 alone-streak
 	lostExited := false             // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）→ Unit timer cancel
 	for _, ts := range tracks {
@@ -458,6 +462,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 		//   + LogicID 回传 tm 复位 still-box，从 0 热机重判（不动 census 身份/realness、不动 repeat 前科）。
 		if d.Fire {
 			firedLogicIDs = append(firedLogicIDs, ts.LogicID)
+			firedBands[ts.LogicID] = d.Band
 		}
 		// 资格恒真：realness 绝不按 PR 把 fall 排出 room OR。任一 track（含 blind 续存）的摔都进房间 OR——
 		//   ghost fall 可能是真人摔的镜像，宁报不漏。realness 的影响只在 N_r（→ C_FN 折扣，帮 fire）。
@@ -558,6 +563,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 		r.deciders[id] = belief.NewDecider()
 	}
 	fr.FiredLogicIDs = firedLogicIDs
+	fr.FiredBands = firedBands
 	fr.DroppedLogicIDs = dropIDs
 	return fr
 }

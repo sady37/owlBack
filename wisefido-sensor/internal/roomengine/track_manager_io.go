@@ -177,6 +177,11 @@ func (tm *TrackManager) forwardFirmwareFall(a RadarFallAlarm) {
 	if emitStatus == "" {
 		emitStatus = "start"
 	}
+	emitCat := a.Category
+	if emitCat == "" {
+		emitCat = alarm.Fall
+	}
+	// reason = <device_uid_hex>.<alarmType>（device 原生标识）；sensor 自发腿用 dbn.<alarmType>。
 	payload := AIPayload{
 		DeviceAddr:  a.DeviceUID,
 		RoomID:      tm.roomID,
@@ -186,15 +191,11 @@ func (tm *TrackManager) forwardFirmwareFall(a RadarFallAlarm) {
 			TrackID:   a.TrackID,
 			Pose:      a.Pose,
 		},
-		Reason: "firmware_radar_fall",
+		Reason: tm.devUIDHex(a.DeviceUID) + "." + emitCat,
 		Evidence: map[string]interface{}{
 			"context":         "qinglan_publisher_event_stream_passthrough",
 			"firmware_status": a.Status,
 		},
-	}
-	emitCat := a.Category
-	if emitCat == "" {
-		emitCat = alarm.Fall
 	}
 	tm.aiPublisher.PublishAIAlarm(context.Background(), payload, emitCat, a.TMs)
 }
@@ -211,7 +212,7 @@ func (tm *TrackManager) trackByLogicID(lid string) *TrackState {
 
 // PublishDBNFall DBN fire 发布腿（S0.c-4，A·R12.3）：fired logicID → 构 payload → emitAIAlarm(alarm.Fall)。
 // DBN_MODE 门控在 engine 内 dbnSelfFireEnabledFor（本方法只发，调用方已判门控）。
-func (tm *TrackManager) PublishDBNFall(lid string, nowMs int64) {
+func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 	tm.mu.Lock()
 	ts := tm.trackByLogicID(lid)
 	var p AIPayload
@@ -219,12 +220,19 @@ func (tm *TrackManager) PublishDBNFall(lid string, nowMs int64) {
 		p = tm.payloadFromTrack(ts)
 		// Occurred = still-box 起点（= nowMs − stillSec·1000）；moving-collapse 无 still run 时留 0 退化 incident==alerted。
 		p.IncidentMs = ts.StillBoxRunStart
+		// floor 久静兜底 fire：坐标取 still-box 起点（人倒下处），非当前 LastRaw（兜底时刻可能已漂/久静末帧）。
+		// report(SFall 胜出)及其它 band：payloadFromTrack 的当前 LastRaw 即倒地处，不覆盖。
+		if band == "floor" && ts.StillBoxRunStart != 0 {
+			p.Track.PositionX = intPtr(ts.StillBoxStartRawH)
+			p.Track.PositionY = intPtr(ts.StillBoxStartRawV)
+			p.Track.PositionZ = intPtr(ts.StillBoxStartRawZ)
+		}
 	}
 	tm.mu.Unlock()
 	if ts == nil {
 		return
 	}
-	p.Reason = "dbn_fall"
+	p.Reason = "dbn." + alarm.Fall
 	tm.emitAIAlarm(p, alarm.Fall, nowMs)
 }
 

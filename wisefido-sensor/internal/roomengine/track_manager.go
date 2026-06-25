@@ -1143,7 +1143,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 
 			ts.Kalman.Predict(dt)
 			ts.Kalman.Update(float64(f.X), float64(f.Y))
-			ts.PushPoint(f.X, f.Y, f.Z, f.TMs)
+			ts.PushPoint(f.X, f.Y, f.Z, f.RawH, f.RawV, f.RawZ, f.TMs)
 
 			// 连续指标（StillBox 静止），在 Kalman update 之后维护
 			tm.updateContinuousIndicators(ts, f, nowMs)
@@ -1498,6 +1498,7 @@ func (tm *TrackManager) ResetStillBox(logicID string) {
 		ts.StillBoxRunStart = 0
 		ts.StillBoxStartX = 0
 		ts.StillBoxStartY = 0
+		ts.StillBoxStartRawH, ts.StillBoxStartRawV, ts.StillBoxStartRawZ = 0, 0, 0
 		ts.History = ts.History[:0]
 		// lost = fall 域，不 emit Sit episode；只清姿态累加器（与 box break 区别开）。
 		ts.sitFwMaxMs, ts.sitFwContigStartMs, ts.sitZBest = 0, 0, 0
@@ -1624,6 +1625,9 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			ts.StillBoxRunStart = ts.History[0].TMs
 			ts.StillBoxStartX = ts.History[0].X
 			ts.StillBoxStartY = ts.History[0].Y
+			ts.StillBoxStartRawH = ts.History[0].RawH
+			ts.StillBoxStartRawV = ts.History[0].RawV
+			ts.StillBoxStartRawZ = ts.History[0].RawZ
 		}
 		// AreaSit 学习：box running = episode 进行中，累姿态相关两通道（fwMax/zBest，sit_learning.go）。
 		if RadarPoseToCore(f.Pose) == CorePoseSit {

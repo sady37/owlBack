@@ -2,6 +2,8 @@ package service
 
 import (
 	"sync"
+
+	"owl-common/observation"
 )
 
 type FieldValue struct {
@@ -79,6 +81,34 @@ func (b *MonitorBuffer) SnapshotByDevice(cardID, deviceAddr string) map[string]a
 		"device_addr": deviceAddr,
 		"tracks":    tracks,
 	}
+}
+
+// TrackPosition 取某 device 下指定 track 当前 position（monitor 帧原值，raw firmware 坐标）。
+// 用途：固件直发 fall 的 payload 无坐标，alarm_router 按 track_id 补进 payload，与 DBN 腿统一落点。
+// track 不存在 / 三轴任一缺 → ok=false（caller 省略，不写半截坐标）。
+func (b *MonitorBuffer) TrackPosition(cardID, deviceAddr, trackID string) (x, y, z any, ok bool) {
+	if cardID == "" || deviceAddr == "" {
+		return nil, nil, nil, false
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	cb := b.cards[cardID]
+	if cb == nil {
+		return nil, nil, nil, false
+	}
+	db := cb.Devices[deviceAddr]
+	if db == nil {
+		return nil, nil, nil, false
+	}
+	tb := db.Tracks[trackID]
+	if tb == nil {
+		return nil, nil, nil, false
+	}
+	fx, fy, fz := tb.Fields[observation.FieldPositionX], tb.Fields[observation.FieldPositionY], tb.Fields[observation.FieldPositionZ]
+	if fx == nil || fy == nil || fz == nil {
+		return nil, nil, nil, false
+	}
+	return fx.Value, fy.Value, fz.Value, true
 }
 
 // Write updates fields for a card:device:track. Only fields present in the

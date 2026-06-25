@@ -458,24 +458,37 @@ func speedSync(a, b float64) float64 {
 	return 1 - math.Abs(a-b)/m
 }
 
-// reflectSep 桶二镜像几何（§69 五步，架构师定法）→ 反射裕度 cm（0=非反射，喂 WallMargin 软发射）：
+const radarSelfCrossCm = 10 // 交点距 radar <此 = radar 踩墙的自穿(t≈0)，丢弃（真反射体不会贴 radar 这么近）
+
+// reflectSep 桶二镜像几何（§69 五步）→ 反射裕度 cm（0=非反射，喂 WallMargin 软发射）：
+//	① ghost 在房间 bbox 内 → 0（真人在房内天然非反射）；
+//	② radar→ghost 连线与各 wall 边求距 ghost 最近的交点 = mirror 点，排除 radar 自身处交点；
+//	③ 连线不穿任何墙 → 0；④ mirror 点→ghost <sepCm → 0，FN-safe 偏 0。无墙 → 恒 0（§69 柱E）。
 //
-//	① ghost 在任一 wall 矩形内（墙内 = 非反射）→ 0；
-//	② radar→ghost 连线与各 wall 边求交，取**距 ghost 最近的交点 = mirror 点**（多墙取全局最近，§69 步4）；
-//	③ 连线不穿任何墙 → 0；④ mirror 点→ghost <sepCm（雷达精度/墙太靠内）→ 0，FN-safe 偏 0。
-//
-// FN-safe（§69 柱B）：宁可漏判镜像不可误判真人为镜像。真人在房内（墙内/不穿墙）几何天然 0；
-// 只有 ghost 真在墙外且连线穿墙 ≥阈才返裕度。无墙配置 → 恒 0（零回归，§69 柱E）。
+// ① 用边线并集 bbox 判房内、非逐墙 insideRect：walls 是 wallsFromPolygon 产的零厚度边线 rect，房内点
+//   判不进任何单条边线 → insideRect 恒 false 护栏失效，房内真人误判反射。② radar 常装在墙边线上，
+//   连线起点(t≈0)假性穿墙取全长当裕度——非真反射，按距 radar 阈丢弃。
 func reflectSep(gx, gy int, radar Point, walls []Rect, sepCm int) float64 {
+	if len(walls) == 0 {
+		return 0
+	}
+	minX, maxX := walls[0].X1, walls[0].X1
+	minY, maxY := walls[0].Y1, walls[0].Y1
 	for _, w := range walls {
-		if insideRect(gx, gy, w) {
-			return 0 // ① ghost 在墙内 → 非反射
-		}
+		minX, maxX = min(minX, w.X1, w.X2), max(maxX, w.X1, w.X2)
+		minY, maxY = min(minY, w.Y1, w.Y2), max(maxY, w.Y1, w.Y2)
+	}
+	if gx >= minX && gx <= maxX && gy >= minY && gy <= maxY {
+		return 0 // ① ghost 在房间 bbox 内 → 非反射
 	}
 	gxf, gyf := float64(gx), float64(gy)
+	rxf, ryf := float64(radar.X), float64(radar.Y)
 	best, found := math.MaxFloat64, false
 	for _, w := range walls {
-		for _, p := range segRectIntersections(float64(radar.X), float64(radar.Y), gxf, gyf, w) {
+		for _, p := range segRectIntersections(rxf, ryf, gxf, gyf, w) {
+			if math.Hypot(p.x-rxf, p.y-ryf) < radarSelfCrossCm {
+				continue // 排除 radar 踩墙的自穿交点（t≈0）
+			}
 			if d := math.Hypot(p.x-gxf, p.y-gyf); d < best { // ② 距 ghost 最近交点（含多墙全局最近）
 				best, found = d, true
 			}
@@ -485,11 +498,6 @@ func reflectSep(gx, gy int, radar Point, walls []Rect, sepCm int) float64 {
 		return 0 // ③ 不穿墙 / ④ 交点→ghost <阈 → 非反射
 	}
 	return best // 反射裕度（mirror 点→ghost 距，cm）
-}
-
-// insideRect 点在矩形内（含边界）。
-func insideRect(x, y int, r Rect) bool {
-	return x >= r.X1 && x <= r.X2 && y >= r.Y1 && y <= r.Y2
 }
 
 type ptf struct{ x, y float64 }

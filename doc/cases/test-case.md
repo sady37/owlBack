@@ -6,7 +6,10 @@ replay集
 # * case-09e7-0620-22402242   
 # * case-09e7-6021-22162229   1room2radar,reisktime,fall2,9min fall     **success  同房在床，可能睡，不抑制fire报警
 
-# * case-d523-0622-13341336   D523,椅子后80s lost, 120s 101guest sleepad inbed handoff  **success 
+# * case-d523-0622-13341336   D523,椅子后80s lost, 120s 101guest sleepad inbed handoff  **success
+# * case-B197-0624-09180932  livingRoom 2人， 有Ghost, 有2次fall. 
+# * case-B197-0624-08430856  livingRoom  ExitRoom,  BlindArea, 12min  handle->Enter/Door  Exit zone: add permanently  
+# * case-0777-0624-12001201  sandiego  learning area,  重复sitonground fire
 
 # * case-d5f7-0617-23252357 replay
 case1  bathroom  still+D

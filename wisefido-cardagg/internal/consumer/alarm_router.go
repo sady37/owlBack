@@ -15,11 +15,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
 	"owl-common/alarm"
 	"owl-common/card"
+	"owl-common/observation"
 	owlredis "owl-common/redis"
 	"owl-common/spatial"
 
@@ -195,10 +197,50 @@ func (r *AlarmRouter) Handle(ctx context.Context, msg *owlredis.IoTStreamMessage
 	return r.persist(ctx, msg, cardID, eventName, level, data)
 }
 
+// isFirmwareOriginReason 判 fall origin = device 直发：reason 形如 <device_uid_hex>.<alarmType>。
+// sensor 自发 reason=dbn.<alarmType>（前缀非 hex）→ false；空 / 无 "." → false。
+func isFirmwareOriginReason(reason string) bool {
+	i := strings.IndexByte(reason, '.')
+	if i <= 0 {
+		return false
+	}
+	for _, c := range reason[:i] {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// trackIDKey 把 payload 里的 track_id（JSON 解出为 float64）转 MonitorBuffer 的字符串键（strconv.Itoa 同源）。
+func trackIDKey(v any) string {
+	switch n := v.(type) {
+	case float64:
+		return strconv.Itoa(int(n))
+	case int:
+		return strconv.Itoa(n)
+	case string:
+		return n
+	}
+	return ""
+}
+
 func (r *AlarmRouter) persist(ctx context.Context, msg *owlredis.IoTStreamMessage, cardID, eventName, level string, data map[string]interface{}) error {
 	ac := service.AddrCtxFromMsg(msg)
+	reasonStr, _ := data["reason"].(string) // origin：<uid>.alarmType 固件直发 / dbn.alarmType sensor 自发 → alarm_events.reason
+
+	// 固件直发 fall（reason=<uid_hex>.<type>）payload 无坐标 → 按 track_id 从 MonitorBuffer 补 position 进
+	// payload，与 DBN 腿（payload 自带）统一落点 payload.position_x/y/z，下游/feedback 单一读法不再 lookback。
+	if r.monitorBuf != nil && isFirmwareOriginReason(reasonStr) {
+		if _, has := data[observation.FieldPositionX]; !has {
+			if x, y, z, ok := r.monitorBuf.TrackPosition(cardID, ac.DeviceAddr, trackIDKey(data[observation.FieldTrackID])); ok {
+				data[observation.FieldPositionX] = x
+				data[observation.FieldPositionY] = y
+				data[observation.FieldPositionZ] = z
+			}
+		}
+	}
 	triggerData, _ := json.Marshal(data)
-	reasonStr, _ := data["reason"].(string) // Fall 子类型 → alarm_events.reason（此前从不写，列全 null）
 	parentSpan := service.BuildParentSpan(msg.Producer, msg.SequenceNumber)
 
 	// alarm 触发时刻取报警设备 monitor 缓存（HR/RR/position/pose 等所有 raw 字段），

@@ -64,13 +64,13 @@ func newDBNRouter(logger *zap.Logger) *dbnRouter {
 // onRoomFrame = Engine.OnRoomFrame 回调（纯裁决）。返回三腿：
 //
 //	fired→PublishAIAlarm（engine 内门控发布）/ dropped→emitGhostVerdict / confidence→TrackConfidence 写回。
-func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string, confidence map[string]int) {
+func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string, confidence map[string]int, firedBands map[string]string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	g := d.geom[roomID]
 	if g == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	// B 轴读数 = room 级权威 bed 状态（sleepad+radar 床事件融合）。
@@ -140,7 +140,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 
 	u := d.units[d.roomUnit[roomID]]
 	if u == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	fr := u.Tick(roomID, fi)
 
@@ -173,7 +173,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Int("fired", len(fr.FiredLogicIDs)), zap.Int("dropped", len(fr.DroppedLogicIDs)),
 		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("risktime", isRiskTime))
 
-	return fr.FiredLogicIDs, fr.DroppedLogicIDs, confidence
+	return fr.FiredLogicIDs, fr.DroppedLogicIDs, confidence, fr.FiredBands
 }
 
 // bedReadingName B 轴读数名（log 用）。

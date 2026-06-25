@@ -18,8 +18,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// sensorVetoBaseURL sensor veto HTTP 端点（同机默认；env SENSOR_HTTP_URL 覆盖）。
-func sensorVetoBaseURL() string {
+// sensorHTTPBaseURL sensor live engine HTTP 端点（veto + feedback ingest 共用；同机默认；env SENSOR_HTTP_URL 覆盖）。
+func sensorHTTPBaseURL() string {
 	if u := os.Getenv("SENSOR_HTTP_URL"); u != "" {
 		return strings.TrimRight(u, "/")
 	}
@@ -98,7 +98,7 @@ func (s *RadarInstall) notifySensorVeto(ctx context.Context, deviceAddr string, 
 	body, _ := json.Marshal(map[string]interface{}{"device_addr": deviceAddr, "x": x, "y": y})
 	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, sensorVetoBaseURL()+"/roomengine/cell/veto", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, sensorHTTPBaseURL()+"/roomengine/cell/veto", bytes.NewReader(body))
 	if err != nil {
 		s.logger.Warn("notifySensorVeto: build request", zap.Error(err))
 		return

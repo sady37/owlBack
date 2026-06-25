@@ -41,7 +41,7 @@ type AlarmInsertParams struct {
 	AlertedAt   time.Time       // 系统决策上抛时刻；零值 → 默认 = TriggeredAt（producer 拆参后再实拍）
 	TriggerData json.RawMessage // 映射 payload
 	Metadata    json.RawMessage // 映射 evidence
-	Reason      string          // 映射 alarm_events.reason（Fall 子类型：sleepad_radar_conflict / track_lost_... / firmware_radar_fall；空=不写）
+	Reason      string          // 映射 alarm_events.reason（fall origin：<device_uid_hex>.<alarmType> 固件直发 / dbn.<alarmType> sensor 自发；空=不写）
 	RoomID      string
 	UnitID      string
 	// 北极星 envelope（详 alarm_events.producer / parent_span / trace_id 列注释）

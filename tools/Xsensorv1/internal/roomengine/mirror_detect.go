@@ -31,8 +31,7 @@ const (
 	mirrorMidpointRMSECm  = 20.0 // 中点到拟合直线 RMSE 上限（cm）
 	mirrorOrthogonalCos   = 0.20 // |cos(midline 方向, mean v)| 上限（cos 5°≈0.087；放宽到 ~78° 容忍噪声）
 	mirrorSpeedRatioMax   = 0.40 // |s_A - s_B| / max(s_A, s_B) 上限（独立行人不会这么同步）
-	mirrorMinTotalMoveCm  = 30   // 5 帧累计位移下限：静止场景跳过判定
-	mirrorGhostPenaltyAdd = 50   // 命中 ghost 累加的 GhostPenalty
+	mirrorMinTotalMoveCm = 30 // 5 帧累计位移下限：静止场景跳过判定
 )
 
 // mirrorPairKey 两 track 配对（小 ID 在前，固定 key 顺序）。ID = trackKey（设备+firmware track_id），
@@ -286,18 +285,12 @@ type mirrorCandidate struct {
 	X, Y int
 }
 
-// scanMirrorGhostPairs TrackManager 入口：每帧调用，扫所有"非 ghost & 非 anchored"
-// track 两两组合，累配对样本；满 5 帧 + 通过三不变量 + tiebreaker → ghost 端 GhostPenalty +50
-// 并把 bounce 点写 grid。调用方持锁（processFrameAt 内调用）。
+// scanMirrorGhostPairs TrackManager 入口：每帧调用，扫所有 track 两两组合，累配对样本；
+// 满 5 帧 + 通过三不变量 + tiebreaker → 把 bounce 点写 grid（2×2 微块累 MBC，≥3 升 AreaDeny+SourceLearned）。
+// ghost 判定单源到 census PReal，本扫描只做镜面区自学习。调用方持锁（processFrameAt 内调用）。
 func (tm *TrackManager) scanMirrorGhostPairs(nowMs int64) {
-	// 收集候选 track：Verdict 已 anchored Real（LongSurvivalAnchored / StartupGrace）跳过 —
-	// 两个都已确认 Real 不可能互为 mirror；任一未锚定即评估
 	var cands []mirrorCandidate
 	for tid, ts := range tm.tracks {
-		// 已经判 Ghost 不参与配对（节省工作量；它本来就是 ghost）
-		if ts.Verdict == VerdictGhost {
-			continue
-		}
 		pxF, pyF := ts.Kalman.Position()
 		cands = append(cands, mirrorCandidate{ID: tid, X: int(math.Round(pxF)), Y: int(math.Round(pyF))})
 	}
@@ -317,13 +310,6 @@ func (tm *TrackManager) scanMirrorGhostPairs(nowMs int64) {
 		for j := i + 1; j < len(cands); j++ {
 			a := cands[i]
 			b := cands[j]
-			// 跳过两个都已 anchored Real 的 pair
-			tsA := tm.tracks[a.ID]
-			tsB := tm.tracks[b.ID]
-			if (tsA.LongSurvivalAnchored || tsA.StartupGrace) &&
-				(tsB.LongSurvivalAnchored || tsB.StartupGrace) {
-				continue
-			}
 
 			key := newMirrorPairKey(a.ID, b.ID)
 			buf, ok := tm.mirrorBuffer[key]
@@ -331,7 +317,7 @@ func (tm *TrackManager) scanMirrorGhostPairs(nowMs int64) {
 				buf = &mirrorPairBuffer{}
 				tm.mirrorBuffer[key] = buf
 			}
-			// 冷却中：还是要 push 样本以保持滑窗连续，但不触发评估 + paint + penalty
+			// 冷却中：还是要 push 样本以保持滑窗连续，但不触发评估 + paint
 			buf.pushSample(mirrorPairSample{Ax: a.X, Ay: a.Y, Bx: b.X, By: b.Y, Ts: nowMs})
 			if nowMs-buf.lastConfirmedMs < tm.mirrorCooldownMs && buf.lastConfirmedMs > 0 {
 				continue
@@ -341,23 +327,12 @@ func (tm *TrackManager) scanMirrorGhostPairs(nowMs int64) {
 			if !res.IsMirror {
 				continue
 			}
-			// 加 GhostPenalty 到 ghost 端
-			ghost := tm.tracks[res.GhostTrackID]
-			if ghost != nil {
-				ghost.GhostPenalty += mirrorGhostPenaltyAdd
-				if ghost.GhostPenalty > 100 {
-					ghost.GhostPenalty = 100
-				}
-				tm.logger.Info("ghost_veto",
-					zap.String("reason", "mirror_pair_l1"),
-					zap.String("ghost_device", res.GhostTrackID.dev), zap.Int("ghost_track_id", res.GhostTrackID.tid),
-					zap.String("real_device", res.RealTrackID.dev), zap.Int("real_track_id", res.RealTrackID.tid),
-					zap.Int("penalty_added", mirrorGhostPenaltyAdd),
-					zap.Int("ghost_penalty_now", ghost.GhostPenalty),
-					zap.Int("bounce_points", len(res.BouncePoints)),
-				)
-			}
-			// 把每个 bounce 点 paint 2×2 微块累 MBC
+			tm.logger.Info("mirror_pair_l1",
+				zap.String("ghost_device", res.GhostTrackID.dev), zap.Int("ghost_track_id", res.GhostTrackID.tid),
+				zap.String("real_device", res.RealTrackID.dev), zap.Int("real_track_id", res.RealTrackID.tid),
+				zap.Int("bounce_points", len(res.BouncePoints)),
+			)
+			// 把每个 bounce 点 paint 2×2 微块累 MBC（镜面区自学习；ghost 判定单源到 census）
 			for _, bp := range res.BouncePoints {
 				tm.grid.MarkMirrorBounce(bp.X, bp.Y, nowMs)
 			}

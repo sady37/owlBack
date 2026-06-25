@@ -1305,9 +1305,6 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 			data = make(map[string]interface{})
 		}
 		switch eventType {
-		case 1:
-			// area_type 写入 data，供下游区分区域（床区/感应区等）
-
 		case 2:
 			// 4 个 pose-class category 各自保留（不再合并 SuspectedFall→Fall）：
 			//   - SuspectedFall          (pose=2)  firmware 第一帧检测 → 下游 WARNING

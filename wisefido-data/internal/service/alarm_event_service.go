@@ -911,6 +911,13 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 		}
 	}()
 
+	// 事件触发：handle 完即调 sensor live engine 即时处理该条 fall 反馈（best-effort，非 fall 类 sensor 自行忽略）。
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.notifySensorFeedback(bgCtx, req.EventID)
+	}()
+
 	return response, nil
 }
 

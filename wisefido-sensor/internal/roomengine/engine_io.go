@@ -354,37 +354,6 @@ func (e *Engine) scanBeliefAll() {
 	)
 }
 
-func (e *Engine) alarmFeedbackLoop(ctx context.Context) {
-	if e.feedbackIngester == nil {
-		return
-	}
-	// 启动延迟 5s，避免与 RegisterRoom / hydrate 同时进 DB
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(5 * time.Second):
-	}
-	if n, err := e.feedbackIngester.IngestOnce(ctx); err != nil {
-		e.logger.Warn("alarm_feedback ingest at startup", zap.Error(err))
-	} else {
-		e.logger.Info("alarm_feedback startup ingest", zap.Int("processed", n))
-	}
-	ticker := time.NewTicker(e.feedbackInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if n, err := e.feedbackIngester.IngestOnce(ctx); err != nil {
-				e.logger.Warn("alarm_feedback ingest tick", zap.Error(err))
-			} else if n > 0 {
-				e.logger.Info("alarm_feedback ingest tick", zap.Int("processed", n))
-			}
-		}
-	}
-}
-
 func (e *Engine) snapshotLoop(ctx context.Context) {
 	ticker := time.NewTicker(e.snapshotInterval)
 	defer ticker.Stop()

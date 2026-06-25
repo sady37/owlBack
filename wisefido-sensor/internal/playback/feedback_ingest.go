@@ -4,10 +4,8 @@
 // 灌进 grid.cells。让 playback HTML 的 SVG overlay 可以展示真实的人类反馈层
 // （GhostCount / RestZoneConfirmed / RealFallCount / FakeAlarmCount）。
 //
-// 运行时（cmd/wisefido-sensor daemon）有 PR-4 持续 ingester；playback 是离线快照工具，
-// 不持有 redis client / 不调 engine.PublishAIEvent，所以单独走一条灌库逻辑。
-//
-// 与 internal/roomengine/feedback.go 的 IngestOnce 同样：
+// 运行时（cmd/wisefido-sensor daemon）由 wisefido-data handle 后事件触发逐条 ingest；playback 是离线快照
+// 工具，不持有 redis client / 不调 engine.PublishAIEvent，所以单独走一条按时间窗批量灌库逻辑：
 //   1. 拉指定 device 的 alarm_events 历史（false_alarm + verified）
 //   2. parseConditions(notes) 解析 ☑ checkbox
 //   3. 90s lookback monitor_stream 拿 radar.track 帧（雷达本地 h/v/z）

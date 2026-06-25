@@ -4,8 +4,9 @@ import "math"
 
 // TimedPoint 带时间戳的画布坐标（cm 整数）
 type TimedPoint struct {
-	X, Y, Z int
-	TMs     int64
+	X, Y, Z          int   // canvas（旋转后）
+	RawH, RawV, RawZ int   // raw firmware（与 LastRaw 同系；floor fall 用 still-box 起点 raw）
+	TMs              int64
 }
 
 // TrackState 单个 track 的完整生命档案。
@@ -73,7 +74,8 @@ type TrackState struct {
 	// 用于 lost-fall pending 计算 credit（半计入等待）+ PR-C 流式 cancel 守卫。
 	StillBoxRunStart int64
 	// still-box 单源派生（updateContinuousIndicators 同步算，cell engine 久静量读，替代旧 StillSince/StillX/StillY）：
-	StillBoxStartX, StillBoxStartY int   // box run 起点位置（=History[0] 回填点）→ MarkDwell/MarkToleratedStill 灌入 cell
+	StillBoxStartX, StillBoxStartY int   // box run 起点位置 canvas（=History[0] 回填点）→ MarkDwell/MarkToleratedStill 灌入 cell
+	StillBoxStartRawH, StillBoxStartRawV, StillBoxStartRawZ int // box run 起点 raw firmware（=History[0]）→ floor fall 坐标
 	StillBoxBreakDurMs             int64 // 本帧 still-box 刚 break 的 dwell 时长（0=未 break）→ 移动块 MarkDwell 消费
 
 	// ---- AreaSit 4 通道学习累加器（sit_learning.go；StillBox run = episode，box-break = walk-away emit）----
@@ -138,8 +140,8 @@ const stillPathCm = 200
 const stillStepFloorCm = 30
 
 // PushPoint 追加一帧观测到历史窗口
-func (ts *TrackState) PushPoint(x, y, z int, tMs int64) {
-	pt := TimedPoint{X: x, Y: y, Z: z, TMs: tMs}
+func (ts *TrackState) PushPoint(x, y, z, rawH, rawV, rawZ int, tMs int64) {
+	pt := TimedPoint{X: x, Y: y, Z: z, RawH: rawH, RawV: rawV, RawZ: rawZ, TMs: tMs}
 	ts.History = append(ts.History, pt)
 	if len(ts.History) > HistoryLen {
 		ts.History = ts.History[len(ts.History)-HistoryLen:]

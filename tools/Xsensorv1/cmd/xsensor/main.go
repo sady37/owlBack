@@ -245,6 +245,9 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		// P1 单 setter（契约 §3 / §9.3 裁定）：Nr 折叠 + uncovered-sleepad（撑占用，修缺陷①漏算）。
 		//   只进 RealPeopleInRoom(P1 占用/alone)；P2 census.Nr→C_FN 不动（睡着的人不进 fall 风险，§9.4）。
 		d.eng.SetRoomRadarPeople(roomID, fr.Decision.PeopleCount+uncovered)
+		for _, t := range fr.Tracks {
+			d.eng.SetTrackPReal(roomID, t.LogicID, t.PReal) // ghost 单源回灌：census PReal → TrackState（cell 占用/床区学习读）
+		}
 		realPeople = d.eng.RealPeopleInRoom(roomID)
 		// de-absorption no-silent-caps（§9.4）：主 radar 离床+垫仍 InBed 时 LOG，标明 V5/V6 stale/fresh 仲裁
 		//   在 09e7 **未被真 case 覆盖**（铁律 [[validate_real_case_no_unit_tests]] 不靠推理）。
@@ -271,7 +274,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		raw = append(raw, map[string]interface{}{
 			"tid": b.TrackID, "present": b.Present, "pose": b.Pose,
 			"x": b.X, "y": b.Y, "z": b.Z, "stillbox": b.StillBoxSec,
-			"area": int(b.CellAreaType), "verdict": int(b.Verdict),
+			"area": int(b.CellAreaType), "bf_preal": b.PReal,
 			"fw_area": b.FwAreaID, "fw_bed": fwBed(b.FwAreaID, g.bedAreaIDs), // 固件 area_id + 是否命中床区(N,抬 SBed 那条腿)
 			"vital": b.SleepadVitalPresent, // 该轨 sleepad 接触 vital(InBed+HR/RR fresh)→ couplesAnyBed 时抬 SBed
 		})

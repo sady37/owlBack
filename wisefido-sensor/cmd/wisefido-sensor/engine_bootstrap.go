@@ -20,6 +20,7 @@ import (
 	"wisefido-sensor/internal/config"
 	"wisefido-sensor/internal/roomengine"
 	"wisefido-sensor/internal/roomengine/adapter"
+	"wisefido-sensor/internal/roomengine/belief"
 	dbnengine "wisefido-sensor/internal/roomengine/engine"
 )
 
@@ -149,9 +150,8 @@ func buildRuntimeConfig(cfg *config.Config, db *sql.DB) roomengine.RuntimeConfig
 			BedsideMarginCm: r.BedsideFall.BedsideMarginCm,
 			StillTimeoutSec: r.BedsideFall.StillTimeoutSec,
 		},
-		// alarm_events false_alarm 反馈链：用同一个 *sql.DB；间隔 5min（默认）。
-		FeedbackDB:       db,
-		FeedbackInterval: 5 * time.Minute,
+		// alarm_events false_alarm 反馈链：用同一个 *sql.DB（事件触发，wisefido-data handle 后直调 HTTP）。
+		FeedbackDB: db,
 	}
 
 	// ParamSets：3 组并行参数（保守/中庸/激进）
@@ -346,7 +346,15 @@ func registerAllRooms(ctx context.Context, engine *roomengine.Engine, db *sql.DB
 				if nb == 0 && sleepadPresent {
 					nb = 1
 				}
+				if nb > belief.MaxBeds {
+					logger.Warn("room beds 超 P-5 上界，自动跳过多余床（只取前 N，房降级跑不 crash）",
+						zap.String("room", roomID), zap.Int("declared", nb), zap.Int("cap", belief.MaxBeds))
+					nb = belief.MaxBeds
+				}
 				beds := rectsFrom(cfg.Beds)
+				if len(beds) > nb {
+					beds = beds[:nb]
+				}
 				for len(beds) < nb {
 					beds = append(beds, adapter.Rect{})
 				}

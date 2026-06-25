@@ -42,7 +42,7 @@ func (tm *TrackManager) scanStaticReflectors(nowMs int64) {
 	// 游走真人（仅作 log 信息，不 gate——无人时纯金属幻影也要能学）
 	roamer := -1 // firmware track_id（仅 log；-1=无游走真人）
 	for _, ts := range tm.tracks {
-		if ts.Verdict == VerdictReal && ts.DisplacementWithinMs(30_000, nowMs) >= staticReflectorRoamMinCm {
+		if ts.DBNConfidence >= 50 && ts.DisplacementWithinMs(30_000, nowMs) >= staticReflectorRoamMinCm {
 			roamer = ts.TrackID
 			break
 		}

@@ -84,7 +84,7 @@ for dev in "${DEVS[@]}"; do
     echo "  radar $u → $layout_file ($(wc -c < "$OUT_DIR/$layout_file") bytes)"
   fi
 done
-printf '{"devices":[%s]}\n' "$META_DEVS" > "$OUT_DIR/meta.json"
+printf '{"tz":"%s","devices":[%s]}\n' "$TZ_ARG" "$META_DEVS" > "$OUT_DIR/meta.json"
 
 # ── window.json：unit 内所有 Radar 的 monitor(track/heart) + event ──────────
 PSQL -c "

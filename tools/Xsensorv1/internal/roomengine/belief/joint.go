@@ -9,10 +9,10 @@ import (
 // S 轴（9 态全空间，state.go）× B 轴（每床 vac/occ，bed_axis.go）的笛卡尔积。
 // 基数 = numStates · 2^numBeds。索引：idx = s·(2^numBeds) + bmask，bmask 第 j 位 = B^j。
 //
-// P-5（状态爆炸硬 bound）：养老院房 ≤3–4 床，maxBeds=3 → 9·8=72 态，全表轻量。
+// P-5（状态爆炸硬 bound）：养老院房 ≤3–4 床（含 LongSofa 折进 Beds 轴），maxBeds=4 → 9·16=144 态，全表轻量。
 // §7 数值方案：全程 log 域 + log-sum-exp 归一化（ε_art 极小 / L_in 大倍数 → 线性域不安全）。
 
-const maxBeds = 3 // P-5 硬上界。|B|>maxBeds → panic。
+const maxBeds = 4 // P-5 硬上界。|B|>maxBeds → panic。
 
 // JointSpace 联合状态空间元信息。numBeds 进字段（B1 闭合：床数显式持有，不靠隐式推断）。
 type JointSpace struct {

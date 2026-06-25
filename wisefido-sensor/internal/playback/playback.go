@@ -39,8 +39,8 @@ type Options struct {
 	// 4 个 0 = 不 dump。用于定位"为什么这片 cell 学成 X 类型"。
 	DumpRect [4]int // [x1, y1, x2, y2]
 
-	// LogTrackVerdicts debug：true = 每帧记录所有 track 的 verdict / anomaly / score 到 Result.TrackVerdicts。
-	// 用于 ghost / fall verify 算法验证。
+	// LogTrackVerdicts debug：true = 每帧记录所有 track 的位置快照到 Result.TrackVerdicts。
+	// 用于 ghost / fall verify 算法验证（realness/verdict 判定已迁出 TrackOutput → census/DBN）。
 	LogTrackVerdicts bool
 
 	// AlarmInjector：每个 monitor 行处理后调用，按时间戳注入 firmware Fall 报警到 engine。
@@ -85,23 +85,19 @@ type Result struct {
 	// RectDump：Options.DumpRect 设置时，跑完后的 cell 统计列表（用于定位学习异常）
 	RectDump []roomengine.CellStat `json:"rect_dump,omitempty"`
 
-	// TrackVerdicts：Options.LogTrackVerdicts 启用时，记录每帧 ProcessFrame 后所有 track 的 verdict / anomaly
-	// 用途：debug ghost 检测——看 engine 对真假 track 是否给出正确判定。
+	// TrackVerdicts：Options.LogTrackVerdicts 启用时，记录每帧 ProcessFrame 后所有 track 的位置快照
+	// 用途：debug ghost 检测——看 engine 对真假 track 的位置/still 演化。
 	TrackVerdicts []TrackVerdictRecord `json:"track_verdicts,omitempty"`
 }
 
-// TrackVerdictRecord 单个 track 在某一帧的判定快照
+// TrackVerdictRecord 单个 track 在某一帧的位置快照（realness/verdict 判定已迁出 TrackOutput → census/DBN）
 type TrackVerdictRecord struct {
-	TMs      int64  `json:"t_ms"`
-	TrackID  int    `json:"track_id"`
-	Verdict  string `json:"verdict"` // pending / real / ghost
-	Score    int    `json:"score"`
-	Risk     int    `json:"risk"`
-	Anomaly  string `json:"anomaly,omitempty"`
-	X        int    `json:"x"`
-	Y        int    `json:"y"`
-	Z        int    `json:"z"`
-	StillSec int    `json:"still_sec,omitempty"`
+	TMs      int64 `json:"t_ms"`
+	TrackID  int   `json:"track_id"`
+	X        int   `json:"x"`
+	Y        int   `json:"y"`
+	Z        int   `json:"z"`
+	StillSec int   `json:"still_sec,omitempty"`
 }
 
 // 历史轨迹窗口（与原 playback 一致）
@@ -387,17 +383,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 					totalFrames += len(frames)
 					realIDs := make(map[int]bool, len(outputs))
 					for _, o := range outputs {
-						if o.Verdict == roomengine.VerdictReal {
-							realIDs[o.TrackID] = true
-						}
+						realIDs[o.TrackID] = true // realness 判定单源已迁出 TrackOutput → census/DBN；轨迹 path 显示全部 track
 						if opts.LogTrackVerdicts {
 							trackVerdicts = append(trackVerdicts, TrackVerdictRecord{
 								TMs:      ts,
 								TrackID:  o.TrackID,
-								Verdict:  verdictName(o.Verdict),
-								Score:    o.Score,
-								Risk:     o.Risk,
-								Anomaly:  anomalyName(o.Anomaly),
 								X:        o.X,
 								Y:        o.Y,
 								Z:        o.Z,
@@ -453,39 +443,6 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		res.TrackVerdicts = trackVerdicts
 	}
 	return res, nil
-}
-
-// verdictName / anomalyName：把 enum 转可读字符串（JSON 输出用）
-func verdictName(v roomengine.TrackVerdict) string {
-	switch v {
-	case roomengine.VerdictPending:
-		return "pending"
-	case roomengine.VerdictReal:
-		return "real"
-	case roomengine.VerdictGhost:
-		return "ghost"
-	}
-	return "unknown"
-}
-
-func anomalyName(a roomengine.Anomaly) string {
-	switch a {
-	case roomengine.AnomalyNone:
-		return ""
-	case roomengine.AnomalyFall:
-		return "fall"
-	case roomengine.AnomalyStillTooLong:
-		return "still_too_long"
-	case roomengine.AnomalyPathBreak:
-		return "path_break"
-	case roomengine.AnomalyPoseMismatch:
-		return "pose_mismatch"
-	case roomengine.AnomalyBedFall:
-		return "bed_fall"
-	case roomengine.AnomalyBedsideFall:
-		return "bedside_fall"
-	}
-	return "unknown"
 }
 
 // pathPt 单帧 track 位置记录

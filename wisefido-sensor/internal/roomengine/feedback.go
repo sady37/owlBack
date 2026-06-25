@@ -21,13 +21,11 @@
 //   operation='verified' (人确认真摔):       → RealFallCount++ + ClearNonHumanLearnedZone（擦非 Human 抑制/deny）
 //     ↳ Sticky veto: ...                   → 额外 MarkLearnBlocked（永久禁该 cell 自动/反馈学抑制）
 //
-// 流程：
-//  1. 从 engine_alarm_feedback_cursor 读 last_hand_time
-//  2. SELECT alarm_events WHERE operation IN (false_alarm, verified) AND event_type IN (Fall, ...)
-//     AND hand_time > cursor ORDER BY hand_time
-//  3. 每条：解析 notes 提取 ☑ checkbox → 路由到对应 cell counter
-//  4. 90s lookback iot_timeseries 找触发位置 → RadarToCanvas → cell mark
-//  5. UPDATE cursor
+// 流程（事件触发：wisefido-data handle 完直调 sensor /roomengine/feedback/ingest {event_id}）：
+//  1. event_id 内存去重（cell counter 非幂等，重复调禁双增）
+//  2. SELECT alarm_events WHERE event_id=$1 AND operation IN (false_alarm, verified) AND event_type IN (Fall, ...)
+//  3. 解析 notes 提取 ☑ checkbox → 路由到对应 cell counter
+//  4. 读 payload 顶层 position_x/y/z（producer 落点单源）→ RadarToCanvas → cell mark
 
 package roomengine
 
@@ -37,10 +35,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
-	"owl-common/alarm"
 	"owl-common/radarutils"
 )
 
@@ -50,24 +48,20 @@ type AlarmFeedbackIngester struct {
 	engine *Engine
 	logger *zap.Logger
 
-	// 90s 回看窗口，覆盖 silent fall 60s windows 略有余量
-	lookbackMs int64
-
-	// 仅这些 event_type 的 false_alarm 喂入（fall 类才与 cell 位置相关）
-	eventTypes []string
+	// event_id 去重集：事件触发是乱序单条，processOne 的 cell counter 非幂等，重复调禁双增。
+	mu   sync.Mutex
+	seen map[string]struct{}
 }
 
-// NewAlarmFeedbackIngester 默认 90s lookback，仅 Fall/SittingOnGround/Stay 类。
 func NewAlarmFeedbackIngester(db *sql.DB, engine *Engine, logger *zap.Logger) *AlarmFeedbackIngester {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	return &AlarmFeedbackIngester{
-		db:         db,
-		engine:     engine,
-		logger:     logger,
-		lookbackMs: 90_000,
-		eventTypes: []string{alarm.Fall, alarm.SittingOnGround, alarm.Stay},
+		db:     db,
+		engine: engine,
+		logger: logger,
+		seen:   map[string]struct{}{},
 	}
 }
 
@@ -179,101 +173,58 @@ func parseConditions(notes string) ParsedConditions {
 	return out
 }
 
-// IngestOnce 跑一次增量同步。
-// 返回 (处理的反馈条数, 错误)。错误时游标不更新；下次会重试同一批。
-func (i *AlarmFeedbackIngester) IngestOnce(ctx context.Context) (int, error) {
+// IngestOne 处理单条 alarm 反馈（事件触发：wisefido-data handle 完直调）。
+// event_id 去重：同一 event 重复调只跑一次 processOne（cell counter 非幂等，禁双增）。
+// 返回 (是否落地处理, 错误)。非 fall-feedback 行（operation/event_type 不匹配）静默忽略，不算错误。
+func (i *AlarmFeedbackIngester) IngestOne(ctx context.Context, eventID string) (bool, error) {
 	if i.db == nil || i.engine == nil {
-		return 0, fmt.Errorf("ingester not configured (nil db or engine)")
+		return false, fmt.Errorf("ingester not configured (nil db or engine)")
+	}
+	if eventID == "" {
+		return false, fmt.Errorf("empty event_id")
 	}
 
-	// 1. 读游标 (v2 schema: cursor_key VARCHAR PK + last_processed_at；id/processed_total 退役)
-	var cursorTime time.Time
-	err := i.db.QueryRowContext(ctx,
-		`SELECT last_processed_at FROM engine_alarm_feedback_cursor WHERE cursor_key = 'engine_alarm_feedback'`,
-	).Scan(&cursorTime)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			// 还没初始化，按 epoch 当成首次
-			cursorTime = time.Unix(0, 0)
-		} else {
-			return 0, fmt.Errorf("read cursor: %w", err)
-		}
+	i.mu.Lock()
+	_, dup := i.seen[eventID]
+	i.mu.Unlock()
+	if dup {
+		i.logger.Debug("alarm_feedback: event already processed", zap.String("event_id", eventID))
+		return false, nil
 	}
 
-	// 2. 拉新事件 (v2 alarm_events: trigger_data → payload；notes → handler_notes)
-	placeholders := make([]string, len(i.eventTypes))
-	args := make([]interface{}, 0, len(i.eventTypes)+1)
-	args = append(args, cursorTime)
-	for idx, et := range i.eventTypes {
-		placeholders[idx] = fmt.Sprintf("$%d", idx+2)
-		args = append(args, et)
-	}
-	q := fmt.Sprintf(`
-		SELECT event_id::text, host(device_addr)::text, event_type, operation, triggered_at, hand_time,
+	// 不按 operation/event_type 过滤：feedback 处理的是 handle 结果，裁决看 handler_notes 的块头
+	// （False Alarm Reason: / Observed Conditions:），与 alarm 生命周期（auto_resolved 等）正交。
+	const q = `
+		SELECT host(device_addr)::text, event_type, operation, triggered_at, hand_time,
 		       payload, COALESCE(handler_notes, '')
 		FROM alarm_events
-		WHERE operation IN ('false_alarm', 'verified')
-		  AND event_type IN (%s)
-		  AND hand_time IS NOT NULL
-		  AND hand_time > $1
-		ORDER BY hand_time
-		LIMIT 500
-	`, strings.Join(placeholders, ","))
-
-	rows, err := i.db.QueryContext(ctx, q, args...)
+		WHERE event_id = $1::uuid
+	`
+	var deviceAddr, eventType, operation, notes string
+	var triggeredAt, handTime time.Time
+	var triggerData []byte
+	err := i.db.QueryRowContext(ctx, q, eventID).Scan(
+		&deviceAddr, &eventType, &operation, &triggeredAt, &handTime, &triggerData, &notes)
 	if err != nil {
-		return 0, fmt.Errorf("scan alarm_events: %w", err)
-	}
-	defer rows.Close()
-
-	processed := 0
-	var maxHandTime time.Time = cursorTime
-	var lastEventID string
-
-	for rows.Next() {
-		var eventID, deviceAddr, eventType, operation, notes string
-		var triggeredAt, handTime time.Time
-		var triggerData []byte
-		if err := rows.Scan(&eventID, &deviceAddr, &eventType, &operation, &triggeredAt, &handTime, &triggerData, &notes); err != nil {
-			i.logger.Warn("alarm_feedback: scan row", zap.Error(err))
-			continue
+		if err == sql.ErrNoRows {
+			i.logger.Debug("alarm_feedback: event_id not found", zap.String("event_id", eventID))
+			return false, nil
 		}
-
-		// 反查位置 → 按 conditions 分流到不同 cell counter
-		ok := i.processOne(ctx, eventID, deviceAddr, eventType, operation, triggeredAt, handTime, triggerData, notes)
-		if ok {
-			processed++
-		}
-		// 不论成功与否，都向前推游标（避免错误事件反复重试）
-		if handTime.After(maxHandTime) {
-			maxHandTime = handTime
-			lastEventID = eventID
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return processed, fmt.Errorf("iterate alarm_events: %w", err)
+		return false, fmt.Errorf("select alarm_event %s: %w", eventID, err)
 	}
 
-	// 3. 推进游标（v2: UPSERT cursor_key 主键；processed_total 退役，notes 字段记最近一批 N）
-	if maxHandTime.After(cursorTime) {
-		_, err := i.db.ExecContext(ctx, `
-			INSERT INTO engine_alarm_feedback_cursor (cursor_key, last_processed_id, last_processed_at, notes)
-			VALUES ('engine_alarm_feedback', $1::uuid, $2, $3)
-			ON CONFLICT (cursor_key) DO UPDATE
-			SET last_processed_id = EXCLUDED.last_processed_id,
-			    last_processed_at = EXCLUDED.last_processed_at,
-			    notes             = EXCLUDED.notes
-		`, lastEventID, maxHandTime, fmt.Sprintf("processed=%d", processed))
-		if err != nil {
-			return processed, fmt.Errorf("update cursor: %w", err)
-		}
-	}
-	return processed, nil
+	ok := i.processOne(ctx, eventID, deviceAddr, eventType, operation, triggeredAt, handTime, triggerData, notes)
+
+	i.mu.Lock()
+	i.seen[eventID] = struct{}{}
+	i.mu.Unlock()
+
+	return ok, nil
 }
 
 // processOne 处理单条 alarm（false_alarm 或 verified）：
 // 1) 解析 notes 提取 ☑ checkbox
-// 2) 反查 90s 内位置 → canvas
+// 2) 读 payload 顶层 position → canvas
 // 3) 按 conditions 分流到不同 cell counter
 //
 // 返回是否成功（false 时记 debug 日志，不阻塞批次）。
@@ -296,21 +247,17 @@ func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
 		return false
 	}
 
-	// 2. 抽 trigger_data 里的 track_id（可选过滤）
-	wantTrackID, hasWant := extractTriggerTrackID(triggerData)
-
-	// 3. 90s lookback iot_timeseries 找最近的 monitor 帧
-	triggerMs := triggeredAt.UnixMilli()
-	loX, loY, loZ, foundLocal := i.findRadarPositionAt(ctx, deviceAddr, triggerMs, wantTrackID, hasWant)
-	if !foundLocal {
-		i.logger.Debug("alarm_feedback: no matching monitor frame in lookback",
+	// 2. fire 坐标直接读 payload 顶层（落点统一：sensor dbn 自带 incident 坐标 / 固件由 cardagg
+	//    AlarmRouter 按 track_id 从 MonitorBuffer 补）。不再 lookback monitor_stream。
+	loX, loY, loZ, hasPos := positionFromPayload(triggerData)
+	if !hasPos {
+		i.logger.Debug("alarm_feedback: payload 无 position（producer 未落点）",
 			zap.String("event_id", eventID),
-			zap.String("device_addr", deviceAddr),
-			zap.Int64("trigger_ms", triggerMs))
+			zap.String("device_addr", deviceAddr))
 		return false
 	}
 
-	// 4. RadarToCanvas
+	// 3. RadarToCanvas
 	canvas := radarutils.RadarToCanvas(radarutils.RadarPoint{H: loX, V: loY, Z: loZ}, mount)
 
 	// 5. 解析 notes conditions
@@ -329,7 +276,8 @@ func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
 
 	// 永久加区：护士勾"钉为坐/躺/干扰/盲/门区" → 追加 source=Feedback layout 对象 + 即时 live 刷 grid。
 	//   live-stamp 桥接 daily reload(22:00)/重启窗口：否则区要到下次 reload 才落 grid，期间 track 仍读 none→12min 误报。
-	if operation == "false_alarm" {
+	//   裁决看 notes 块头（operation 兜底），与 auto_resolved 等生命周期正交。
+	if pc.HasFalseAlarmBlock || operation == "false_alarm" {
 		if pc.FALoungeLongSofa && pc.LoungePermanent {
 			i.pinFeedbackZone(ctx, deviceAddr, roomID, canvas.X, canvas.Y, eventID, feedbackLoungeObject)
 		}
@@ -498,8 +446,12 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 		return i.engine.ApplyToCell(roomID, x, y, nowMs, fn)
 	}
 
-	switch operation {
-	case "false_alarm":
+	// 裁决看 handle 写的 notes 块头（False Alarm Reason / Observed Conditions），operation 仅兜底。
+	// 与 alarm 生命周期正交：auto_resolved 把 operation 覆盖掉也不影响（块头仍在）。
+	isFalseAlarm := pc.HasFalseAlarmBlock || operation == "false_alarm"
+	isVerified := pc.HasObservedBlock || operation == "verified"
+	switch {
+	case isFalseAlarm:
 		// 坐类 → AreaSit（wheelchair mobile decay 自滤）
 		if pc.anySitClass() {
 			locked := false
@@ -551,7 +503,7 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 				routes = append(routes, "fake_generic")
 			}
 		}
-	case "verified":
+	case isVerified:
 		// 人确认真摔：RealFallCount++ + 擦非 Human 抑制/deny；勾 sticky veto 再永久封该 cell 自动学习。
 		// verdict 本身即 ground truth，不再要求具体 Observed 勾选（FE Observed 标签已 per-type 化）。
 		cleared := false
@@ -578,124 +530,22 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 	return routes
 }
 
-// findRadarPositionAt 在 [triggerMs - lookbackMs, triggerMs + 1000] 区间查 monitor 帧。
-// 优先匹配指定 track_id；若无则取最接近 triggerMs 的任一 track 帧。
-// 返回雷达本地坐标 (h, v, z) 与是否找到。
-//
-// v2 schema: iot_timeseries 退役 → monitor_stream (PK ts TIMESTAMPTZ, device_addr INET);
-// stream_type 替代 topic_type+category 二元组合 ('radar.track')；payload 替代 data_value。
-func (i *AlarmFeedbackIngester) findRadarPositionAt(ctx context.Context,
-	deviceAddr string, triggerMs int64, wantTrackID int, hasWant bool) (int, int, int, bool) {
-
-	q := `
-		SELECT (extract(epoch from ts) * 1000)::bigint AS ts_ms, payload
-		FROM monitor_stream
-		WHERE device_addr = $1::INET
-		  AND stream_type = 'radar.track'
-		  AND ts BETWEEN to_timestamp($2 / 1000.0) AND to_timestamp($3 / 1000.0)
-		ORDER BY ts DESC
-		LIMIT 50
-	`
-	rows, err := i.db.QueryContext(ctx, q,
-		deviceAddr, triggerMs-i.lookbackMs, triggerMs+1000)
-	if err != nil {
-		i.logger.Warn("alarm_feedback: lookup iot_timeseries", zap.Error(err))
-		return 0, 0, 0, false
-	}
-	defer rows.Close()
-
-	type cand struct {
-		tms     int64
-		h, v, z int
-		matched bool // 与 wantTrackID 匹配
-	}
-	var best *cand
-
-	for rows.Next() {
-		var tms int64
-		var dv []byte
-		if err := rows.Scan(&tms, &dv); err != nil {
-			continue
-		}
-		var arr []map[string]interface{}
-		if err := json.Unmarshal(dv, &arr); err != nil {
-			continue
-		}
-		for _, m := range arr {
-			// Stage 1b：category='track' 已由 SQL 过滤；这里只解 payload 字段
-			tid := jsonInt(m["track_id"])
-			h := jsonInt(m["position_x"])
-			v := jsonInt(m["position_y"])
-			z := jsonInt(m["position_z"])
-			// 全 0 帧（heartbeat）跳过
-			if h == 0 && v == 0 && z == 0 {
-				continue
-			}
-			matched := hasWant && tid == wantTrackID
-			c := &cand{tms: tms, h: h, v: v, z: z, matched: matched}
-			// 选优规则：优先 matched；其次最接近 triggerMs
-			if best == nil {
-				best = c
-				continue
-			}
-			if matched && !best.matched {
-				best = c
-				continue
-			}
-			if matched == best.matched {
-				if abs64(c.tms-triggerMs) < abs64(best.tms-triggerMs) {
-					best = c
-				}
-			}
-		}
-	}
-	if best == nil {
-		return 0, 0, 0, false
-	}
-	return best.h, best.v, best.z, true
-}
-
-// extractTriggerTrackID 尝试从 trigger_data 里抽 event_payload.track_id。
-// trigger_data 结构例：
-//
-//	{"event_name":"Fall", "event_payload": "{\"track_id\":0,...}"}
-//
-// event_payload 是字符串化 JSON。返回 (track_id, found)。
-func extractTriggerTrackID(triggerData []byte) (int, bool) {
+// positionFromPayload 从 alarm_events.payload 顶层读 fire 坐标（raw firmware h/v/z, cm）。
+// 落点统一单源：sensor dbn 腿 payload 自带 incident 坐标；固件直发由 cardagg AlarmRouter 按 track_id
+// 从 MonitorBuffer 补进 payload（见 alarm_router.go persist）。三轴任一缺 → ok=false（不落点）。
+func positionFromPayload(triggerData []byte) (x, y, z int, ok bool) {
 	if len(triggerData) == 0 {
-		return 0, false
+		return 0, 0, 0, false
 	}
-	var top map[string]interface{}
-	if err := json.Unmarshal(triggerData, &top); err != nil {
-		return 0, false
+	var p map[string]interface{}
+	if err := json.Unmarshal(triggerData, &p); err != nil {
+		return 0, 0, 0, false
 	}
-	payloadStr, _ := top["event_payload"].(string)
-	if payloadStr == "" {
-		// 可能直接是对象
-		if pl, ok := top["event_payload"].(map[string]interface{}); ok {
-			if v, ok := pl["track_id"]; ok {
-				return jsonInt(v), true
-			}
-		}
-		// 或顶层就有 track_id
-		if v, ok := top["track_id"]; ok {
-			return jsonInt(v), true
-		}
-		return 0, false
+	px, okx := p["position_x"]
+	py, oky := p["position_y"]
+	pz, okz := p["position_z"]
+	if !okx || !oky || !okz {
+		return 0, 0, 0, false
 	}
-	var pl map[string]interface{}
-	if err := json.Unmarshal([]byte(payloadStr), &pl); err != nil {
-		return 0, false
-	}
-	if v, ok := pl["track_id"]; ok {
-		return jsonInt(v), true
-	}
-	return 0, false
-}
-
-func abs64(x int64) int64 {
-	if x < 0 {
-		return -x
-	}
-	return x
+	return jsonInt(px), jsonInt(py), jsonInt(pz), true
 }

@@ -6,7 +6,7 @@
 #
 # 多雷达同房:窗口里**每个雷达的 raw track 帧都出一行**(dev.tid=uid后4.track_id),belief 列(top/SFall..)取房级
 # xray 最近 tick(房只按引擎实际用的 base track 跑信念)。于是"某雷达看到 FALL 但房信念没动"的 FN 一眼可见。
-import sys, json, bisect, datetime, zoneinfo
+import os, sys, json, bisect, datetime, zoneinfo
 from collections import defaultdict
 
 case_dir = sys.argv[1].rstrip('/')
@@ -15,7 +15,8 @@ log_path = sys.argv[3] if len(sys.argv) > 3 else '/home/wisefido/owl/log/Xsensor
 # 第 4 参=本房设备 uid 后 4(逗号分隔),过滤掉同 unit 其它房的雷达;省略=全收。
 allow = set(s.upper() for s in sys.argv[4].split(',')) if len(sys.argv) > 4 else None
 PLACEHOLDER_TIDS = {88, 11}  # firmware 心跳/无坐标占位 track,非真人
-TZ = zoneinfo.ZoneInfo('America/Denver')
+# 显示时区=设备所在地(epoch ms 不变,只换标签);跨时区 case 必传 CASE_TZ,否则 HH:MM:SS 错位。
+TZ = zoneinfo.ZoneInfo(os.environ.get('CASE_TZ', 'America/Denver'))
 
 POSE = {0:'init',1:'walk',2:'susfall',3:'sit',4:'stand',5:'FALL',6:'lying',
         7:'sitgnd',8:'sitgnd',9:'bedsit',10:'bedsit',11:'bedsit',12:'run'}
@@ -144,7 +145,7 @@ hdr = (f"{'time':8} {'dev.tid':8} {'lid':13} {'pose':7} {'z':4} {'bed':8} "
        f"{'SBliR':5} {'SEmpt':5} {'SLeft':5}")
 out = []
 fall_ts = [r['timestamp'] for r in win if r['category']=='Fall']
-out.append(f"# {case_dir.split('/')[-1]} — 卧室(09E7+D523 双雷达同房) 每 tick belief 时间线")
+out.append(f"# {case_dir.split('/')[-1]} — 每 tick belief 时间线 (room {room_pfx}, TZ {TZ.key})")
 out.append("")
 out.append("dev.tid=uid后4.track_id(雷达 raw track 帧,**两台雷达都出行**)。lid=引擎采用的 base track 出生身份。")
 out.append("**belief 列现为 per-track**:src=trk → 该 lid 自己的 s_marg(pR=该轨 p_real);src=room → 该行无 lid,回退房级 s_dist。")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -213,7 +214,7 @@ type Engine struct {
 	//   dropped（确认离场/空）→ evict track_manager，停 12s coast re-feed（防 census 重发新 logicID = churn）。
 	// confidence: per-track DBN 置信度（logicID→PReal 0-100），写回 TrackState.TrackConfidence 下发 cardagg
 	//   （第三腿 A·R13/R15.3-2，不门控始终发；不在 fired/dropped 二元里，单独返回）。
-	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string, confidence map[string]int)
+	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string, confidence map[string]int, firedBands map[string]string)
 
 	// ── 生产 I/O（从旧 ws engine 焊回；Xsensor replay 道裁掉，生产必需）──
 	srcSeqMu            sync.RWMutex
@@ -228,7 +229,6 @@ type Engine struct {
 	dailySnapshotMinute int
 	historyRetainDays   int
 	feedbackDB          *sql.DB
-	feedbackInterval    time.Duration
 	feedbackIngester    *AlarmFeedbackIngester
 	dailyReloadHour     int
 	dailyReloadDB       *sql.DB
@@ -261,7 +261,6 @@ type RuntimeConfig struct {
 	DailySnapshotMinute int
 	HistoryRetainDays   int
 	FeedbackDB          *sql.DB
-	FeedbackInterval    time.Duration
 }
 
 // NewEngine 创建 Room Engine（默认参数）。生产环境调用 Configure 注入 yaml 配置。
@@ -375,15 +374,8 @@ func (e *Engine) Configure(cfg RuntimeConfig) {
 		e.historyRetainDays = cfg.HistoryRetainDays
 	}
 	e.feedbackDB = cfg.FeedbackDB
-	if cfg.FeedbackInterval > 0 {
-		e.feedbackInterval = cfg.FeedbackInterval
-	} else if e.feedbackInterval == 0 {
-		e.feedbackInterval = 5 * time.Minute
-	}
 	if e.feedbackDB != nil {
 		e.feedbackIngester = NewAlarmFeedbackIngester(e.feedbackDB, e, e.logger)
-	} else {
-		e.feedbackIngester = nil
 	}
 }
 
@@ -566,6 +558,15 @@ func (e *Engine) StampPriorRect(roomID string, rect radarutils.Rect, areaType Ar
 	}
 	g.SetPrior(rect, areaType, conf, SourceHuman)
 	return true
+}
+
+// IngestFeedback 事件触发入口：wisefido-data handle 完直调 HTTP /roomengine/feedback/ingest，
+// 即时处理单条 alarm 反馈（event_id 去重）。无批处理兜底，sensor 不可达即丢。
+func (e *Engine) IngestFeedback(ctx context.Context, eventID string) (bool, error) {
+	if e.feedbackIngester == nil {
+		return false, fmt.Errorf("feedback ingester not configured (nil feedback DB)")
+	}
+	return e.feedbackIngester.IngestOne(ctx, eventID)
 }
 
 // VetoCell 人否决某 Feedback 学习区（删了 canvas 上的 source='Feedback' object 触发）：
@@ -831,7 +832,7 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 			//   且丢轨 12s 驱逐后 base 空——闭包持 tm（recentRadarEvents/lostExitInfo 按 age 淘汰，不随 track drop）。
 			exitLogOdds = tm.ExitLogOdds
 		}
-		fired, dropped, confidence := e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds)
+		fired, dropped, confidence, firedBands := e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds)
 		if tm != nil {
 			// 第三腿 confidence（A·R13/R15.3-2，不门控）：DBN per-track PReal 写回 TrackState.TrackConfidence
 			//   → payloadFromTrack → PublishAIEvent → cardagg（旧 adjudicator 已删，DBN 是唯一来源，断则回归）。
@@ -848,7 +849,7 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 			fireEnabled := e.dbnSelfFireEnabledFor(suiteID, nowMs)
 			for _, lid := range fired {
 				if fireEnabled {
-					tm.PublishDBNFall(lid, nowMs) // DBN Fallen fire → iot:alarm:stream（category=alarm.Fall）；须在 ResetStillBox 前，否则 occurred(StillBoxRunStart) 被清成 0
+					tm.PublishDBNFall(lid, firedBands[lid], nowMs) // DBN Fallen fire → iot:alarm:stream（category=alarm.Fall）；须在 ResetStillBox 前，否则 occurred(StillBoxRunStart) 被清成 0
 				}
 				tm.ResetStillBox(lid) // fall fire 发布后 → still-box 从 0 热机（belief 已在 DBN 侧就地复位）
 			}
@@ -1076,9 +1077,6 @@ func (e *Engine) Run(ctx context.Context) error {
 	go e.beliefScanLoop(ctx)
 	if e.persister != nil && e.snapshotInterval > 0 {
 		go e.snapshotLoop(ctx)
-	}
-	if e.feedbackIngester != nil && e.feedbackInterval > 0 {
-		go e.alarmFeedbackLoop(ctx)
 	}
 	if e.dailyReloadHour >= 0 && e.dailyReloadDB != nil {
 		go e.dailyLayoutReloadLoop(ctx)
