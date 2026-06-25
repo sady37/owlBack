@@ -981,7 +981,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		e.deviceMounts[cfg.RoomID] = cfg.Radar
 	}
 	tm := NewTrackManager(cfg.RoomID, grid, cfg.BedAreaIDs)
-	tm.bedCount = len(cfg.Beds) // 同房多雷达占用对账单床闸（仅 ==1 启用）
+	tm.bedCount = countRealBeds(cfg.BedAreaTypes) // 同房多雷达占用对账单床闸（仅 ==1 启用）；LongSofa 不计
 	tm.SetAIPublisher(e)        // 生产发布腿（S0.c）：engine 实现 AIPublisher（PublishAIEvent/Alarm/DeviceUIDHex）
 	tm.SetMoveSpeedCms(e.learnParams.MoveSpeedCms)
 	tm.SetSitLearnParams(e.learnParams.SitPromoteTau, e.learnParams.SitSpreadCm)

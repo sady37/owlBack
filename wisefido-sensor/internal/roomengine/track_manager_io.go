@@ -112,10 +112,7 @@ func (tm *TrackManager) RoomLedgerEmpty() bool {
 }
 
 func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
-	conf := ts.DBNConfidence // S0.c-4 第三腿：DBN realness PReal 优先；<0 回退旧 ghost-penalty 派生
-	if conf < 0 {
-		conf = 100 - ts.GhostPenalty
-	}
+	conf := ts.DBNConfidence // S0.c-4 第三腿：DBN realness 后验（0-100）；<0=DBN 未设 → 0
 	if conf < 0 {
 		conf = 0
 	}
@@ -157,16 +154,13 @@ func (tm *TrackManager) emitGhostVerdict(ts *TrackState, reason, context string,
 	p := tm.payloadFromTrack(ts)
 	p.Reason = reason
 	p.Evidence = map[string]interface{}{
-		"score":         ts.Score,
-		"birth_score":   ts.BirthScore,
-		"ghost_penalty": ts.GhostPenalty,
-		"frame_count":   ts.FrameCount,
+		"dbn_confidence": ts.DBNConfidence, // DBN realness 后验（ghost 判定单源）
+		"frame_count":    ts.FrameCount,
 	}
 	if context != "" {
 		p.Evidence["context"] = context
 	}
 	p.Event = "verdict_change"
-	p.Evidence["verdict"] = int(ts.Verdict)
 	tm.emitAIEvent(p, CategoryTrackVerdict, nowMs)
 }
 
@@ -175,6 +169,9 @@ func (tm *TrackManager) emitGhostVerdict(ts *TrackState, reason, context string,
 func (tm *TrackManager) forwardFirmwareFall(a RadarFallAlarm) {
 	if tm.aiPublisher == nil {
 		return // playback / 测试场景
+	}
+	if tm.vetoFirmwareFallLying(a) {
+		return // B 方案：lying 区固件即时摔不转发（dbn_mode≥2）；floor 90min 兜底不受影响
 	}
 	emitStatus := a.Status
 	if emitStatus == "" {

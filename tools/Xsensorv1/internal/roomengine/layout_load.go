@@ -54,6 +54,20 @@ func LoadRoomCanvases(ctx context.Context, db *sql.DB, logger *zap.Logger) (map[
 	return out, rows.Err()
 }
 
+// isRealBed 真床(AreaBed/AreaMonitorBed)。bedCount 单床闸只算真床；LongSofa(AreaLying) 不计。
+func isRealBed(at AreaType) bool { return at == AreaBed || at == AreaMonitorBed }
+
+// countRealBeds 真床数（bedCount 单床闸：LongSofa 不计）。
+func countRealBeds(areaTypes []AreaType) int {
+	n := 0
+	for _, at := range areaTypes {
+		if isRealBed(at) {
+			n++
+		}
+	}
+	return n
+}
+
 // BuildRoomConfigFromCanvases 把一个 /88 room 下所有 /128 device canvas 解析+合并成单个 RoomConfig。
 // 单雷达房（绝大多数，含 CABB）= 唯一 canvas，cfg 即该 canvas 几何，完全正确。
 // 多雷达房 = 各 canvas 独立 device-local 帧、无共享房间坐标系：best-effort union 各自几何 +
@@ -73,7 +87,8 @@ func BuildRoomConfigFromCanvases(roomID string, canvases []DeviceCanvas, logger 
 			continue
 		}
 		parsed++
-		// per-device 床：留住每台自己 canvas 的床（covers 只用本台 layout，不跨系借别台的床）
+		// per-device 床：留住每台自己 canvas 的床（covers 只用本台 layout，不跨系借别台的床）。
+		// 不在此剔 LongSofa：covers 链 dormant + cap≤1 已保护（zoneengine makeCovers），且 areaType 本就区分。
 		merged.DeviceBeds[dc.DeviceAddr] = cfg.Beds
 		merged.DeviceBedHeights[dc.DeviceAddr] = cfg.BedHeights
 		merged.Radars = append(merged.Radars, cfg.Radar)

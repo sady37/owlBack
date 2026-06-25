@@ -667,6 +667,32 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 	tm.forwardFirmwareFall(a) // S0.c 焊回：固件 Fall 即时转 iot:alarm:stream（ground floor，DBN observation 之外）
 }
 
+// vetoFirmwareFallLying B 方案「否决固件」轴（dbn_mode=2）：固件即时摔的 track 当前位置落 AreaLying 区 →
+// 否决转发（沙发即时摔不报）。floor 90min 自发腿走 PublishDBNFall（Band="floor"），不经此腿、不受影响 →
+// 久躺兜底仍在。lying 是 layout 确定事实（非 DBN 学习判定）→ 直接 gate 全局 dbnMode，不挂冷启 cap。
+// track 不在管 / 无 grid → 不否决（照转发，FN-safe）。调用方不持 tm.mu。
+func (tm *TrackManager) vetoFirmwareFallLying(a RadarFallAlarm) bool {
+	if dbnMode < 2 {
+		return false
+	}
+	tm.mu.Lock()
+	ts, ok := tm.tracks[trackKey{a.DeviceUID, a.TrackID}]
+	if !ok || tm.grid == nil {
+		tm.mu.Unlock()
+		return false
+	}
+	pxF, pyF := ts.Kalman.Position()
+	cell := tm.grid.CellAt(int(math.Round(pxF)), int(math.Round(pyF)))
+	inLying := cell != nil && cell.Belief[0].Type == AreaLying
+	tm.mu.Unlock()
+	if inLying && tm.logger != nil {
+		tm.logger.Info("firmware_fall_vetoed_lying_zone",
+			zap.String("device_uid", a.DeviceUID), zap.Int("track_id", a.TrackID),
+			zap.Int("pose", a.Pose), zap.Int64("ts_ms", a.TMs))
+	}
+	return inLying
+}
+
 // RecordRadarEvent 落账 radar 来源的事件（EnterRoom/ExitRoom/InBed/LeftBed）。
 // 仅落账。PR-14: radar InBed 触发两个副作用：
 //  1. 当前 track 位置 cell 锁为 AreaBed（"床区自学"——radar 有事件即给出空间证据）
