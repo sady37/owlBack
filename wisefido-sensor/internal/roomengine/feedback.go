@@ -11,9 +11,10 @@
 //     ☑ Lying Lounge Chair / Long Sofa     → ↳ Lounge placement（与 Sit pin 一致，只永久无 2H）:
 //         "Permanent (update layout)"      → pinFeedbackZone：追加 LongSofa object + StampPriorRect(AreaLying,SourceHuman)
 //         (无 ↳ 行)                         → 不动 layout
-//     ☑ BlindArea / No Fall (家具后遮挡盲区) ↳ permanent → 追加 Furniture object（reload→AreaDeny；保留 5min tFloor 兜底真摔）
+//     ☑ BlindArea / No Fall (家具后遮挡盲区) ↳ permanent → 追加 BlindArea object（reload→AreaActive；12min tFloor 快速兜底盲区真摔，非 deny）
 //     ☑ Enter / Door (未画出口)             ↳ 直接 → 追加 Enter object（reload→AreaEnter）
-//     ☑ Electric / AC Interference         → GhostCount++（ghost 学习，非 lying）
+//     ☑ Metal / Mirror (reflection)        ↳ reflector zone → 追加 MetalCan object（reload→AreaReflector 豁免；ghost 走 realness OR）
+//     ☑ Curtain / Fan / Plants             ↳ interference zone → 追加 Interfere object（reload→AreaInterfer，floor 豁免；帘动→瞬态track停后必误火）
 //     ☑ Error Pose Detection / Out of Detection Range → 不进任何 counter（传感误差，非空间属性）
 //     ☑ Unknown / 无勾选                    → FakeAlarmCount++（兜底容忍）
 //
@@ -88,11 +89,13 @@ const (
 	loungePlacementPermanent = "Lounge placement: Permanent (update layout)"
 	stickyVetoMark           = "Sticky veto: never auto-learn fall suppression here"
 
-	// 永久加区 marker（owlFront alarm.ts SIT_PIN_MARKER / DENY_ZONE_MARKER）。
-	sitPinMark    = "Sit zone: pin permanently (update layout)"
-	denyZoneMark  = "Interference zone: mark permanently (deny, update layout)"
-	blindAreaMark = "Blind area: mark permanently (no-fall zone, update layout)"
-	enterDoorMark = "Exit zone: add permanently (update layout)"
+	// 永久加区 marker（owlFront alarm.ts 单源）。reflector(metal/mirror) 与 interfere(curtain/fan) 拆开：
+	// 前者 AreaReflector 豁免（无真人静态反射，ghost 走 realness OR），后者 AreaInterfer 同样 floor 豁免（帘动→生瞬态 track 停后 still-timeout 必误火，故不给 floor 网；firmware type3 masking 源头滤）。
+	sitPinMark        = "Sit zone: pin permanently (update layout)"
+	reflectorZoneMark = "Reflector zone: mark permanently (mirror/metal, update layout)"
+	interfereZoneMark = "Interference zone: mark permanently (curtain/fan, update layout)"
+	blindAreaMark     = "Blind area: mark permanently (no-fall zone, update layout)"
+	enterDoorMark     = "Exit zone: add permanently (update layout)"
 )
 
 // ParsedConditions 从 notes 解析的勾选/标记状态（label 见上方常量）。
@@ -100,7 +103,7 @@ type ParsedConditions struct {
 	// 坐类（→ AreaSit 学习）
 	FASitChairShortSofa bool
 	FAWheelchair        bool
-	// 盲区/出口（左列良性，→ AreaDeny / AreaEnter，不进 sit 学习）
+	// 盲区/出口（左列良性，→ AreaActive / AreaEnter，不进 sit 学习）
 	FABlindAreaNoFall bool
 	FAEnterDoor       bool
 	// 躺类（→ 二次问询 Lounge placement）
@@ -117,8 +120,9 @@ type ParsedConditions struct {
 
 	// 永久加区二次动作（追加 layout 对象）
 	SitPin        bool // ↳ sit zone pin → 追加 Chair object（reload→AreaSit 神圣）
-	DenyZone      bool // ↳ interference zone → 追加 Interfere object（reload→AreaDeny）
-	BlindArea     bool // ↳ blind area permanent → 追加 Furniture object（reload→AreaDeny）
+	ReflectorZone bool // ↳ reflector zone(metal/mirror) → 追加 MetalCan object（reload→AreaReflector 豁免）
+	InterfereZone bool // ↳ interference zone(curtain/fan) → 追加 Interfere object（reload→AreaInterfer，floor 豁免；帘动→瞬态track停后必误火）
+	BlindArea     bool // ↳ blind area permanent → 追加 BlindArea object（reload→AreaActive 12min）
 	EnterDoorZone bool // ↳ enter/door（勾 reason 即永久）→ 追加 Enter object（reload→AreaEnter）
 
 	// verified
@@ -136,7 +140,7 @@ func (p ParsedConditions) anyFASelected() bool {
 		p.FAErrorPose || p.FAUnknown
 }
 
-// anySitClass 坐类（Chair/ShortSofa/Wheelchair → AreaSit）。Behind 已退役为 BlindArea(→AreaDeny)，不再进 sit。
+// anySitClass 坐类（Chair/ShortSofa/Wheelchair → AreaSit）。Behind 已退役为 BlindArea(→AreaActive)，不再进 sit。
 func (p ParsedConditions) anySitClass() bool {
 	return p.FASitChairShortSofa || p.FAWheelchair
 }
@@ -166,7 +170,8 @@ func parseConditions(notes string) ParsedConditions {
 	// 二次问询 / veto 是 "↳ <marker>" 子行（非 ☑），直接 substring
 	out.LoungePermanent = strings.Contains(notes, loungePlacementPermanent)
 	out.SitPin = strings.Contains(notes, sitPinMark)
-	out.DenyZone = strings.Contains(notes, denyZoneMark)
+	out.ReflectorZone = strings.Contains(notes, reflectorZoneMark)
+	out.InterfereZone = strings.Contains(notes, interfereZoneMark)
 	out.BlindArea = strings.Contains(notes, blindAreaMark)
 	out.EnterDoorZone = strings.Contains(notes, enterDoorMark)
 	out.StickyVeto = strings.Contains(notes, stickyVetoMark)
@@ -331,7 +336,10 @@ func (i *AlarmFeedbackIngester) processOne(ctx context.Context,
 		if pc.SitPin {
 			i.pinFeedbackZone(ctx, deviceAddr, roomID, canvas.X, canvas.Y, eventID, feedbackSitObject)
 		}
-		if pc.DenyZone {
+		if pc.ReflectorZone {
+			i.pinFeedbackZone(ctx, deviceAddr, roomID, canvas.X, canvas.Y, eventID, feedbackReflectorObject)
+		}
+		if pc.InterfereZone {
 			i.pinFeedbackZone(ctx, deviceAddr, roomID, canvas.X, canvas.Y, eventID, feedbackInterfereObject)
 		}
 		if pc.BlindArea {
@@ -378,13 +386,15 @@ type feedbackObjectSpec struct {
 const feedbackObjectHalfCm = 20
 
 // reload 后 engine 先验（liveArea，与 layout_parser typeName 映射一致）：
-//   LongSofa→AreaLying(90min,非床躺) / Chair→AreaSit / Interfere→AreaInterfer / Furniture→AreaDeny / Enter→AreaEnter。
+//   LongSofa→AreaLying(90min) / Chair→AreaSit / MetalCan→AreaReflector(豁免) / Interfere→AreaInterfer(豁免) /
+//   BlindArea→AreaActive(12min) / Enter→AreaEnter。
 // 均 source=Feedback：drawObjects 渲染虚线、updateRadarAreas 过滤不下发雷达（人确认转 Human 后才 declare）。
 var (
 	feedbackLoungeObject    = feedbackObjectSpec{"feedback_lounge_", "Lounge (learned)", "LongSofa", "furniture", "#c19a6b", 40, "feedback_lounge_object_appended", AreaLying, 99}
 	feedbackSitObject       = feedbackObjectSpec{"feedback_sit_", "Sit zone (pinned)", "Chair", "furniture", "#ffff00", 90, "feedback_sit_object_appended", AreaSit, chairPriorConf}
-	feedbackInterfereObject = feedbackObjectSpec{"feedback_deny_", "Interference (marked)", "Interfere", "interference", "#4a4a4a", 120, "feedback_interfere_object_appended", AreaInterfer, 99}
-	feedbackBlindObject     = feedbackObjectSpec{"feedback_blind_", "Blind area (no-fall)", "Furniture", "furniture", "#d3d3d3", 80, "feedback_blind_object_appended", AreaDeny, 99}
+	feedbackReflectorObject = feedbackObjectSpec{"feedback_reflector_", "Reflector (marked)", "MetalCan", "interference", "#F5F5F5", 80, "feedback_reflector_object_appended", AreaReflector, 99}
+	feedbackInterfereObject = feedbackObjectSpec{"feedback_interfere_", "Interference (marked)", "Interfere", "interference", "#4a4a4a", 120, "feedback_interfere_object_appended", AreaInterfer, 99}
+	feedbackBlindObject     = feedbackObjectSpec{"feedback_blind_", "Blind area (no-fall)", "BlindArea", "furniture", "#5b3a1a", 80, "feedback_blind_object_appended", AreaActive, 99}
 	feedbackEnterObject     = feedbackObjectSpec{"feedback_enter_", "Exit (learned)", "Enter", "structure", "#a9eaa9", 0, "feedback_enter_object_appended", AreaEnter, 99}
 )
 
@@ -504,6 +514,14 @@ func (i *AlarmFeedbackIngester) routeFeedback(roomID string, x, y int, nowMs int
 					routes = append(routes, "locked_AreaSit")
 				}
 			}
+		}
+		// 盲区/出口（左列良性）：cell 由 pinFeedbackZone 追加 layout 对象处理（非 cell counter）；
+		// 此处仅记 route 让 processOne 不在 len(routes)==0 提前 return → pin 块可达（否则纯 Enter/Blind 反馈被丢）。
+		if pc.FABlindAreaNoFall {
+			routes = append(routes, "blind_area")
+		}
+		if pc.FAEnterDoor {
+			routes = append(routes, "enter_door")
 		}
 		// 躺类 permanent：cell 由 pinFeedbackZone StampPriorRect(AreaLying,SourceHuman) 刷（lying 高风险禁软自学，
 		// 不在此走 MarkRestZoneByFeedback）；此处仅记 route 让 processOne 继续到 pin 块 / 无选不动

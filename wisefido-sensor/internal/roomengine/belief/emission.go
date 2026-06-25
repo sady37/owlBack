@@ -71,7 +71,7 @@ const roomBathroom = 1
 
 // stillMuSigma 正常停留 (μ,σ) 秒：浴室房一律 20min 房级 override，否则按 cell area（cellMuSigma）。
 //
-//	bed/monitorbed/reflector 已在 floor.Step 豁免、到不了这里；sit/lying/deny/interfer→90min；其余→12min。
+//	bed/monitorbed/reflector/interfer 已在 floor.Step 豁免、到不了这里；仅 sit/lying→90min；其余(含 deny)→12min。
 func stillMuSigma(areaType, roomType int) (mu, sigma float64) {
 	if roomType == roomBathroom {
 		// 浴室一律 ~20min（占用区）：压过 cell 姿态阈——马桶/淋浴久留医学上 ~20min 即异常，
@@ -83,10 +83,10 @@ func stillMuSigma(areaType, roomType int) (mu, sigma float64) {
 
 func cellMuSigma(areaType int) (mu, sigma float64) {
 	switch areaType {
-	case areaSit, areaLying, areaDeny, areaInterfer:
-		// 久留区 90min：sit(椅/沙发坐)/lying(沙发躺)/deny(家具旁)/interfer(帘扇旁噪声但人可能在)。
+	case areaSit, areaLying:
+		// 90min：仅真休息区(椅/沙发坐躺)——人会正当久留 60~90min。其余非休息区 90min 静止本身即异常 → 不给长容忍。
 		return MuSitSec, SigmaSitSec
-	default: // unknown/active/enter 12min（bed/monitorbed/reflector 在 floor.Step 已豁免）
+	default: // 12min：unknown/active/enter/deny（bed/monitorbed/reflector/interfer 在 floor.Step 已豁免）
 		return MuDefaultSec, SigmaDefaultSec
 	}
 }

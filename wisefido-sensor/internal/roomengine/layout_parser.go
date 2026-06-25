@@ -127,15 +127,22 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
-		case "furniture", "table", "other":
+		case "furniture", "table", "other", "blindarea":
+			// 家具/桌子→AreaDeny(12min)；blindarea=护士标的遮挡盲区→AreaActive(默认桶 12min，
+			// 快速兜底盲区内真摔；非 deny——盲区里 track 当可能真人，不当假)。
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Furnitures = append(cfg.Furnitures, *rect)
 				cfg.FurnitureHeights = append(cfg.FurnitureHeights, objHeight)
+				at := AreaDeny
+				if strings.ToLower(hdr.TypeName) == "blindarea" {
+					at = AreaActive
+				}
+				cfg.FurnitureAreaTypes = append(cfg.FurnitureAreaTypes, at)
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
 		case "interfere", "metalcan", "wheelchair", "glasstv", "curtain":
-			// 反射体(金属/玻璃 → AreaReflector,豁免) vs 运动干扰(帘/轮椅/泛 → AreaInterfer,90min)。
+			// 反射体(金属/玻璃 → AreaReflector,豁免) vs 运动干扰(帘/轮椅/泛 → AreaInterfer,豁免)。
 			// 下发固件都走 masking(3)；内部分开=floor 豁免 vs 兜底。注意：吊灯走 Interfere，height>200 空中不阻挡。
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Interferes = append(cfg.Interferes, *rect)

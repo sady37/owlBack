@@ -85,10 +85,10 @@ func stillMuSigma(areaType, roomType int) (mu, sigma float64) {
 
 func cellMuSigma(areaType int) (mu, sigma float64) {
 	switch areaType {
-	case areaSit, areaLying, areaDeny, areaInterfer:
-		// 久留区 90min：sit(椅/沙发坐)/lying(沙发躺)/deny(家具旁)/interfer(帘扇旁噪声但人可能在)。
+	case areaSit, areaLying:
+		// 90min：仅真休息区(椅/沙发坐躺)——人会正当久留 60~90min。其余非休息区 90min 静止本身即异常 → 不给长容忍。
 		return MuSitSec, SigmaSitSec
-	default: // unknown/active/enter 12min（bed/monitorbed/reflector 在 floor.Step 已豁免）
+	default: // 12min：unknown/active/enter/deny（bed/monitorbed/reflector/interfer 在 floor.Step 已豁免）
 		return MuDefaultSec, SigmaDefaultSec
 	}
 }

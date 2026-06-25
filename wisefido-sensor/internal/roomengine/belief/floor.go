@@ -66,8 +66,10 @@ func (g *FloorGuard) Step(obs Observation) bool {
 	switch {
 	case obs.AreaType == areaBed || obs.AreaType == areaMonitorBed:
 		return false // 真床/监护床：接触床区按 AreaType 豁免（无 sleepad 时几何分不清在床/床边摔，宁漏边缘 FN 不让睡眠误报）
-	case obs.AreaType == areaReflector:
-		return false // 镜/金属静态反射 → 无真人，realness 管
+	case obs.AreaType == areaReflector || obs.AreaType == areaInterfer:
+		// 反射/干扰统一豁免：镜金属静态反射 + 帘扇等运动杂波。帘动→生瞬态 track→停→still 超时，
+		// 任何有限 tFloor 都必误火 → 不给 floor 网。无真人，firmware areaType=3 masking 源头滤 + realness 管 ghost。
+		return false
 	case contactInBed:
 		return false // 真在床
 	}

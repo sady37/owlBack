@@ -44,7 +44,7 @@ type RoomConfig struct {
 	// LongSofa→AreaLying(8,90min)。判据按 typeName 在 layout_parser 单点定，engine SetPrior 只读。
 	BedAreaTypes []AreaType
 	// InterfereAreaTypes 与 Interferes 一一对应：Mirror/Metal/GlassTV→AreaReflector(3,豁免) /
-	// Curtain/Plant/Fan/WheelChair→AreaInterfer(6,90min)。同样 parser 单点定。
+	// Curtain/Plant/Fan/WheelChair→AreaInterfer(6,floor 豁免)。同样 parser 单点定。
 	InterfereAreaTypes []AreaType
 
 	// BedAreaIDs 床区 area_id 集合（areaType∈{2床,5监护床}），来源=固件活体 declare_area
@@ -54,8 +54,10 @@ type RoomConfig struct {
 	Toilets    []radarutils.Rect // AreaSit
 	Showers    []radarutils.Rect // AreaActive
 	Chairs     []radarutils.Rect // AreaSit（粗标沙发/椅子，Conf=80）
-	Furnitures []radarutils.Rect // AreaDeny（家具/桌子）
-	Interferes []radarutils.Rect // AreaDeny（镜子/金属反射区/吊灯）
+	Furnitures []radarutils.Rect // 家具/桌子→AreaDeny；BlindArea(盲区)→AreaActive(12min)。区分走 FurnitureAreaTypes
+	// FurnitureAreaTypes 与 Furnitures 一一对应：Furniture/Table/Other→AreaDeny / BlindArea→AreaActive(12min,默认桶,非deny)。
+	FurnitureAreaTypes []AreaType
+	Interferes         []radarutils.Rect // AreaDeny（镜子/金属反射区/吊灯）
 
 	// 物体顶部高度（cm，地面为 0），与上面同名切片一一对应（Heights[i] ↔ Beds[i]）。
 	// 来源：layout JSON 里每个对象的 height 字段，由前端 Toolbar 录入；
@@ -948,11 +950,12 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	for _, r := range cfg.Chairs {
 		grid.SetPrior(r, AreaSit, chairPriorConf, SourceHuman) // 粗标
 	}
-	for _, r := range cfg.Furnitures {
-		grid.SetPrior(r, AreaDeny, 99, SourceHuman) // 家具不可走 → 90min 背板
+	for i, r := range cfg.Furnitures {
+		// FurnitureAreaTypes 与 Furnitures 1:1（parser 同步 append）：家具→AreaDeny(12min) / BlindArea→AreaActive(12min,快速兜底盲区真摔)
+		grid.SetPrior(r, cfg.FurnitureAreaTypes[i], 99, SourceHuman)
 	}
 	for i, r := range cfg.Interferes {
-		// InterfereAreaTypes 与 Interferes 1:1（规则#1.4）：Mirror/Metal→reflector(豁免) / Curtain/Plant/Fan→interfer(90min)
+		// InterfereAreaTypes 与 Interferes 1:1（规则#1.4）：Mirror/Metal→reflector(豁免) / Curtain/Plant/Fan→interfer(豁免)
 		grid.SetPrior(r, cfg.InterfereAreaTypes[i], 99, SourceHuman)
 	}
 

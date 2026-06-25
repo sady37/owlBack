@@ -17,12 +17,12 @@ type AreaType uint8
 // 值与厂家 declare_area 概念对齐（仅概念，下发走 layout typeName 不读本值）。语义=该区"正常姿态/占用"。
 const (
 	AreaUnknown    AreaType = iota // 0 未知
-	AreaDeny                       // 1 家具不可走（无人占用，留 90min 背板，非豁免）
+	AreaDeny                       // 1 家具不可走（无人占用，12min 背板，非豁免）
 	AreaBed                        // 2 接触真床（sleepad/vital → 豁免）
 	AreaReflector                  // 3 镜/金属静态反射（无真人 → realness 豁免）
 	AreaEnter                      // 4 门/进入区
 	AreaMonitorBed                 // 5 监护床（同 Bed 行为 + 呼吸心率监测）
-	AreaInterfer                   // 6 帘/扇/植物运动干扰（noisy，人可能在 → 90min）
+	AreaInterfer                   // 6 帘/扇/植物运动干扰（动→瞬态 track 停后必误火 → floor 豁免，同 reflector，firmware type3 masking）
 	AreaSit                        // 7 坐区（椅/马桶）
 	AreaLying                      // 8 非床躺区（沙发，无 sleepad → 90min）
 	AreaActive                     // 9 活动区（走道/淋浴/开阔）
