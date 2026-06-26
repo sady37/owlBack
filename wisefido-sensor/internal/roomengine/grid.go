@@ -146,8 +146,31 @@ func (g *RoomGrid) StampEnters(rects []radarutils.Rect, enterTargets []string) {
 	}
 }
 
-// SetPrior 对 rect 内所有 cell 的三组 Belief 统一刷 (AreaType, conf, src)
-// 用于 Layout 人标 Bed/Toilet/Enter 等的初始先验注入。
+// areaPriority 区域重叠覆盖优先级（高→低）：豁免类(Reflector/Interfer) > Bed > Lying > Sit > Deny > Active > Enter > Unknown。
+// 多个人标 rect 压同一 cell 时取优先级高者：masking/无真人区(reflector/interfer)压过床/躺/坐，避免反射杂波被当真人/床。
+func areaPriority(t AreaType) int {
+	switch t {
+	case AreaReflector, AreaInterfer:
+		return 7
+	case AreaBed, AreaMonitorBed:
+		return 6
+	case AreaLying:
+		return 5
+	case AreaSit:
+		return 4
+	case AreaDeny:
+		return 3
+	case AreaActive:
+		return 2
+	case AreaEnter:
+		return 1
+	default: // AreaUnknown
+		return 0
+	}
+}
+
+// SetPrior 对 rect 内所有 cell 刷 (AreaType, conf, src)。重叠 priority gate：
+// 已有 SourceHuman 且优先级更高时不降级（豁免>Bed>lying>...）；非 Human(learned/unknown)直接被人标盖。
 func (g *RoomGrid) SetPrior(rect radarutils.Rect, t AreaType, conf int, src Source) {
 	rect = rect.Norm()
 	c1, r1 := g.ToIndex(rect.X1, rect.Y1)
@@ -162,11 +185,15 @@ func (g *RoomGrid) SetPrior(rect radarutils.Rect, t AreaType, conf int, src Sour
 			}
 			c := &g.Cells[row*g.Width+col]
 			for bi := 0; bi < 3; bi++ {
+				cur := c.Belief[bi]
+				if cur.Source == SourceHuman && areaPriority(t) < areaPriority(cur.Type) {
+					continue // 已有更高优先级人标，不降级
+				}
 				c.Belief[bi].Type = t
 				c.Belief[bi].Confidence = conf
 				c.Belief[bi].Source = src
 			}
-			c.AreaType = t // mirror
+			c.AreaType = c.Belief[0].Type // mirror
 		}
 	}
 }

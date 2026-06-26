@@ -123,8 +123,6 @@ var (
 	// EnumEventLevel 与 gateway/使能表 event_level 一致；级别常量以 owl-common/alarm 为准，此处仅作校验枚举。
 	EnumEventLevel    = []string{"INFO", "NOTICE", "WARNING", "ERROR", "CRITICAL", "EMERG", "ALERT"}
 	EnumCommandResult = []string{"success", "fail", "timeout"}
-	// EnumAreaType 区域类型（track/declare 协议 0-6），与 FieldAreaType 一致
-	EnumAreaType = []string{"none", "custom", "bed", "interfer", "door", "monitor_bed", "sensing"}
 	// EnumPoseDisplay Pose 0-12 的 display 字符串（PascalCase）
 	EnumPoseDisplay = []string{"Initialization", "Walking", "SuspectedFall", "Sitting", "Standing", "Fall", "Lying", "SuspectedSittingOnGround", "SittingOnGround", "BedSitUp", "SuspectedBedSitUp", "ConfirmedBedSitUp", "Running"}
 )
@@ -160,7 +158,7 @@ var Registry = map[string]*FieldDef{
 	FieldEvent:               {Key: FieldEvent, Type: TInt, Persist: false, Max: 6}, // 0=无, 1-6=EventInRoom/OutRoom/InArea/OutArea/EnterMonitor/ExitMonitor
 	FieldTrackCount:          {Key: FieldTrackCount, Type: TInt, Persist: true, Max: 8},
 	FieldAreaID:              {Key: FieldAreaID, Type: TInt, Persist: false},
-	FieldAreaType:            {Key: FieldAreaType, Type: TEnum, Persist: false, Enum: EnumAreaType},
+	FieldAreaType:            {Key: FieldAreaType, Type: TEnum, Persist: false, Enum: areaNames[:]},
 	FieldRemainingTime:       {Key: FieldRemainingTime, Type: TInt, Unit: "s", Persist: false},
 	FieldWalkDistance:        {Key: FieldWalkDistance, Type: TInt, Unit: "m", Persist: false},
 	FieldWalkDuration:        {Key: FieldWalkDuration, Type: TInt, Unit: "s", Persist: true, Max: 900},
@@ -280,38 +278,36 @@ func PoseDisplayToNum(s string) (int, bool) {
 	return 0, false
 }
 
-// AreaType 字段值（track/declare_area type），与协议一致
-const (
-	AreaTypeNone       = 0
-	AreaTypeCustom     = 1
-	AreaTypeBed        = 2
-	AreaTypeInterfer   = 3
-	AreaTypeDoor       = 4
-	AreaTypeMonitorBed = 5
-	AreaTypeSensing    = 6
-)
-
-// DeclareAreaType 固件 declare_area 区域类型（0-5，协议 3.4.3）——**distinct named type**，
-// 防与内部 roomengine.AreaType（cell 推断语义）裸 int 串味。两套同号不同义，绝不可混用：
-//
-//	值 | 固件 declare（本类型）     | 内部 roomengine.AreaType（重编号后）
-//	1  | Custom（装饰，雷达不处理） | AreaDeny（家具）
-//	2  | Bed（进/离床事件）         | AreaBed（接触真床）
-//	3  | Noise（运动屏蔽）          | AreaReflector（镜/金属反射）
-//	4  | Door（进/离房事件）        | AreaEnter（门）
-//	5  | MonitorBed（呼吸心率）     | AreaMonitorBed（监护床）
-//
-// 内部→固件下发映射在 roomengine.areaTypeProtocolStr / FE FURNITURE_CONFIGS，非本类型直转。
-type DeclareAreaType uint8
+// AreaType 区域类型——全仓唯一权威。雷达只给一个 area_type 字段，前 6 值（0-5）即固件上报值，
+// 6-9 是 engine 内部细分（固件不发）。所有层（固件上报/engine/FE）统一用本类型，无独立协议枚举。
+type AreaType uint8
 
 const (
-	DeclareAreaInvalid    DeclareAreaType = 0
-	DeclareAreaCustom     DeclareAreaType = 1
-	DeclareAreaBed        DeclareAreaType = 2
-	DeclareAreaNoise      DeclareAreaType = 3
-	DeclareAreaDoor       DeclareAreaType = 4
-	DeclareAreaMonitorBed DeclareAreaType = 5
+	AreaUnknown    AreaType = iota // 0 未知
+	AreaDeny                       // 1 家具装饰，无人占用
+	AreaBed                        // 2 接触真床
+	AreaReflector                  // 3 镜/金属静态反射（固件 area_type=3 上报值）
+	AreaEnter                      // 4 门/进入区
+	AreaMonitorBed                 // 5 监护床
+	AreaInterfer                   // 6 帘/扇/植物运动干扰（engine 内部，固件归 3）
+	AreaSit                        // 7 坐区（椅/马桶，engine 内部）
+	AreaLying                      // 8 非床躺区（沙发，engine 内部）
+	AreaActive                     // 9 活动区/开阔（engine 内部）
+	NumAreaTypes
 )
+
+var areaNames = [NumAreaTypes]string{
+	"AreaUnknown", "AreaDeny", "AreaBed", "AreaReflector", "AreaEnter",
+	"AreaMonitorBed", "AreaInterfer", "AreaSit", "AreaLying", "AreaActive",
+}
+
+// Name 返回 AreaType 规范名（areaName 单一来源：日志/snapshot/FE 一致）。
+func (t AreaType) Name() string {
+	if int(t) >= len(areaNames) {
+		return ""
+	}
+	return areaNames[t]
+}
 
 // Event 进出事件字段值（type=1 track 字节 14），与协议 3.5 一致
 const (

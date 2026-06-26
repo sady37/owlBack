@@ -81,7 +81,7 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 			wallPoints = append(wallPoints, pts...)
 			allObjectPoints = append(allObjectPoints, pts...)
 
-		case "enter", "door":
+		case "enter":
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Enters = append(cfg.Enters, *rect)
 				cfg.EnterHeights = append(cfg.EnterHeights, objHeight)
@@ -89,13 +89,13 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
-		case "bed", "monitorbed", "longsofa":
+		case "bed", "monitorbed", "recliner":
 			// 都进 cfg.Beds 供 covers/MM 几何；cell 区域按 typeName 分（大小写不敏感）：
-			//   Bed→AreaBed(豁免) / MonitorBed→AreaMonitorBed(豁免+vital) / LongSofa→AreaLying(90min,非床躺)。
+			//   Bed→AreaBed(豁免) / MonitorBed→AreaMonitorBed(豁免+vital) / Recliner→AreaLying(90min,非床躺)。
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Beds = append(cfg.Beds, *rect)
 				cfg.BedHeights = append(cfg.BedHeights, objHeight)
-				at := AreaLying // LongSofa / 不含 bed
+				at := AreaLying // Recliner / 不含 bed
 				switch strings.ToLower(hdr.TypeName) {
 				case "bed":
 					at = AreaBed
@@ -127,8 +127,8 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
-		case "furniture", "table", "other", "blindarea":
-			// 家具/桌子→AreaDeny(12min)；blindarea=护士标的遮挡盲区→AreaActive(默认桶 12min，
+		case "furniture", "blindarea":
+			// 家具→AreaDeny(12min)；blindarea=护士标的遮挡盲区→AreaActive(默认桶 12min，
 			// 快速兜底盲区内真摔；非 deny——盲区里 track 当可能真人，不当假)。
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Furnitures = append(cfg.Furnitures, *rect)
@@ -141,15 +141,15 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
 			}
 
-		case "interfere", "metalcan", "wheelchair", "glasstv", "curtain":
-			// 反射体(金属/玻璃 → AreaReflector,豁免) vs 运动干扰(帘/轮椅/泛 → AreaInterfer,豁免)。
+		case "interfere", "metalcan", "mirror", "wheelchair", "curtain":
+			// 反射体(金属/镜子 → AreaReflector,豁免) vs 运动干扰(帘/轮椅/泛 → AreaInterfer,豁免)。
 			// 下发固件都走 masking(3)；内部分开=floor 豁免 vs 兜底。注意：吊灯走 Interfere，height>200 空中不阻挡。
 			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
 				cfg.Interferes = append(cfg.Interferes, *rect)
 				cfg.InterfereHeights = append(cfg.InterfereHeights, objHeight)
 				at := AreaInterfer
 				switch strings.ToLower(hdr.TypeName) {
-				case "metalcan", "glasstv":
+				case "metalcan", "mirror":
 					at = AreaReflector
 				}
 				cfg.InterfereAreaTypes = append(cfg.InterfereAreaTypes, at)
@@ -217,20 +217,16 @@ func defaultHeightForType(typeName string) int {
 	switch strings.ToLower(typeName) {
 	case "bed", "monitorbed":
 		return 60
-	case "longsofa":
+	case "recliner":
 		return 40
-	case "interfere":
+	case "interfere", "mirror":
 		return 120 // 默认洗手台/镜子；空中吊灯由前端 Toolbar 改 240+
-	case "enter", "door":
+	case "enter":
 		return 0 // 门洞地面到顶，不阻挡通行
 	case "wall":
 		return 240
-	case "furniture", "other", "metalcan":
+	case "furniture", "metalcan":
 		return 80
-	case "glasstv":
-		return 120
-	case "table":
-		return 75
 	case "chair":
 		return 90
 	case "curtain":

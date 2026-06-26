@@ -362,17 +362,17 @@ const maxDeclareAreas = 16
 //
 //	删除(0,housekeeping) → 床/监护床(2/5,vitals+床事件不可替代) → 门(4,进离房/hand-off) →
 //	干扰(3,去噪;软件 realness 有兜底,超限先丢) → 自定义(1,雷达 no-op,最先丢) → 其余。
-func declareAreaKeepPriority(areaType observation.DeclareAreaType) int {
+func declareAreaKeepPriority(areaType observation.AreaType) int {
 	switch areaType {
-	case observation.DeclareAreaInvalid: // 0 删除/清空
+	case observation.AreaUnknown: // 0 删除/清空
 		return 0
-	case observation.DeclareAreaBed, observation.DeclareAreaMonitorBed: // 2,5
+	case observation.AreaBed, observation.AreaMonitorBed: // 2,5
 		return 1
-	case observation.DeclareAreaDoor: // 4
+	case observation.AreaEnter: // 4 门
 		return 2
-	case observation.DeclareAreaNoise: // 3 干扰
+	case observation.AreaReflector: // 3 固件干扰（运动屏蔽）
 		return 3
-	case observation.DeclareAreaCustom: // 1
+	case observation.AreaDeny: // 1 自定义/装饰
 		return 4
 	default:
 		return 5
@@ -381,9 +381,9 @@ func declareAreaKeepPriority(areaType observation.DeclareAreaType) int {
 
 // sortCapDeclareAreaMaps 对 builder 产出（[]interface{}，每项 map 含字符串 "type"）排序 + 截 16。
 func sortCapDeclareAreaMaps(decl []interface{}) []interface{} {
-	typeOf := func(m interface{}) observation.DeclareAreaType {
+	typeOf := func(m interface{}) observation.AreaType {
 		mm, _ := m.(map[string]interface{})
-		return observation.DeclareAreaType(extractFloat64Value(mm["type"]))
+		return observation.AreaType(extractFloat64Value(mm["type"]))
 	}
 	sort.SliceStable(decl, func(i, j int) bool {
 		return declareAreaKeepPriority(typeOf(decl[i])) < declareAreaKeepPriority(typeOf(decl[j]))
@@ -403,7 +403,7 @@ func sortCapDeclareAreaString(s string) string {
 		return s
 	}
 	sort.SliceStable(areas, func(i, j int) bool {
-		return declareAreaKeepPriority(observation.DeclareAreaType(areas[i].AreaType)) < declareAreaKeepPriority(observation.DeclareAreaType(areas[j].AreaType))
+		return declareAreaKeepPriority(observation.AreaType(areas[i].AreaType)) < declareAreaKeepPriority(observation.AreaType(areas[j].AreaType))
 	})
 	if len(areas) > maxDeclareAreas {
 		log.Printf("declare_area passthrough over %d-slot limit: keep %d drop %d",

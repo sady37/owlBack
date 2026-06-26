@@ -228,7 +228,6 @@ type Engine struct {
 	dailySnapshotHour   int
 	dailySnapshotMinute int
 	historyRetainDays   int
-	feedbackDB          *sql.DB
 	feedbackIngester    *AlarmFeedbackIngester
 	dailyReloadHour     int
 	dailyReloadDB       *sql.DB
@@ -260,7 +259,6 @@ type RuntimeConfig struct {
 	DailySnapshotHour   int
 	DailySnapshotMinute int
 	HistoryRetainDays   int
-	FeedbackDB          *sql.DB
 }
 
 // NewEngine 创建 Room Engine（默认参数）。生产环境调用 Configure 注入 yaml 配置。
@@ -373,10 +371,8 @@ func (e *Engine) Configure(cfg RuntimeConfig) {
 	if cfg.HistoryRetainDays > 0 {
 		e.historyRetainDays = cfg.HistoryRetainDays
 	}
-	e.feedbackDB = cfg.FeedbackDB
-	if e.feedbackDB != nil {
-		e.feedbackIngester = NewAlarmFeedbackIngester(e.feedbackDB, e, e.logger)
-	}
+	// feedback 不连库（payload 由 data 推），ingester 无 DB 依赖 → 始终创建。
+	e.feedbackIngester = NewAlarmFeedbackIngester(e, e.logger)
 }
 
 // SetOutputCallback 设置 track 输出回调（发 alarm 等下游）
@@ -562,11 +558,11 @@ func (e *Engine) StampPriorRect(roomID string, rect radarutils.Rect, areaType Ar
 
 // IngestFeedback 事件触发入口：wisefido-data handle 完直调 HTTP /roomengine/feedback/ingest，
 // 即时处理单条 alarm 反馈（event_id 去重）。无批处理兜底，sensor 不可达即丢。
-func (e *Engine) IngestFeedback(ctx context.Context, eventID string) (bool, error) {
+func (e *Engine) IngestFeedback(ctx context.Context, fe FeedbackEvent) (bool, error) {
 	if e.feedbackIngester == nil {
-		return false, fmt.Errorf("feedback ingester not configured (nil feedback DB)")
+		return false, fmt.Errorf("feedback ingester not configured")
 	}
-	return e.feedbackIngester.IngestOne(ctx, eventID)
+	return e.feedbackIngester.IngestOne(ctx, fe)
 }
 
 // VetoCell 人否决某 Feedback 学习区（删了 canvas 上的 source='Feedback' object 触发）：
@@ -993,6 +989,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetLogger(e.logger)
 	tm.SetRoomName(cfg.RoomName)
 	tm.SetRoomType(cfg.RoomType)
+	tm.SetChairs(cfg.Chairs)
 	tm.SetInterferes(cfg.Interferes)
 	tm.SetRadarMount(cfg.Radar)        // L1 mirror pair 检测用 radar 中心做 ghost tiebreaker
 	tm.SetWallPolygon(cfg.WallPolygon) // 静止反射体检测判"近墙"

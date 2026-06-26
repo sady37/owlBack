@@ -9,7 +9,7 @@
 //                                          → RestZoneConfirmed++ + MarkRestZoneByFeedback(AreaSit)
 //         ↳ Sit zone pin                   → 追加 Chair object（reload→AreaSit 神圣不衰减）
 //     ☑ Lying Lounge Chair / Long Sofa     → ↳ Lounge placement（与 Sit pin 一致，只永久无 2H）:
-//         "Permanent (update layout)"      → pinFeedbackZone：追加 LongSofa object + StampPriorRect(AreaLying,SourceHuman)
+//         "Permanent (update layout)"      → pinFeedbackZone：追加 Recliner object + StampPriorRect(AreaLying,SourceHuman)
 //         (无 ↳ 行)                         → 不动 layout
 //     ☑ BlindArea / No Fall (家具后遮挡盲区) ↳ permanent → 追加 BlindArea object（reload→AreaActive；12min tFloor 快速兜底盲区真摔，非 deny）
 //     ☑ Enter / Door (未画出口)             ↳ 直接 → 追加 Enter object（reload→AreaEnter）
@@ -30,10 +30,12 @@
 package roomengine
 
 import (
+	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -42,9 +44,20 @@ import (
 	"owl-common/radarutils"
 )
 
-// AlarmFeedbackIngester 从 alarm_events 增量拉 false_alarm 反馈到 cell。
+// FeedbackEvent data handle 完 POST 过来的反馈事件（payload 由 data 推，sensor 不再回读 alarm_events）。
+type FeedbackEvent struct {
+	EventID       string          `json:"event_id"`
+	DeviceAddr    string          `json:"device_addr"` // host text（无 mask）
+	EventType     string          `json:"event_type"`
+	Operation     string          `json:"operation"`
+	TriggeredAtMs int64           `json:"triggered_at_ms"`
+	HandTimeMs    int64           `json:"hand_time_ms"`
+	Payload       json.RawMessage `json:"payload"`
+	HandlerNotes  string          `json:"handler_notes"`
+}
+
+// AlarmFeedbackIngester 把 data 推来的 false_alarm/verified 反馈喂回 cell（不连库，payload 随事件推送）。
 type AlarmFeedbackIngester struct {
-	db     *sql.DB
 	engine *Engine
 	logger *zap.Logger
 
@@ -53,12 +66,11 @@ type AlarmFeedbackIngester struct {
 	seen map[string]struct{}
 }
 
-func NewAlarmFeedbackIngester(db *sql.DB, engine *Engine, logger *zap.Logger) *AlarmFeedbackIngester {
+func NewAlarmFeedbackIngester(engine *Engine, logger *zap.Logger) *AlarmFeedbackIngester {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	return &AlarmFeedbackIngester{
-		db:     db,
 		engine: engine,
 		logger: logger,
 		seen:   map[string]struct{}{},
@@ -70,7 +82,7 @@ func NewAlarmFeedbackIngester(db *sql.DB, engine *Engine, logger *zap.Logger) *A
 // FE 把勾选写成 remarks 里的 "☑ <label>" 行 + "↳ <marker>" 子行，这里按 substring 反解。改这些常量必须与 alarm.ts 同步。
 const (
 	faSitChairShortSofa = "Sit on Chair / Short Sofa"
-	faLoungeLongSofa    = "Lying Lounge Chair / Long Sofa"
+	faLoungeLongSofa    = "Lying on Sofa / Recliner"
 	faBlindAreaNoFall   = "BlindArea / No Fall"
 	faEnterDoor         = "Enter / Door"
 	faWheelchair        = "Sit in Wheelchair"
@@ -110,7 +122,7 @@ type ParsedConditions struct {
 	FAUnknown          bool // 兜底 → fake
 
 	// Lounge placement（仅 FALoungeLongSofa 勾选时有意义；与 Sit pin 一致只永久，无 2H）
-	LoungePermanent bool // ↳ permanent → pinFeedbackZone(AreaLying)：追加 LongSofa object + StampPriorRect
+	LoungePermanent bool // ↳ permanent → pinFeedbackZone(AreaLying)：追加 Recliner object + StampPriorRect
 
 	// 永久加区二次动作（追加 layout 对象）
 	SitPin        bool // ↳ sit zone pin → 追加 Chair object（reload→AreaSit 神圣）
@@ -173,50 +185,31 @@ func parseConditions(notes string) ParsedConditions {
 	return out
 }
 
-// IngestOne 处理单条 alarm 反馈（事件触发：wisefido-data handle 完直调）。
+// IngestOne 处理单条 alarm 反馈（事件触发：wisefido-data handle 完 POST 推送，payload 随带）。
 // event_id 去重：同一 event 重复调只跑一次 processOne（cell counter 非幂等，禁双增）。
-// 返回 (是否落地处理, 错误)。非 fall-feedback 行（operation/event_type 不匹配）静默忽略，不算错误。
-func (i *AlarmFeedbackIngester) IngestOne(ctx context.Context, eventID string) (bool, error) {
-	if i.db == nil || i.engine == nil {
-		return false, fmt.Errorf("ingester not configured (nil db or engine)")
+// payload/notes 由 data 推（不再回读 alarm_events，铁律写硬读软 [[sensor_asks_data_sync_not_db]] §9.1）。
+func (i *AlarmFeedbackIngester) IngestOne(ctx context.Context, fe FeedbackEvent) (bool, error) {
+	if i.engine == nil {
+		return false, fmt.Errorf("ingester not configured (nil engine)")
 	}
-	if eventID == "" {
+	if fe.EventID == "" {
 		return false, fmt.Errorf("empty event_id")
 	}
 
 	i.mu.Lock()
-	_, dup := i.seen[eventID]
+	_, dup := i.seen[fe.EventID]
 	i.mu.Unlock()
 	if dup {
-		i.logger.Debug("alarm_feedback: event already processed", zap.String("event_id", eventID))
+		i.logger.Debug("alarm_feedback: event already processed", zap.String("event_id", fe.EventID))
 		return false, nil
 	}
 
-	// 不按 operation/event_type 过滤：feedback 处理的是 handle 结果，裁决看 handler_notes 的块头
-	// （False Alarm Reason: / Observed Conditions:），与 alarm 生命周期（auto_resolved 等）正交。
-	const q = `
-		SELECT host(device_addr)::text, event_type, operation, triggered_at, hand_time,
-		       payload, COALESCE(handler_notes, '')
-		FROM alarm_events
-		WHERE event_id = $1::uuid
-	`
-	var deviceAddr, eventType, operation, notes string
-	var triggeredAt, handTime time.Time
-	var triggerData []byte
-	err := i.db.QueryRowContext(ctx, q, eventID).Scan(
-		&deviceAddr, &eventType, &operation, &triggeredAt, &handTime, &triggerData, &notes)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			i.logger.Debug("alarm_feedback: event_id not found", zap.String("event_id", eventID))
-			return false, nil
-		}
-		return false, fmt.Errorf("select alarm_event %s: %w", eventID, err)
-	}
-
-	ok := i.processOne(ctx, eventID, deviceAddr, eventType, operation, triggeredAt, handTime, triggerData, notes)
+	// 裁决看 handler_notes 的块头（False Alarm Reason: / Observed Conditions:），与 alarm 生命周期正交。
+	ok := i.processOne(ctx, fe.EventID, fe.DeviceAddr, fe.EventType, fe.Operation,
+		time.UnixMilli(fe.TriggeredAtMs), time.UnixMilli(fe.HandTimeMs), fe.Payload, fe.HandlerNotes)
 
 	i.mu.Lock()
-	i.seen[eventID] = struct{}{}
+	i.seen[fe.EventID] = struct{}{}
 	i.mu.Unlock()
 
 	return ok, nil
@@ -334,16 +327,16 @@ type feedbackObjectSpec struct {
 const feedbackObjectHalfCm = 20
 
 // reload 后 engine 先验（liveArea，与 layout_parser typeName 映射一致）：
-//   LongSofa→AreaLying(90min) / Chair→AreaSit / MetalCan→AreaReflector(豁免) / Interfere→AreaInterfer(豁免) /
+//   Recliner→AreaLying(90min) / Chair→AreaSit / MetalCan→AreaReflector(豁免) / Interfere→AreaInterfer(豁免) /
 //   BlindArea→AreaActive(12min) / Enter→AreaEnter。
 // 均 source=Feedback：drawObjects 渲染虚线、updateRadarAreas 过滤不下发雷达（人确认转 Human 后才 declare）。
 var (
-	feedbackLoungeObject    = feedbackObjectSpec{"feedback_lounge_", "Lounge (learned)", "LongSofa", "furniture", "#c19a6b", 40, "feedback_lounge_object_appended", AreaLying, 99}
-	feedbackSitObject       = feedbackObjectSpec{"feedback_sit_", "Sit zone (pinned)", "Chair", "furniture", "#ffff00", 90, "feedback_sit_object_appended", AreaSit, chairPriorConf}
-	feedbackReflectorObject = feedbackObjectSpec{"feedback_reflector_", "Reflector (marked)", "MetalCan", "interference", "#F5F5F5", 80, "feedback_reflector_object_appended", AreaReflector, 99}
-	feedbackInterfereObject = feedbackObjectSpec{"feedback_interfere_", "Interference (marked)", "Interfere", "interference", "#4a4a4a", 120, "feedback_interfere_object_appended", AreaInterfer, 99}
-	feedbackBlindObject     = feedbackObjectSpec{"feedback_blind_", "Blind area (no-fall)", "BlindArea", "furniture", "#5b3a1a", 80, "feedback_blind_object_appended", AreaActive, 99}
-	feedbackEnterObject     = feedbackObjectSpec{"feedback_enter_", "Exit (learned)", "Enter", "structure", "#a9eaa9", 0, "feedback_enter_object_appended", AreaEnter, 99}
+	feedbackLoungeObject    = feedbackObjectSpec{"feedback_lounge_", "Recliner-PIN", "Recliner", "furniture", "#c19a6b", 40, "feedback_lounge_object_appended", AreaLying, 99}
+	feedbackSitObject       = feedbackObjectSpec{"feedback_sit_", "Chair-PIN", "Chair", "furniture", "#ffff00", 90, "feedback_sit_object_appended", AreaSit, chairPriorConf}
+	feedbackReflectorObject = feedbackObjectSpec{"feedback_reflector_", "Reflector-PIN", "MetalCan", "interference", "#F5F5F5", 80, "feedback_reflector_object_appended", AreaReflector, 99}
+	feedbackInterfereObject = feedbackObjectSpec{"feedback_interfere_", "Interfer-PIN", "Interfere", "interference", "#4a4a4a", 120, "feedback_interfere_object_appended", AreaInterfer, 99}
+	feedbackBlindObject     = feedbackObjectSpec{"feedback_blind_", "Blind-PIN", "BlindArea", "furniture", "#5b3a1a", 80, "feedback_blind_object_appended", AreaActive, 99}
+	feedbackEnterObject     = feedbackObjectSpec{"feedback_enter_", "Exit-PIN", "Enter", "structure", "#a9eaa9", 0, "feedback_enter_object_appended", AreaEnter, 99}
 )
 
 // pinFeedbackZone 永久加区单一入口：append source=Feedback layout 对象 + 即时 live 刷同一 40×40 rect。
@@ -368,8 +361,17 @@ func (i *AlarmFeedbackIngester) pinFeedbackZone(ctx context.Context, deviceAddr,
 //   - 幂等：同 event 的 object id 已存在则不重复 append。
 //   - canvas_hash 置 NULL：让下次 FE save 必写；engine snapshot 用自身 geometry hash，不受影响。
 //   - 几何 = 告警点周边 40×40cm 小方块（angle=0 轴对齐，人可 resize 到真实家具）。
+var feedbackHTTPClient = &http.Client{Timeout: 5 * time.Second}
+
+func feedbackDataURL() string {
+	if v := os.Getenv("SENSOR_DATA_URL"); v != "" {
+		return v
+	}
+	return "http://127.0.0.1:8080"
+}
+
 func (i *AlarmFeedbackIngester) appendFeedbackObject(ctx context.Context, deviceAddr string, x, y int, eventID string, spec feedbackObjectSpec) {
-	if i.db == nil || deviceAddr == "" {
+	if deviceAddr == "" {
 		return
 	}
 	half := feedbackObjectHalfCm
@@ -378,7 +380,7 @@ func (i *AlarmFeedbackIngester) appendFeedbackObject(ctx context.Context, device
 		"id":        objID,
 		"name":      spec.name,
 		"typeName":  spec.typeName,
-		"typeValue": 0,
+		"typeValue": int(spec.liveArea), // = observation.AreaType（单源，对齐 FE FURNITURE_CONFIGS）
 		"source":    "Feedback",
 		"geometry": map[string]interface{}{
 			"type": "rectangle",
@@ -402,24 +404,35 @@ func (i *AlarmFeedbackIngester) appendFeedbackObject(ctx context.Context, device
 		i.logger.Warn("appendFeedbackObject: marshal", zap.String("type", spec.typeName), zap.Error(err))
 		return
 	}
-	res, err := i.db.ExecContext(ctx, `
-		UPDATE room_visual_layout
-		SET canvas      = jsonb_set(canvas, '{objects}',
-		                    COALESCE(canvas->'objects', '[]'::jsonb) || $2::jsonb),
-		    canvas_hash = NULL,
-		    version     = version + 1,
-		    updated_at  = NOW()
-		WHERE spatial_prefix = $1::inet
-		  AND NOT (COALESCE(canvas->'objects', '[]'::jsonb) @> $3::jsonb)
-	`, deviceAddr, string(objJSON), `[{"id":"`+objID+`"}]`)
+	// 经 data 单写入口（取代直写 room_visual_layout）：data 原子 append + 真追加则即时下发设备 + config:card。
+	body, err := json.Marshal(map[string]interface{}{
+		"spatial_prefix": deviceAddr,
+		"object_id":      objID,
+		"object":         json.RawMessage(objJSON),
+	})
 	if err != nil {
-		i.logger.Warn("appendFeedbackObject: update layout", zap.String("device_addr", deviceAddr), zap.String("type", spec.typeName), zap.Error(err))
+		i.logger.Warn("appendFeedbackObject: marshal body", zap.Error(err))
 		return
 	}
-	n, _ := res.RowsAffected()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, feedbackDataURL()+"/internal/radar/feedback-object", bytes.NewReader(body))
+	if err != nil {
+		i.logger.Warn("appendFeedbackObject: new request", zap.Error(err))
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := feedbackHTTPClient.Do(req)
+	if err != nil {
+		i.logger.Warn("appendFeedbackObject: post data", zap.String("device_addr", deviceAddr), zap.String("type", spec.typeName), zap.Error(err))
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		i.logger.Warn("appendFeedbackObject: data non-200", zap.String("device_addr", deviceAddr), zap.Int("status", resp.StatusCode))
+		return
+	}
 	i.logger.Info(spec.logKey,
 		zap.String("device_addr", deviceAddr), zap.String("object_id", objID),
-		zap.Int("canvas_x", x), zap.Int("canvas_y", y), zap.Int64("rows", n))
+		zap.Int("canvas_x", x), zap.Int("canvas_y", y))
 }
 
 // routeFeedback 根据 operation + parsed conditions 把 cell counter 增量。

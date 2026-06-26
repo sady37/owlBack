@@ -498,7 +498,7 @@ items 是 []interface{}，每个元素是一个 map[string]interface{}。
   {"event_name": "Offline", "event_type": 5, "status_type": "...", "status_value": "1"}
 ]
 // event_name 全集（与 alarm.Enter2OutMap / PoseMap / NumberPeopleCategory / buildStatus 一致）：
-//   - event_type=1 进出: EnterRoom, ExitRoom, InBed, LeftBed, EnterSensingArea, ExitSensingArea, EnterMonitor, ExitMonitor
+//   - event_type=1 进出: EnterRoom, ExitRoom, InBed, LeftBed, EnterMonitor, ExitMonitor
 //   - event_type=2 姿态: Initialization, Walking, Fall, Sitting, Standing, Lying, SittingOnGround, BedSitUp
 //   - event_type=3 人数: number-people
 //   - event_type=5: OfflineAlarm
@@ -638,22 +638,6 @@ func toInt(v interface{}) int {
 	return 0
 }
 
-// mapAreaType 映射 area_type 数值到可读字符串
-// 2=Bed 4=Door 5=MonitorBed 6=SensingArea
-func mapAreaType(areaType int) string {
-	switch areaType {
-	case 2:
-		return "Bed"
-	case 4:
-		return "Door"
-	case 5:
-		return "MonitorBed"
-	case 6:
-		return "SensingArea"
-	default:
-		return fmt.Sprintf("%d", areaType)
-	}
-}
 
 // decodeMonitorTrackFromBase64 解码 monitor track，与 radar.MonitorTrackData 布局一致
 func decodeMonitorTrackFromBase64(base64Track string) ([]radar.MonitorTrackData, error) {

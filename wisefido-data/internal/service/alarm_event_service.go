@@ -912,10 +912,28 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 	}()
 
 	// 事件触发：handle 完即调 sensor live engine 即时处理该条 fall 反馈（best-effort，非 fall 类 sensor 自行忽略）。
+	// payload/notes 由 data 直接推（sensor 不再回读 alarm_events，写硬读软 §9.1）。
 	go func() {
 		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		s.notifySensorFeedback(bgCtx, req.EventID)
+		addr := event.DeviceAddr
+		if idx := strings.IndexByte(addr, '/'); idx >= 0 {
+			addr = addr[:idx]
+		}
+		var triggeredMs int64
+		if !event.TriggeredAt.IsZero() {
+			triggeredMs = event.TriggeredAt.UnixMilli()
+		}
+		s.notifySensorFeedback(bgCtx, feedbackIngestBody{
+			EventID:       req.EventID,
+			DeviceAddr:    addr,
+			EventType:     event.EventType,
+			Operation:     operation,
+			TriggeredAtMs: triggeredMs,
+			HandTimeMs:    handTime.UnixMilli(),
+			Payload:       event.TriggerData,
+			HandlerNotes:  req.Remarks,
+		})
 	}()
 
 	return response, nil

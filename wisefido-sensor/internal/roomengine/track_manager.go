@@ -12,6 +12,8 @@ import (
 	"owl-common/card"
 	"owl-common/radarutils"
 	"owl-common/roomutil"
+
+	"wisefido-sensor/internal/roomengine/belief"
 )
 
 // intPtr：observation.Track 的 PositionX/Y/Z 是 *int（区分"没值"vs"=0"）。
@@ -162,6 +164,9 @@ type TrackManager struct {
 	// 权威 bathroom 标志（FE 由 room_name 同义词 ∪ 勾选 bathroom 复选框写库）。
 	// lost-fall 等待时长：room_type==Bathroom 即整房按 bathroom 长档（不依赖是否画了 Toilet/Shower 子区）。
 	roomType int
+
+	// chairs：layout 解析出的 AreaSit rect（含 feedback pin 钉的 Chair）；fire evidence 反查命中的 pin 矩形。
+	chairs []radarutils.Rect
 
 	// PR-Bootstrap: v1 stayAlarmEnabled 字段已删除（loadStayAlarmEnablement DB 路径同时删除）。
 	// PR-10 BathroomStillFall 用 room.kind=="bathroom" 分支替代"运维显式启用 Stay alarm"语义。
@@ -316,6 +321,14 @@ func (tm *TrackManager) SetRoomType(t int) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	tm.roomType = t
+}
+
+// SetChairs 注入 layout AreaSit rect（含 feedback pin），fire evidence 反查命中 pin 矩形用。
+// 由 engine.RegisterRoom 调用。
+func (tm *TrackManager) SetChairs(rects []radarutils.Rect) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.chairs = rects
 }
 
 // SetInterferes 注入本房间镜面/反射区矩形（cfg.Interferes）。
@@ -911,12 +924,32 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
 		}
-		if c := tm.grid.CellAt(px, py); c != nil {
-			base.CellAreaType = c.Belief[0].Type // cell 仍喂 tFloor 阈 + sit/bath/active redirect（含 sofa 的 lying 区，故不换 baseline）
-			ts.LastCellArea = c.Belief[0].Type   // 单源:发布层 area_type 复用,免 raw 重算
-			if c.Belief[0].Type == AreaEnter {
-				base.EnterTarget = c.EnterTarget
-			}
+		// cell area 走 stillbox 锁定(box 开始那格,updateContinuousIndicators 用 raw 起点读一次)→ floor 阈 + emission
+		// redirect 单源,躲开逐帧 Kalman/raw 微动跨格(sit 区边缘被偏读成 active 致误报)。移动期不读(floor 不计时/emission 靠 pose)。
+		// EnterTarget(门方向,lost-fall 用)仍按当前 raw 位置实时取。
+		rawCx, rawCy := px, py
+		if n := len(ts.History); n > 0 {
+			rawCx, rawCy = ts.History[n-1].X, ts.History[n-1].Y
+		}
+		if c := tm.grid.CellAt(rawCx, rawCy); c != nil && c.Belief[0].Type == AreaEnter {
+			base.EnterTarget = c.EnterTarget
+		}
+		if ts.StillBoxRunStart != 0 {
+			base.CellAreaType = ts.StillBoxCellArea // 久静期:锁定值
+		} else {
+			base.CellAreaType = AreaUnknown // 移动期:不读
+		}
+		ts.LastCellArea = base.CellAreaType
+		// 诊断(久静≥60s):锁定 area vs raw/Kalman 落格对比(验证锁定躲开跨格抖动)
+		if base.StillBoxSec >= 60 {
+			rcol, rrow := tm.grid.ToIndex(rawCx, rawCy)
+			pcol, prow := tm.grid.ToIndex(px, py)
+			tm.logger.Info("cell_area_read",
+				zap.Int("track_id", ts.TrackID), zap.String("logic_id", ts.LogicID),
+				zap.String("locked_area", base.CellAreaType.Name()),
+				zap.Int("raw_cx", rawCx), zap.Int("raw_cy", rawCy), zap.Int("raw_col", rcol), zap.Int("raw_row", rrow),
+				zap.Int("px", px), zap.Int("py", py), zap.Int("k_col", pcol), zap.Int("k_row", prow),
+				zap.Int("stillbox_sec", base.StillBoxSec))
 		}
 		// present track 在 firmware 床区 = radar 连续 InBed 几何证据，刷 lastRadarInBedGeomMs（事件常缺前置/窗裁，连续刷补上）。
 		//   用 **firmware area_id（baseline type2/5，设备真值）** 而非 cell AreaBed：cell 含 sofa(lying 区)会把沙发误判成床；
@@ -1013,19 +1046,27 @@ func (tm *TrackManager) exitTrendRatio(ts *TrackState) float64 {
 func (tm *TrackManager) ExitLogOdds(logicID string, nowMs int64) float64 {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
+	l, _, _ := tm.exitLogOddsLocked(logicID, nowMs)
+	return l
+}
+
+// exitLogOddsLocked SLeft 对数几率 + 诊断分量（hasExit=① ExitRoom 硬证据命中；trend=② 朝门强度）。
+// 调用方持 tm.mu（belief 闭包经 ExitLogOdds 包装 / fire evidence 经 PublishDBNFall 持锁直调，避免重入死锁）。
+func (tm *TrackManager) exitLogOddsLocked(logicID string, nowMs int64) (L float64, hasExit bool, trend float64) {
 	rec := tm.lostExitInfo[logicID]
 	if rec == nil {
-		return 0 // 无丢轨快照（不该被 belief 对 present track 查）→ 无离房证据
+		return 0, false, 0 // 无丢轨快照（不该被 belief 对 present track 查）→ 无离房证据
 	}
-	L := 0.0
+	trend = rec.trendRatio
 	cutoff := nowMs - eventBufferMs // ExitRoom 硬证据消费窗 = 12s coast claim;超此=陈旧/误发,不再 haunt(records 也 12s evict)
 	for k, e := range tm.recentRadarEvents {
 		if k >= cutoff && e.EventName == alarm.ExitRoom && e.DeviceUID == rec.dev && e.TrackID == rec.fwTrackID {
 			L += exitRoomLogOdds // ① 硬证据
+			hasExit = true
 			break
 		}
 	}
-	if rec != nil && rec.trendRatio > 0 && tm.lastNumberPeople == 0 && tm.lastNumberPeopleTs >= rec.lostMs {
+	if rec.trendRatio > 0 && tm.lastNumberPeople == 0 && tm.lastNumberPeopleTs >= rec.lostMs {
 		gapSec := float64(tm.lastNumberPeopleTs-rec.lostMs) / 1000.0
 		if gapSec < 1 {
 			gapSec = 1
@@ -1042,7 +1083,7 @@ func (tm *TrackManager) ExitLogOdds(logicID string, nowMs int64) float64 {
 			L += math.Log(v / (1 - v)) // ② logit(V)
 		}
 	}
-	return L
+	return L, hasExit, trend
 }
 
 const (
@@ -1628,6 +1669,21 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			ts.StillBoxStartRawH = ts.History[0].RawH
 			ts.StillBoxStartRawV = ts.History[0].RawV
 			ts.StillBoxStartRawZ = ts.History[0].RawZ
+			// box 开始那刻用 raw 起点(History[0] canvas)读一次 cell area 锁定，久静期 floor/emission 单源读，
+			// 躲开逐帧 Kalman/raw 微动跨格(sit 区边缘被偏读成 active 致误报)。box-break 清回 AreaUnknown。
+			ts.StillBoxCellArea = AreaUnknown
+			if c := tm.grid.CellAt(ts.StillBoxStartX, ts.StillBoxStartY); c != nil {
+				ts.StillBoxCellArea = c.Belief[0].Type
+			}
+			if tm.logger != nil {
+				tfloor := belief.TFloorFor(int(ts.StillBoxCellArea), tm.roomType, IsNightTime(nowMs, tm.timezone))
+				tm.logger.Debug("still_box_start",
+					zap.Int("track_id", f.TrackID), zap.String("logic_id", ts.LogicID),
+					zap.Int64("start_ms", ts.StillBoxRunStart),
+					zap.Int("canvas_x", ts.StillBoxStartX), zap.Int("canvas_y", ts.StillBoxStartY),
+					zap.Int("raw_h", ts.StillBoxStartRawH), zap.Int("raw_v", ts.StillBoxStartRawV), zap.Int("raw_z", ts.StillBoxStartRawZ),
+					zap.String("locked_area", ts.StillBoxCellArea.Name()), zap.Int("tfloor_sec", tfloor))
+			}
 		}
 		// AreaSit 学习：box running = episode 进行中，累姿态相关两通道（fwMax/zBest，sit_learning.go）。
 		if RadarPoseToCore(f.Pose) == CorePoseSit {
@@ -1645,17 +1701,21 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			}
 		}
 	} else if ts.StillBoxRunStart > 0 {
-		dur := nowMs - ts.StillBoxRunStart
+		startMs := ts.StillBoxRunStart
+		dur := nowMs - startMs
+		lockedArea := ts.StillBoxCellArea
 		ts.StillBoxBreakDurMs = dur // 暂存刚结束的 dwell 时长，供 scoreMovement 移动块 MarkDwell
 		ts.StillBoxRunStart = 0
+		ts.StillBoxCellArea = AreaUnknown // box-break：清锁，移动期不读 cell area（floor 不计时/emission 靠 pose）
 		tm.emitSitEpisode(ts, dur, nowMs) // box-break=移动导致=walk-away → emit Sit episode（lost 走 ResetStillBox 不 emit）
 		if tm.logger != nil {
-			tm.logger.Info("still_box_break",
-				zap.Int("track_id", f.TrackID),
-				zap.Int64("duration_ms", dur),
-				zap.Int("disp_cm", disp),
-				zap.Int("path_cm", path),
-				zap.Int64("now_ms", nowMs))
+			tfloor := belief.TFloorFor(int(lockedArea), tm.roomType, IsNightTime(nowMs, tm.timezone))
+			tm.logger.Debug("still_box_break",
+				zap.Int("track_id", f.TrackID), zap.String("logic_id", ts.LogicID),
+				zap.Int64("start_ms", startMs), zap.Int64("duration_ms", dur),
+				zap.Int("raw_h", f.RawH), zap.Int("raw_v", f.RawV), zap.Int("raw_z", f.RawZ),
+				zap.String("locked_area", lockedArea.Name()), zap.Int("tfloor_sec", tfloor),
+				zap.Int("disp_cm", disp), zap.Int("path_cm", path), zap.Int64("now_ms", nowMs))
 		}
 	}
 }

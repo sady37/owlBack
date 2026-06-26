@@ -88,3 +88,8 @@ func tFloorFor(area, roomType int, isRiskTime bool) float64 {
 	}
 	return mu + k*sigma
 }
+
+// TFloorFor 导出版：供 alarm evidence 记录这次 fire 实际用的 per-area floor 阈（秒取整）。
+func TFloorFor(area, roomType int, isRiskTime bool) int {
+	return int(tFloorFor(area, roomType, isRiskTime))
+}

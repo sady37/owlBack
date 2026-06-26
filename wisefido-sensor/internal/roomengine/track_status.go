@@ -11,7 +11,7 @@ package roomengine
 //     消费方：dev playback (track-status-tail) / 未来 zoneengine v2 / fall verifier。
 //
 //   - areaTypeProtocolStr → 用于 iot:event:stream / iot:alarm:stream（cardagg 消费）
-//     向 owl-common/observation.EnumAreaType 投影（best-effort，5 类协议级 area）。
+//     向固件协议级 area（best-effort，5 类）投影。
 //     消费方：cardagg AI verdict 路由 / alarm 落库。
 //
 // 设计意图：v2 内部表达力（高维）和 cardagg 协议向后兼容（低维）解耦——

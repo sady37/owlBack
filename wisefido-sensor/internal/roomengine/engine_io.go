@@ -246,7 +246,8 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 	}
 }
 
-// areaTypeProtocolStr cell 区域 → 固件 declare_area 协议字符串（下发映射）。
+// areaTypeProtocolStr cell AreaType → iot:event/alarm 流 area_type 字段（协议级 5 类投影，cardagg 消费）。
+// 非固件下发——sensor 只 cmd=read 固件活体 declare_area 取床区，不写 declare。
 func areaTypeProtocolStr(t AreaType) string {
 	switch t {
 	case AreaBed, AreaMonitorBed:

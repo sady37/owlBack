@@ -73,7 +73,7 @@ type EventEnter2OutData struct {
 	FHIRCategory string `json:"fhir_category"` // safety|clinical|behavioral|device
 	TrackID      int    `json:"track_id"`      // track-id：人员轨迹 ID 0-8
 	Event        int    `json:"event"`         // 进出事件 1-6，见 observation 包
-	AreaType     int    `json:"area_type"`     // 区域类型 0-6，见 observation 包
+	AreaType     int    `json:"area_type"`     // 固件 area_type 0-5，见 observation.AreaType（统一枚举）
 }
 
 // EventPoseData 3.5 姿态变化事件 type=2 单条 track
@@ -186,10 +186,10 @@ func (r *RectangleData) ToDMString() string {
 }
 
 // DeclareAreaData 设置区域单条，与 3.4.3 一致。传输格式 {area-id, area-type, x1, y1; x2, y2, x3, y3, x4, y4}
-// AreaID 0-15；AreaType 0-5 见 observation.DeclareArea* 常量
+// AreaID 0-15；AreaType 0-5 见 observation.AreaType（统一枚举，固件上报值落 0-5 子集）
 type DeclareAreaData struct {
 	AreaID   int `json:"area_id"`   // 0-15
-	AreaType int `json:"area_type"` // 0-5，见 observation.DeclareArea* 常量
+	AreaType int `json:"area_type"` // 0-5，见 observation.AreaType（统一枚举）
 	X1       int `json:"x1"`
 	Y1       int `json:"y1"`
 	X2       int `json:"x2"`
@@ -458,4 +458,4 @@ func WorkModelToDisplay(model int) string {
 	}
 }
 
-// 进出事件与区域类型数值见 observation 包：EventInRoom/EventOutRoom/EventInArea/EventOutArea/EventEnterMonitor/EventExitMonitor，AreaType*，DeclareArea*。Pose 数值与 PoseNumToDisplay/PoseDisplayToNum 见 observation。
+// 进出事件与区域类型数值见 observation 包：EventInRoom/EventOutRoom/EventInArea/EventOutArea/EventEnterMonitor/EventExitMonitor，AreaType（固件上报值落 0-5 子集）。Pose 数值与 PoseNumToDisplay/PoseDisplayToNum 见 observation。

@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"owl-common/alarm"
+	"owl-common/observation"
+	rediscommon "owl-common/redis"
 	"wisefido-qinglan/internal/config"
 	"wisefido-qinglan/internal/consumer"
 	"wisefido-qinglan/internal/decode"
@@ -208,6 +210,14 @@ func (s *RadarService) readOneBatch(ctx context.Context, deviceUID string, keys 
 // 协议：/prefix/prop/productId/UID/get
 // 返回设备响应码（200=成功，500/777/778=失败）和错误；发起端可透传 device_code 给前端。
 func (s *RadarService) SetDeviceProperties(ctx context.Context, deviceUID string, properties map[string]interface{}) (deviceCode int, err error) {
+	// firmware 写失败（MQTT 发布失败 / 10s 无响应 / 设备返回非 200）→ 发 DeviceFailure 到 iot:alarm:stream。
+	// 唯一调用方是雷达配置写 HTTP（OTA 走另一条 MQTTPublisher.SetDeviceProperties），故此处必为 firmware 写。
+	defer func() {
+		if err != nil {
+			s.publishDeviceFailure(ctx, deviceUID, deviceCode, err)
+		}
+	}()
+
 	convertedProperties := make(map[string]interface{})
 
 	// 处理 _alarm_items_json：从 wisefido-data 传递的原始 AlarmItem[] 数据
@@ -291,6 +301,33 @@ func (s *RadarService) SetDeviceProperties(ctx context.Context, deviceUID string
 	}
 
 	return s.sendOneSetProperties(ctx, deviceUID, stringProperties)
+}
+
+// publishDeviceFailure firmware 写失败 → DeviceFailure 到 iot:alarm:stream（device-class，DedupWhileActive 防刷）。
+func (s *RadarService) publishDeviceFailure(ctx context.Context, deviceUID string, deviceCode int, cause error) {
+	dsi, dsErr := s.deviceRepo.GetDeviceStoreInfo(ctx, deviceUID)
+	if dsErr != nil || dsi == nil || !dsi.DeviceAddr.IsValid() {
+		s.logger.Warn("publishDeviceFailure: resolve device addr", zap.String("device", deviceUID), zap.Error(dsErr))
+		return
+	}
+	ts := time.Now().UnixMilli()
+	item := observation.NewEventItem(ts, "start")
+	item.TrackID = observation.TrackDevice
+	data, derr := observation.EventItemToDataMap(&item)
+	if derr != nil {
+		s.logger.Warn("publishDeviceFailure: EventItemToDataMap", zap.String("device", deviceUID), zap.Error(derr))
+		return
+	}
+	data[observation.FieldDeviceFailure] = 1
+	data["device_code"] = deviceCode
+	data["reason"] = cause.Error()
+	msg := rediscommon.NewSingleItemMessage(dsi.DeviceAddr, "", "Radar", ts, "alarm", alarm.AlarmTypeDeviceFailure, data)
+	if perr := s.streamPublisher.PublishAlarm(ctx, msg); perr != nil {
+		s.logger.Warn("publishDeviceFailure: PublishAlarm", zap.String("device", deviceUID), zap.Error(perr))
+		return
+	}
+	s.logger.Info("DeviceFailure → iot:alarm:stream",
+		zap.String("device", deviceUID), zap.Int("device_code", deviceCode), zap.String("reason", cause.Error()))
 }
 
 // sendOneSetProperties 发送单次 MQTT 属性设置并等待响应（一次一条命令）

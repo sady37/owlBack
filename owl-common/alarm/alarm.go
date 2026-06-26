@@ -99,8 +99,6 @@ const (
 	WarningArea              = "WarningArea"
 	EnterRoom                = "EnterRoom"
 	ExitRoom                 = "ExitRoom"
-	EnterSensingArea         = "EnterSensingArea"
-	ExitSensingArea          = "ExitSensingArea"
 	EnterMonitor             = "EnterMonitor"
 	ExitMonitor              = "ExitMonitor"
 	MonitoringMode           = "MonitoringMode"
@@ -184,8 +182,6 @@ var Registry = map[string]*AlarmDef{
 	InBed:                    {Key: InBed, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "In bed", Display: "In Bed", EndPolicy: EndPolicyAutoResolve},
 	EnterRoom:                {Key: EnterRoom, ProcessType: ProcessTypeRoomStateChange, DefaultLevel: AlarmLevelNotice, Description: "Enter room", Display: "Room Entry"},
 	ExitRoom:                 {Key: ExitRoom, ProcessType: ProcessTypeRoomStateChange, DefaultLevel: AlarmLevelNotice, Description: "Exit room", Display: "Room Exit"},
-	EnterSensingArea:         {Key: EnterSensingArea, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Enter sensing area", Display: "Entered Sensing Area"},
-	ExitSensingArea:          {Key: ExitSensingArea, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Exit sensing area", Display: "Exited Sensing Area"},
 	EnterMonitor:             {Key: EnterMonitor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Enter monitor", Display: "Monitoring Started"},
 	ExitMonitor:              {Key: ExitMonitor, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelNotice, Description: "Exit monitor", Display: "Monitoring Ended"},
 	HeartRateAlert:           {Key: HeartRateAlert, ProcessType: ProcessTypeImmediate, DefaultLevel: AlarmLevelCrit, Description: "Heart rate alert (base; gateway may send High/Low)", Display: "Heart Rate Alert"},
@@ -305,8 +301,6 @@ var AlarmTypeToFHIRCategory = map[string]string{
 
 	EnterRoom:        FHIRCategoryBehavioral,
 	ExitRoom:         FHIRCategoryBehavioral,
-	EnterSensingArea: FHIRCategoryBehavioral,
-	ExitSensingArea:  FHIRCategoryBehavioral,
 	Initialization:   FHIRCategoryBehavioral,
 	Walking:          FHIRCategoryBehavioral,
 	Sitting:          FHIRCategoryBehavioral,
@@ -1207,29 +1201,27 @@ var MQTTToAlarmTypeMapSleepad = map[string]string{
 // Enter2OutMap type=1 进出事件：[event][area_type] → AlarmType
 // 报警映射独立于 protocol.go，直接使用协议数值。
 // event: 1=进房 2=离房 3=进区域 4=离区域 5=进入监护 6=退出监护
-// area_type: 2=床 4=门 5=监护床 6=感应区
+// area_type（固件 declare 0-5）: 2=床 4=门 5=监护床
 var Enter2OutMap = map[int]map[int]string{
 	1: { // EventInRoom
-		4: EnterRoom, // AreaTypeDoor
+		4: EnterRoom, // AreaEnter
 	},
 	2: { // EventOutRoom
-		4: ExitRoom, // AreaTypeDoor
+		4: ExitRoom, // AreaEnter
 	},
 	3: { // EventInArea
-		2: InBed, // AreaTypeBed
+		2: InBed, // AreaBed
 		5: InBed,
-		6: EnterSensingArea, // AreaTypeSensing
 	},
 	4: { // EventOutArea
-		2: LeftBed, // AreaTypeBed
+		2: LeftBed, // AreaBed
 		5: LeftBed,
-		6: ExitSensingArea, // AreaTypeSensing
 	},
 	5: { // EventEnterMonitor
-		5: EnterMonitor, // AreaTypeMonitorBed
+		5: EnterMonitor, // AreaMonitorBed
 	},
 	6: { // EventExitMonitor
-		5: ExitMonitor, // AreaTypeMonitorBed
+		5: ExitMonitor, // AreaMonitorBed
 	},
 }
 

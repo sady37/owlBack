@@ -76,6 +76,8 @@ type TrackState struct {
 	// still-box 单源派生（updateContinuousIndicators 同步算，cell engine 久静量读，替代旧 StillSince/StillX/StillY）：
 	StillBoxStartX, StillBoxStartY int   // box run 起点位置 canvas（=History[0] 回填点）→ MarkDwell/MarkToleratedStill 灌入 cell
 	StillBoxStartRawH, StillBoxStartRawV, StillBoxStartRawZ int // box run 起点 raw firmware（=History[0]）→ floor fall 坐标
+	StillBoxCellArea  AreaType // box 开始那刻 CellAt(StillBoxStart canvas) 锁定的 cell area；久静期 floor/emission 单源读，
+	//                           避免逐帧 Kalman/raw 微动跨格抖动（sit 区边缘被偏读成 active 致误报）。box-break 清回 AreaUnknown。
 	StillBoxBreakDurMs             int64 // 本帧 still-box 刚 break 的 dwell 时长（0=未 break）→ 移动块 MarkDwell 消费
 
 	// ---- AreaSit 4 通道学习累加器（sit_learning.go；StillBox run = episode，box-break = walk-away emit）----

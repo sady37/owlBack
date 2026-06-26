@@ -150,8 +150,6 @@ func buildRuntimeConfig(cfg *config.Config, db *sql.DB) roomengine.RuntimeConfig
 			BedsideMarginCm: r.BedsideFall.BedsideMarginCm,
 			StillTimeoutSec: r.BedsideFall.StillTimeoutSec,
 		},
-		// alarm_events false_alarm 反馈链：用同一个 *sql.DB（事件触发，wisefido-data handle 后直调 HTTP）。
-		FeedbackDB: db,
 	}
 
 	// ParamSets：3 组并行参数（保守/中庸/激进）

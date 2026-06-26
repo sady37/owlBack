@@ -248,11 +248,24 @@ func (r *AlarmRouter) persist(ctx context.Context, msg *owlredis.IoTStreamMessag
 	// 尤其 sleepace HR/RR alarm 之前只发 type+status 不带瞬时值（sleepace 厂家 payload 也不含），
 	// 由 cardagg 集中从 MonitorBuffer 取报警设备最近一帧统一处理，支持多种设备（sleepad/radar/...）。
 	var metadata json.RawMessage
+	evidence := map[string]any{}
 	if r.monitorBuf != nil {
 		if snap := r.monitorBuf.SnapshotByDevice(cardID, ac.DeviceAddr); snap != nil {
-			evidence := map[string]any{"monitor": snap}
-			metadata, _ = json.Marshal(evidence)
+			evidence["monitor"] = snap
 		}
+	}
+	// 合并 sensor DBN 腿在 payload.evidence 带的 fire/pin 判据快照（取证：band/tfloor/cell + 该点 pin 状态；
+	// pin=null 即"摔倒点没被任何 sit pin 覆盖"=误报根因）。与 monitor 同写 alarm_events.evidence，不互相覆盖。
+	if pe, ok := data["evidence"].(map[string]interface{}); ok {
+		if f, ok2 := pe["fire"]; ok2 {
+			evidence["fire"] = f
+		}
+		if pin, ok2 := pe["pin"]; ok2 {
+			evidence["pin"] = pin
+		}
+	}
+	if len(evidence) > 0 {
+		metadata, _ = json.Marshal(evidence)
 	}
 
 	// 推断类 fall（silent/lost/still/bedside）传 incident_ts_ms = 真实发生时刻；envelope.Timestamp = 决策时刻。

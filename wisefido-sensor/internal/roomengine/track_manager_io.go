@@ -6,8 +6,11 @@ package roomengine
 import (
 	"context"
 
+	"go.uber.org/zap"
 	"owl-common/alarm"
 	"owl-common/observation"
+	"owl-common/radarutils"
+	"wisefido-sensor/internal/roomengine/belief"
 )
 
 type AIPayload struct {
@@ -227,6 +230,72 @@ func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 			p.Track.PositionY = intPtr(ts.StillBoxStartRawV)
 			p.Track.PositionZ = intPtr(ts.StillBoxStartRawZ)
 		}
+		// fire 取证（alarm_events.evidence.fire/pin）：判据快照 + SLeft 分量 + 命中的 pin 矩形。
+		// cx,cy=cell 读取用的画布坐标（History 末点 = RadarToCanvas 直出）；pin=nil 表示该点没被任何 pin 覆盖。
+		cx, cy := 0, 0
+		if n := len(ts.History); n > 0 {
+			cx, cy = ts.History[n-1].X, ts.History[n-1].Y
+		}
+		exitLO, exitHasEvent, exitTrend := tm.exitLogOddsLocked(lid, nowMs)
+		fireEv := map[string]interface{}{
+			"band":              band,
+			"cell_area":         int(ts.LastCellArea),
+			"cell_area_name":    ts.LastCellArea.Name(),
+			"tfloor_sec":        belief.TFloorFor(int(ts.LastCellArea), tm.roomType, IsNightTime(nowMs, tm.timezone)),
+			"stillbox_start_ms": ts.StillBoxRunStart,
+			"x":                 cx,
+			"y":                 cy,
+			"z":                 ts.LastZ,
+			"pose":              ts.LastPose,
+			"room_np":           tm.lastNumberPeople,
+			"exit_logodds":      exitLO,       // SLeft 总对数几率（足够大才压住 lost-fall）
+			"exit_has_event":    exitHasEvent, // ① 固件 ExitRoom 硬证据有没有命中
+			"exit_trend_ratio":  exitTrend,    // ② 朝门移动强度（门口静止→0）
+		}
+		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
+			fireEv["stillbox_sec"] = int((nowMs - ts.StillBoxRunStart) / 1000)
+		}
+		// pin 反查：fire 点落在哪个人标矩形内（sit=chairs / enter=门区 grid.Enters）；pin=nil 即没被任何 pin 覆盖。
+		var pin map[string]interface{}
+		hitPin := func(rects []radarutils.Rect, at AreaType) {
+			if pin != nil {
+				return
+			}
+			for _, r := range rects {
+				rn := r.Norm()
+				if cx >= rn.X1 && cx <= rn.X2 && cy >= rn.Y1 && cy <= rn.Y2 {
+					pin = map[string]interface{}{
+						"rect":      [][]int{{rn.X1, rn.Y1}, {rn.X2, rn.Y1}, {rn.X2, rn.Y2}, {rn.X1, rn.Y2}},
+						"area_type": int(at),
+						"area_name": at.Name(),
+					}
+					return
+				}
+			}
+		}
+		hitPin(tm.chairs, AreaSit)
+		if tm.grid != nil {
+			hitPin(tm.grid.Enters, AreaEnter)
+		}
+		if p.Evidence == nil {
+			p.Evidence = map[string]interface{}{}
+		}
+		p.Evidence["fire"] = fireEv
+		p.Evidence["pin"] = pin
+		// 同步打 Info log（免查 DB 看 fire 判据）。
+		pinName := "none"
+		if pin != nil {
+			pinName, _ = pin["area_name"].(string)
+		}
+		stillSec, _ := fireEv["stillbox_sec"].(int)
+		tfloorSec, _ := fireEv["tfloor_sec"].(int)
+		tm.logger.Info("dbn_fall_fire",
+			zap.String("logic_id", lid), zap.String("band", band),
+			zap.String("cell_area", ts.LastCellArea.Name()),
+			zap.Int("tfloor_sec", tfloorSec), zap.Int("stillbox_sec", stillSec),
+			zap.Int("x", cx), zap.Int("y", cy), zap.Int("z", ts.LastZ), zap.Int("pose", ts.LastPose),
+			zap.Int("room_np", tm.lastNumberPeople), zap.String("pin", pinName),
+			zap.Float64("exit_logodds", exitLO))
 	}
 	tm.mu.Unlock()
 	if ts == nil {

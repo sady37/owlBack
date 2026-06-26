@@ -75,19 +75,17 @@ func startVetoHTTPServer(ctx context.Context, addr string, engine *roomengine.En
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		var req struct {
-			EventID string `json:"event_id"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.EventID == "" {
+		var fe roomengine.FeedbackEvent
+		if err := json.NewDecoder(r.Body).Decode(&fe); err != nil || fe.EventID == "" {
 			http.Error(w, "bad request (need event_id)", http.StatusBadRequest)
 			return
 		}
-		processed, err := engine.IngestFeedback(r.Context(), req.EventID)
+		processed, err := engine.IngestFeedback(r.Context(), fe)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		logger.Info("feedback_ingest_applied", zap.String("event_id", req.EventID), zap.Bool("processed", processed))
+		logger.Info("feedback_ingest_applied", zap.String("event_id", fe.EventID), zap.Bool("processed", processed))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]bool{"processed": processed})
 	})
