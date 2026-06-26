@@ -185,6 +185,10 @@ type TrackManager struct {
 	lastStaticScanMs     int64
 	staticScanIntervalMs int64
 
+	// 瞬移干扰已判 artifact 的 (device,tid) 压制重建集（teleport_interference.go）：固件 PURGE 后持续重报
+	// (~30s),滞留漂移点期间压制重建,直到 NoTarget(GC)或移出该点。常态 0–2 条,gcInterferenceSuppress 回收。
+	interferenceSuppress map[trackKey]*interferenceSuppressRec
+
 	// startupMs：TrackManager 创建时间。用于"service 启动 5min grace"反 ghost 兜底
 	// （grace 内 first-seen 的 track 视为已存在，birth filter 不打 ghost）。
 	startupMs int64
@@ -243,6 +247,7 @@ func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackMana
 		mirrorCooldownMs:        60_000,
 		staticReflectorLastMark: make(map[trackKey]int64),
 		staticScanIntervalMs:    5000, // 默认值（与 config setStaticScanDefaults 一致；零值兜底用）
+		interferenceSuppress:    make(map[trackKey]*interferenceSuppressRec),
 	}
 }
 
@@ -815,8 +820,8 @@ type TrackStatusBase struct {
 	DeviceAddr          string
 	RoomID              string
 	PReal               float64 // 上一 tick 回灌的 census realness（xray forensic：raw-track 视角 ghost 可观测，替代退役 verdict 列）
-	X, Y, Z             int // 画布坐标（grid/cell 算法用；Kalman 输出）
-	RawH, RawV, RawZ    int // firmware raw 雷达本地坐标 — alarm publish 用，对外契约不变
+	X, Y, Z             int     // 画布坐标（grid/cell 算法用；Kalman 输出）
+	RawH, RawV, RawZ    int     // firmware raw 雷达本地坐标 — alarm publish 用，对外契约不变
 	Pose                int
 	StillBoxSec         int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动）→ FloorGuard 纯计时器（直立折扣已移 emission）
 	CellAreaType        AreaType
@@ -912,6 +917,10 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		// StillBoxSec=raw box run 秒（30s 滚动 50×50 抗抖动）→ FloorGuard 纯计时器。直立折扣已移 emission（压 SFallen）。
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
+		}
+		// 瞬移嫌疑待删窗：从 floor/blind-faller still-box 累积排除（等待真人新 tid 接住期间不得误火）。
+		if ts.SuspectInterferenceSinceMs > 0 {
+			base.StillBoxSec = 0
 		}
 		if c := tm.grid.CellAt(px, py); c != nil {
 			base.CellAreaType = c.Belief[0].Type // cell 仍喂 tFloor 阈 + sit/lying/active redirect（含 sofa 的 lying 区，故不换 baseline）
@@ -1095,6 +1104,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	// ========== 段 1: 观测到的 track ==========
 	for _, f := range frames {
 		key := trackKey{f.DeviceAddr, f.TrackID}
+		// 瞬移干扰压制：已判 artifact 的 tid 仍滞留漂移点 → 丢弃该帧不重建 track（防固件重报刷回）。
+		if tm.interferenceSuppressed(key, f, nowMs) {
+			continue
+		}
 		activeIDs[key] = true
 		ts, exists := tm.tracks[key]
 
@@ -1131,6 +1144,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			dtSec = 1
 		} else {
 			// 已有 track
+			// 瞬移干扰检测（Kalman 更新前看 raw 跳变，O(1)/轨）：闸1∧闸2 → PURGE，跳过本帧后续。
+			if tm.handleTeleportObservedFrame(ts, key, f, nowMs) {
+				continue
+			}
 			dt := float64(f.TMs-ts.LastUpdateMs) / 1000.0
 			if dt <= 0 {
 				dt = 1
@@ -1156,6 +1173,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			vx = int(math.Round(vxF))
 			vy = int(math.Round(vyF))
 
+			ts.Prev2Pose = ts.LastPose // teleport 闸1 用 N-2 pose：左移一格后再记 N
 			ts.LastPose = f.Pose
 			ts.LastZ = f.Z
 			ts.LastRawH = f.RawH
@@ -1191,6 +1209,11 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	// ========== 段 2: 未观测到的 track ==========
 	for id, ts := range tm.tracks {
 		if activeIDs[id] {
+			continue
+		}
+		// 待删窗内 artifact 停报 = 已消失 → 直接删，不 coast 进 blind-faller still-box 累积。
+		if ts.SuspectInterferenceSinceMs > 0 {
+			delete(tm.tracks, id)
 			continue
 		}
 		dt := float64(nowMs-ts.LastUpdateMs) / 1000.0
@@ -1246,6 +1269,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	// ========== 段 4e: 静止金属反射体自学习（near-wall + 长期静止 + 游走真人共存）==========
 	// Phase A：仅累计 StaticReflectorCount + log static_reflector_candidate，不改 verdict。详 static_reflector.go。
 	tm.scanStaticReflectors(nowMs)
+
+	// 瞬移干扰压制集 GC：消失 tid 的条目回收（NoTarget 后 TTL 内）。常态 0–2 条。
+	tm.gcInterferenceSuppress(nowMs)
 
 	// PR-9: v1 段 5 Bed-Fall 物理矛盾检测整段删除（依赖 totalBedPeople / bedPersonCount）。
 	// PR-11 silent_fall 重写时用 BedSession + SuiteCensus 重新表达"床上方矛盾"语义，

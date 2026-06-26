@@ -4,9 +4,10 @@
 // 场景 = lego 块（walk/lie/fall/jump 片段）拼装成 1Hz radar track 帧序列。加新场景 = 往 scenarios 注册一个函数。
 //
 // 用法:
-//   go run ./simulate-make/ --list
-//   go run ./simulate-make/ --scenario open-floor-fall --uid SIM00000CD2B \
-//       --addr fd00:0:3:112:3:100:32a1:cd2b --out ../doc/cases/sim-fall --dur-s 20
+//
+//	go run ./simulate-make/ --list
+//	go run ./simulate-make/ --scenario open-floor-fall --uid SIM00000CD2B \
+//	    --addr fd00:0:3:112:3:100:32a1:cd2b --out ../doc/cases/sim-fall --dur-s 20
 //
 // 输出 <out>/：window.json（合成 track 帧）+ meta.json（uid→addr→type）。
 // 注：--addr 须是 live sensor 已绑定（有 DB layout）的真实设备 addr，否则 live 不认这条流。
@@ -91,9 +92,75 @@ func scenGhostJump(uid string, startMs int64, durSec int) []fxRec {
 	return out
 }
 
+// scenTeleportInterference：单 tick 瞬移干扰 + 真人换 tid 重生。验证 teleport_interference PURGE 机制。
+//
+//	tid0 = 真人：走到 A(0,100) 站定(i0-9) → i10 瞬移到 B(300,400)=424cm/s（pose/z 保持良性=无摔倒前兆，闸1 过）
+//	     → 滞留 B 重报(固件粘~30s 模拟，i10-29) → i≥30 停报（测压制集 GC）。
+//	tid1 = 同一真人换新 tid：i≥11 在 A 重新被跟踪（模拟 1-3s 滞后）→ 闸2 接住 → PURGE tid0。
+//	预期：i10 检出瞬移+闸1 过→待删窗(StillBox 排除)；闸2/超时→PURGE(非 lost)；漂移点记 reflector candidate；
+//	     i11-29 tid0 重报被压制不重建；i≥30 停报后压制集 GC。
+func scenTeleportInterference(uid string, startMs int64, durSec int) []fxRec {
+	var out []fxRec
+	const ax, ay = 0, 100   // 真人原区域 A
+	const bx, by = 300, 400 // 镜面多径漂移点 B（jump=√(300²+300²)=424cm/s ≥200）
+	const tid0GoneAt = 30   // tid0 停止重报 → 测压制集 GC（lastSeen + TTL 后回收）
+	for i := 0; i < durSec; i++ {
+		ts := startMs + int64(i)*1000
+		var fs []radarFrame
+		switch {
+		case i < 6: // 走向 A
+			fs = append(fs, radarFrame{TrackID: 0, AreaID: 4, Pose: observation.PoseWalking,
+				PositionX: -150 + i*25, PositionY: ay, PositionZ: 165, TrackConfidence: 80})
+		case i < 10: // 在 A 站定（攒够良性 pose/z 历史）
+			fs = append(fs, radarFrame{TrackID: 0, AreaID: 4, Pose: observation.PoseStanding,
+				PositionX: ax, PositionY: ay, PositionZ: 165, TrackConfidence: 80})
+		case i < tid0GoneAt: // i=10 起瞬移到 B 并滞留（pose/z 良性 = 无前兆）
+			fs = append(fs, radarFrame{TrackID: 0, AreaID: 4, Pose: observation.PoseStanding,
+				PositionX: bx, PositionY: by, PositionZ: 165, TrackConfidence: 80})
+		}
+		if i >= 11 { // 真人换新 tid 在 A 重生
+			fs = append(fs, radarFrame{TrackID: 1, AreaID: 4, Pose: observation.PoseStanding,
+				PositionX: ax, PositionY: ay, PositionZ: 165, TrackConfidence: 80})
+		}
+		if len(fs) > 0 {
+			out = append(out, trackRec(uid, ts, fs...))
+		}
+	}
+	return out
+}
+
+// scenTeleportNoRebirth：瞬移后真人未重生（人走开了）→ 闸2 永不满足 → 待删窗超时 PURGE。
+//
+//	验证：超时分支(reason=window_timeout)；待删窗内嫌疑轨 StillBox 排除（不进 blind-faller 累积，band 不升）；
+//	     PURGE 后固件重报被压制；i≥30 停报后压制集 GC。
+func scenTeleportNoRebirth(uid string, startMs int64, durSec int) []fxRec {
+	var out []fxRec
+	const ax, ay = 0, 100
+	const bx, by = 300, 400
+	const goneAt = 30
+	for i := 0; i < durSec; i++ {
+		ts := startMs + int64(i)*1000
+		var f radarFrame
+		switch {
+		case i < 6:
+			f = radarFrame{TrackID: 0, AreaID: 4, Pose: observation.PoseWalking, PositionX: -150 + i*25, PositionY: ay, PositionZ: 165, TrackConfidence: 80}
+		case i < 10:
+			f = radarFrame{TrackID: 0, AreaID: 4, Pose: observation.PoseStanding, PositionX: ax, PositionY: ay, PositionZ: 165, TrackConfidence: 80}
+		case i < goneAt:
+			f = radarFrame{TrackID: 0, AreaID: 4, Pose: observation.PoseStanding, PositionX: bx, PositionY: by, PositionZ: 165, TrackConfidence: 80}
+		default:
+			continue
+		}
+		out = append(out, trackRec(uid, ts, f))
+	}
+	return out
+}
+
 var scenarios = map[string]scenario{
-	"open-floor-fall": scenOpenFloorFall,
-	"ghost-jump":      scenGhostJump,
+	"open-floor-fall":       scenOpenFloorFall,
+	"ghost-jump":            scenGhostJump,
+	"teleport-interference": scenTeleportInterference,
+	"teleport-no-rebirth":   scenTeleportNoRebirth,
 }
 
 func main() {

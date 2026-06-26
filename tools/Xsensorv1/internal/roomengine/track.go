@@ -48,7 +48,17 @@ type TrackState struct {
 
 	// ---- 最后观测 ----
 	LastPose int
-	LastZ    int
+	// Prev2Pose 上上帧 pose（N-2）。teleport 闸1 看跳前 2 帧 pose 白名单，O(1) 免 History 扫
+	// （pose 不存 History）。每观测帧在 LastPose 更新前左移一格维护。
+	Prev2Pose int
+	LastZ     int
+
+	// ---- 瞬移干扰待删窗（teleport_interference.go）----
+	// SuspectInterferenceSinceMs：闸1 过、闸2 未到的待删窗起点 ms（0=非嫌疑）。置位期间
+	// SnapshotTrackStatuses 零其 StillBoxSec → 从 floor/blind-faller 累积排除。
+	SuspectInterferenceSinceMs int64
+	PreJumpX, PreJumpY         int // 跳变前真人原区域（闸2 查"是否被另一活轨接住"）
+	DriftX, DriftY             int // 漂移落点（PURGE 后压制重建匹配 + reflector candidate）
 	// LastFwAreaID firmware 直发的 area_id（present 帧更新；miss tick 不更新 = 冻结末值）。
 	// 床判定 N：命中某床 areaId → 该床占用。255=声明区外/0=无区。
 	LastFwAreaID int
