@@ -139,6 +139,7 @@ func buildRuntimeConfig(cfg *config.Config) roomengine.RuntimeConfig {
 			BedsideMarginCm: r.BedsideFall.BedsideMarginCm,
 			StillTimeoutSec: r.BedsideFall.StillTimeoutSec,
 		},
+		StaticScanIntervalMs: r.StaticScanIntervalMs,
 	}
 	if len(r.ParamSets) >= 3 {
 		for i := 0; i < 3; i++ {

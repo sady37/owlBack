@@ -180,6 +180,11 @@ type TrackManager struct {
 	wallPolygon             []radarutils.Point
 	staticReflectorLastMark map[trackKey]int64
 
+	// scanStaticReflectors 节流：每 staticScanIntervalMs 最多扫一次（签名②要 300s 存活，1Hz 严重过采样）。
+	// 扫描独立无跨帧连续依赖，可自由降采样；mirror 不可（5 帧滑窗连续 + 同步等速判据，绝不节流）。
+	lastStaticScanMs     int64
+	staticScanIntervalMs int64
+
 	// startupMs：TrackManager 创建时间。用于"service 启动 5min grace"反 ghost 兜底
 	// （grace 内 first-seen 的 track 视为已存在，birth filter 不打 ghost）。
 	startupMs int64
@@ -237,7 +242,16 @@ func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackMana
 		mirrorBuffer:            make(map[mirrorPairKey]*mirrorPairBuffer),
 		mirrorCooldownMs:        60_000,
 		staticReflectorLastMark: make(map[trackKey]int64),
+		staticScanIntervalMs:    5000, // 默认值（与 config setStaticScanDefaults 一致；零值兜底用）
 	}
+}
+
+// SetStaticScanIntervalMs 注入 static reflector 扫描节流间隔（ms）。<=0 保留默认。
+func (tm *TrackManager) SetStaticScanIntervalMs(ms int) {
+	if ms <= 0 {
+		return
+	}
+	tm.staticScanIntervalMs = int64(ms)
 }
 
 // SetWallPolygon 注入本房间墙多边形（cfg.WallPolygon），静止反射体检测判"近墙"用。
@@ -1226,7 +1240,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 
 	// ========== 段 4d: L1 mirror pair 检测 + 自学习 ==========
 	// 跨 track 几何对称检测（无 layout 镜面坐标先验），命中 → 5 帧 bounce 点 grid.MarkMirrorBounce
-	// （2×2 微块累 MBC，≥3 升 AreaDeny+SourceLearned）。ghost 判定单源到 census/DBN realness。
+	// （2×2 微块累 MBC，≥3 升 AreaReflector+SourceLearned）。ghost 判定单源到 census/DBN realness。
 	tm.scanMirrorGhostPairs(nowMs)
 
 	// ========== 段 4e: 静止金属反射体自学习（near-wall + 长期静止 + 游走真人共存）==========

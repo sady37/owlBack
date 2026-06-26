@@ -216,8 +216,8 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams, nowMs int64) {
 		// reset：TraverseCount >= 5 或 RealDecay >= 5（真活动证据）→ 重置计时
 		// hysteresis 区 TraverseCount [3, 5)：维持现状（既不前进也不重置）
 		//
-		// 自纠错：cell 已是 AreaDeny + 被走过（TraverseCount >= 5）→ 回退 Unknown
-		// 让 Walk 规则重新评估（应对家具搬走/重布局）
+		// 自纠错：cell 已是 AreaDeny 或自学习 AreaReflector + 被走过（TraverseCount >= 5）→ 回退 Unknown
+		// 让 Walk 规则重新评估（应对家具搬走/重布局，或反射点其实有真人走动）
 		//
 		// 历史教训：
 		//   PR-15.0/15.1 严格 ==0：jitter 单次触发即重置
@@ -225,14 +225,14 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams, nowMs int64) {
 		//   PR-15.3 仅 NearTraverseCount：抓不到 island 核心（互斥几何）
 		//   PR-15.4 = BFS 距离场 + 5-cell 软共识 + 15 天门控 + 自纠错
 
-		// 自纠错：Deny cell 被走过 → 回退 Unknown
+		// 自纠错：Deny / 自学习 Reflector cell 被走过 → 回退 Unknown
 		resetThresh := p.AutoDenyTraverseReset
 		if resetThresh < 1 {
 			resetThresh = 5
 		}
 		hasRealActivity := int(c.TraverseCount) >= resetThresh ||
 			c.RealDecay >= realDecayDenyTolerance
-		if t == AreaDeny && c.Belief[0].Source == SourceLearned && hasRealActivity {
+		if (t == AreaDeny || t == AreaReflector) && c.Belief[0].Source == SourceLearned && hasRealActivity {
 			c.Belief[0] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
 			c.Belief[1] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
 			c.Belief[2] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}

@@ -10,7 +10,7 @@
 // Tiebreaker（谁是 ghost）：物理上 ghost 反射路径更长 → 距 radar 远者 = ghost。
 //
 // 自学习：命中时每帧的 bounce 点（线段 R'-A_t 与 mirror_line 交点）调 grid.MarkMirrorBounce
-//   累 2×2 微块 MBC；同一 cell 多次独立配对累 ≥ MirrorPromoteThreshold (3) 后升 AreaDeny + SourceLearned。
+//   累 2×2 微块 MBC；同一 cell 多次独立配对累 ≥ MirrorPromoteThreshold (3) 后升 AreaReflector + SourceLearned。
 //   不写回 cfg.Interferes；layout 是人工真相由 FE 接受用户操作后通过 wisefido-data API 改。
 
 package roomengine
@@ -286,7 +286,7 @@ type mirrorCandidate struct {
 }
 
 // scanMirrorGhostPairs TrackManager 入口：每帧调用，扫所有 track 两两组合，累配对样本；
-// 满 5 帧 + 通过三不变量 + tiebreaker → 把 bounce 点写 grid（2×2 微块累 MBC，≥3 升 AreaDeny+SourceLearned）。
+// 满 5 帧 + 通过三不变量 + tiebreaker → 把 bounce 点写 grid（2×2 微块累 MBC，≥3 升 AreaReflector+SourceLearned）。
 // ghost 判定单源到 census PReal，本扫描只做镜面区自学习。调用方持锁（processFrameAt 内调用）。
 func (tm *TrackManager) scanMirrorGhostPairs(nowMs int64) {
 	var cands []mirrorCandidate

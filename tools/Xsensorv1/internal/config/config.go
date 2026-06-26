@@ -163,6 +163,7 @@ type RoomEngineConfig struct {
 		Storage             string `yaml:"storage"`               // 默认 "postgres"
 		Table               string `yaml:"table"`                 // 默认 "roomengine_grid_snapshot"
 	} `yaml:"persist"`
+	StaticScanIntervalMs int `yaml:"static_scan_interval_ms"` // static reflector 扫描节流间隔；默认 5000（签名②要 300s 存活，1Hz 严重过采样）
 }
 
 // Load 加载配置
@@ -244,6 +245,20 @@ func (c *Config) setDefaults() {
 	c.setAIPublishDefaults()
 	c.setIdentityDefaults()
 	c.setDataDefaults()
+	c.setStaticScanDefaults()
+}
+
+// setStaticScanDefaults — static reflector 扫描节流间隔（ENV > yaml > 默认 5000ms）。
+// 双路径(Load/LoadFromEnv)都调，避免 yaml 在场时 env 被静默忽略（[[config_double_path_env_silently_ignored]]）。
+func (c *Config) setStaticScanDefaults() {
+	if v := os.Getenv("XSENSOR_STATIC_SCAN_INTERVAL_MS"); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+			c.RoomEngine.StaticScanIntervalMs = ms
+		}
+	}
+	if c.RoomEngine.StaticScanIntervalMs == 0 {
+		c.RoomEngine.StaticScanIntervalMs = 5000
+	}
 }
 
 // setDataDefaults — wisefido-data HTTP base（ENV > yaml > 默认）。
@@ -457,6 +472,7 @@ func LoadFromEnv() (*Config, error) {
 	cfg.Log.Format = getEnv("LOG_FORMAT", "json")
 	cfg.setAIPublishDefaults()
 	cfg.setDataDefaults()
+	cfg.setStaticScanDefaults()
 	return cfg, nil
 }
 

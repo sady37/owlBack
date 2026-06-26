@@ -54,7 +54,7 @@ type RoomConfig struct {
 	Furnitures []radarutils.Rect // 家具/桌子→AreaDeny；BlindArea(盲区)→AreaActive(12min)。区分走 FurnitureAreaTypes
 	// FurnitureAreaTypes 与 Furnitures 一一对应：Furniture/Table/Other→AreaDeny / BlindArea→AreaActive(12min,默认桶,非deny)。
 	FurnitureAreaTypes []AreaType
-	Interferes         []radarutils.Rect // AreaDeny（镜子/金属反射区/吊灯）
+	Interferes         []radarutils.Rect // 镜子/金属/玻璃→AreaReflector；帘/扇/植物/吊灯→AreaInterfer。区分走 InterfereAreaTypes
 
 	// 物体顶部高度（cm，地面为 0），与上面同名切片一一对应（Heights[i] ↔ Beds[i]）。
 	// 来源：layout JSON 里每个对象的 height 字段，由前端 Toolbar 录入；
@@ -162,6 +162,7 @@ type Engine struct {
 	decayParams    DecayParams
 	learnParams    LearnParams
 	bedsideFallCfg BedsideFallConfig // R4 床边晕倒参数；RegisterRoom 时下发到 TrackManager
+	staticScanMs   int               // static reflector 扫描节流间隔(ms)；RegisterRoom 时下发到 TrackManager
 
 	decayInterval time.Duration
 
@@ -225,6 +226,10 @@ type RuntimeConfig struct {
 	// R4 床边晕倒参数；通过 TrackManager.SetBedsideFallConfig 注入到每个房间。
 	// 任一字段 0 保留 defaultBedsideFallCfg 默认值。
 	BedsideFall BedsideFallConfig
+
+	// static reflector 扫描节流间隔（ms）；通过 TrackManager.SetStaticScanIntervalMs 注入。
+	// 0 保留 NewTrackManager 默认 5000ms。
+	StaticScanIntervalMs int
 }
 
 // NewEngine 创建 Room Engine（默认参数）。生产环境调用 Configure 注入 yaml 配置。
@@ -305,9 +310,13 @@ func (e *Engine) Configure(cfg RuntimeConfig) {
 	// R4 参数：保存到 engine 级 + 下发到所有已注册房间的 TrackManager。
 	// （RegisterRoom 在 Configure 之前调用的房间也要补设。）
 	e.bedsideFallCfg = cfg.BedsideFall
+	e.staticScanMs = cfg.StaticScanIntervalMs
 	for _, tm := range e.rooms {
 		tm.SetBedsideFallConfig(cfg.BedsideFall)
+		tm.SetStaticScanIntervalMs(cfg.StaticScanIntervalMs)
 	}
+	e.logger.Info("roomengine_configured",
+		zap.Int("static_scan_interval_ms", cfg.StaticScanIntervalMs))
 }
 
 // SetOutputCallback 设置 track 输出回调（发 alarm 等下游）
@@ -896,6 +905,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetMoveSpeedCms(e.learnParams.MoveSpeedCms)
 	tm.SetSitLearnParams(e.learnParams.SitPromoteTau, e.learnParams.SitSpreadCm)
 	tm.SetBedsideFallConfig(e.bedsideFallCfg)
+	tm.SetStaticScanIntervalMs(e.staticScanMs)
 	tm.SetLogger(e.logger)
 	tm.SetRoomName(cfg.RoomName)
 	tm.SetRoomType(cfg.RoomType)

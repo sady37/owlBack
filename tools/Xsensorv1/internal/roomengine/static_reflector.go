@@ -12,7 +12,7 @@
 //   ② 从不移走   ——出生后一直没离开出生点，且存活够久（人迟早走开，金属永远不走）
 //   ③ 近墙       ——金属支架螺墙上（有高度，故**不**卡 z≈0，否则漏墙上金属）
 // 游走真人共存只作 log 信息**不 gate**（否则漏掉无人时纯金属幻影）。
-// 跨独立 episode 累 ≥ StaticReflectorPromoteThreshold → 升 AreaDeny（Phase B）；
+// 跨独立 episode 累 ≥ StaticReflectorPromoteThreshold → 升 AreaReflector（Phase B）；
 // demote 仍由 cell_learning hasRealActivity 兜底（真人真走过 → 退回 Unknown，误学自纠）。
 
 package roomengine
@@ -34,18 +34,15 @@ const (
 )
 
 // scanStaticReflectors 每帧调用（processFrameAt 内，调用方持锁）。Phase A：仅累计 + log，不改 verdict。
+// 节流：扫描无跨帧连续依赖（只看 BirthPos/age/wall），签名②要 300s 存活 + 60s 去抖，1Hz 严重过采样
+// → 每 staticScanIntervalMs 最多扫一次。闸放在最前（早于 wall guard），空房/无墙走最快免费路径。
 func (tm *TrackManager) scanStaticReflectors(nowMs int64) {
-	if len(tm.wallPolygon) < 3 || tm.grid == nil {
+	if nowMs-tm.lastStaticScanMs < tm.staticScanIntervalMs {
 		return
 	}
-
-	// 游走真人（仅作 log 信息，不 gate——无人时纯金属幻影也要能学）
-	roamer := -1 // firmware track_id（仅 log；-1=无游走真人）
-	for _, ts := range tm.tracks {
-		if ts.PReal >= 0.5 && ts.DisplacementWithinMs(30_000, nowMs) >= staticReflectorRoamMinCm {
-			roamer = ts.TrackID
-			break
-		}
+	tm.lastStaticScanMs = nowMs
+	if len(tm.wallPolygon) < 3 || tm.grid == nil {
+		return
 	}
 
 	for key, ts := range tm.tracks {
@@ -74,6 +71,9 @@ func (tm *TrackManager) scanStaticReflectors(nowMs int64) {
 		if c := tm.grid.CellAt(px, py); c != nil {
 			count = c.StaticReflectorCount
 		}
+		// 游走真人（仅作 log 信息，不 gate）惰性求值：仅在确认候选、即将打 log 时算一次；
+		// 常态 0 候选 → 完全不算（移自旧函数开头的 O(T×30) 预计算循环）。
+		roamer := tm.findRoamerTrackID(nowMs)
 		tm.logger.Info("static_reflector_candidate", // Phase A：log-only，不改 verdict
 			zap.Int("track_id", ts.TrackID),
 			zap.Int("x", px), zap.Int("y", py),
@@ -86,6 +86,17 @@ func (tm *TrackManager) scanStaticReflectors(nowMs int64) {
 		)
 	}
 	tm.gcStaticReflectorMarks()
+}
+
+// findRoamerTrackID 返回一个游走真人的 firmware track_id（PReal≥0.5 且近 30s 位移≥阈），无则 -1。
+// 仅供 static_reflector_candidate log 的 roamer_track_id 字段（-1=无游走真人/纯金属幻影），不 gate。
+func (tm *TrackManager) findRoamerTrackID(nowMs int64) int {
+	for _, ts := range tm.tracks {
+		if ts.PReal >= 0.5 && ts.DisplacementWithinMs(30_000, nowMs) >= staticReflectorRoamMinCm {
+			return ts.TrackID
+		}
+	}
+	return -1
 }
 
 // gcStaticReflectorMarks 清掉已死 track 的去抖时戳。

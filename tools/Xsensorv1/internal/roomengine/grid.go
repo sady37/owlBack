@@ -396,14 +396,14 @@ func (g *RoomGrid) MarkLongStill(x, y int, nowMs int64) {
 	c.LastUpdateMs = nowMs
 }
 
-// MirrorPromoteThreshold L1 mirror cell 晋升 AreaDeny+SourceLearned 的 MBC 阈值。
+// MirrorPromoteThreshold L1 mirror cell 晋升 AreaReflector+SourceLearned 的 MBC 阈值。
 // "≥3 次独立配对命中"——单 cell 涂法下每次配对单 bounce 点 +1，需 3 次独立运动累积。
 const MirrorPromoteThreshold = 3
 
 // MarkMirrorBounce L1 mirror pair 反射点累加：单 cell（10×10cm）+=1。
 // 雷达 XY 精度本来就 ±5-10cm 与 cell 同量级，不再 2×2 涂抹（避免单次配对 5 bounce
 // 点共 20 次 cell++ 假性达阈值）。命中达 MirrorPromoteThreshold 即 promote
-// Belief[0]=AreaDeny+SourceLearned（已是 SourceHuman 的不动）。
+// Belief[0]=AreaReflector+SourceLearned（已是 SourceHuman 的不动）：镜面静态反射，floor.Step 豁免。
 func (g *RoomGrid) MarkMirrorBounce(x, y int, nowMs int64) {
 	c := g.CellAt(x, y)
 	if c == nil {
@@ -414,17 +414,17 @@ func (g *RoomGrid) MarkMirrorBounce(x, y int, nowMs int64) {
 	c.LastUpdateMs = nowMs
 	if c.MirrorBounceCount >= MirrorPromoteThreshold && !c.LearnBlocked &&
 		c.Belief[0].Source != SourceHuman && c.Belief[0].Source != SourceFeedback {
-		c.Belief[0] = BeliefState{Type: AreaDeny, Confidence: 70, Source: SourceLearned}
-		c.AreaType = AreaDeny
+		c.Belief[0] = BeliefState{Type: AreaReflector, Confidence: 70, Source: SourceLearned}
+		c.AreaType = AreaReflector
 	}
 }
 
-// StaticReflectorPromoteThreshold 静止反射体 cell 晋升 AreaDeny+SourceLearned 的独立 episode 阈值。
+// StaticReflectorPromoteThreshold 静止反射体 cell 晋升 AreaReflector+SourceLearned 的独立 episode 阈值。
 const StaticReflectorPromoteThreshold = 3
 
 // MarkStaticReflector 静止金属反射体累加（static_reflector.go 检测命中调）。
-// **Phase A：仅累计 + 时戳，不晋升 AreaDeny / 不改 verdict**（log-only 验证标点是否正确）。
-// 验证后 Phase B 再放开：≥ StaticReflectorPromoteThreshold 升 AreaDeny（SourceHuman 不覆盖）+ 该 cell 出生即 ghost。
+// **Phase A：仅累计 + 时戳，不晋升 AreaReflector / 不改 verdict**（log-only 验证标点是否正确）。
+// 验证后 Phase B 再放开：≥ StaticReflectorPromoteThreshold 升 AreaReflector（SourceHuman 不覆盖）+ 该 cell 出生即 ghost。
 func (g *RoomGrid) MarkStaticReflector(x, y int, nowMs int64) {
 	c := g.CellAt(x, y)
 	if c == nil {

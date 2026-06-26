@@ -207,14 +207,14 @@ type Cell struct {
 	LearnBlocked bool
 
 	// MirrorBounceCount: L1 mirror pair 检测命中后在 bounce point 周围 2×2 微块累加。
-	// ≥ MirrorPromoteThreshold (3) 即升 Belief[0]=AreaDeny+SourceLearned（人工 SourceHuman 不覆盖）。
+	// ≥ MirrorPromoteThreshold (3) 即升 Belief[0]=AreaReflector+SourceLearned（人工 SourceHuman 不覆盖）。
 	// LastMirrorMs: 最近一次累加时戳，Decay 用。
 	MirrorBounceCount int
 	LastMirrorMs      int64
 
 	// StaticReflectorCount: 静止金属反射体自学习（运动镜像之外的另一类）——一条 track 长期钉死在
 	// 此 cell（金属把手/淋浴架直射回波）+ 同时另一真人 track 在别处游走（corroboration）时累加。
-	// 跨多次独立 episode ≥ StaticReflectorPromoteThreshold 升 AreaDeny（Phase B；Phase A 仅累计+log）。
+	// 跨多次独立 episode ≥ StaticReflectorPromoteThreshold 升 AreaReflector（Phase B；Phase A 仅累计+log）。
 	// 这类点人工标不了（幻影坐标依赖雷达角度/材质/多径，非肉眼可预知），只能自动学。
 	StaticReflectorCount  int
 	LastStaticReflectorMs int64
@@ -277,7 +277,7 @@ func DefaultDecayParams() DecayParams {
 		//   AreaReflector (镜/金属)：          30 天衰到 10 HL=9d    — 固定
 		//   AreaActive (walk path)：  14 天衰到 10 HL=4.2d  — 走道路径稳定，但易被新家具污染
 		//   AreaEnter (门洞)：        30 天衰到 10 HL=9d    — 几何固定但 layout 可能改
-		//   AreaDeny (墙/家具/镜子)： 30 天衰到 10 HL=9d    — 同上
+		//   AreaDeny (墙/家具/不可走)： 30 天衰到 10 HL=9d    — 同上
 		//   AreaUnknown：             0（不衰退；本来就是 0）
 		BeliefHalfLifeByType: [NumAreaTypes]float64{
 			AreaUnknown:    0,
@@ -376,12 +376,12 @@ func (c *Cell) StillTimeoutSec(isRiskTime bool) int {
 }
 
 // stillTimeoutBase risk-time 基线值（严格档）。
-// 床/沙发：不限（休息合理）；马桶/淋浴：15min；Deny: 5min；其它：8min。
+// 床/沙发：不限（休息合理）；马桶/淋浴：15min；Deny/反射/干扰: 5min；其它：8min。
 func (c *Cell) stillTimeoutBase() int {
 	switch c.Belief[0].Type {
 	case AreaBed, AreaMonitorBed, AreaSit, AreaLying:
 		return 0
-	case AreaDeny, AreaInterfer:
+	case AreaDeny, AreaInterfer, AreaReflector:
 		return stillAreaDenySec
 	}
 	return stillAreaDefaultSec
@@ -508,7 +508,7 @@ func (c *Cell) ClearNonHumanLearnedZone() bool {
 		return false
 	}
 	switch b.Type {
-	case AreaBed, AreaMonitorBed, AreaSit, AreaLying, AreaDeny, AreaInterfer:
+	case AreaBed, AreaMonitorBed, AreaSit, AreaLying, AreaDeny, AreaInterfer, AreaReflector:
 	default:
 		return false
 	}

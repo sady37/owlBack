@@ -10,7 +10,8 @@ package belief
 // 直立/活动证据（z≥80 / pose=sit·walk）已单一归 emission（压 SFallen，移自旧 stillDiscount）——floor 是
 // **不信 pose/z 的纯时间兜底**（pose/z 错报时正是 floor 该接的场景），故 floor 绝不再看 z/pose（杜绝双压）。
 // 豁免**挂可观测证据,不挂 label**:
-//   - AreaDeny(15天高bar 静态反射)→ 非真占用,交 realness。
+//   - AreaReflector/AreaInterfer(镜金属静态反射 + 帘扇运动杂波)→ 无真人,交 realness/firmware masking。
+//   - AreaBed/AreaMonitorBed → 接触床区按 AreaType 豁免（无 sleepad 时几何分不清在床/床边）。
 //   - **本 track 所在床** 接触 InBed → 真在床（按 NearBedMask 收窄到本床，非任一房间 sleepad——
 //     否则双人房里他人在床会误豁免地板上的摔者 = FN）。
 
