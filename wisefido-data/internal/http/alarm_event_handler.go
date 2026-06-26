@@ -165,7 +165,9 @@ func (h *AlarmEventHandler) parseListAlarmEventsRequest(w http.ResponseWriter, r
 }
 
 // ScopedListAlarmEvents：按 5W 严格 scope 查询。优先级：
-//   scope_unit_id + scope_room_id + scope_device_addr (alarm_events 直接列过滤，最快最精确)
+//
+//	scope_unit_id + scope_room_id + scope_device_addr (alarm_events 直接列过滤，最快最精确)
+//
 // > scope_unit_id + scope_room_id                     (alarm_events 直接列过滤，room 内全部设备)
 // > card_id / room_id / device_addrs                  (反查 devices 兼容旧调用)
 //
@@ -200,13 +202,13 @@ func buildAlarmEventsListPayload(resp *service.ListAlarmEventsResponse) map[stri
 	items := make([]any, 0, len(resp.Items))
 	for _, item := range resp.Items {
 		itemMap := map[string]any{
-			"event_id":     item.EventID,
-			"tenant_id":    item.TenantID,
-			"device_addr":  item.DeviceAddr,
-			"event_type":   item.EventType,
-			"category":     item.Category,
-			"alarm_level":  item.AlarmLevel,
-			"alarm_status": item.AlarmStatus,
+			"event_id":        item.EventID,
+			"tenant_id":       item.TenantID,
+			"device_addr":     item.DeviceAddr,
+			"event_type":      item.EventType,
+			"category":        item.Category,
+			"alarm_level":     item.AlarmLevel,
+			"alarm_status":    item.AlarmStatus,
 			"triggered_at":    item.TriggeredAt,
 			"triggered_at_ms": item.TriggeredAtMs,
 		}
@@ -219,6 +221,12 @@ func buildAlarmEventsListPayload(resp *service.ListAlarmEventsResponse) map[stri
 		}
 		if item.HandledAtMs != nil {
 			itemMap["handled_at_ms"] = *item.HandledAtMs
+		}
+		if item.AutoResolvedAt != nil {
+			itemMap["auto_resolved_at"] = *item.AutoResolvedAt
+		}
+		if item.AutoResolvedAtMs != nil {
+			itemMap["auto_resolved_at_ms"] = *item.AutoResolvedAtMs
 		}
 		if item.HandlingState != nil {
 			itemMap["handling_state"] = *item.HandlingState
@@ -403,4 +411,3 @@ func (h *AlarmEventHandler) HandleAlarmEvent(w http.ResponseWriter, r *http.Requ
 		"event_id": eventID,
 	}))
 }
-

@@ -104,14 +104,14 @@ type ListAlarmEventsRequest struct {
 	AlarmLevels []string // 报警级别过滤
 
 	// 关联过滤
-	CardID    string   // 按卡片ID过滤（后端通过 card.unit_id + card.bed_id 反查 devices 表的物理位置绑定，得 device_addrs）
+	CardID      string   // 按卡片ID过滤（后端通过 card.unit_id + card.bed_id 反查 devices 表的物理位置绑定，得 device_addrs）
 	DeviceAddrs []string // 按设备ID过滤（精确指定，绕过 card → location → devices 推导）
-	RoomID    string   // 按 room 过滤（room_id → devices.bound_room_id 或 beds.room_id → bound_bed_id）
+	RoomID      string   // 按 room 过滤（room_id → devices.bound_room_id 或 beds.room_id → bound_bed_id）
 
 	// 5W 直接 scope（仅在 ScopedListAlarmEvents 入口使用，其他入口忽略）：
 	// 优先级：UnitID + RoomID + DeviceAddr > UnitID + RoomID > CardID。
-	ScopeUnitID   string // ae.unit_id 直接过滤（5W where snapshot）
-	ScopeRoomID   string // ae.room_id 直接过滤（5W where snapshot）
+	ScopeUnitID     string // ae.unit_id 直接过滤（5W where snapshot）
+	ScopeRoomID     string // ae.room_id 直接过滤（5W where snapshot）
 	ScopeDeviceAddr string // ae.device_addr 直接过滤
 
 	// 分页
@@ -136,25 +136,27 @@ type PaginationDTO struct {
 // AlarmEventDTO 报警事件 DTO（包含关联数据）
 type AlarmEventDTO struct {
 	// 基础字段（来自 alarm_events 表）
-	EventID     string `json:"event_id"`     // UUID
-	TenantID    string `json:"tenant_id"`    // 租户ID
-	DeviceAddr    string `json:"device_addr"`    // 设备ID
-	EventType   string `json:"event_type"`   // 事件类型
-	Category    string `json:"category"`     // 类别（safety, clinical, behavioral, device）
-	AlarmLevel  string `json:"alarm_level"`  // 报警级别
-	AlarmStatus string `json:"alarm_status"` // 报警状态（'active','acked','resolved','auto_resolved','expired'）
-	TriggeredAt   string `json:"triggered_at"`    // RFC3339 带 unit_timezone offset；unit_timezone 未知时回退 UTC（Z 结尾）— 实际发生时刻（incident moment）
-	TriggeredAtMs int64  `json:"triggered_at_ms"` // UTC unix milliseconds，FE 想在 viewer-local TZ 显示时用 new Date(ms)
-	AlertedAt     string `json:"alerted_at,omitempty"`    // 系统决策上抛时刻；推断类 fall ＞ triggered_at（延迟 = idle 时长）；nil/empty = 等于 triggered_at（firmware Fall 直发类）
+	EventID       string `json:"event_id"`             // UUID
+	TenantID      string `json:"tenant_id"`            // 租户ID
+	DeviceAddr    string `json:"device_addr"`          // 设备ID
+	EventType     string `json:"event_type"`           // 事件类型
+	Category      string `json:"category"`             // 类别（safety, clinical, behavioral, device）
+	AlarmLevel    string `json:"alarm_level"`          // 报警级别
+	AlarmStatus   string `json:"alarm_status"`         // 报警状态（'active','acked','resolved','auto_resolved','expired'）
+	TriggeredAt   string `json:"triggered_at"`         // RFC3339 带 unit_timezone offset；unit_timezone 未知时回退 UTC（Z 结尾）— 实际发生时刻（incident moment）
+	TriggeredAtMs int64  `json:"triggered_at_ms"`      // UTC unix milliseconds，FE 想在 viewer-local TZ 显示时用 new Date(ms)
+	AlertedAt     string `json:"alerted_at,omitempty"` // 系统决策上抛时刻；推断类 fall ＞ triggered_at（延迟 = idle 时长）；nil/empty = 等于 triggered_at（firmware Fall 直发类）
 	AlertedAtMs   int64  `json:"alerted_at_ms,omitempty"`
 
 	// 处理信息
-	HandlingState   *string `json:"handling_state,omitempty"`   // 'verified' | 'false_alarm' | 'test'（从 operation 映射）
-	HandlingDetails *string `json:"handling_details,omitempty"` // 备注（从 notes 获取）
-	HandlerID       *string `json:"handler_id,omitempty"`       // 处理人ID（从 handler 获取）
-	HandlerName     *string `json:"handler_name,omitempty"`     // 处理人名称（通过 JOIN users 获取）
-	HandledAt       *string `json:"handled_at,omitempty"`       // RFC3339 带 unit_timezone offset；处理时间（hand_time）
-	HandledAtMs     *int64  `json:"handled_at_ms,omitempty"`    // UTC unix milliseconds
+	HandlingState    *string `json:"handling_state,omitempty"`   // 'verified' | 'false_alarm' | 'test'（从 operation 映射）
+	HandlingDetails  *string `json:"handling_details,omitempty"` // 备注（从 notes 获取）
+	HandlerID        *string `json:"handler_id,omitempty"`       // 处理人ID（从 handler 获取）
+	HandlerName      *string `json:"handler_name,omitempty"`     // 处理人名称（通过 JOIN users 获取）
+	HandledAt        *string `json:"handled_at,omitempty"`       // RFC3339 带 unit_timezone offset；处理时间（hand_time）
+	HandledAtMs      *int64  `json:"handled_at_ms,omitempty"`    // UTC unix milliseconds
+	AutoResolvedAt   *string `json:"auto_resolved_at,omitempty"` // 仅 operation=auto_resolved 且未人工 review 时 = hand_time（设备/行为自动解除时刻）；review 后 hand_time 被覆盖故置空
+	AutoResolvedAtMs *int64  `json:"auto_resolved_at_ms,omitempty"`
 
 	// 关联数据（通过 JOIN 查询）
 	CardID     *string `json:"card_id,omitempty"`     // 卡片ID，CIDR 带掩码（如 fd00:0:3:411:3::/80）；掩码区分 unit(/80)/room(/88)/bed(/96) 卡，是身份一部分，禁止 host() 抹掉
@@ -209,7 +211,7 @@ type HandleAlarmEventResponse struct {
 	Success        bool   `json:"success"`                   // 处理是否成功
 	EventID        string `json:"event_id,omitempty"`        // 报警事件ID
 	CardID         string `json:"card_id,omitempty"`         // 卡片ID，CIDR 带掩码（禁止 host() 抹掉）
-	DeviceAddr       string `json:"device_addr,omitempty"`       // 设备ID
+	DeviceAddr     string `json:"device_addr,omitempty"`     // 设备ID
 	AlarmLevel     string `json:"alarm_level,omitempty"`     // 报警级别
 	AlarmType      string `json:"alarm_type,omitempty"`      // 报警类型
 	AlarmTimestamp int64  `json:"alarm_timestamp,omitempty"` // 处理时间(hand_time)
@@ -846,7 +848,7 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 		notes = &req.Remarks
 	}
 	resolveSnapshot, _ := json.Marshal(map[string]interface{}{
-		"handler":      req.CurrentUserID,
+		"handler":     req.CurrentUserID,
 		"operation":   operation,
 		"handle_type": req.HandleType,
 	})
@@ -881,7 +883,7 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 		Success:        true,
 		EventID:        req.EventID,
 		CardID:         cardID,
-		DeviceAddr:       event.DeviceAddr,
+		DeviceAddr:     event.DeviceAddr,
 		AlarmLevel:     event.AlarmLevel,
 		AlarmType:      event.EventType,
 		AlarmTimestamp: handTime.Unix(),
@@ -946,13 +948,13 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 // convertAlarmEventToDTO 将 domain.AlarmEvent 转换为 AlarmEventDTO
 func (s *alarmEventService) convertAlarmEventToDTO(ctx context.Context, tenantID string, event *domain.AlarmEvent) (*AlarmEventDTO, error) {
 	dto := &AlarmEventDTO{
-		EventID:     event.EventID,
-		TenantID:    event.TenantID,
+		EventID:       event.EventID,
+		TenantID:      event.TenantID,
 		DeviceAddr:    event.DeviceAddr,
-		EventType:   event.EventType,
-		Category:    event.Category,
-		AlarmLevel:  event.AlarmLevel,
-		AlarmStatus: event.AlarmStatus,
+		EventType:     event.EventType,
+		Category:      event.Category,
+		AlarmLevel:    event.AlarmLevel,
+		AlarmStatus:   event.AlarmStatus,
 		TriggeredAt:   event.TriggeredAt.UTC().Format(time.RFC3339),
 		TriggeredAtMs: event.TriggeredAt.UnixMilli(),
 	}
@@ -983,6 +985,12 @@ func (s *alarmEventService) convertAlarmEventToDTO(ctx context.Context, tenantID
 	if event.Operation != nil {
 		handlingState := mapOperationToHandleType(*event.Operation)
 		dto.HandlingState = &handlingState
+	}
+	if event.Operation != nil && *event.Operation == "auto_resolved" && event.Handler == nil && event.HandTime != nil {
+		autoResolvedAt := event.HandTime.UTC().Format(time.RFC3339)
+		dto.AutoResolvedAt = &autoResolvedAt
+		autoResolvedAtMs := event.HandTime.UnixMilli()
+		dto.AutoResolvedAtMs = &autoResolvedAtMs
 	}
 	if event.Notes != nil {
 		dto.HandlingDetails = event.Notes
