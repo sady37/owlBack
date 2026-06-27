@@ -366,6 +366,47 @@ func (tm *TrackManager) chairPinFieldW(x, y int) float64 {
 	return best
 }
 
+// chairAnchorCell 解析 (x,y) 命中的 chair → 其 rect 中心格作 per-chair 久坐窗的 anchor（一椅一窗，不碎）。
+// 命中判据同 chairPinFieldW（field>0）；取 field 最大的那把椅子。无命中/越界 → nil。调用方持锁。
+func (tm *TrackManager) chairAnchorCell(x, y int) *Cell {
+	halo := tm.sitSpreadCm
+	bestW := 0.0
+	var bestRect radarutils.Rect
+	for _, r := range tm.chairs {
+		w := 0.0
+		if d := r.DistTo(x, y); d == 0 {
+			w = 1.0
+		} else if halo > 0 && d < halo {
+			w = 1.0 - float64(d)/float64(halo)
+		}
+		if w > bestW {
+			bestW, bestRect = w, r
+		}
+	}
+	if bestW <= 0 {
+		return nil
+	}
+	ctr := bestRect.Center()
+	return tm.grid.CellAt(ctr.X, ctr.Y)
+}
+
+// RecomputeChairDwell 慢周期(hourly)：对每把椅子的 anchor 格重算久坐窗(丢>14天槽+聚合μ/σ)。engine 定时调。
+func (tm *TrackManager) RecomputeChairDwell(nowMs int64) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.grid == nil {
+		return
+	}
+	seen := make(map[*Cell]bool, len(tm.chairs))
+	for _, r := range tm.chairs {
+		ctr := r.Center()
+		if ac := tm.grid.CellAt(ctr.X, ctr.Y); ac != nil && !seen[ac] {
+			seen[ac] = true
+			ac.RecomputeDwell(nowMs)
+		}
+	}
+}
+
 // SetInterferes 注入本房间镜面/反射区矩形（cfg.Interferes）。
 // 由 engine.RegisterRoom 启动时调用。用于因子 7 镜面对称 ghost 检测。
 // 内部 deep-copy 避免共享 slice 被外部修改。
@@ -1680,12 +1721,10 @@ func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
 	fwMaxMin := float64(ts.sitFwMaxMs) / 60000.0
 	deltaL := sitEpisodeLLR(dwellMin, ts.sitZBest, fwMaxMin)
 	x, y := ts.StillBoxStartX, ts.StillBoxStartY
-	// Chair 区 dwell 分布（B）：本格在 chair pin 区 → 把这条 >5min walk-away 久坐时长喂进锚 cell 的 dwell EMA，
-	// floor 连续 tFloor=clamp(μ+kσ,[12,90]) 单源读。人标=feedback pin 同等(都在 cfg.Chairs)，含 SourceHuman 格。
-	if tm.chairPinFieldW(x, y) > 0 {
-		if ac := tm.grid.CellAt(x, y); ac != nil {
-			ac.UpdateDwellStat(float64(durMs) / 1000.0)
-		}
+	// Chair 区久坐窗（B，per-chair）：把这条 >5min walk-away 久坐时长喂进该椅 anchor 格的 14 日滚动窗，
+	// hourly 重算 μ/σ 供 floor 连续 tFloor=clamp(μ+1.5σ,[12,90]) 单源读。人标=feedback pin 同等(都在 cfg.Chairs)。
+	if ac := tm.chairAnchorCell(x, y); ac != nil {
+		ac.AppendDwell(float64(durMs)/1000.0, nowMs)
 	}
 	scoreCap := tm.sitPromoteTau * sitScoreCapRatio
 	// 加到锚 cell + ±sitSpreadCm 邻域，按切比雪夫距离分层衰减（tier 按半径比例缩放，30 时=±10→1.0/±20→0.5/±30→0.3）：
@@ -1754,15 +1793,17 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			// box 开始那刻用 raw 起点(History[0] canvas)读一次 cell area 锁定，久静期 floor/emission 单源读，
 			// 躲开逐帧 Kalman/raw 微动跨格(sit 区边缘被偏读成 active 致误报)。box-break 清回 AreaUnknown。
 			ts.StillBoxCellArea = AreaUnknown
-			// chair 区 dwell 分布锁定（电子云 gate=pin 几何，免疫 Belief 翻转）：在 chair 区且样本够 → 锁 μ/σ；
-			// 冷启(N<min)锁 ChairMu=0 → floor 回退 90min。box-break 清。
+			// chair 区久坐窗锁定（电子云 gate=pin 几何，免疫 Belief 翻转）：读该椅 anchor 格缓存 μ/σ；
+			// 冷启(窗样本<min)锁 ChairMu=0 → floor 回退 90min。box-break 清。
 			ts.StillBoxInChair = tm.chairPinFieldW(ts.StillBoxStartX, ts.StillBoxStartY) > 0
 			ts.StillBoxChairMu, ts.StillBoxChairSigma = 0, 0
 			if c := tm.grid.CellAt(ts.StillBoxStartX, ts.StillBoxStartY); c != nil {
 				ts.StillBoxCellArea = c.Belief[0].Type
-				if ts.StillBoxInChair && c.DwellN >= DwellColdMinN {
-					ts.StillBoxChairMu = c.DwellMean
-					ts.StillBoxChairSigma = c.DwellSigma()
+			}
+			if ts.StillBoxInChair {
+				if ac := tm.chairAnchorCell(ts.StillBoxStartX, ts.StillBoxStartY); ac != nil && ac.DwellN >= DwellColdMinN {
+					ts.StillBoxChairMu = ac.DwellMu
+					ts.StillBoxChairSigma = ac.DwellSig
 				}
 			}
 			if tm.logger != nil {

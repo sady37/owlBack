@@ -222,12 +222,13 @@ type Cell struct {
 	// ≥ sitPromoteTau 升 AreaSit(SourceLearned)；HL DecayParams.SitScoreSec(默认 4d,config 可调) 指数衰减（隔离 episode 自然褪）。
 	SitScore float64
 
-	// ---- Chair 区 dwell 分布（仅 chairPinFieldW>0 的格学；floor 连续 tFloor=clamp(μ+kσ,[12,90]) 单源）----
-	// 只喂 walk-away 收场且 dwell>5min 的 episode（过路/站立<5min 已被 sitActiveCutoffMin 滤掉）。EMA(均值+均方)
-	// 算 μ/σ：本把椅子上本人真实坐时长。不衰减（椅子挪走→pin 移→新格重学，旧格 gate 自然失效）。冷启(N<min)回退 90min。
-	DwellMean   float64 // EMA 均值（秒）
-	DwellSqMean float64 // EMA 均方（秒²）→ σ=√(max(0,SqMean−Mean²))
-	DwellN      int     // 样本数（冷启门控）
+	// ---- Chair 区久坐分布（per-chair：仅 chair anchor 格带；floor 连续 tFloor=clamp(μ+1.5σ,[12,90]) 单源）----
+	// 14 日滚动窗：每 >5min walk-away 久坐 episode 进当天桶(AppendDwell)；hourly RecomputeDwell 丢>14天槽+聚合。
+	// 缓存 μ/σ/N 供 floor 热路径 O(1) 读；直方图 Hist(5min bin) 留 median/分位后期用。冷启(N<min)回退 90min。
+	DwellWindow []DwellBucket // 14 日环（只 anchor 格，omitempty）
+	DwellMu     float64       // 缓存：窗口 μ（秒）；0=冷启
+	DwellSig    float64       // 缓存：窗口 σ（秒）
+	DwellN      int           // 缓存：窗口总样本数（冷启门控 <DwellColdMinN）
 
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
@@ -775,31 +776,100 @@ func (c *Cell) updateRisk(g int) {
 	c.Belief[g].RiskScore = r
 }
 
-// dwellEMAMinAlpha EMA 下限步长：前 ~10 条按运行均值，之后保持适应性（习惯变了能跟上）。
-const dwellEMAMinAlpha = 0.1
-
-// DwellColdMinN dwell 分布冷启门控：样本 < 此值 → floor 回退 90min（声明椅学够前不误报）。
+// DwellColdMinN 久坐窗冷启门控：窗口样本 < 此值 → floor 回退 90min（声明椅学够前不误报）。
 const DwellColdMinN = 3
 
-// UpdateDwellStat 喂一条 walk-away 收场的久坐 episode 时长（秒）到本格 dwell 分布（EMA 均值+均方）。
-// 调用方保证已过 >5min 过滤 + 本格在 chair 区。调用方持锁。
-func (c *Cell) UpdateDwellStat(durSec float64) {
-	c.DwellN++
-	a := 1.0 / float64(c.DwellN)
-	if a < dwellEMAMinAlpha {
-		a = dwellEMAMinAlpha
-	}
-	c.DwellMean += a * (durSec - c.DwellMean)
-	c.DwellSqMean += a * (durSec*durSec - c.DwellSqMean)
+const (
+	dwellWindowDays = 14 // 久坐窗滚动天数
+	dwellHistBins   = 18 // 5min bin：[0]=[5,10)…[16]=[85,90)，[17]=[90,∞)
+	dwellHistLowMin = 5  // 第一个 bin 下界(min)；<5min 已过滤不入
+	dwellHistBinMin = 5  // bin 宽(min)
+)
+
+// DwellBucket 一天的 >5min 久坐统计：N/Sum/SumSq 精确算 μ+1.5σ；Hist(5min bin) 留 median/分位后期用。
+type DwellBucket struct {
+	Day   int32                 `json:"d"`  // epoch day = unixSec/86400 (UTC)
+	N     int32                 `json:"n"`  // 样本数
+	Sum   float64               `json:"s"`  // Σ时长(秒)
+	SumSq float64               `json:"sq"` // Σ时长²
+	Hist  [dwellHistBins]uint16 `json:"h"`  // 5min 直方图
 }
 
-// DwellSigma 由 EMA 均值/均方算标准差（秒）；方差负值（浮点误差）夹 0。
-func (c *Cell) DwellSigma() float64 {
-	v := c.DwellSqMean - c.DwellMean*c.DwellMean
-	if v <= 0 {
-		return 0
+func epochDay(nowMs int64) int32 { return int32(nowMs / 1000 / 86400) }
+
+func dwellHistIdx(durSec float64) int {
+	i := (int(durSec/60) - dwellHistLowMin) / dwellHistBinMin
+	if i < 0 {
+		i = 0
 	}
-	return math.Sqrt(v)
+	if i >= dwellHistBins {
+		i = dwellHistBins - 1
+	}
+	return i
+}
+
+// AppendDwell 记一条 >5min walk-away 久坐(秒)到当天桶(14 日环)。调用方保证本格是 chair anchor + 持锁。
+func (c *Cell) AppendDwell(durSec float64, nowMs int64) {
+	day := epochDay(nowMs)
+	var b *DwellBucket
+	for i := range c.DwellWindow {
+		if c.DwellWindow[i].Day == day {
+			b = &c.DwellWindow[i]
+			break
+		}
+	}
+	if b == nil {
+		if len(c.DwellWindow) < dwellWindowDays {
+			c.DwellWindow = append(c.DwellWindow, DwellBucket{Day: day})
+			b = &c.DwellWindow[len(c.DwellWindow)-1]
+		} else {
+			oldest := 0
+			for i := 1; i < len(c.DwellWindow); i++ {
+				if c.DwellWindow[i].Day < c.DwellWindow[oldest].Day {
+					oldest = i
+				}
+			}
+			c.DwellWindow[oldest] = DwellBucket{Day: day}
+			b = &c.DwellWindow[oldest]
+		}
+	}
+	b.N++
+	b.Sum += durSec
+	b.SumSq += durSec * durSec
+	b.Hist[dwellHistIdx(durSec)]++
+}
+
+// RecomputeDwell 慢周期(hourly)重算：丢 >14 天槽 → 聚合本窗 → 写缓存 μ/σ/N。调用方持锁。
+func (c *Cell) RecomputeDwell(nowMs int64) {
+	if len(c.DwellWindow) == 0 {
+		c.DwellMu, c.DwellSig, c.DwellN = 0, 0, 0
+		return
+	}
+	cutoff := epochDay(nowMs) - (dwellWindowDays - 1)
+	live := c.DwellWindow[:0]
+	var n int
+	var sum, sumSq float64
+	for _, b := range c.DwellWindow {
+		if b.Day < cutoff {
+			continue // 丢 >14 天
+		}
+		live = append(live, b)
+		n += int(b.N)
+		sum += b.Sum
+		sumSq += b.SumSq
+	}
+	c.DwellWindow = live
+	c.DwellN = n
+	if n == 0 {
+		c.DwellMu, c.DwellSig = 0, 0
+		return
+	}
+	c.DwellMu = sum / float64(n)
+	v := sumSq/float64(n) - c.DwellMu*c.DwellMu
+	if v < 0 {
+		v = 0
+	}
+	c.DwellSig = math.Sqrt(v)
 }
 
 // ========================================================================

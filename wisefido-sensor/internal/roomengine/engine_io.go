@@ -319,6 +319,37 @@ func (e *Engine) decayLoop(ctx context.Context) {
 	}
 }
 
+// chairDwellInterval per-chair 久坐窗慢周期重算节拍（分布按天变，1H 够；FloorGuard 热路径只读缓存 μ/σ）。
+const chairDwellInterval = time.Hour
+
+func (e *Engine) chairDwellLoop(ctx context.Context) {
+	ticker := time.NewTicker(chairDwellInterval)
+	defer ticker.Stop()
+	e.recomputeChairDwellAll() // 启动即算一次（hydrate 后缓存可能落后于灌入的窗）
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.recomputeChairDwellAll()
+		}
+	}
+}
+
+func (e *Engine) recomputeChairDwellAll() {
+	nowMs := time.Now().UnixMilli()
+	e.mu.RLock()
+	tms := make([]*TrackManager, 0, len(e.rooms))
+	for _, tm := range e.rooms {
+		tms = append(tms, tm)
+	}
+	e.mu.RUnlock()
+	for _, tm := range tms {
+		tm.RecomputeChairDwell(nowMs)
+	}
+	e.logger.Debug("chair dwell recompute done", zap.Int("rooms", len(tms)))
+}
+
 func (e *Engine) beliefScanLoop(ctx context.Context) {
 	ticker := time.NewTicker(e.beliefScanInterval)
 	defer ticker.Stop()

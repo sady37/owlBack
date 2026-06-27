@@ -51,9 +51,9 @@ type Counters struct {
 	RZC int       `json:"rzc,omitempty"`
 	RFC int       `json:"rfc,omitempty"`
 	SS  float64   `json:"ss,omitempty"`  // SitScore log-odds
-	DM  float64   `json:"dm,omitempty"`  // DwellMean EMA 秒 — chair 区 dwell 分布
-	DSQ float64   `json:"dsq,omitempty"` // DwellSqMean EMA 秒²
-	DN  int       `json:"dn,omitempty"`  // DwellN 样本数
+	DMu  float64 `json:"dmu,omitempty"` // 缓存窗口 μ 秒 — chair anchor 久坐窗（dwin 原始桶 replay 不需,忽略）
+	DSig float64 `json:"dsg,omitempty"` // 缓存窗口 σ 秒
+	DN   int     `json:"dn,omitempty"`  // 缓存窗口样本数
 	ADS int64     `json:"ads,omitempty"`
 	ET  string    `json:"et,omitempty"`
 	IEN int       `json:"ien,omitempty"`
@@ -139,8 +139,8 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 			c.RestZoneConfirmed = cs.C.RZC
 			c.RealFallCount = cs.C.RFC
 			c.SitScore = cs.C.SS
-			c.DwellMean = cs.C.DM
-			c.DwellSqMean = cs.C.DSQ
+			c.DwellMu = cs.C.DMu
+			c.DwellSig = cs.C.DSig
 			c.DwellN = cs.C.DN
 			c.AutoDenyQualifiedSinceMs = cs.C.ADS
 			c.EnterTarget = cs.C.ET

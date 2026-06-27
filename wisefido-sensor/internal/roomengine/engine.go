@@ -1117,6 +1117,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	// ── 生产 I/O 后台 loop ──
 	go e.decayLoop(ctx)
 	go e.beliefScanLoop(ctx)
+	go e.chairDwellLoop(ctx)
 	if e.persister != nil && e.snapshotInterval > 0 {
 		go e.snapshotLoop(ctx)
 	}

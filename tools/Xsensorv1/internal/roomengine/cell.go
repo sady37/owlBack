@@ -223,10 +223,10 @@ type Cell struct {
 	// ≥ sitPromoteTau 升 AreaSit(SourceLearned)；HL DecayParams.SitScoreSec(默认 4d,config 可调) 指数衰减（隔离 episode 自然褪）。
 	SitScore float64
 
-	// ---- Chair 区 dwell 分布（hydrate 自 28；Xsensorv1 replay 只读不学，floor 连续 tFloor=clamp(μ+kσ,[12,90]) 单源）----
-	DwellMean   float64 // EMA 均值（秒）
-	DwellSqMean float64 // EMA 均方（秒²）→ σ=√(max(0,SqMean−Mean²))
-	DwellN      int     // 样本数（冷启门控）
+	// ---- Chair 区久坐缓存（per-chair anchor，hydrate 自 28；Xsensorv1 replay 只读不学/不重算，floor tFloor=clamp(μ+1.5σ,[12,90]) 单源）----
+	DwellMu  float64 // 缓存：窗口 μ（秒）；0=冷启
+	DwellSig float64 // 缓存：窗口 σ（秒）
+	DwellN   int     // 缓存：窗口样本数（冷启门控）
 
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
@@ -777,15 +777,6 @@ func (c *Cell) updateRisk(g int) {
 
 // DwellColdMinN dwell 分布冷启门控：样本 < 此值 → floor 回退 90min（与 wisefido-sensor 正本一致）。
 const DwellColdMinN = 3
-
-// DwellSigma 由 EMA 均值/均方算标准差（秒）；方差负值（浮点误差）夹 0。
-func (c *Cell) DwellSigma() float64 {
-	v := c.DwellSqMean - c.DwellMean*c.DwellMean
-	if v <= 0 {
-		return 0
-	}
-	return math.Sqrt(v)
-}
 
 // ========================================================================
 // Helper 函数

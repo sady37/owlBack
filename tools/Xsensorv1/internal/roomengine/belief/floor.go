@@ -78,7 +78,7 @@ func (g *FloorGuard) Step(obs Observation) bool {
 }
 
 // tFloorFor floor(= §I stillbox 计时器)异常阈。risktime 纯时间轴：μ,σ 不变(物理),只动风险容忍 k——
-// 白天 1.5σ(保守防 FP)/夜间 0.5σ(少等早兜底)。只缩短不延长(FN-safe);不进 C_FN(报警阈与时辰无关)。
+// 白天 1.5σ(保守防 FP)/夜间也 1.5σ(用户 2026-06-27:夜间不提前兜底,防误报多致无人用)。不进 C_FN(报警阈与时辰无关)。
 //
 // 分层（镜像 wisefido-sensor 正本）：
 //   bathroom 房     → bath 阈(20min)，压过一切（占用区紧阈）。
@@ -89,7 +89,7 @@ func (g *FloorGuard) Step(obs Observation) bool {
 func tFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairSigma float64) float64 {
 	k := 1.5
 	if isRiskTime {
-		k = 0.5
+		k = 1.5
 	}
 	tActive := MuDefaultSec + k*SigmaDefaultSec
 	tSit := MuSitSec + k*SigmaSitSec

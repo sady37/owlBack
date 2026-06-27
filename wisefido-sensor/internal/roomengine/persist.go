@@ -37,10 +37,12 @@ import (
 // v7 (2026-05-18): sensor_v2 决定 15+20 — Cell 加 EnterTarget 字符串 + InsideEnterEvidenceN + InsideEnterLearned
 // v8 (2026-05-19): L1 mirror pair 自学习 — Cell 加 MirrorBounceCount + LastMirrorMs
 // v9 (2026-06-04): sticky 否决 — Cell 加 LearnBlocked（verified 真摔人勾"永不在此自动学抑制"，跨重启保留）
-// v11 (2026-06-27): Counters 加 SS（SitScore log-odds）+ DM/DSQ/DN（Chair 区 dwell 分布 EMA 均值/均方/样本数）—
-//                   floor 连续 tFloor=clamp(μ+kσ,[12,90]) 只对 chair 区按本格学到的久坐时长分布算，需跨重启保留；
-//                   否则每次重启清零→坐区 tFloor 塌回 active(12min) 误报。非破坏：v10 旧快照缺失=0。
-const SnapshotSchemaVersion = 11 // v10: AreaType 重编号(deny/reflector/monitorbed/interfer/lying，删 shower/toilet)，旧快照 area 值失效须冷启
+// v11 (2026-06-27): Counters 加 SS（SitScore log-odds）。
+// v12 (2026-06-27): Chair 久坐学习由 EMA(DM/DSQ/DN) 改 per-chair 14 日滚动窗——Counters 删 DM/DSQ,
+//                   加 DWin（anchor 14 日桶：n/sum/sumSq+5min直方图）+ DMu/DSig/DN（缓存 μ/σ/样本数，floor 热路径读）。
+//                   floor 连续 tFloor=clamp(μ+1.5σ,[12,90]) 只对 chair anchor 算,需跨重启保留;否则重启塌回 active(12min)。
+//                   非破坏:旧 v11 快照无 DWin → 冷启回退 90min,14 天内边学边收敛(FN-safe)。
+const SnapshotSchemaVersion = 12 // v10: AreaType 重编号(deny/reflector/monitorbed/interfer/lying，删 shower/toilet)，旧快照 area 值失效须冷启
 
 // CellSnapshot 单 cell 的可持久化字段（紧凑 JSON，short keys 节省空间）
 type CellSnapshot struct {
@@ -73,9 +75,10 @@ type Counters struct {
 	RZC int       `json:"rzc,omitempty"` // RestZoneConfirmed (schema_v ≥ 5)
 	RFC int       `json:"rfc,omitempty"` // RealFallCount (schema_v ≥ 5)
 	SS  float64   `json:"ss,omitempty"`  // SitScore log-odds (schema_v ≥ 11) — Belief→AreaSit 学习层
-	DM  float64   `json:"dm,omitempty"`  // DwellMean EMA 秒 (schema_v ≥ 11) — chair 区 dwell 分布
-	DSQ float64   `json:"dsq,omitempty"` // DwellSqMean EMA 秒² (schema_v ≥ 11)
-	DN  int       `json:"dn,omitempty"`  // DwellN 样本数 (schema_v ≥ 11)
+	DWin []DwellBucket `json:"dwin,omitempty"` // Chair anchor 14 日久坐窗 (schema_v ≥ 12)
+	DMu  float64       `json:"dmu,omitempty"`  // 缓存窗口 μ 秒 (schema_v ≥ 12) — floor 热路径读
+	DSig float64       `json:"dsg,omitempty"`  // 缓存窗口 σ 秒 (schema_v ≥ 12)
+	DN   int           `json:"dn,omitempty"`   // 缓存窗口样本数 (schema_v ≥ 12)
 	ADS int64     `json:"ads,omitempty"` // AutoDenyQualifiedSinceMs (schema_v ≥ 6)
 
 	// sensor_v2 v7 (决定 15+20):
@@ -188,9 +191,10 @@ func buildCounters(c *Cell) *Counters {
 		RZC: c.RestZoneConfirmed,
 		RFC: c.RealFallCount,
 		SS:  c.SitScore,
-		DM:  c.DwellMean,
-		DSQ: c.DwellSqMean,
-		DN:  c.DwellN,
+		DWin: c.DwellWindow,
+		DMu:  c.DwellMu,
+		DSig: c.DwellSig,
+		DN:   c.DwellN,
 		ADS: c.AutoDenyQualifiedSinceMs,
 		ET:  c.EnterTarget,
 		IEN: c.InsideEnterEvidenceN,
@@ -206,7 +210,7 @@ func buildCounters(c *Cell) *Counters {
 		ct.FA == 0 && ct.TS == 0 && ct.BSR == 0 && ct.ADS == 0 &&
 		ct.ET == "" && ct.IEN == 0 && !ct.IEL &&
 		ct.MBC == 0 && ct.LMM == 0 && !ct.LB && ct.SS == 0 &&
-		ct.DM == 0 && ct.DSQ == 0 && ct.DN == 0 {
+		len(ct.DWin) == 0 && ct.DMu == 0 && ct.DSig == 0 && ct.DN == 0 {
 		return nil
 	}
 	return &ct
@@ -285,8 +289,9 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 			c.RestZoneConfirmed = cs.C.RZC
 			c.RealFallCount = cs.C.RFC
 			c.SitScore = cs.C.SS
-			c.DwellMean = cs.C.DM
-			c.DwellSqMean = cs.C.DSQ
+			c.DwellWindow = cs.C.DWin
+			c.DwellMu = cs.C.DMu
+			c.DwellSig = cs.C.DSig
 			c.DwellN = cs.C.DN
 			c.AutoDenyQualifiedSinceMs = cs.C.ADS
 			c.EnterTarget = cs.C.ET

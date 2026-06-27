@@ -692,6 +692,30 @@ func (tm *TrackManager) chairPinFieldW(x, y int) float64 {
 	return best
 }
 
+// chairAnchorCell 解析 (x,y) 命中的 chair → 其 rect 中心格作 per-chair 久坐窗 anchor（读 hydrate 来的缓存 μ/σ）。
+// 命中判据同 chairPinFieldW；取 field 最大的椅子。无命中/越界 → nil。调用方持锁。
+func (tm *TrackManager) chairAnchorCell(x, y int) *Cell {
+	halo := tm.sitSpreadCm
+	bestW := 0.0
+	var bestRect radarutils.Rect
+	for _, r := range tm.chairs {
+		w := 0.0
+		if d := r.DistTo(x, y); d == 0 {
+			w = 1.0
+		} else if halo > 0 && d < halo {
+			w = 1.0 - float64(d)/float64(halo)
+		}
+		if w > bestW {
+			bestW, bestRect = w, r
+		}
+	}
+	if bestW <= 0 {
+		return nil
+	}
+	ctr := bestRect.Center()
+	return tm.grid.CellAt(ctr.X, ctr.Y)
+}
+
 // SetMoveSpeedCms 注入"在动"速度阈值。<=0 保留默认。
 func (tm *TrackManager) SetMoveSpeedCms(v int) {
 	if v <= 0 {
@@ -960,13 +984,13 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			if c.Belief[0].Type == AreaEnter {
 				base.EnterTarget = c.EnterTarget
 			}
-			// chair 区 dwell 分布（电子云 gate=pin 几何，免疫 Belief 翻转）：实时读本格 hydrate 来的 μ/σ；
+			// chair 区久坐窗（per-chair，电子云 gate=pin 几何，免疫 Belief 翻转）：读该椅 anchor 格 hydrate 来的缓存 μ/σ；
 			// 在 chair 区且样本够 → 喂 floor 连续阈；冷启(N<min)留 ChairMu=0 → floor 回退 90min。
 			if tm.chairPinFieldW(px, py) > 0 {
 				base.InChair = true
-				if c.DwellN >= DwellColdMinN {
-					base.ChairMu = c.DwellMean
-					base.ChairSigma = c.DwellSigma()
+				if ac := tm.chairAnchorCell(px, py); ac != nil && ac.DwellN >= DwellColdMinN {
+					base.ChairMu = ac.DwellMu
+					base.ChairSigma = ac.DwellSig
 				}
 			}
 		}
