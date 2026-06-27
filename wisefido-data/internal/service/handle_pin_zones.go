@@ -50,12 +50,12 @@ type pinSpec struct {
 }
 
 var (
-	pinSpecSit       = pinSpec{"feedback_sit_", "Chair (pin)", "Chair", "furniture", "#ffff00", 90, 7, 80, "pin_sit"}
+	pinSpecSit       = pinSpec{"feedback_sit_", "Chair (pin)", "Chair", "furniture", "#e9b48f", 90, 7, 80, "pin_sit"}
 	pinSpecLounge    = pinSpec{"feedback_lounge_", "Recliner (pin)", "Recliner", "furniture", "#c19a6b", 40, 8, 99, "pin_lounge"}
 	pinSpecReflector = pinSpec{"feedback_reflector_", "Reflector (pin)", "MetalCan", "interference", "#F5F5F5", 80, 3, 99, "pin_reflector"}
-	pinSpecInterfere = pinSpec{"feedback_interfere_", "Interfer (pin)", "Interfere", "interference", "#4a4a4a", 120, 6, 99, "pin_interfere"}
+	pinSpecInterfere = pinSpec{"feedback_interfere_", "Interfer (pin)", "Interfere", "interference", "#82BBEB", 120, 6, 99, "pin_interfere"}
 	pinSpecBlind     = pinSpec{"feedback_blind_", "Blind (pin)", "BlindArea", "furniture", "#5b3a1a", 80, 9, 99, "pin_blind"}
-	pinSpecEnter     = pinSpec{"feedback_enter_", "Exit (pin)", "Enter", "structure", "#a9eaa9", 0, 4, 99, "pin_enter"}
+	pinSpecEnter     = pinSpec{"feedback_enter_", "Exit (pin)", "Enter", "structure", "#A9EAA9", 0, 4, 99, "pin_enter"}
 )
 
 // HandlePinZones 护士 handle+PIN 编排（best-effort，失败仅 warn，不阻塞 handle）。
