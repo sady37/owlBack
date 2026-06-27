@@ -48,6 +48,7 @@ type alarmEventService struct {
 	db              *sql.DB // 用于查询卡片信息（临时方案）
 	redisClient     *redis.Client
 	configPublisher ConfigPublisher
+	radarInstall    *RadarInstall // handle+PIN 编排（layout/firmware/cell stamp 单源）
 	logger          *zap.Logger
 }
 
@@ -60,6 +61,7 @@ func NewAlarmEventService(
 	db *sql.DB,
 	redisClient *redis.Client,
 	configPublisher ConfigPublisher,
+	radarInstall *RadarInstall,
 	logger *zap.Logger,
 ) AlarmEventService {
 	return &alarmEventService{
@@ -70,6 +72,7 @@ func NewAlarmEventService(
 		db:              db,
 		redisClient:     redisClient,
 		configPublisher: configPublisher,
+		radarInstall:    radarInstall,
 		logger:          logger,
 	}
 }
@@ -913,30 +916,19 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 		}
 	}()
 
-	// 事件触发：handle 完即调 sensor live engine 即时处理该条 fall 反馈（best-effort，非 fall 类 sensor 自行忽略）。
-	// payload/notes 由 data 直接推（sensor 不再回读 alarm_events，写硬读软 §9.1）。
-	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		addr := event.DeviceAddr
-		if idx := strings.IndexByte(addr, '/'); idx >= 0 {
-			addr = addr[:idx]
-		}
-		var triggeredMs int64
-		if !event.TriggeredAt.IsZero() {
-			triggeredMs = event.TriggeredAt.UnixMilli()
-		}
-		s.notifySensorFeedback(bgCtx, feedbackIngestBody{
-			EventID:       req.EventID,
-			DeviceAddr:    addr,
-			EventType:     event.EventType,
-			Operation:     operation,
-			TriggeredAtMs: triggeredMs,
-			HandTimeMs:    handTime.UnixMilli(),
-			Payload:       event.TriggerData,
-			HandlerNotes:  req.Remarks,
-		})
-	}()
+	// handle+PIN 编排：解析 remarks marker → fire 点转 canvas → ① layout + ② firmware + 写回 metadata
+	// + ③ 即时刷 sensor grid（sticky veto 清 cell）。全部业务在 data（sensor 被动），best-effort 不阻塞 handle。
+	if s.radarInstall != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			addr := event.DeviceAddr
+			if idx := strings.IndexByte(addr, '/'); idx >= 0 {
+				addr = addr[:idx]
+			}
+			s.radarInstall.HandlePinZones(bgCtx, req.EventID, req.TenantID, addr, event.TriggerData, operation, req.Remarks)
+		}()
+	}
 
 	return response, nil
 }

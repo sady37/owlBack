@@ -11,9 +11,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"time"
 
 	"go.uber.org/zap"
+
+	"owl-common/radarutils"
 
 	"wisefido-sensor/internal/roomengine"
 	"wisefido-sensor/internal/zoneengine/wiring"
@@ -23,6 +26,18 @@ type cellVetoRequest struct {
 	DeviceAddr string `json:"device_addr"` // /128 device host text
 	X          int    `json:"x"`           // canvas cm
 	Y          int    `json:"y"`           // canvas cm
+	Sticky     bool   `json:"sticky"`      // true=handle "never auto-suppress" → 额外 MarkLearnBlocked
+}
+
+// cellStampRequest data 在 layout 写入（pin / FE resize save）后调，被动刷 grid 完整 rect。
+type cellStampRequest struct {
+	DeviceAddr string `json:"device_addr"` // /128 device host text
+	X1         int    `json:"x1"`          // canvas cm
+	Y1         int    `json:"y1"`
+	X2         int    `json:"x2"`
+	Y2         int    `json:"y2"`
+	AreaType   int    `json:"area_type"` // observation.AreaType 0-9
+	Conf       int    `json:"conf"`
 }
 
 // startVetoHTTPServer 在 addr 起 mux，POST /roomengine/cell/veto → engine.VetoCell。
@@ -56,38 +71,88 @@ func startVetoHTTPServer(ctx context.Context, addr string, engine *roomengine.En
 			http.Error(w, "bad request (need device_addr + x,y)", http.StatusBadRequest)
 			return
 		}
-		cleared, blocked, ok := engine.VetoCell(req.DeviceAddr, req.X, req.Y, time.Now().UnixMilli())
+		cleared, blocked, ok := engine.VetoCell(req.DeviceAddr, req.X, req.Y, req.Sticky, time.Now().UnixMilli())
 		if !ok {
 			http.Error(w, "device not routed / cell out of grid", http.StatusNotFound)
 			return
 		}
 		logger.Info("cell_veto_applied",
 			zap.String("device_addr", req.DeviceAddr), zap.Int("x", req.X), zap.Int("y", req.Y),
-			zap.Bool("cleared", cleared), zap.Bool("learn_blocked", blocked))
+			zap.Bool("sticky", req.Sticky), zap.Bool("cleared", cleared), zap.Bool("learn_blocked", blocked))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]bool{"cleared": cleared, "learn_blocked": blocked})
 	})
 
-	// 事件触发：wisefido-data handle 完即调，即时处理单条 alarm 反馈（event_id 去重）。
-	mux.HandleFunc("/roomengine/feedback/ingest", func(w http.ResponseWriter, r *http.Request) {
+	// data 在 layout 写入后调，被动刷 grid 完整 rect（pin 初始正方形 / FE resize 后完整矩形）。零业务判断。
+	mux.HandleFunc("/roomengine/cell/stamp", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		var fe roomengine.FeedbackEvent
-		if err := json.NewDecoder(r.Body).Decode(&fe); err != nil || fe.EventID == "" {
-			http.Error(w, "bad request (need event_id)", http.StatusBadRequest)
+		var req cellStampRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceAddr == "" {
+			http.Error(w, "bad request (need device_addr + rect)", http.StatusBadRequest)
 			return
 		}
-		processed, err := engine.IngestFeedback(r.Context(), fe)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		rect := radarutils.Rect{X1: req.X1, Y1: req.Y1, X2: req.X2, Y2: req.Y2}
+		ok := engine.StampPriorRectByDevice(req.DeviceAddr, rect, roomengine.AreaType(req.AreaType), req.Conf)
+		if !ok {
+			http.Error(w, "device not routed / room grid not built", http.StatusNotFound)
 			return
 		}
-		logger.Info("feedback_ingest_applied", zap.String("event_id", fe.EventID), zap.Bool("processed", processed))
+		logger.Info("cell_stamp_applied",
+			zap.String("device_addr", req.DeviceAddr), zap.Int("area_type", req.AreaType),
+			zap.Int("x1", req.X1), zap.Int("y1", req.Y1), zap.Int("x2", req.X2), zap.Int("y2", req.Y2))
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]bool{"processed": processed})
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]bool{"stamped": true})
+	})
+
+	// data 删 Feedback pin 对象时调，强清该 rect 回 Unknown（随后 data 重刷剩余 layout 盖回叠加区）。零业务判断。
+	mux.HandleFunc("/roomengine/cell/clear", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req cellStampRequest // 复用 rect 字段（area_type/conf 忽略）
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceAddr == "" {
+			http.Error(w, "bad request (need device_addr + rect)", http.StatusBadRequest)
+			return
+		}
+		rect := radarutils.Rect{X1: req.X1, Y1: req.Y1, X2: req.X2, Y2: req.Y2}
+		ok := engine.ClearPriorRectByDevice(req.DeviceAddr, rect)
+		if !ok {
+			http.Error(w, "device not routed / room grid not built", http.StatusNotFound)
+			return
+		}
+		logger.Info("cell_clear_applied",
+			zap.String("device_addr", req.DeviceAddr),
+			zap.Int("x1", req.X1), zap.Int("y1", req.Y1), zap.Int("x2", req.X2), zap.Int("y2", req.Y2))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]bool{"cleared": true})
+	})
+
+	// 只读诊断：GET /roomengine/cell/at?device_addr=&x=&y= → 该 canvas 点当前 cell 的 AreaType。
+	mux.HandleFunc("/roomengine/cell/at", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		addr := q.Get("device_addr")
+		x, _ := strconv.Atoi(q.Get("x"))
+		y, _ := strconv.Atoi(q.Get("y"))
+		if addr == "" {
+			http.Error(w, "bad request (need device_addr + x,y)", http.StatusBadRequest)
+			return
+		}
+		area, name, conf, ok := engine.CellAreaAt(addr, x, y)
+		if !ok {
+			http.Error(w, "device not routed / point out of grid", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"x": x, "y": y, "area_type": area, "area_name": name, "conf": conf,
+		})
 	})
 
 	mux.HandleFunc("/roomengine/health", func(w http.ResponseWriter, _ *http.Request) {

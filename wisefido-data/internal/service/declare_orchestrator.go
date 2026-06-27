@@ -772,6 +772,7 @@ func (s *RadarInstall) applyDeclare(ctx context.Context, tenantID, prefix string
 			result.Warnings = append(result.Warnings, fmt.Sprintf("Couldn't write zones to device %s: %s", d.DeviceUID, d.Error))
 		}
 	}
+	s.stampCanvasCells(ctx, newCanvas) // ③ stamp 跟随 layout 写入：即时刷 cell（含 FE resize 完整 rect，修 E598）
 	return result
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -228,7 +227,6 @@ type Engine struct {
 	dailySnapshotHour   int
 	dailySnapshotMinute int
 	historyRetainDays   int
-	feedbackIngester    *AlarmFeedbackIngester
 	dailyReloadHour     int
 	dailyReloadDB       *sql.DB
 	unitFirstTrackMs    map[string]int64 // suiteID → 首见 track 时戳（DBN_MODE 冷启 cap，dbn_mode.go）
@@ -371,8 +369,6 @@ func (e *Engine) Configure(cfg RuntimeConfig) {
 	if cfg.HistoryRetainDays > 0 {
 		e.historyRetainDays = cfg.HistoryRetainDays
 	}
-	// feedback 不连库（payload 由 data 推），ingester 无 DB 依赖 → 始终创建。
-	e.feedbackIngester = NewAlarmFeedbackIngester(e, e.logger)
 }
 
 // SetOutputCallback 设置 track 输出回调（发 alarm 等下游）
@@ -556,19 +552,59 @@ func (e *Engine) StampPriorRect(roomID string, rect radarutils.Rect, areaType Ar
 	return true
 }
 
-// IngestFeedback 事件触发入口：wisefido-data handle 完直调 HTTP /roomengine/feedback/ingest，
-// 即时处理单条 alarm 反馈（event_id 去重）。无批处理兜底，sensor 不可达即丢。
-func (e *Engine) IngestFeedback(ctx context.Context, fe FeedbackEvent) (bool, error) {
-	if e.feedbackIngester == nil {
-		return false, fmt.Errorf("feedback ingester not configured")
+// StampPriorRectByDevice 解析 device→room 后即时刷 rect。data 在 layout 写入（pin / FE resize save）
+// 后调本被动腿刷完整 rect，桥接 daily reload/重启窗口。grid 缺失静默 false（防单 room 卡死全局）。
+func (e *Engine) StampPriorRectByDevice(deviceAddr string, rect radarutils.Rect, areaType AreaType, conf int) bool {
+	roomID := e.RoomForDevice(deviceAddr)
+	if roomID == "" {
+		return false
 	}
-	return e.feedbackIngester.IngestOne(ctx, fe)
+	return e.StampPriorRect(roomID, rect, areaType, conf)
 }
 
-// VetoCell 人否决某 Feedback 学习区（删了 canvas 上的 source='Feedback' object 触发）：
-// 该 cell 擦掉非 Human 抑制/deny（ClearNonHumanLearnedZone）+ 永久封自动学习（MarkLearnBlocked，跨重启）。
+// CellAreaAt 只读：取 canvas 点 (x,y) 当前 cell 的 AreaType + 置信（诊断端点 GET /roomengine/cell/at）。
+// conf 区分人标(80/99)/学习(低)；point 出 grid 或 device 未路由 → ok=false。
+func (e *Engine) CellAreaAt(deviceAddr string, x, y int) (area int, name string, conf int, ok bool) {
+	roomID := e.RoomForDevice(deviceAddr)
+	if roomID == "" {
+		return 0, "", 0, false
+	}
+	e.mu.RLock()
+	g := e.grids[roomID]
+	e.mu.RUnlock()
+	if g == nil {
+		return 0, "", 0, false
+	}
+	col, row := g.ToIndex(x, y)
+	if col < 0 || col >= g.Width || row < 0 || row >= g.Height {
+		return 0, "", 0, false
+	}
+	c := g.Cells[row*g.Width+col]
+	return int(c.AreaType), c.AreaType.Name(), c.Belief[0].Confidence, true
+}
+
+// ClearPriorRectByDevice 解析 device→room 后强清 rect 回 Unknown。data 删 Feedback pin 对象时调，
+// 配合随后的 stampCanvasCells 重刷剩余 layout（叠加区盖回，未覆盖区留 Unknown）。grid 缺失静默 false。
+func (e *Engine) ClearPriorRectByDevice(deviceAddr string, rect radarutils.Rect) bool {
+	roomID := e.RoomForDevice(deviceAddr)
+	if roomID == "" {
+		return false
+	}
+	e.mu.RLock()
+	g := e.grids[roomID]
+	e.mu.RUnlock()
+	if g == nil {
+		return false
+	}
+	g.ClearPriorRect(rect)
+	return true
+}
+
+// VetoCell 清该 cell 非 Human 抑制/deny（ClearNonHumanLearnedZone，→AreaUnknown）。
+// 两个触发都由 data 驱动：(1) 删 layout 上 source='Feedback' object（sticky=false，仅清）；
+// (2) handle 勾 "Never auto-suppress"（sticky=true，额外 MarkLearnBlocked 永久封自动学习，跨重启）。
 // deviceAddr=/128 device host text；x,y=canvas cm。返回 (cleared, blocked, ok=cell 在 grid)。
-func (e *Engine) VetoCell(deviceAddr string, x, y int, nowMs int64) (cleared, blocked, ok bool) {
+func (e *Engine) VetoCell(deviceAddr string, x, y int, sticky bool, nowMs int64) (cleared, blocked, ok bool) {
 	roomID := e.RoomForDevice(deviceAddr)
 	if roomID == "" {
 		return false, false, false
@@ -577,7 +613,7 @@ func (e *Engine) VetoCell(deviceAddr string, x, y int, nowMs int64) (cleared, bl
 		if c.ClearNonHumanLearnedZone() {
 			cleared = true
 		}
-		if c.MarkLearnBlocked() {
+		if sticky && c.MarkLearnBlocked() {
 			blocked = true
 		}
 	})
@@ -903,6 +939,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		if cfg.RoomType == card.RoomTypeBathroom && cfg.IsPublicBathroom && e.suiteCensus != nil && cfg.SuiteID != "" {
 			e.suiteCensus.MarkPublicBathroom(cfg.SuiteID) // 幂等
 		}
+		e.logger.Info("registerroom_softonly", zap.String("room", cfg.RoomID), zap.Int("chairs", len(cfg.Chairs)))
 		return
 	}
 
@@ -946,6 +983,13 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	}
 	for _, r := range cfg.Chairs {
 		grid.SetPrior(r, AreaSit, chairPriorConf, SourceHuman) // 粗标
+		rn := r.Norm()
+		cc1, rr1 := grid.ToIndex(rn.X1, rn.Y1)
+		cc2, rr2 := grid.ToIndex(rn.X2, rn.Y2)
+		e.logger.Info("setprior_chair", zap.String("room", cfg.RoomID),
+			zap.Int("x1", rn.X1), zap.Int("y1", rn.Y1), zap.Int("x2", rn.X2), zap.Int("y2", rn.Y2),
+			zap.Int("col1", cc1), zap.Int("row1", rr1), zap.Int("col2", cc2), zap.Int("row2", rr2),
+			zap.Int("ox", grid.OriginX), zap.Int("oy", grid.OriginY))
 	}
 	for i, r := range cfg.Furnitures {
 		// FurnitureAreaTypes 与 Furnitures 1:1（parser 同步 append）：家具→AreaDeny(12min) / BlindArea→AreaActive(12min,快速兜底盲区真摔)

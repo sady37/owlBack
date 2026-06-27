@@ -445,6 +445,7 @@ func main() {
 			db,
 			redisClient,
 			configPublisher,
+			radarInstall,
 			logger,
 		)
 		alarmEventHandler := httpapi.NewAlarmEventHandler(alarmEventService, logger)

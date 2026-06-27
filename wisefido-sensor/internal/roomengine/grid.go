@@ -198,6 +198,30 @@ func (g *RoomGrid) SetPrior(rect radarutils.Rect, t AreaType, conf int, src Sour
 	}
 }
 
+// ClearPriorRect 强清 rect 内所有 cell 回 Unknown/Unset（不分 source、不过优先级 gate）。
+// 用于 data 删 Feedback pin 对象时擦掉该区先验；调用方随后按剩余 layout 重刷（stampCanvasCells），
+// 叠加区自动盖回其它对象（如 reflector 删后露出底下的 chair Sit），未覆盖区才留 Unknown。
+func (g *RoomGrid) ClearPriorRect(rect radarutils.Rect) {
+	rect = rect.Norm()
+	c1, r1 := g.ToIndex(rect.X1, rect.Y1)
+	c2, r2 := g.ToIndex(rect.X2, rect.Y2)
+	for row := r1; row <= r2; row++ {
+		if row < 0 || row >= g.Height {
+			continue
+		}
+		for col := c1; col <= c2; col++ {
+			if col < 0 || col >= g.Width {
+				continue
+			}
+			c := &g.Cells[row*g.Width+col]
+			for bi := 0; bi < 3; bi++ {
+				c.Belief[bi] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
+			}
+			c.AreaType = AreaUnknown
+		}
+	}
+}
+
 // NearestEntryDist 到最近 Enter 矩形的距离（cm）
 func (g *RoomGrid) NearestEntryDist(x, y int) int {
 	if len(g.Enters) == 0 {
