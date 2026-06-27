@@ -58,6 +58,11 @@ type TrackState struct {
 	// 转 coast + 无倒地前兆 + 有活轨接住共存」的孤儿，coast 起标置位，SnapshotTrackStatuses 零其
 	// StillBoxSec 不喂 floor；不删轨（25min lostStillCarry 自然 GC）；再被观测且移走→解标。
 	FloorArtifactSinceMs int64
+	// InterferBornSinceMs：interfer 出生伪迹的 floor 抑制 latch（0=未标）。诞生在 interfer cell + 无进门 +
+	// 无近邻可继承 + 出生时孤立（≥120cm）的孤迹（帘扇杂波），出生即置位，SnapshotTrackStatuses 零其
+	// StillBoxSec 不喂 floor；走出出生点/现摔倒前兆→解标（churn 原地重生的真人摔倒得以恢复 floor 网）。
+	// 软压非 purge：出生无姿态历史无法即时定性，留轨待撤销（见 stampInterferBornIfIsolated）。
+	InterferBornSinceMs int64
 	// LastFwAreaID firmware 直发的 area_id（present 帧更新；miss tick 不更新 = 冻结末值）。
 	// 床判定 N：命中某床 areaId → 该床占用。255=声明区外/0=无区。
 	LastFwAreaID int
@@ -90,6 +95,10 @@ type TrackState struct {
 	StillBoxStartX, StillBoxStartY, StillBoxStartZ int // box run 起点 canvas（=History[0] 回填点）→ MarkDwell/cell + floor fall 坐标(经 CanvasToRadar 逆算 raw,Z 透传)
 	StillBoxCellArea  AreaType // box 开始那刻 CellAt(StillBoxStart canvas) 锁定的 cell area；久静期 floor/emission 单源读，
 	//                           避免逐帧 Kalman/raw 微动跨格抖动（sit 区边缘被偏读成 active 致误报）。box-break 清回 AreaUnknown。
+	// box 起点锁定的 chair 区 dwell 分布 → floor 连续 tFloor 单源（仅 chair 区）。box-break 清。
+	StillBoxInChair    bool
+	StillBoxChairMu    float64 // dwell EMA 均值（秒）；0=冷启
+	StillBoxChairSigma float64 // dwell EMA σ（秒）
 	StillBoxBreakDurMs             int64 // 本帧 still-box 刚 break 的 dwell 时长（0=未 break）→ 移动块 MarkDwell 消费
 
 	// ---- AreaSit 4 通道学习累加器（sit_learning.go；StillBox run = episode，box-break = walk-away emit）----

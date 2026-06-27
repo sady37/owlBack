@@ -222,6 +222,13 @@ type Cell struct {
 	// ≥ sitPromoteTau 升 AreaSit(SourceLearned)；HL DecayParams.SitScoreSec(默认 4d,config 可调) 指数衰减（隔离 episode 自然褪）。
 	SitScore float64
 
+	// ---- Chair 区 dwell 分布（仅 chairPinFieldW>0 的格学；floor 连续 tFloor=clamp(μ+kσ,[12,90]) 单源）----
+	// 只喂 walk-away 收场且 dwell>5min 的 episode（过路/站立<5min 已被 sitActiveCutoffMin 滤掉）。EMA(均值+均方)
+	// 算 μ/σ：本把椅子上本人真实坐时长。不衰减（椅子挪走→pin 移→新格重学，旧格 gate 自然失效）。冷启(N<min)回退 90min。
+	DwellMean   float64 // EMA 均值（秒）
+	DwellSqMean float64 // EMA 均方（秒²）→ σ=√(max(0,SqMean−Mean²))
+	DwellN      int     // 样本数（冷启门控）
+
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
 
@@ -766,6 +773,33 @@ func (c *Cell) updateRisk(g int) {
 		r = 100
 	}
 	c.Belief[g].RiskScore = r
+}
+
+// dwellEMAMinAlpha EMA 下限步长：前 ~10 条按运行均值，之后保持适应性（习惯变了能跟上）。
+const dwellEMAMinAlpha = 0.1
+
+// DwellColdMinN dwell 分布冷启门控：样本 < 此值 → floor 回退 90min（声明椅学够前不误报）。
+const DwellColdMinN = 3
+
+// UpdateDwellStat 喂一条 walk-away 收场的久坐 episode 时长（秒）到本格 dwell 分布（EMA 均值+均方）。
+// 调用方保证已过 >5min 过滤 + 本格在 chair 区。调用方持锁。
+func (c *Cell) UpdateDwellStat(durSec float64) {
+	c.DwellN++
+	a := 1.0 / float64(c.DwellN)
+	if a < dwellEMAMinAlpha {
+		a = dwellEMAMinAlpha
+	}
+	c.DwellMean += a * (durSec - c.DwellMean)
+	c.DwellSqMean += a * (durSec*durSec - c.DwellSqMean)
+}
+
+// DwellSigma 由 EMA 均值/均方算标准差（秒）；方差负值（浮点误差）夹 0。
+func (c *Cell) DwellSigma() float64 {
+	v := c.DwellSqMean - c.DwellMean*c.DwellMean
+	if v <= 0 {
+		return 0
+	}
+	return math.Sqrt(v)
 }
 
 // ========================================================================

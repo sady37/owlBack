@@ -63,6 +63,11 @@ type TrackState struct {
 	// 转 coast + 无倒地前兆 + 有活轨共存 → coast 起标置位，SnapshotTrackStatuses 零其 StillBoxSec
 	// 不喂 floor；不删轨（25min lostStillCarry 自然 GC）；再被观测且移走→解标。
 	FloorArtifactSinceMs int64
+	// InterferBornSinceMs：interfer 出生伪迹的 floor 抑制 latch（0=未标）。诞生在 interfer cell + 无进门 +
+	// 无近邻可继承 + 出生时孤立（≥120cm）的孤迹（帘扇杂波），出生即置位，SnapshotTrackStatuses 零其
+	// StillBoxSec 不喂 floor；走出出生点/现摔倒前兆→解标（churn 原地重生的真人摔倒得以恢复 floor 网）。
+	// 软压非 purge：出生无姿态历史无法即时定性，留轨待撤销（见 stampInterferBornIfIsolated）。
+	InterferBornSinceMs int64
 	// LastFwAreaID firmware 直发的 area_id（present 帧更新；miss tick 不更新 = 冻结末值）。
 	// 床判定 N：命中某床 areaId → 该床占用。255=声明区外/0=无区。
 	LastFwAreaID int

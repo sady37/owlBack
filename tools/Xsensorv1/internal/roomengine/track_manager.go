@@ -107,6 +107,8 @@ type TrackManager struct {
 	sitPromoteTau float64 // SitScore 升格阈 τ（默认 6.0）
 	sitSpreadCm   int     // episode 加分邻域半径 cm（默认 30）
 
+	chairs []radarutils.Rect // layout chair pin rect（含 feedback）；floor 连续 tFloor 的 chair 区 gate（电子云几何）
+
 	lastRadarInBedMs   int64 // radar 离散 InBed **事件** ts（状态翻转权威；非每帧几何）
 	lastRadarLeftBedMs int64 // 审查㊾:radar LeftBed ts(any-source-OR bed 占用 veto)
 	// lastRadarInBedGeomMs：way3 每帧"present track 在 firmware 床区"几何续命 ts（连续在床补 InBed 事件缺失）。
@@ -663,6 +665,33 @@ func (tm *TrackManager) SetSitLearnParams(tau float64, spreadCm int) {
 	tm.mu.Unlock()
 }
 
+// SetChairs 注入 layout chair pin rect（含 feedback）。floor 连续 tFloor 的 chair 区 gate。
+func (tm *TrackManager) SetChairs(rects []radarutils.Rect) {
+	tm.mu.Lock()
+	tm.chairs = rects
+	tm.mu.Unlock()
+}
+
+// chairPinFieldW chair pin 的几何"电子云"坐场 ∈[0,1]：矩形内 1.0；外按到边距离在 halo(sitSpreadCm)
+// 内线性衰减到 0；取所有 chair 的 max。人标=feedback 同等（都在 cfg.Chairs）。镜像 wisefido-sensor 正本。
+// floor 用 >0 当 chair 区 gate。调用方持锁。
+func (tm *TrackManager) chairPinFieldW(x, y int) float64 {
+	halo := tm.sitSpreadCm
+	best := 0.0
+	for _, r := range tm.chairs {
+		d := r.DistTo(x, y)
+		if d == 0 {
+			return 1.0
+		}
+		if halo > 0 && d < halo {
+			if w := 1.0 - float64(d)/float64(halo); w > best {
+				best = w
+			}
+		}
+	}
+	return best
+}
+
 // SetMoveSpeedCms 注入"在动"速度阈值。<=0 保留默认。
 func (tm *TrackManager) SetMoveSpeedCms(v int) {
 	if v <= 0 {
@@ -825,6 +854,10 @@ type TrackStatusBase struct {
 	Pose                int
 	StillBoxSec         int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动）→ FloorGuard 纯计时器（直立折扣已移 emission）
 	CellAreaType        AreaType
+	// chair 区 dwell 分布（实时读 px,py 的 cell）→ floor 连续 tFloor 单源（仅 chair 区）
+	InChair             bool
+	ChairMu             float64
+	ChairSigma          float64
 	FwAreaID            int    // firmware area_id（present=本帧；lost=冻结末值）→ adapter N 床判定
 	EnterTarget         string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
 	MoveActive          bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
@@ -918,14 +951,23 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
 		}
-		// 瞬移嫌疑待删窗 / immature-coast 反射伪迹：从 floor/blind-faller still-box 累积排除（不得误火）。
-		if ts.SuspectInterferenceSinceMs > 0 || ts.FloorArtifactSinceMs > 0 {
+		// 瞬移嫌疑待删窗 / immature-coast 反射伪迹 / interfer 出生孤迹：从 floor/blind-faller still-box 累积排除（不得误火）。
+		if ts.SuspectInterferenceSinceMs > 0 || ts.FloorArtifactSinceMs > 0 || ts.InterferBornSinceMs > 0 {
 			base.StillBoxSec = 0
 		}
 		if c := tm.grid.CellAt(px, py); c != nil {
 			base.CellAreaType = c.Belief[0].Type // cell 仍喂 tFloor 阈 + sit/lying/active redirect（含 sofa 的 lying 区，故不换 baseline）
 			if c.Belief[0].Type == AreaEnter {
 				base.EnterTarget = c.EnterTarget
+			}
+			// chair 区 dwell 分布（电子云 gate=pin 几何，免疫 Belief 翻转）：实时读本格 hydrate 来的 μ/σ；
+			// 在 chair 区且样本够 → 喂 floor 连续阈；冷启(N<min)留 ChairMu=0 → floor 回退 90min。
+			if tm.chairPinFieldW(px, py) > 0 {
+				base.InChair = true
+				if c.DwellN >= DwellColdMinN {
+					base.ChairMu = c.DwellMean
+					base.ChairSigma = c.DwellSigma()
+				}
 			}
 		}
 		// present track 在 firmware 床区 = radar 连续 InBed 几何证据，刷 lastRadarInBedGeomMs（事件常缺前置/窗裁，连续刷补上）。
@@ -1118,9 +1160,12 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			// logic_id：有 EnterRoom 配对 = 真新人进门 → 全新身份；无 enter = firmware
 			// 重用/跳变/分裂 → 继承最近存活 track 的 logic_id（跨 track_id 数据关联，
 			// 让"漂走/重编"的同一逻辑目标保持身份连续，供 ghost/lost-fall 按 logic_id 聚合）。
-			if !tm.hasRecentEnterRoom(f.TMs) {
+			enteredRecently := tm.hasRecentEnterRoom(f.TMs)
+			inherited := false
+			if !enteredRecently {
 				if parent := tm.nearestAliveTrack(f.X, f.Y, f.DeviceAddr, f.TMs, frameKeys); parent != nil {
 					ts.LogicID = parent.LogicID
+					inherited = true
 					tm.logger.Info("logic_id_inherited_no_enter",
 						zap.String("device_uid", f.DeviceAddr),
 						zap.Int("track_id", f.TrackID),
@@ -1131,6 +1176,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			}
 			if ts.LogicID == "" {
 				ts.LogicID = makeLogicID(tm.devUIDHex(f.DeviceAddr), f.TrackID, f.TMs)
+			}
+			// 孤儿 fresh 出生（无进门事件 + 无近邻继承）= 独立伪迹签名 → 若落 interfer cell 且出生时孤立则软压。
+			if !enteredRecently && !inherited {
+				tm.stampInterferBornIfIsolated(ts, f, nowMs)
 			}
 			tm.tracks[key] = ts
 			ts.PrevCore = RadarPoseToCore(f.Pose)
@@ -1152,6 +1201,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			if ts.FloorArtifactSinceMs > 0 && distInt(ts.BirthPos.X, ts.BirthPos.Y, f.X, f.Y) > staticReflectorConfineCm {
 				ts.FloorArtifactSinceMs = 0
 			}
+			tm.revokeInterferBornIfMoved(ts, f)
 			dt := float64(f.TMs-ts.LastUpdateMs) / 1000.0
 			if dt <= 0 {
 				dt = 1

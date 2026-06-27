@@ -1,15 +1,33 @@
 replay集
 # * case-d5f7-0617-23252357 replay  false stand, lost, 
 # * case-cabb-0616-17441802	replay  hunzi, bathroom lost,ghost,
-# * case-cd2b-0617-23302345-curtain  bedroom 窗帘误报  这个基本无解  replay
+# * case-cd2b-0617-23302345-curtain  bedroom 窗帘误报  这个基本无解  replay  z:有高有低
 # * case-cd2b-0620-11231131  hand-off
+# * case-cd2b-0627-04270442  curtain出生，才豁免，
+
+
 # * case-09e7-0620-22402242   
 # * case-09e7-6021-22162229   1room2radar,reisktime,fall2,9min fall     **success  同房在床，可能睡，不抑制fire报警
 
 # * case-d523-0622-13341336   D523,椅子后80s lost, 120s 101guest sleepad inbed handoff  **success
+
 # * case-B197-0624-09180932  livingRoom 2人， 有Ghost, 有2次fall. 
 # * case-B197-0624-08430856  livingRoom  ExitRoom,  BlindArea, 12min  handle->Enter/Door  Exit zone: add permanently  
+# * case-b197-0626-15371540  livingRoom   镜面/反射 ghost 签名(一条假轨长期挂在固定小区,跟真人并存）
+# * casse-B197-0627-09280932  livingRoom  openArea  lost  有一边是开放空间
+# * casse-B197-0627-15311535  livingRoom  openArea  lost  有一边是开放空间
+
+
+
+# * case-1797-0627-13261328  mom bathroom ,  stillbox 整体30秒走了500， 要视为stillbox break
+
+
+
+
+# * case-B17F-0626-13321344  kitchen, 1个静止interfer, real split 2 track,  其中一个在island still
+
 # * case-0777-0624-12001201  sandiego  learning area,  重复sitonground fire
+
 
 # * case-d5f7-0617-23252357 replay
 case1  bathroom  still+D

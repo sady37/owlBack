@@ -41,6 +41,12 @@ type Observation struct {
 	// 床(bed/monitorbed)与 reflector 在 floor.Step 豁免；bed 占用走 RadarBedHitMask(firmware N) 驱动。
 	AreaType int
 
+	// Chair 区 dwell 分布（hydrate 自 28，replay 期不学）：floor 只对 chair 区(InChair)按本格 dwell 分布算连续阈
+	//   tFloor=clamp(ChairMu+k·ChairSigma,[12min,90min])；冷启(ChairMu≤0)回退 90min。pin 几何 gate，免疫 Belief 翻转。
+	InChair    bool
+	ChairMu    float64 // dwell EMA 均值（秒）；0=冷启
+	ChairSigma float64 // dwell EMA σ（秒）
+
 	// RadarBedHitMask 逐床 N：firmware area_id 命中该床声明的 areaId（= 雷达判"人在该床上"）。长 numBeds。
 	// 替代旧 cell-area 床判定：cell 几何随 canvas drift 误判，firmware area_id 是雷达地面真值。
 	// emission 床 boost = lArea × 该床 covers(M) × N（命中才抬 SBed）。离线 = 全 false。

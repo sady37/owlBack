@@ -88,6 +88,70 @@ func (tm *TrackManager) scanStaticReflectors(nowMs int64) {
 	tm.gcStaticReflectorMarks()
 }
 
+// ===== interfer-born 软压制（同支 fast-path：static 是「对未知 cell 久驻发现反射」，本节是「已知 interfer
+// cell 出生即利用」。共享 born-here + confinement 血缘；动作软压非 purge，因出生无姿态历史无法即时定性）=====
+
+const (
+	interferBornIsolationCm = 120 // ③ 出生点到其它非ghost真轨的最小距离 ≥此 = 孤立独立伪迹（>同人保号 50cm，留缓冲）
+	interferBornConfineCm   = 50  // 撤销：当前位到 BirthPos >此 = 走出出生点（人类位移）→ 解标恢复 floor 网
+)
+
+// stampInterferBornIfIsolated 出生钩子：调用方已判「孤儿 fresh 出生」（无进门 + 无近邻继承）。本函数再验
+// ① 落 interfer cell ③ 出生时孤立 → 标 InterferBornSinceMs（②无 lid 继承已由调用方保证）。调用方持锁，
+// ts 尚未入 tm.tracks。
+func (tm *TrackManager) stampInterferBornIfIsolated(ts *TrackState, f TrackFrame, nowMs int64) {
+	if tm.grid == nil {
+		return
+	}
+	c := tm.grid.CellAt(f.X, f.Y)
+	if c == nil || c.Belief[0].Type != AreaInterfer {
+		return
+	}
+	if !tm.isolatedFromRealTracks(f.X, f.Y) {
+		return
+	}
+	ts.InterferBornSinceMs = nowMs
+	tm.logger.Info("interfer_born_suppressed",
+		zap.Int("track_id", ts.TrackID),
+		zap.String("logic_id", ts.LogicID),
+		zap.Int("birth_x", f.X), zap.Int("birth_y", f.Y),
+	)
+}
+
+// isolatedFromRealTracks 出生点 (x,y) 到所有「未盖 interfer-born ghost」的存活轨的最小距离 ≥ interferBornIsolationCm。
+// 已盖 ghost 的轨不计——否则两个相邻帘动幻影会互相打掩护。ts 尚未入 map，故无需排自身。
+func (tm *TrackManager) isolatedFromRealTracks(x, y int) bool {
+	for _, other := range tm.tracks {
+		if other.Kalman == nil || other.InterferBornSinceMs > 0 {
+			continue
+		}
+		ox, oy := other.Kalman.Position()
+		if distInt(x, y, int(math.Round(ox)), int(math.Round(oy))) < interferBornIsolationCm {
+			return false
+		}
+	}
+	return true
+}
+
+// revokeInterferBornIfMoved 撤销闸：被观测回来且（走出出生点 / 现摔倒前兆）→ 解标恢复 floor 网。
+// fall-precursor 与 teleport 闸1 共用谓词（真摔者绝不被压）。调用方持锁。
+func (tm *TrackManager) revokeInterferBornIfMoved(ts *TrackState, f TrackFrame) {
+	if ts.InterferBornSinceMs == 0 {
+		return
+	}
+	movedOut := distInt(ts.BirthPos.X, ts.BirthPos.Y, f.X, f.Y) > interferBornConfineCm
+	fallPrecursor := teleportFallPrecursorPose(f.Pose)
+	if movedOut || fallPrecursor {
+		ts.InterferBornSinceMs = 0
+		tm.logger.Info("interfer_born_revoked",
+			zap.Int("track_id", ts.TrackID),
+			zap.String("logic_id", ts.LogicID),
+			zap.Bool("moved_out", movedOut),
+			zap.Bool("fall_precursor", fallPrecursor),
+		)
+	}
+}
+
 // gcStaticReflectorMarks 清掉已死 track 的去抖时戳。
 func (tm *TrackManager) gcStaticReflectorMarks() {
 	if len(tm.staticReflectorLastMark) == 0 {

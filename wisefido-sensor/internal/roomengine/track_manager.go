@@ -346,6 +346,26 @@ func (tm *TrackManager) SetChairs(rects []radarutils.Rect) {
 	tm.chairs = rects
 }
 
+// chairPinFieldW chair pin 的几何"电子云"坐场 ∈[0,1]：矩形内 1.0；矩形外按到边距离在 halo(sitSpreadCm)
+// 内线性衰减到 0；取所有 chair 的 max。人标=feedback pin 同等（都在 cfg.Chairs，不分 source）。
+// 非衰减（每帧从 layout 几何算）→ 护士一钉即生效。调用方持锁（emitSitEpisode/box-start 路径内）。
+func (tm *TrackManager) chairPinFieldW(x, y int) float64 {
+	halo := tm.sitSpreadCm
+	best := 0.0
+	for _, r := range tm.chairs {
+		d := r.DistTo(x, y)
+		if d == 0 {
+			return 1.0
+		}
+		if halo > 0 && d < halo {
+			if w := 1.0 - float64(d)/float64(halo); w > best {
+				best = w
+			}
+		}
+	}
+	return best
+}
+
 // SetInterferes 注入本房间镜面/反射区矩形（cfg.Interferes）。
 // 由 engine.RegisterRoom 启动时调用。用于因子 7 镜面对称 ghost 检测。
 // 内部 deep-copy 避免共享 slice 被外部修改。
@@ -847,6 +867,10 @@ type TrackStatusBase struct {
 	Pose                int
 	StillBoxSec         int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动）→ FloorGuard 纯计时器（直立折扣已移 emission）
 	CellAreaType        AreaType
+	// chair 区 dwell 分布（box 起点锁定）→ floor 连续 tFloor 单源（仅 chair 区）
+	InChair             bool
+	ChairMu             float64
+	ChairSigma          float64
 	FwAreaID            int    // firmware area_id（present=本帧；lost=冻结末值）→ adapter N 床判定
 	EnterTarget         string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
 	MoveActive          bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
@@ -939,8 +963,8 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
 		}
-		// 瞬移待删窗 / immature-coast 反射伪迹 → 零 StillBoxSec，排出 FloorGuard 累积（不删轨，floor-neutral）。
-		if ts.SuspectInterferenceSinceMs > 0 || ts.FloorArtifactSinceMs > 0 {
+		// 瞬移待删窗 / immature-coast 反射伪迹 / interfer 出生孤迹 → 零 StillBoxSec，排出 FloorGuard 累积（不删轨，floor-neutral）。
+		if ts.SuspectInterferenceSinceMs > 0 || ts.FloorArtifactSinceMs > 0 || ts.InterferBornSinceMs > 0 {
 			base.StillBoxSec = 0
 		}
 		// cell area 走 stillbox 锁定(box 开始那格,updateContinuousIndicators 用 raw 起点读一次)→ floor 阈 + emission
@@ -955,8 +979,14 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		}
 		if ts.StillBoxRunStart != 0 {
 			base.CellAreaType = ts.StillBoxCellArea // 久静期:锁定值
+			base.InChair = ts.StillBoxInChair       // 久静期:锁定 chair dwell 分布
+			base.ChairMu = ts.StillBoxChairMu
+			base.ChairSigma = ts.StillBoxChairSigma
 		} else {
 			base.CellAreaType = AreaUnknown // 移动期:不读
+			base.InChair = false            // 移动期:不读
+			base.ChairMu = 0
+			base.ChairSigma = 0
 		}
 		ts.LastCellArea = base.CellAreaType
 		// 诊断(久静≥60s):锁定 area vs raw/Kalman 落格对比(验证锁定躲开跨格抖动)
@@ -1168,9 +1198,12 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			// logic_id：有 EnterRoom 配对 = 真新人进门 → 全新身份；无 enter = firmware
 			// 重用/跳变/分裂 → 继承最近存活 track 的 logic_id（跨 track_id 数据关联，
 			// 让"漂走/重编"的同一逻辑目标保持身份连续，供 ghost/lost-fall 按 logic_id 聚合）。
-			if !tm.hasRecentEnterRoom(f.TMs) {
+			enteredRecently := tm.hasRecentEnterRoom(f.TMs)
+			inherited := false
+			if !enteredRecently {
 				if parent := tm.nearestAliveTrack(f.X, f.Y, f.DeviceAddr, f.TMs, frameKeys); parent != nil {
 					ts.LogicID = parent.LogicID
+					inherited = true
 					tm.logger.Info("logic_id_inherited_no_enter",
 						zap.String("device_uid", f.DeviceAddr),
 						zap.Int("track_id", f.TrackID),
@@ -1181,6 +1214,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			}
 			if ts.LogicID == "" {
 				ts.LogicID = makeLogicID(tm.devUIDHex(f.DeviceAddr), f.TrackID, f.TMs)
+			}
+			// 孤儿 fresh 出生（无进门事件 + 无近邻继承）= 独立伪迹签名 → 若落 interfer cell 且出生时孤立则软压。
+			if !enteredRecently && !inherited {
+				tm.stampInterferBornIfIsolated(ts, f, nowMs)
 			}
 
 			// PR-5.3 反 ghost: service startup 5min grace 内 first-seen → 默认 Real
@@ -1204,6 +1241,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			if ts.FloorArtifactSinceMs > 0 && distInt(ts.BirthPos.X, ts.BirthPos.Y, f.X, f.Y) > staticReflectorConfineCm {
 				ts.FloorArtifactSinceMs = 0
 			}
+			tm.revokeInterferBornIfMoved(ts, f)
 			dt := float64(f.TMs-ts.LastUpdateMs) / 1000.0
 			if dt <= 0 {
 				dt = 1
@@ -1642,6 +1680,13 @@ func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
 	fwMaxMin := float64(ts.sitFwMaxMs) / 60000.0
 	deltaL := sitEpisodeLLR(dwellMin, ts.sitZBest, fwMaxMin)
 	x, y := ts.StillBoxStartX, ts.StillBoxStartY
+	// Chair 区 dwell 分布（B）：本格在 chair pin 区 → 把这条 >5min walk-away 久坐时长喂进锚 cell 的 dwell EMA，
+	// floor 连续 tFloor=clamp(μ+kσ,[12,90]) 单源读。人标=feedback pin 同等(都在 cfg.Chairs)，含 SourceHuman 格。
+	if tm.chairPinFieldW(x, y) > 0 {
+		if ac := tm.grid.CellAt(x, y); ac != nil {
+			ac.UpdateDwellStat(float64(durMs) / 1000.0)
+		}
+	}
 	scoreCap := tm.sitPromoteTau * sitScoreCapRatio
 	// 加到锚 cell + ±sitSpreadCm 邻域，按切比雪夫距离分层衰减（tier 按半径比例缩放，30 时=±10→1.0/±20→0.5/±30→0.3）：
 	// 覆盖坐姿足迹 + 让锚漂内 episode 合并；SourceHuman（人画的已知区）跳过不污染。
@@ -1709,16 +1754,26 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			// box 开始那刻用 raw 起点(History[0] canvas)读一次 cell area 锁定，久静期 floor/emission 单源读，
 			// 躲开逐帧 Kalman/raw 微动跨格(sit 区边缘被偏读成 active 致误报)。box-break 清回 AreaUnknown。
 			ts.StillBoxCellArea = AreaUnknown
+			// chair 区 dwell 分布锁定（电子云 gate=pin 几何，免疫 Belief 翻转）：在 chair 区且样本够 → 锁 μ/σ；
+			// 冷启(N<min)锁 ChairMu=0 → floor 回退 90min。box-break 清。
+			ts.StillBoxInChair = tm.chairPinFieldW(ts.StillBoxStartX, ts.StillBoxStartY) > 0
+			ts.StillBoxChairMu, ts.StillBoxChairSigma = 0, 0
 			if c := tm.grid.CellAt(ts.StillBoxStartX, ts.StillBoxStartY); c != nil {
 				ts.StillBoxCellArea = c.Belief[0].Type
+				if ts.StillBoxInChair && c.DwellN >= DwellColdMinN {
+					ts.StillBoxChairMu = c.DwellMean
+					ts.StillBoxChairSigma = c.DwellSigma()
+				}
 			}
 			if tm.logger != nil {
-				tfloor := belief.TFloorFor(int(ts.StillBoxCellArea), tm.roomType, IsNightTime(nowMs, tm.timezone))
+				tfloor := belief.TFloorFor(int(ts.StillBoxCellArea), tm.roomType, IsNightTime(nowMs, tm.timezone), ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairSigma)
 				tm.logger.Debug("still_box_start",
 					zap.Int("track_id", f.TrackID), zap.String("logic_id", ts.LogicID),
 					zap.Int64("start_ms", ts.StillBoxRunStart),
 					zap.Int("canvas_x", ts.StillBoxStartX), zap.Int("canvas_y", ts.StillBoxStartY), zap.Int("canvas_z", ts.StillBoxStartZ),
-					zap.String("locked_area", ts.StillBoxCellArea.Name()), zap.Int("tfloor_sec", tfloor))
+					zap.String("locked_area", ts.StillBoxCellArea.Name()),
+					zap.Bool("in_chair", ts.StillBoxInChair), zap.Float64("chair_mu", ts.StillBoxChairMu), zap.Float64("chair_sigma", ts.StillBoxChairSigma),
+					zap.Int("tfloor_sec", tfloor))
 			}
 		}
 		// AreaSit 学习：box running = episode 进行中，累姿态相关两通道（fwMax/zBest，sit_learning.go）。
@@ -1740,12 +1795,15 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 		startMs := ts.StillBoxRunStart
 		dur := nowMs - startMs
 		lockedArea := ts.StillBoxCellArea
+		lockedInChair, lockedMu, lockedSigma := ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairSigma
 		ts.StillBoxBreakDurMs = dur // 暂存刚结束的 dwell 时长，供 scoreMovement 移动块 MarkDwell
 		ts.StillBoxRunStart = 0
 		ts.StillBoxCellArea = AreaUnknown // box-break：清锁，移动期不读 cell area（floor 不计时/emission 靠 pose）
+		ts.StillBoxInChair = false        // box-break：清锁 chair dwell 分布
+		ts.StillBoxChairMu, ts.StillBoxChairSigma = 0, 0
 		tm.emitSitEpisode(ts, dur, nowMs) // box-break=移动导致=walk-away → emit Sit episode（lost 走 ResetStillBox 不 emit）
 		if tm.logger != nil {
-			tfloor := belief.TFloorFor(int(lockedArea), tm.roomType, IsNightTime(nowMs, tm.timezone))
+			tfloor := belief.TFloorFor(int(lockedArea), tm.roomType, IsNightTime(nowMs, tm.timezone), lockedInChair, lockedMu, lockedSigma)
 			tm.logger.Debug("still_box_break",
 				zap.Int("track_id", f.TrackID), zap.String("logic_id", ts.LogicID),
 				zap.Int64("start_ms", startMs), zap.Int64("duration_ms", dur),

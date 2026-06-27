@@ -910,6 +910,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetRoomName(cfg.RoomName)
 	tm.SetRoomType(cfg.RoomType)
 	tm.SetInterferes(cfg.Interferes)
+	tm.SetChairs(cfg.Chairs)           // floor 连续 tFloor 的 chair 区 gate（电子云几何）
 	tm.SetRadarMount(cfg.Radar)        // L1 mirror pair 检测用 radar 中心做 ghost tiebreaker
 	tm.SetWallPolygon(cfg.WallPolygon) // 静止反射体检测判"近墙"
 	tm.SetUIDHexResolver(e.DeviceUIDHex)
