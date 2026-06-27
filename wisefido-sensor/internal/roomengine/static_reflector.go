@@ -133,20 +133,29 @@ func (tm *TrackManager) isolatedFromRealTracks(x, y int) bool {
 	return true
 }
 
-// revokeInterferBornIfMoved 撤销闸：被观测回来且（走出出生点 / 现摔倒前兆）→ 解标恢复 floor 网。
-// fall-precursor 与 teleport 闸1 共用谓词（真摔者绝不被压）。调用方持锁。
+// revokeInterferBornIfMoved 撤销闸：被观测回来且（位移>confine 且已离开 interfer cell / 现摔倒前兆）→ 解标恢复 floor 网。
+// 用「移走 ∧ 离区」而非单纯离出生点：大 interfer 区内游走的伪迹仍属噪声继续压，只有真走出噪声区才当人放行；
+// confine 位移作 hysteresis 防边缘格抖动单帧误撤。fall-precursor 独立兜底原地摔（与 teleport 闸1 共用谓词，真摔绝不被压）。
+// 调用方持锁。
 func (tm *TrackManager) revokeInterferBornIfMoved(ts *TrackState, f TrackFrame) {
 	if ts.InterferBornSinceMs == 0 {
 		return
 	}
 	movedOut := distInt(ts.BirthPos.X, ts.BirthPos.Y, f.X, f.Y) > interferBornConfineCm
+	leftZone := true
+	if tm.grid != nil {
+		if c := tm.grid.CellAt(f.X, f.Y); c != nil && c.Belief[0].Type == AreaInterfer {
+			leftZone = false
+		}
+	}
 	fallPrecursor := teleportFallPrecursorPose(f.Pose)
-	if movedOut || fallPrecursor {
+	if (movedOut && leftZone) || fallPrecursor {
 		ts.InterferBornSinceMs = 0
 		tm.logger.Info("interfer_born_revoked",
 			zap.Int("track_id", ts.TrackID),
 			zap.String("logic_id", ts.LogicID),
 			zap.Bool("moved_out", movedOut),
+			zap.Bool("left_zone", leftZone),
 			zap.Bool("fall_precursor", fallPrecursor),
 		)
 	}

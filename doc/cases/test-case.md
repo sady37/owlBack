@@ -10,6 +10,7 @@ replay集
 # * case-09e7-6021-22162229   1room2radar,reisktime,fall2,9min fall     **success  同房在床，可能睡，不抑制fire报警
 
 # * case-d523-0622-13341336   D523,椅子后80s lost, 120s 101guest sleepad inbed handoff  **success
+# * case-d523-0627-15351540   D523，重启， stillbox learn sit 持久化，避免重启丢失。 stillbox >5min后 平均数，tFloor=media*1.5
 
 # * case-B197-0624-09180932  livingRoom 2人， 有Ghost, 有2次fall. 
 # * case-B197-0624-08430856  livingRoom  ExitRoom,  BlindArea, 12min  handle->Enter/Door  Exit zone: add permanently  
