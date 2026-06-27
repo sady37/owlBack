@@ -180,6 +180,9 @@ type TrackManager struct {
 	// L1 mirror pair 检测：跨 track 几何对称（无需 layout 镜面坐标先验）。
 	// 详 mirror_detect.go。SetRadarMount 由 engine.RegisterRoom 注入。
 	radarMount       radarutils.RadarMount
+	// mountResolver per-device mount 查询（= engine.MountForDevice），floor fall 发布腿把 canvas 起点
+	// 经 CanvasToRadar 逆算成 raw（多雷达房按 fire 轨自己的 device 取 mount）。engine.RegisterRoom 注入。
+	mountResolver func(deviceAddr string) (radarutils.RadarMount, bool)
 	mirrorBuffer     map[mirrorPairKey]*mirrorPairBuffer
 	mirrorCooldownMs int64 // 单 pair 命中后 60s 内不重复 paint + 加 penalty（防同一 pair 持续命中刷分）
 
@@ -266,6 +269,13 @@ func (tm *TrackManager) SetRadarMount(m radarutils.RadarMount) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	tm.radarMount = m
+}
+
+// SetMountResolver 注入 per-device mount 查询（engine.MountForDevice），floor fall 发布腿逆算 raw 用。
+func (tm *TrackManager) SetMountResolver(fn func(deviceAddr string) (radarutils.RadarMount, bool)) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.mountResolver = fn
 }
 
 // ClearDevice 清空 device 在本 tm 内的所有 in-memory state（"device offline = 内存重启"原则）。
@@ -1205,7 +1215,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 
 			ts.Kalman.Predict(dt)
 			ts.Kalman.Update(float64(f.X), float64(f.Y))
-			ts.PushPoint(f.X, f.Y, f.Z, f.RawH, f.RawV, f.RawZ, f.TMs)
+			ts.PushPoint(f.X, f.Y, f.Z, f.TMs)
 
 			// 连续指标（StillBox 静止），在 Kalman update 之后维护
 			tm.updateContinuousIndicators(ts, f, nowMs)
@@ -1568,7 +1578,7 @@ func (tm *TrackManager) ResetStillBox(logicID string) {
 		ts.StillBoxRunStart = 0
 		ts.StillBoxStartX = 0
 		ts.StillBoxStartY = 0
-		ts.StillBoxStartRawH, ts.StillBoxStartRawV, ts.StillBoxStartRawZ = 0, 0, 0
+		ts.StillBoxStartZ = 0
 		ts.History = ts.History[:0]
 		// lost = fall 域，不 emit Sit episode；只清姿态累加器（与 box break 区别开）。
 		ts.sitFwMaxMs, ts.sitFwContigStartMs, ts.sitZBest = 0, 0, 0
@@ -1695,9 +1705,7 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			ts.StillBoxRunStart = ts.History[0].TMs
 			ts.StillBoxStartX = ts.History[0].X
 			ts.StillBoxStartY = ts.History[0].Y
-			ts.StillBoxStartRawH = ts.History[0].RawH
-			ts.StillBoxStartRawV = ts.History[0].RawV
-			ts.StillBoxStartRawZ = ts.History[0].RawZ
+			ts.StillBoxStartZ = ts.History[0].Z // canvas Z（=raw Z 透传）→ floor fall PositionZ
 			// box 开始那刻用 raw 起点(History[0] canvas)读一次 cell area 锁定，久静期 floor/emission 单源读，
 			// 躲开逐帧 Kalman/raw 微动跨格(sit 区边缘被偏读成 active 致误报)。box-break 清回 AreaUnknown。
 			ts.StillBoxCellArea = AreaUnknown
@@ -1709,8 +1717,7 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 				tm.logger.Debug("still_box_start",
 					zap.Int("track_id", f.TrackID), zap.String("logic_id", ts.LogicID),
 					zap.Int64("start_ms", ts.StillBoxRunStart),
-					zap.Int("canvas_x", ts.StillBoxStartX), zap.Int("canvas_y", ts.StillBoxStartY),
-					zap.Int("raw_h", ts.StillBoxStartRawH), zap.Int("raw_v", ts.StillBoxStartRawV), zap.Int("raw_z", ts.StillBoxStartRawZ),
+					zap.Int("canvas_x", ts.StillBoxStartX), zap.Int("canvas_y", ts.StillBoxStartY), zap.Int("canvas_z", ts.StillBoxStartZ),
 					zap.String("locked_area", ts.StillBoxCellArea.Name()), zap.Int("tfloor_sec", tfloor))
 			}
 		}

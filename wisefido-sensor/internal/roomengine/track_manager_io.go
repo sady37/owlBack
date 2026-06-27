@@ -224,11 +224,15 @@ func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 		// Occurred = still-box 起点（= nowMs − stillSec·1000）；moving-collapse 无 still run 时留 0 退化 incident==alerted。
 		p.IncidentMs = ts.StillBoxRunStart
 		// floor 久静兜底 fire：坐标取 still-box 起点（人倒下处），非当前 LastRaw（兜底时刻可能已漂/久静末帧）。
-		// report(SFall 胜出)及其它 band：payloadFromTrack 的当前 LastRaw 即倒地处，不覆盖。
-		if band == "floor" && ts.StillBoxRunStart != 0 {
-			p.Track.PositionX = intPtr(ts.StillBoxStartRawH)
-			p.Track.PositionY = intPtr(ts.StillBoxStartRawV)
-			p.Track.PositionZ = intPtr(ts.StillBoxStartRawZ)
+		// 起点单源存 canvas（StillBoxStartX/Y/Z），发布时经 CanvasToRadar 逆算 raw——避免出生帧/coast 帧
+		// raw 缺失塌成 (0,0)（雷达正下方）的旧 bug。report(SFall 胜出)及其它 band：当前 LastRaw 即倒地处，不覆盖。
+		if band == "floor" && ts.StillBoxRunStart != 0 && tm.mountResolver != nil {
+			if m, ok := tm.mountResolver(ts.DeviceAddr); ok {
+				rp := radarutils.CanvasToRadar(radarutils.Point{X: ts.StillBoxStartX, Y: ts.StillBoxStartY}, m)
+				p.Track.PositionX = intPtr(rp.H)
+				p.Track.PositionY = intPtr(rp.V)
+				p.Track.PositionZ = intPtr(ts.StillBoxStartZ) // Z 透传（CanvasToRadar 不还原 Z）
+			}
 		}
 		// fire 取证（alarm_events.evidence.fire/pin）：判据快照 + SLeft 分量 + 命中的 pin 矩形。
 		// cx,cy=cell 读取用的画布坐标（History 末点 = RadarToCanvas 直出）；pin=nil 表示该点没被任何 pin 覆盖。

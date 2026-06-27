@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"owl-common/observation"
+	"owl-common/radarutils"
 
 	"go.uber.org/zap"
 )
@@ -173,34 +174,36 @@ func firmwarePolicy(typeName string, isMonitorBed bool) (code int, send bool) {
 	}
 }
 
-func installCornAngle(installModel string) float64 {
-	if installModel == "corn" {
-		return -45
+// radarMount 把 declare 的 radarFrame 折成 owl-common/radarutils.RadarMount（corn 内旋 -45 交由 radarutils）。
+// center/angle 取整 ≤1cm 误差，60G 雷达 ±十几cm + cell 容错下可接受（坐标转换全仓单源 int）。
+func (r radarFrame) radarMount() radarutils.RadarMount {
+	im := radarutils.InstallCeiling
+	switch r.installModel {
+	case "corn":
+		im = radarutils.InstallCorn
+	case "wall":
+		im = radarutils.InstallWall
 	}
-	return 0
+	return radarutils.RadarMount{
+		Center:       radarutils.Point{X: roundInt(r.center.X), Y: roundInt(r.center.Y)},
+		Rotation:     roundInt(r.angle),
+		InstallModel: im,
+	}
 }
 
-// toRadarCoordinate 画布(x,y)→雷达系(h,v)。移植 radarUtils.ts:94。
+// toRadarCoordinate 画布(x,y)→雷达系(h,v)。公式单源到 owl-common/radarutils。
 func toRadarCoordinate(x, y float64, r radarFrame) radarPt {
-	localX := x - r.center.X
-	localY := y - r.center.Y
-	angle := r.angle + installCornAngle(r.installModel)
-	a := -(angle * math.Pi) / 180
-	unrotX := localX*math.Cos(a) + localY*math.Sin(a)
-	unrotY := -localX*math.Sin(a) + localY*math.Cos(a)
-	return radarPt{H: -unrotX, V: unrotY, Z: 0}
+	rp := radarutils.CanvasToRadar(radarutils.Point{X: roundInt(x), Y: roundInt(y)}, r.radarMount())
+	return radarPt{H: float64(rp.H), V: float64(rp.V), Z: 0}
 }
 
-// toCanvasCoordinate 雷达系(h,v,z)→画布(x,y)。移植 radarUtils.ts:55。
+// toCanvasCoordinate 雷达系(h,v,z)→画布(x,y)。公式单源到 owl-common/radarutils（Z 透传）。
 func toCanvasCoordinate(p radarPt, r radarFrame) cvPoint {
-	localX := -p.H
-	localY := p.V
-	angle := r.angle + installCornAngle(r.installModel)
-	a := -(angle * math.Pi) / 180
-	rotX := localX*math.Cos(a) - localY*math.Sin(a)
-	rotY := localX*math.Sin(a) + localY*math.Cos(a)
-	return cvPoint{X: r.center.X + rotX, Y: r.center.Y + rotY, Z: p.Z}
+	cv := radarutils.RadarToCanvas(radarutils.RadarPoint{H: roundInt(p.H), V: roundInt(p.V)}, r.radarMount())
+	return cvPoint{X: float64(cv.X), Y: float64(cv.Y), Z: p.Z}
 }
+
+func roundInt(x float64) int { return int(math.Round(x)) }
 
 // objectVertices 对象在画布系的顶点（含对象自转）。furniture+structure 都算（feedback 门=structure）；
 // 非矩形/circle 几何（measure_dots/point/雷达）由 switch default 返回 nil 自然排除。

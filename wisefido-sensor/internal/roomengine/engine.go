@@ -1036,6 +1036,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetChairs(cfg.Chairs)
 	tm.SetInterferes(cfg.Interferes)
 	tm.SetRadarMount(cfg.Radar)        // L1 mirror pair 检测用 radar 中心做 ghost tiebreaker
+	tm.SetMountResolver(e.MountForDevice) // floor fall 发布腿 canvas→raw 逆算（per-device）
 	tm.SetWallPolygon(cfg.WallPolygon) // 静止反射体检测判"近墙"
 	tm.SetUIDHexResolver(e.DeviceUIDHex)
 	// 注入 IANA 时区（IsNightTime 用）；空串保持 nil → IsNightTime 退化 UTC

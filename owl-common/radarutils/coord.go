@@ -16,7 +16,8 @@ import "math"
 //
 // Z 直接透传 rp.Z（不做 fallback；贴地 track Z≈0 是 Silent Fall 关键信号）。
 //
-// 内部用 float64 做三角运算，最后 math.Round 取整返回。
+// 内部用 float64 做三角运算，最后 math.Round 取整返回。全仓单源此函数（sensor fall 坐标 + data declare
+// 几何 + cardagg firmware 直发补 canvas 均经此）；60G 雷达本身 ±十几cm + cell 40/50 容错，int 取整 ≤1cm 可接受。
 func RadarToCanvas(rp RadarPoint, m RadarMount) Point {
 	localX := float64(-rp.H)
 	localY := float64(rp.V)
@@ -34,8 +35,7 @@ func RadarToCanvas(rp RadarPoint, m RadarMount) Point {
 }
 
 // CanvasToRadar 画布（房间）坐标 (x, y) → 雷达本地坐标 (h, v)。
-// RadarToCanvas 的逆运算，与前端 `toRadarCoordinate` 对齐。
-// 返回 Z 默认 0（画布 → 雷达本地时 Z 不参与 2D 转换）。
+// RadarToCanvas 的逆运算，与前端 `toRadarCoordinate` 对齐。返回 Z 默认 0（2D 转换不含 Z）。
 func CanvasToRadar(p Point, m RadarMount) RadarPoint {
 	localX := float64(p.X - m.Center.X)
 	localY := float64(p.Y - m.Center.Y)
