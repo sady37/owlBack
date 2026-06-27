@@ -187,6 +187,10 @@ type TrackManager struct {
 	wallPolygon             []radarutils.Point
 	staticReflectorLastMark map[trackKey]int64
 
+	// 瞬移干扰已判 artifact 的 (device,tid) 压制重建集（teleport_interference.go）。PURGE 后固件持续重报
+	// (~30s)，滞留漂移点期间压制重建，直到 NoTarget(GC)或移出该点。常态 0–2 条，gcInterferenceSuppress 回收。
+	interferenceSuppress map[trackKey]*interferenceSuppressRec
+
 	// startupMs：TrackManager 创建时间。用于"service 启动 5min grace"反 ghost 兜底
 	// （grace 内 first-seen 的 track 视为已存在，birth filter 不打 ghost）。
 	startupMs int64
@@ -245,6 +249,7 @@ func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackMana
 		mirrorBuffer:            make(map[mirrorPairKey]*mirrorPairBuffer),
 		mirrorCooldownMs:        60_000,
 		staticReflectorLastMark: make(map[trackKey]int64),
+		interferenceSuppress:    make(map[trackKey]*interferenceSuppressRec),
 	}
 }
 
@@ -924,6 +929,10 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
 		}
+		// 瞬移待删窗 / immature-coast 反射伪迹 → 零 StillBoxSec，排出 FloorGuard 累积（不删轨，floor-neutral）。
+		if ts.SuspectInterferenceSinceMs > 0 || ts.FloorArtifactSinceMs > 0 {
+			base.StillBoxSec = 0
+		}
 		// cell area 走 stillbox 锁定(box 开始那格,updateContinuousIndicators 用 raw 起点读一次)→ floor 阈 + emission
 		// redirect 单源,躲开逐帧 Kalman/raw 微动跨格(sit 区边缘被偏读成 active 致误报)。移动期不读(floor 不计时/emission 靠 pose)。
 		// EnterTarget(门方向,lost-fall 用)仍按当前 raw 位置实时取。
@@ -1135,6 +1144,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	// ========== 段 1: 观测到的 track ==========
 	for _, f := range frames {
 		key := trackKey{f.DeviceAddr, f.TrackID}
+		// 瞬移干扰压制：已判 artifact 的 tid 仍滞留漂移点 → 丢弃该帧不重建 track（防固件重报刷回）。
+		if tm.interferenceSuppressed(key, f, nowMs) {
+			continue
+		}
 		activeIDs[key] = true
 		ts, exists := tm.tracks[key]
 
@@ -1173,6 +1186,14 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			dtSec = 1
 		} else {
 			// 已有 track
+			// 瞬移干扰检测（Kalman 更新前看 raw 跳变，O(1)/轨）：闸1∧闸2 → PURGE，跳过本帧后续。
+			if tm.handleTeleportObservedFrame(ts, key, f, nowMs) {
+				continue
+			}
+			// 被观测回来且移走出生点 → 解 floor 抑制 latch（不再是纯冻结孤儿，恢复正常 floor）。
+			if ts.FloorArtifactSinceMs > 0 && distInt(ts.BirthPos.X, ts.BirthPos.Y, f.X, f.Y) > staticReflectorConfineCm {
+				ts.FloorArtifactSinceMs = 0
+			}
 			dt := float64(f.TMs-ts.LastUpdateMs) / 1000.0
 			if dt <= 0 {
 				dt = 1
@@ -1198,6 +1219,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			vx = int(math.Round(vxF))
 			vy = int(math.Round(vyF))
 
+			ts.Prev2Pose = ts.LastPose // teleport 闸1 用 N-2 pose：左移一格后再记 N
 			ts.LastPose = f.Pose
 			ts.LastZ = f.Z
 			ts.LastRawH = f.RawH
@@ -1255,6 +1277,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			tm.updateContinuousIndicators(ts, TrackFrame{TrackID: ts.TrackID, X: last.X, Y: last.Y, Z: last.Z, Pose: ts.LastPose, TMs: nowMs}, nowMs)
 		}
 
+		// immature-coast 反射伪迹 floor 抑制：真实寿命极短 + 无倒地前兆 + 有活轨共存 → latch（不删轨，
+		// 仅 SnapshotTrackStatuses 零其 StillBoxSec 不喂 floor；lid389 类 1-tick 远墙反射）。
+		tm.maybeLatchFloorArtifact(ts, id, nowMs)
+
 		// 驱逐：续 still-box 期间保留到 lostStillCarryMs 上限（让 still 累积到 floor 兜底）。
 		//   不用 noTargetSustained(固件 88 无目标)删——它分不清"人走了"vs"跟丢摔倒的人"，删了=漏摔；
 		//   撤销（人真走了不兜底）由 belief exitL≥flip(ExitRoom 硬证据)压 floor 承担，不在此删 track。
@@ -1288,6 +1314,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	// ========== 段 4e: 静止金属反射体自学习（near-wall + 长期静止 + 游走真人共存）==========
 	// Phase A：仅累计 StaticReflectorCount + log static_reflector_candidate，不改 verdict。详 static_reflector.go。
 	tm.scanStaticReflectors(nowMs)
+
+	// 瞬移干扰压制集 GC：回收已消失 tid 的条目（NoTarget 后 TTL 内）。
+	tm.gcInterferenceSuppress(nowMs)
 
 	// PR-9: v1 段 5 Bed-Fall 物理矛盾检测整段删除（依赖 totalBedPeople / bedPersonCount）。
 	// PR-11 silent_fall 重写时用 BedSession + SuiteCensus 重新表达"床上方矛盾"语义，

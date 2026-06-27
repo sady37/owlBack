@@ -918,8 +918,8 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
 		}
-		// 瞬移嫌疑待删窗：从 floor/blind-faller still-box 累积排除（等待真人新 tid 接住期间不得误火）。
-		if ts.SuspectInterferenceSinceMs > 0 {
+		// 瞬移嫌疑待删窗 / immature-coast 反射伪迹：从 floor/blind-faller still-box 累积排除（不得误火）。
+		if ts.SuspectInterferenceSinceMs > 0 || ts.FloorArtifactSinceMs > 0 {
 			base.StillBoxSec = 0
 		}
 		if c := tm.grid.CellAt(px, py); c != nil {
@@ -1148,6 +1148,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			if tm.handleTeleportObservedFrame(ts, key, f, nowMs) {
 				continue
 			}
+			// 被观测回来且移走出生点 → 解 floor 抑制 latch（不再是纯冻结孤儿，恢复正常 floor）。
+			if ts.FloorArtifactSinceMs > 0 && distInt(ts.BirthPos.X, ts.BirthPos.Y, f.X, f.Y) > staticReflectorConfineCm {
+				ts.FloorArtifactSinceMs = 0
+			}
 			dt := float64(f.TMs-ts.LastUpdateMs) / 1000.0
 			if dt <= 0 {
 				dt = 1
@@ -1235,6 +1239,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			}
 			tm.updateContinuousIndicators(ts, TrackFrame{TrackID: ts.TrackID, X: last.X, Y: last.Y, Z: last.Z, Pose: ts.LastPose, TMs: nowMs}, nowMs)
 		}
+
+		// immature-coast 反射伪迹 floor 抑制：真实寿命极短 + 无倒地前兆 + 有活轨共存 → latch（不删轨，
+		// 仅 SnapshotTrackStatuses 零其 StillBoxSec 不喂 floor；lid389 类 1-tick 远墙反射）。
+		tm.maybeLatchFloorArtifact(ts, id, nowMs)
 
 		// 驱逐：续 still-box 期间保留到 lostStillCarryMs 上限（让 still 累积到 floor 兜底）。
 		//   不用 noTargetSustained(固件 88 无目标)删——它分不清"人走了"vs"跟丢摔倒的人"，删了=漏摔；

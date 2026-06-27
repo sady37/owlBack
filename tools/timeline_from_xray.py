@@ -81,7 +81,10 @@ for r in win:
                          pose_name(t.get('pose',0)), t.get('position_z',0), None,
                          pose_name(t.get('pose',0))])
     elif cat in EVT_RDR and dtype == 'Radar':
-        rows.append([ts, 0, u4, 'E', '-', '-', 0, None, f'{cat}(rdr)'])
+        evtid = next((t['track_id'] for t in (r['data_value'] or [])
+                      if isinstance(t, dict) and t.get('track_id') is not None), None)
+        evlid = dev_tid_lid.get((u4, evtid), '-') if evtid is not None else '-'
+        rows.append([ts, 0, u4, f'E{evtid}' if evtid is not None else 'E', evlid, '-', 0, None, f'{cat}(rdr)'])
     elif cat == 'number_people' and dtype == 'Radar':
         for t in (r['data_value'] or []):
             npv = t.get('number_people', t.get('count', '?'))
