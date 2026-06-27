@@ -953,14 +953,6 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		}
 		// 瞬移嫌疑待删窗 / immature-coast 反射伪迹 / interfer 出生孤迹：从 floor/blind-faller still-box 累积排除（不得误火）。
 		if ts.SuspectInterferenceSinceMs > 0 || ts.FloorArtifactSinceMs > 0 || ts.InterferBornSinceMs > 0 {
-			// ⚠️ Xsensor 验证专用，**故意不镜像进生产 wisefido-sensor**（生产无此行；逐帧打、量大，仅供 replay 取证 interfer-born 实际零掉多少 still 喂 floor）。
-			if ts.InterferBornSinceMs > 0 && base.StillBoxSec > 0 {
-				tm.logger.Info("interfer_born_stillbox_zeroed",
-					zap.Int("track_id", ts.TrackID),
-					zap.String("logic_id", ts.LogicID),
-					zap.Int("stillbox_sec_suppressed", base.StillBoxSec),
-				)
-			}
 			base.StillBoxSec = 0
 		}
 		if c := tm.grid.CellAt(px, py); c != nil {
