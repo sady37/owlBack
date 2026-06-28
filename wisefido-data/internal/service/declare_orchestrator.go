@@ -45,6 +45,7 @@ type cvGeometry struct {
 
 type cvObject struct {
 	ID         string  `json:"id"`
+	Name       string  `json:"name"`
 	TypeName   string  `json:"typeName"`
 	Angle      float64 `json:"angle"`
 	Source     string  `json:"source"`
@@ -52,7 +53,9 @@ type cvObject struct {
 	Device     struct {
 		Category string `json:"category"`
 		IOT      struct {
-			Radar *cvRadar `json:"radar"`
+			Radar      *cvRadar `json:"radar"`
+			DeviceUID  string   `json:"device_uid"` // 设备终身身份(logMAC)；declare 下发认这个，免疫 device_addr 漂移
+			DeviceAddr string   `json:"deviceAddr"` // 设备实测绑定 addr(来自设备查询)；仅 display，非顶层 copy-leftover device_addr
 		} `json:"iot"`
 	} `json:"device"`
 	Geometry cvGeometry `json:"geometry"`
@@ -65,7 +68,8 @@ type cvDoc struct {
 // radarFrame 一个雷达对象的下发上下文。
 type radarFrame struct {
 	id           string
-	deviceAddr   string
+	deviceUID    string // 下发/分组 key：设备终身身份
+	deviceAddr   string // display 用：设备实测 addr
 	center       cvPoint
 	angle        float64
 	installModel string
@@ -81,19 +85,21 @@ type radarPt struct {
 
 // declareArea 单个区域的下发产物。
 type declareArea struct {
-	AreaID   int
-	FwType   int
-	TypeName string
-	ObjectID string
-	Vertices [4]radarPt
+	AreaID     int
+	FwType     int
+	TypeName   string
+	ObjectID   string
+	ObjectName string
+	Vertices   [4]radarPt
 }
 
 // declareSkip 落 layout/cell 但不下发固件的对象（策略不下发，如 Chair/BlindArea/Wall）。
 type declareSkip struct {
 	ObjectID   string
+	ObjectName string
 	TypeName   string
 	Reason     string
-	DeviceAddr string // 所属雷达（供 verify 把 not-sent 对象并到对应雷达）
+	DeviceUID  string // 所属雷达 uid（供 verify 把 not-sent 对象并到对应雷达）
 	Vertices   [4]radarPt
 }
 
@@ -380,8 +386,8 @@ func radarFrameOf(o cvObject) (radarFrame, bool) {
 		im = "ceiling"
 	}
 	return radarFrame{
-		id: o.ID, deviceAddr: o.DeviceAddr, center: c, angle: o.Angle,
-		installModel: im, boundary: rc.Boundary,
+		id: o.ID, deviceUID: o.Device.IOT.DeviceUID, deviceAddr: o.Device.IOT.DeviceAddr,
+		center: c, angle: o.Angle, installModel: im, boundary: rc.Boundary,
 	}, true
 }
 
@@ -399,10 +405,11 @@ func bedContainsAnyRadar(bed cvObject, radars []radarFrame) bool {
 }
 
 // computeDeclareSet 每雷达 → declare set + 跳过清单。
-func computeDeclareSet(canvas []byte) (map[string][]declareArea, []declareSkip, []declareDrop, error) {
+// perRadar / uidAddr 均按 device_uid(设备终身身份)收口：下发认 uid，免疫 device_addr 漂移；uidAddr 仅供 display。
+func computeDeclareSet(canvas []byte) (map[string][]declareArea, map[string]string, []declareSkip, []declareDrop, error) {
 	var doc cvDoc
 	if err := json.Unmarshal(canvas, &doc); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	var radars []radarFrame
 	for _, o := range doc.Objects {
@@ -411,9 +418,11 @@ func computeDeclareSet(canvas []byte) (map[string][]declareArea, []declareSkip, 
 		}
 	}
 	perRadar := make(map[string][]declareArea, len(radars))
+	uidAddr := make(map[string]string, len(radars))
 	var skips []declareSkip
 	var drops []declareDrop
 	for _, r := range radars {
+		uidAddr[r.deviceUID] = r.deviceAddr
 		type candidate struct {
 			o     cvObject
 			code  int
@@ -439,7 +448,7 @@ func computeDeclareSet(canvas []byte) (map[string][]declareArea, []declareSkip, 
 			isMB := o.TypeName == "Bed" && bedContainsAnyRadar(o, radars)
 			code, send := firmwarePolicy(o.TypeName, isMB)
 			if !send {
-				skips = append(skips, declareSkip{ObjectID: o.ID, TypeName: o.TypeName, Reason: "policy:not-sent", DeviceAddr: r.deviceAddr, Vertices: verts})
+				skips = append(skips, declareSkip{ObjectID: o.ID, ObjectName: o.Name, TypeName: o.TypeName, Reason: "policy:not-sent", DeviceUID: r.deviceUID, Vertices: verts})
 				continue
 			}
 			sendable = append(sendable, candidate{o: o, code: code, verts: verts})
@@ -457,11 +466,11 @@ func computeDeclareSet(canvas []byte) (map[string][]declareArea, []declareSkip, 
 		// 顺序占槽 0..N-1（确定性）：旧/新均如此编号，删旧=DELETE 尾部 [N..M-1]，无需追踪设备态。
 		areas := make([]declareArea, 0, len(sendable))
 		for i, c := range sendable {
-			areas = append(areas, declareArea{AreaID: i, FwType: c.code, TypeName: c.o.TypeName, ObjectID: c.o.ID, Vertices: c.verts})
+			areas = append(areas, declareArea{AreaID: i, FwType: c.code, TypeName: c.o.TypeName, ObjectID: c.o.ID, ObjectName: c.o.Name, Vertices: c.verts})
 		}
-		perRadar[r.deviceAddr] = areas
+		perRadar[r.deviceUID] = areas
 	}
-	return perRadar, skips, drops, nil
+	return perRadar, uidAddr, skips, drops, nil
 }
 
 // radarDownlinkResult 单雷达下发结果（回客户端显示）。
@@ -483,15 +492,17 @@ type SaveRoomLayoutResult struct {
 
 // ZoneInfo 单个权威声明区（供 FE status 显示，单源 = data 对 canvas 的编排结果）。
 type ZoneInfo struct {
-	AreaID   int       `json:"area_id"`
-	Type     int       `json:"type"`
-	TypeName string    `json:"type_name"`
-	ObjectID string    `json:"object_id"`
-	Vertices [4][2]int `json:"vertices"`
+	AreaID     int       `json:"area_id"`
+	Type       int       `json:"type"`
+	TypeName   string    `json:"type_name"`
+	ObjectID   string    `json:"object_id"`
+	ObjectName string    `json:"object_name,omitempty"`
+	Vertices   [4][2]int `json:"vertices"`
 }
 
 type RadarZones struct {
 	DeviceAddr string     `json:"device_addr"`
+	DeviceUID  string     `json:"device_uid,omitempty"`
 	Zones      []ZoneInfo `json:"zones"`
 }
 
@@ -510,16 +521,16 @@ func (s *RadarInstall) GetRoomZones(ctx context.Context, tenantID, roomID string
 	if len(canvas) == 0 {
 		return result, nil
 	}
-	perRadar, _, _, err := computeDeclareSet(canvas)
+	perRadar, uidAddr, _, _, err := computeDeclareSet(canvas)
 	if err != nil {
 		return nil, err
 	}
-	for addr, areas := range perRadar {
-		rz := RadarZones{DeviceAddr: addr, Zones: []ZoneInfo{}}
+	for uid, areas := range perRadar {
+		rz := RadarZones{DeviceAddr: uidAddr[uid], DeviceUID: uid, Zones: []ZoneInfo{}}
 		for _, a := range areas {
 			v := a.Vertices
 			rz.Zones = append(rz.Zones, ZoneInfo{
-				AreaID: a.AreaID, Type: a.FwType, TypeName: a.TypeName, ObjectID: a.ObjectID,
+				AreaID: a.AreaID, Type: a.FwType, TypeName: a.TypeName, ObjectID: a.ObjectID, ObjectName: a.ObjectName,
 				Vertices: [4][2]int{
 					{int(v[0].H), int(v[0].V)}, {int(v[1].H), int(v[1].V)},
 					{int(v[2].H), int(v[2].V)}, {int(v[3].H), int(v[3].V)},
@@ -591,6 +602,7 @@ type ZoneVerify struct {
 	IntentType     int       `json:"intent_type"`
 	IntentTypeName string    `json:"intent_type_name"`
 	ObjectID       string    `json:"object_id,omitempty"`
+	ObjectName     string    `json:"object_name,omitempty"`
 	DeviceType     int       `json:"device_type"`
 	DeviceVertices [4][2]int `json:"device_vertices"` // dm RAW（设备原值，不 ×10）
 	NotNeed        bool      `json:"not_need,omitempty"` // 引擎用、不下发固件（Chair 等）→ FE 显 "-"
@@ -619,29 +631,23 @@ func (s *RadarInstall) GetRoomZonesVerify(ctx context.Context, tenantID, roomID 
 	if len(canvas) == 0 {
 		return result, nil
 	}
-	intentPerRadar, skips, _, err := computeDeclareSet(canvas)
+	intentPerRadar, uidAddr, skips, _, err := computeDeclareSet(canvas)
 	if err != nil {
 		return nil, err
 	}
-	for addr, areas := range intentPerRadar {
-		rv := RadarZonesVerify{DeviceAddr: addr, Zones: []ZoneVerify{}}
+	for uid, areas := range intentPerRadar {
+		rv := RadarZonesVerify{DeviceAddr: uidAddr[uid], DeviceUID: uid, Zones: []ZoneVerify{}}
 		intentByID := make(map[int]declareArea, len(areas))
 		for _, a := range areas {
 			intentByID[a.AreaID] = a
 		}
 		deviceByID := map[int]deviceZone{}
 		switch {
-		case addr == "":
-			rv.Error = "radar object has no device_addr binding"
+		case uid == "":
+			rv.Error = "radar object has no device_uid binding"
 		case s.qinglanClient == nil:
 			rv.Error = "qinglan client not available"
 		default:
-			uid, uerr := s.GetDeviceUID(ctx, tenantID, addr)
-			if uerr != nil {
-				rv.Error = fmt.Sprintf("resolve uid: %v", uerr)
-				break
-			}
-			rv.DeviceUID = uid
 			props, perr := s.qinglanClient.GetDeviceProperties(ctx, uid, []string{"declare_area"})
 			if perr != nil {
 				rv.Error = perr.Error()
@@ -669,7 +675,7 @@ func (s *RadarInstall) GetRoomZonesVerify(ctx context.Context, tenantID, roomID 
 			dz, onDevice := deviceByID[id]
 			zv := ZoneVerify{AreaID: id, OnIntent: onIntent, OnDevice: onDevice}
 			if onIntent {
-				zv.IntentType, zv.IntentTypeName, zv.ObjectID = ia.FwType, ia.TypeName, ia.ObjectID
+				zv.IntentType, zv.IntentTypeName, zv.ObjectID, zv.ObjectName = ia.FwType, ia.TypeName, ia.ObjectID, ia.ObjectName
 			}
 			if onDevice {
 				zv.DeviceType = dz.Type
@@ -685,9 +691,9 @@ func (s *RadarInstall) GetRoomZonesVerify(ctx context.Context, tenantID, roomID 
 	}
 	// B：not-sent 对象（Chair 等引擎用）并进对应雷达，标 not_need → FE 显 "-"。
 	for _, sk := range skips {
-		zv := ZoneVerify{OnIntent: true, NotNeed: true, IntentType: engineAreaType(sk.TypeName), IntentTypeName: sk.TypeName, ObjectID: sk.ObjectID}
+		zv := ZoneVerify{OnIntent: true, NotNeed: true, IntentType: engineAreaType(sk.TypeName), IntentTypeName: sk.TypeName, ObjectID: sk.ObjectID, ObjectName: sk.ObjectName}
 		for i := range result.Radars {
-			if result.Radars[i].DeviceAddr == sk.DeviceAddr {
+			if result.Radars[i].DeviceUID == sk.DeviceUID {
 				result.Radars[i].Zones = append(result.Radars[i].Zones, zv)
 				break
 			}
@@ -737,13 +743,13 @@ func (s *RadarInstall) AppendFeedbackObject(ctx context.Context, spatialPrefix, 
 // 编排、16-cap、删旧、下发、失败/截断提示全在此一处（单源，3 端只画 canvas + 显示结果）。
 func (s *RadarInstall) applyDeclare(ctx context.Context, tenantID, prefix string, newCanvas []byte) *SaveRoomLayoutResult {
 	result := &SaveRoomLayoutResult{}
-	newPerRadar, skips, drops, err := computeDeclareSet(newCanvas)
+	newPerRadar, uidAddr, skips, drops, err := computeDeclareSet(newCanvas)
 	if err != nil {
 		s.logger.Warn("declare: canvas parse failed", zap.String("prefix", prefix), zap.Error(err))
 		return result
 	}
-	for addr, areas := range newPerRadar {
-		fields := []zap.Field{zap.String("prefix", prefix), zap.String("addr", addr), zap.Int("count", len(areas))}
+	for uid, areas := range newPerRadar {
+		fields := []zap.Field{zap.String("prefix", prefix), zap.String("uid", uid), zap.String("addr", uidAddr[uid]), zap.Int("count", len(areas))}
 		for _, a := range areas {
 			fields = append(fields, zap.String("area", declareAreaLine(a)))
 		}
@@ -758,12 +764,12 @@ func (s *RadarInstall) applyDeclare(ctx context.Context, tenantID, prefix string
 		}
 		result.Warnings = append(result.Warnings, fmt.Sprintf("Zone limit reached: %d lower-priority zone(s) were dropped to fit the device's 16-zone limit. Beds, doors, and interfer zones were kept.", len(drops)))
 	}
-	result.Downlink, result.Verify = s.downlinkDeclares(ctx, tenantID, newPerRadar, computeInstallProps(newCanvas))
+	result.Downlink, result.Verify = s.downlinkDeclares(ctx, newPerRadar, uidAddr, computeInstallProps(newCanvas))
 	// B：not-sent 对象（Chair 等引擎用）并进对应雷达 verify，标 not_need → FE 显 "-"。
 	for _, sk := range skips {
-		zv := ZoneVerify{OnIntent: true, NotNeed: true, IntentType: engineAreaType(sk.TypeName), IntentTypeName: sk.TypeName, ObjectID: sk.ObjectID}
+		zv := ZoneVerify{OnIntent: true, NotNeed: true, IntentType: engineAreaType(sk.TypeName), IntentTypeName: sk.TypeName, ObjectID: sk.ObjectID, ObjectName: sk.ObjectName}
 		for i := range result.Verify {
-			if result.Verify[i].DeviceAddr == sk.DeviceAddr {
+			if result.Verify[i].DeviceUID == sk.DeviceUID {
 				result.Verify[i].Zones = append(result.Verify[i].Zones, zv)
 				break
 			}
@@ -863,10 +869,10 @@ func computeInstallProps(canvas []byte) map[string]map[string]interface{} {
 	out := map[string]map[string]interface{}{}
 	for _, o := range doc.Objects {
 		r, ok := radarFrameOf(o)
-		if !ok || r.deviceAddr == "" {
+		if !ok || r.deviceUID == "" {
 			continue
 		}
-		out[r.deviceAddr] = map[string]interface{}{
+		out[r.deviceUID] = map[string]interface{}{
 			"rectangle":            boundaryToRectangleDM(r.boundary, r.installModel),
 			"radar_install_height": int(math.Round(r.center.Z / 10)), // cm→dm
 			"install_model":        installModelCode(r.installModel),
@@ -902,35 +908,25 @@ func buildVerifyZones(areas []declareArea, deviceByID map[int]deviceZone, ok boo
 }
 
 // downlinkDeclares 每雷达 addr→UID，读 baseline→diff 只发变化+删残留+安装配置→qinglan；返回下发结果 + db↔iot verify。
-func (s *RadarInstall) downlinkDeclares(ctx context.Context, tenantID string, newPerRadar map[string][]declareArea, installProps map[string]map[string]interface{}) ([]radarDownlinkResult, []RadarZonesVerify) {
+func (s *RadarInstall) downlinkDeclares(ctx context.Context, newPerRadar map[string][]declareArea, uidAddr map[string]string, installProps map[string]map[string]interface{}) ([]radarDownlinkResult, []RadarZonesVerify) {
 	var results []radarDownlinkResult
 	var verifyList []RadarZonesVerify
 	if s.qinglanClient == nil {
-		for addr, areas := range newPerRadar {
-			results = append(results, radarDownlinkResult{DeviceAddr: addr, AreaCount: len(areas), Error: "qinglan client not available"})
+		for uid, areas := range newPerRadar {
+			results = append(results, radarDownlinkResult{DeviceAddr: uidAddr[uid], DeviceUID: uid, AreaCount: len(areas), Error: "qinglan client not available"})
 		}
 		return results, verifyList
 	}
-	for addr, areas := range newPerRadar {
-		res := radarDownlinkResult{DeviceAddr: addr, AreaCount: len(areas)}
-		rv := RadarZonesVerify{DeviceAddr: addr, Zones: []ZoneVerify{}}
-		if addr == "" {
-			res.Error = "radar object has no device_addr binding"
+	for uid, areas := range newPerRadar {
+		res := radarDownlinkResult{DeviceAddr: uidAddr[uid], DeviceUID: uid, AreaCount: len(areas)}
+		rv := RadarZonesVerify{DeviceAddr: uidAddr[uid], DeviceUID: uid, Zones: []ZoneVerify{}}
+		if uid == "" {
+			res.Error = "radar object has no device_uid binding"
 			rv.Error = res.Error
 			results = append(results, res)
 			verifyList = append(verifyList, rv)
 			continue
 		}
-		uid, err := s.GetDeviceUID(ctx, tenantID, addr)
-		if err != nil {
-			res.Error = fmt.Sprintf("resolve uid: %v", err)
-			rv.Error = res.Error
-			results = append(results, res)
-			verifyList = append(verifyList, rv)
-			continue
-		}
-		res.DeviceUID = uid
-		rv.DeviceUID = uid
 
 		// Option B：读设备 baseline（declare + 安装配置）→ 只发变化；读失败兜底全发。
 		deviceByID := map[int]deviceZone{}
@@ -953,7 +949,7 @@ func (s *RadarInstall) downlinkDeclares(ctx context.Context, tenantID string, ne
 		if declStr != "" {
 			props["declare_area"] = declStr
 		}
-		for k, v := range installProps[addr] { // rectangle / radar_install_height / install_model：只发变化的
+		for k, v := range installProps[uid] { // rectangle / radar_install_height / install_model：只发变化的
 			if deviceProps != nil && fmt.Sprintf("%v", deviceProps[k]) == fmt.Sprintf("%v", v) {
 				continue // 与设备一致（如只改 objectName，安装配置没动）→ 不发
 			}
