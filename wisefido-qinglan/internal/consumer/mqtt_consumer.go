@@ -970,7 +970,8 @@ func radarTrackToData(tr map[string]interface{}) map[string]any {
 		t.Event = asInt(v)
 	}
 	if v, ok := tr["area_id"]; ok {
-		t.AreaID = asInt(v)
+		av := asInt(v)
+		t.AreaID = &av
 	}
 	data := t.ToFieldMap()
 	if v, ok := tr["remaining_time"]; ok {

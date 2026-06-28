@@ -11,7 +11,7 @@ type Track struct {
 	PositionX       *int   `json:"position_x"`
 	PositionY       *int   `json:"position_y"`
 	PositionZ       *int   `json:"position_z"`
-	AreaID          int    `json:"area_id,omitempty"` // firmware 区域号；255=声明区域之外。0=无声明区/设备无区域概念(sleepad)
+	AreaID          *int   `json:"area_id,omitempty"` // firmware 区域号(0-indexed,0-15 均有效区)；255=声明区域之外；nil=未上报/设备无区域概念(sleepad)。指针区分 nil(无) vs &0(Area 0)
 	Event         int    `json:"event"`          // 事件类型: 0=无, 1=进房, 2=离房, 3=进区, 4=离区
 	TrackConfidence int    `json:"track_confidence,omitempty"`
 
@@ -57,7 +57,7 @@ func (t *Track) FromFieldMap(m map[string]any) {
 		t.Event = v
 	}
 	if v, ok := intVal(m, FieldAreaID); ok {
-		t.AreaID = v
+		t.AreaID = &v
 	}
 	if v, ok := intVal(m, FieldPose); ok {
 		t.Pose = v
@@ -112,12 +112,10 @@ func (t *Track) ToFieldMap() map[string]any {
 	if t.Event != 0 {
 		m[FieldEvent] = t.Event
 	}
-	if t.AreaID != 0 {
-		m[FieldAreaID] = t.AreaID
+	if t.AreaID != nil {
+		m[FieldAreaID] = *t.AreaID
 	}
-	if t.Pose != 0 {
-		m[FieldPose] = t.Pose
-	}
+	m[FieldPose] = t.Pose // 0=初始化(PoseUnknown)是有效枚举,无条件发(不可 omit:与"无 pose"无二义)
 	if t.PoseConfidence != 0 {
 		m[FieldPoseConfidence] = t.PoseConfidence
 	}
