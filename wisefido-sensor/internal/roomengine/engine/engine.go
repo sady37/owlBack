@@ -368,6 +368,14 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 			logPsi = cp.LogPsi(r.js, gxy)
 			logPhi = em.LogPhi(r.js, obs)
 			r.applyLeftBedOpen(cp, logPhi, obs, gxy, true) // ③ 在场 → SOpenFloor
+			// present 静止 ghost「已离房」：真人离房后镜面/家具残留 z≡0 轨，被 room-empty 信号 + 门距划 SLeft
+			//   → 压 floor 不误火 + 攒 SLeft 丢轨即 absorbed-drop。硬门(Δz/pose)在 track_manager 否决真摔。
+			//   🔴 latch-first：已证摔绝不划（与 hand-off 同纪律）；不设 lostExited（非真人过门）。
+			if fi.GhostLeftLogOdds != nil && !r.fallLatched[ts.LogicID] {
+				if exitL = fi.GhostLeftLogOdds(ts.LogicID, fi.NowMs); exitL > 0 {
+					r.js.AddLogToS(logPhi, belief.SLeft, exitL)
+				}
+			}
 		} else {
 			// 消失态：雷达轴中性（RadarOnline=false），**接触轴(sleepad)仍应用**——在床 InBed→SBed
 			//   保护睡眠者；LeftBed→B vac→Ψ 放行 SFallen。belief **自然演化**（无人工 ramp，已作废）：

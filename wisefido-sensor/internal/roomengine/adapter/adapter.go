@@ -85,6 +85,10 @@ type FrameInput struct {
 	//   喂 blind track 的 logPhi[SLeft]：够强 → 自然 absorbed-drop + 压低 pF 不 fire；≥ExitFlipLogOdds →
 	//   Unit D/UD timer cancel。nil=无源→0（保守不抑制）。
 	ExitLogOdds func(logicID string, atMs int64) float64
+	// GhostLeftLogOdds 按 LogicID 算 present 静止占用轨「已离房」的 SLeft 对数几率（room-empty 信号
+	//   + 门距 + 时间门；硬门 Δz/pose 否决真摔）。喂 present 分支 logPhi[SLeft]：镜面残留 ghost 在真人
+	//   离房后被划 SLeft → 压 floor 不误火 + 丢轨即 absorbed-drop。nil=无源→0。
+	GhostLeftLogOdds func(logicID string, atMs int64) float64
 }
 
 // Params 派生层参数（form-anchor，标定留 oracle）。

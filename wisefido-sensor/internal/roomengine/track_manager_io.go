@@ -105,7 +105,17 @@ func (tm *TrackManager) SetAIPublisher(p AIPublisher) {
 }
 
 func (tm *TrackManager) roomLedgerEmpty() bool {
-	return tm.lastExitMs > tm.lastEnterMs
+	// 房级 = 跨设备聚合：任一设备 enter>exit → 占用（非空）；须至少一台报过 exit 才算"已空"（无事件保守=非空）。
+	anyExit := false
+	for _, d := range tm.devRoom {
+		if d.enterMs > d.exitMs {
+			return false
+		}
+		if d.exitMs > 0 {
+			anyExit = true
+		}
+	}
+	return anyExit
 }
 
 func (tm *TrackManager) RoomLedgerEmpty() bool {
@@ -254,7 +264,7 @@ func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 			"y":                 cy,
 			"z":                 ts.LastZ,
 			"pose":              ts.LastPose,
-			"room_np":           tm.lastNumberPeople,
+			"room_np":           tm.roomNpLocked(),
 			"exit_logodds":      exitLO,       // SLeft 总对数几率（足够大才压住 lost-fall）
 			"exit_has_event":    exitHasEvent, // ① 固件 ExitRoom 硬证据有没有命中
 			"exit_trend_ratio":  exitTrend,    // ② 朝门移动强度（门口静止→0）
@@ -301,7 +311,7 @@ func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 			zap.String("cell_area", ts.LastCellArea.Name()),
 			zap.Int("tfloor_sec", tfloorSec), zap.Int("stillbox_sec", stillSec),
 			zap.Int("x", cx), zap.Int("y", cy), zap.Int("z", ts.LastZ), zap.Int("pose", ts.LastPose),
-			zap.Int("room_np", tm.lastNumberPeople), zap.String("pin", pinName),
+			zap.Int("room_np", tm.roomNpLocked()), zap.String("pin", pinName),
 			zap.Float64("exit_logodds", exitLO))
 	}
 	tm.mu.Unlock()

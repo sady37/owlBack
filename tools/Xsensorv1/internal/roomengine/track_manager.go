@@ -115,20 +115,11 @@ type TrackManager struct {
 	// 与离散 InBed 事件分开存：几何分不出"躺床/站床边"，须服从离床 latch——不得越过离散 LeftBed 续命床占用。
 	lastRadarInBedGeomMs int64
 
-	// lastNumberPeople：固件最近一次上报的房内人数(单一 np latch,审查51 #1.3 单源真相)。
-	// np=0 ≡ count==0(原 lastNumberPeopleZeroMs subsume 进此,不留两个独立 latch 防 drift)。
-	// 喂 belief ObsNumberPeople(弱 corroboration:np=0 弱 Empty 非 substitution / np≥1 压 Empty,R5 不入 SFallen)。
-	lastNumberPeople   int   // 最近人数;仅当 lastNumberPeopleTs>0 才有效(0=有效计数,非"未上报")
-	lastNumberPeopleTs int64 // 最近 number_people 事件 ts(0=从未上报)
-	// noTargetSinceMs：固件最近一次明示"无目标"（track_id=88 心跳 / 全零帧）起始 ts；收到真 track 帧即清 0。
-	// 供 88-加速驱逐：持续无目标 ≥ heartbeat88EvictMs 时陈旧 track 不必等满 MaxMissCount
-	// （稀疏心跳下要 >120s，见 Case2 142s）即可快速进 lost_fall/vanish。镜像 cardagg ClearDeviceTracks。
-	noTargetSinceMs int64
-	// 占用账（enter/exit 权威的人数守恒）：lastEnterMs/lastExitMs 供 NeighborRoomEnterMs 跨房 hand-off 判占用。
-	//   lost-fall"人过门走了"已改按 track_id 算 SLeft 对数几率（ExitLogOdds），不再用房级 lastExit>lastEnter（多人误判）。
-	// lost_fall 入池前查：房账为空 → 失锁 track 是"人走后残影"（冻住的反射）→ 抑制。不靠 ghost，靠 enter/exit。
-	lastEnterMs int64
-	lastExitMs  int64
+	// devRoom：np / EnterRoom / ExitRoom / no-target(tid=88) 全部 **per-device** 隔离。多雷达同房不得
+	//   last-writer-wins 互相 clobber——瞎雷达 np=0 绝不能覆盖同房另一台看到的真人（治 09e7→d523 FN）。
+	//   ghost 反射必与投射它的真人同设备，故 ghost 离房抑制按 same-device scope（GhostLeftLogOdds）。
+	//   房级语义（占用/np=0）由跨 devRoom 聚合派生（CurrentNumberPeople/NeighborRoomEnterMs），非独立 latch。
+	devRoom map[string]*devRoomState // key=device addr
 
 	// bedsideFallCfg：R4（床边晕倒）参数；PR-9 v1 R4 触发已删，字段保留供 PR-10/11 BathroomBedsideFall 复用。
 	// 全 0 = 用默认（180s / 100cm / 900s）。
@@ -225,6 +216,26 @@ var defaultBedsideFallCfg = BedsideFallConfig{
 }
 
 // NewTrackManager 创建 track 管理器
+// devRoomState per-device 房状态（np/Enter/Exit/no-target）。多雷达同房按设备隔离防 last-writer-wins
+// clobber；房级语义由跨 devRoom 聚合派生。npTs==0 = 该设备从未上报 np。
+type devRoomState struct {
+	np         int   // 最近人数（仅 npTs>0 有效）
+	npTs       int64 // 最近 number_people 事件 ts
+	enterMs    int64 // 最近 EnterRoom ts
+	exitMs     int64 // 最近 ExitRoom ts
+	noTargetMs int64 // 最近 no-target(tid=88/全零)起始 ts；收到该设备真帧清 0
+}
+
+// devRoomFor 取/建某设备的房状态（调用方持 tm.mu）。
+func (tm *TrackManager) devRoomFor(dev string) *devRoomState {
+	d := tm.devRoom[dev]
+	if d == nil {
+		d = &devRoomState{}
+		tm.devRoom[dev] = d
+	}
+	return d
+}
+
 func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackManager {
 	return &TrackManager{
 		roomID:                  roomID,
@@ -232,6 +243,7 @@ func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackMana
 		bedAreaIDs:              bedAreaIDs,
 		tracks:                  make(map[trackKey]*TrackState),
 		outputs:                 make(map[trackKey]*TrackOutput),
+		devRoom:                 make(map[string]*devRoomState),
 		lastRealTrackByDevice:   make(map[string]int64),
 		bedSessions:             make(map[string]*BedSession),
 		sleepadStates:           make(map[string]*SleepadObservation),
@@ -461,7 +473,16 @@ func (tm *TrackManager) HasOtherLiveTrackWithLogicID(logicID string, exceptKey t
 func (tm *TrackManager) NeighborRoomEnterMs() (enterMs int64, occupied bool) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	return tm.lastEnterMs, tm.lastEnterMs > tm.lastExitMs
+	// 房级占用 = 跨设备聚合：最新 EnterRoom ts；任一设备 enter>exit = 仍占用（不被另一台 exit 翻掉）。
+	for _, d := range tm.devRoom {
+		if d.enterMs > enterMs {
+			enterMs = d.enterMs
+		}
+		if d.enterMs > d.exitMs {
+			occupied = true
+		}
+	}
+	return enterMs, occupied
 }
 
 // NeighborBedHandoff 跨房 hand-off：bed InBed 翻转 ts + 当前是否在床（接触式，BedConfidence>0 才有效）。
@@ -768,22 +789,22 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	if e.EventName == alarm.InBed && e.TMs > tm.lastRadarInBedMs {
 		tm.lastRadarInBedMs = e.TMs // radar 离散 InBed 事件 ts（床占用状态翻转权威；不再写 AreaBed cell，Bed 禁自学）
 	}
-	// number_people=0：固件「屋内空」断言。只落 ts，不直接驱动任何取消——
-	// count=0 不等于人离开（可能盲区/水气丢信号），须与门区空间证据合取才采信（见 bathroom_fall）。
-	if e.EventName == EventNameNumberPeople && e.TMs > tm.lastNumberPeopleTs {
-		tm.lastNumberPeople = e.NumberPeople // 单 latch:任一 count(含 0)都 latch;np=0 ≡ count==0
-		tm.lastNumberPeopleTs = e.TMs
+	// number_people / Enter / Exit 全 per-device（e.DeviceUID 实为 addr）：瞎雷达 np=0 不得 clobber 同房真人。
+	// count=0 不等于人离开（盲区/水气丢信号），须与门区空间证据合取才采信（见 bathroom_fall）。
+	d := tm.devRoomFor(e.DeviceUID)
+	if e.EventName == EventNameNumberPeople && e.TMs > d.npTs {
+		d.np = e.NumberPeople
+		d.npTs = e.TMs
 	}
 	// radar LeftBed 落 ts(审查㊾ any-source-OR:bed 占用 veto 须 OR 所有源,非只 sleepad → radar 先报 LeftBed 立即释放压制)。
 	if e.EventName == alarm.LeftBed && e.TMs > tm.lastRadarLeftBedMs {
 		tm.lastRadarLeftBedMs = e.TMs
 	}
-	// 占用账：EnterRoom→占用，ExitRoom→空（np=0 另在 lastNumberPeopleZeroMs）。np≥1 不计占用（镜面虚增）。
-	if e.EventName == alarm.EnterRoom && e.TMs > tm.lastEnterMs {
-		tm.lastEnterMs = e.TMs
+	if e.EventName == alarm.EnterRoom && e.TMs > d.enterMs {
+		d.enterMs = e.TMs
 	}
-	if e.EventName == alarm.ExitRoom && e.TMs > tm.lastExitMs {
-		tm.lastExitMs = e.TMs
+	if e.EventName == alarm.ExitRoom && e.TMs > d.exitMs {
+		d.exitMs = e.TMs
 	}
 }
 
@@ -793,23 +814,41 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 func (tm *TrackManager) LastNumberPeopleZeroMs() int64 {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	if tm.lastNumberPeopleTs > 0 && tm.lastNumberPeople == 0 {
-		return tm.lastNumberPeopleTs
+	// 房级 np=0 = 跨设备聚合：任一设备 np≥1 → 房非空（返 0）；否则取报 np=0 的设备里最新 ts。
+	zeroTs := int64(0)
+	for _, d := range tm.devRoom {
+		if d.npTs == 0 {
+			continue
+		}
+		if d.np >= 1 {
+			return 0
+		}
+		if d.np == 0 && d.npTs > zeroTs {
+			zeroTs = d.npTs
+		}
 	}
-	return 0
+	return zeroTs
 }
 
 // numberPeopleTTLMs number_people event 新鲜窗（firmware 分钟级 push，>1min stale 不再当新鲜）。
 const numberPeopleTTLMs = 70_000
 
-// CurrentNumberPeople 单 np latch:最近房内人数 + 是否新鲜(TTL 内)。count=-1/fresh=false=从未上报。
+// CurrentNumberPeople 房内人数 + 是否新鲜(TTL 内)。count=-1/fresh=false=从未上报。
+// 房级 = 跨设备聚合：取新鲜设备里的 max np（任一台看到 k 人即占用，瞎雷达 np=0 不压真人）。
 func (tm *TrackManager) CurrentNumberPeople(nowMs int64) (count int, fresh bool) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	if tm.lastNumberPeopleTs == 0 || nowMs-tm.lastNumberPeopleTs > numberPeopleTTLMs {
-		return -1, false
+	count = -1
+	for _, d := range tm.devRoom {
+		if d.npTs == 0 || nowMs-d.npTs > numberPeopleTTLMs {
+			continue
+		}
+		fresh = true
+		if d.np > count {
+			count = d.np
+		}
 	}
-	return tm.lastNumberPeople, true
+	return count, fresh
 }
 
 // evictOldRadarAlarms / evictOldRadarEvents：删除超出 recentBufferMs 的旧记录。
@@ -844,15 +883,16 @@ func (tm *TrackManager) Tick(ts int64) []TrackOutput {
 	return tm.processFrameAt(nil, ts)
 }
 
-// NoTargetTick 固件无目标心跳（track_id=88 / 全零帧）专用 tick：标记"无目标起始"后推进。
+// NoTargetTick 固件无目标心跳（track_id=88 / 全零帧）专用 tick：标记该设备"无目标起始"后推进。
 // 与普通 Tick 区分——alarm/event 到达触发的 Tick 不代表无目标，不应触发 88-加速驱逐。
-func (tm *TrackManager) NoTargetTick(ts int64) []TrackOutput {
+// dev=发心跳的设备 addr（per-device：瞎雷达 no-target 不得算作同房另一台看着的真人离场）。
+func (tm *TrackManager) NoTargetTick(ts int64, dev string) []TrackOutput {
 	if ts == 0 {
 		ts = time.Now().UnixMilli()
 	}
 	tm.mu.Lock()
-	if tm.noTargetSinceMs == 0 {
-		tm.noTargetSinceMs = ts
+	if d := tm.devRoomFor(dev); d.noTargetMs == 0 {
+		d.noTargetMs = ts
 	}
 	tm.mu.Unlock()
 	return tm.processFrameAt(nil, ts)
@@ -1101,8 +1141,9 @@ func (tm *TrackManager) ExitLogOdds(logicID string, nowMs int64) float64 {
 			break
 		}
 	}
-	if rec != nil && rec.trendRatio > 0 && tm.lastNumberPeople == 0 && tm.lastNumberPeopleTs >= rec.lostMs {
-		gapSec := float64(tm.lastNumberPeopleTs-rec.lostMs) / 1000.0
+	dev := tm.devRoom[rec.dev] // np 软证据按丢轨人**自己设备**算（per-device，绝不用同房瞎雷达 np=0）
+	if rec.trendRatio > 0 && dev != nil && dev.np == 0 && dev.npTs >= rec.lostMs {
+		gapSec := float64(dev.npTs-rec.lostMs) / 1000.0
 		if gapSec < 1 {
 			gapSec = 1
 		}
@@ -1133,6 +1174,131 @@ const (
 	exitVMax        = 0.95 // V 封顶（永留余地，到不了 1）
 )
 
+// ── present 静止 ghost「已离房」SLeft 注入参数（GhostLeftLogOdds）─────────────────
+const (
+	ghostLeftMaxLogOdds = 8.0 // sum 封顶（= exitRoomLogOdds 同量级，攒够顶过 absorbedThresh→purge）
+	// P_born 门距分桶（log-odds）：门口静止可能真人逗留→负不划；房深处静止=滞留 ghost→正
+	ghostBornNearDoorCm = 110  // < 此 = 门口区
+	ghostBornDeepCm     = 140  // ≥ 此 = 房深处
+	ghostBornNearScore  = -2.0 // 门口 → 负（不划，protect 门口真人）
+	ghostBornMidScore   = 2.5
+	ghostBornDeepScore  = 3.5
+	// timeGate：距 room-empty 信号（ExitRoom/np=0/tid=88）Δt 的乘性时间门
+	ghostGateRampStartMs = 15_000 // < 此 = 太早（给真人重获机会）→ 门=0
+	ghostGateFullMs      = 30_000 // [ramp,full) 线性 0→1；≥ 此满权（中位 30s）
+	ghostGateExpireMs    = 45_000 // > 此 = 证据陈旧 → 门=0（退回 floor 兜底）
+)
+
+// deviceEmptySinceMs 某设备最近一次「屋内空」断言的 ts（取三源最新）：ExitRoom / np=0 / no-target(tid=88)。
+// **per-device**：绝不用同房另一台瞎雷达的信号（治 09e7 np=0 误划 d523 站立真人）。EnterRoom 晚于 ExitRoom
+// = 该设备又见人进门 → 旧 ExitRoom 作废。0 = 该设备从未断言空。调用方持锁。
+func (tm *TrackManager) deviceEmptySinceMs(dev string) int64 {
+	d := tm.devRoom[dev]
+	if d == nil {
+		return 0
+	}
+	exit := d.exitMs
+	if d.enterMs > exit {
+		exit = 0 // 末次房转移是 EnterRoom（人又进来）→ 旧 ExitRoom 作废
+	}
+	since := exit
+	if d.np == 0 && d.npTs > since {
+		since = d.npTs
+	}
+	if d.noTargetMs > since {
+		since = d.noTargetMs
+	}
+	return since
+}
+
+// ghostBornScore P_born：候选静止轨当前位置距最近门的分桶 log-odds。
+func ghostBornScore(distToDoor int) float64 {
+	switch {
+	case distToDoor < ghostBornNearDoorCm:
+		return ghostBornNearScore
+	case distToDoor < ghostBornDeepCm:
+		return ghostBornMidScore
+	default:
+		return ghostBornDeepScore
+	}
+}
+
+// ghostTimeGate 乘性时间门 ∈[0,1]：太早(<15s)/陈旧(>45s)=0；[15,30)线性升；[30,45]满权。
+func ghostTimeGate(dtMs int64) float64 {
+	switch {
+	case dtMs < ghostGateRampStartMs || dtMs > ghostGateExpireMs:
+		return 0
+	case dtMs >= ghostGateFullMs:
+		return 1
+	default:
+		return float64(dtMs-ghostGateRampStartMs) / float64(ghostGateFullMs-ghostGateRampStartMs)
+	}
+}
+
+// GhostLeftLogOdds present(在场)静止占用轨在 room-empty 信号(ExitRoom/np=0/tid=88)后的「已离房」SLeft 对数几率。
+// 治本：真人离房后镜面/家具反射残留一条 z≡0 随机游走轨——既过不了 teleport 硬 PURGE（位移<200cm/s）
+// 又非 immature（寿命>5s，maybeLatchFloorArtifact 盖不住）→ 冻结 coast 磨 still-box → bathroom 20min floor 误火。
+// 判据（全过才注入，fire-neutral 软证据，与 ExitLogOdds 同走 logPhi[SLeft] 通道）：
+//   硬门(FN-safe 绝对否决)：Δz>40(质心骤降=塌陷前兆) ∨ pose∈倒地前兆 → 0（不碰，floor 照常兜底真摔）
+//   静止门：StillBoxRunStart==0(在动) → 0（只处理静止赖着的占用，移动真人不碰）
+//   时间门：太早(<15s 给真人重获机会)/陈旧(>45s 退回 floor) → 0
+//   正向：clamp(P_born(门距),0,max) × timeGate(Δt)；门口(负分)→ 0（protect 逗留门口真人）
+// 自锁版（belief 经 OnRoomFrame 闭包调，不持 tm.mu）；按 LogicID 查 present 轨（多雷达撞 track_id 用身份）。
+func (tm *TrackManager) GhostLeftLogOdds(logicID string, nowMs int64) float64 {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.grid == nil {
+		return 0
+	}
+	// 按 LogicID 找 present 轨（身份单源，排多雷达撞号）——先拿到轨才知它属哪台设备
+	var ts *TrackState
+	for _, t := range tm.tracks {
+		if t.LogicID == logicID && nowMs-t.LastObservedMs < presenceCoastMs {
+			ts = t
+			break
+		}
+	}
+	if ts == nil || ts.StillBoxRunStart == 0 {
+		return 0 // 非 present(丢轨走 ExitLogOdds 老路) / 在动(不碰)
+	}
+	// 「屋内空」信号只认**这条轨自己设备**的（per-device：09e7 瞎雷达 np=0 不得划 d523 真人）
+	emptySince := tm.deviceEmptySinceMs(ts.DeviceAddr)
+	if emptySince == 0 {
+		return 0 // 该设备无「屋内空」断言 → 无离房依据
+	}
+	gate := ghostTimeGate(nowMs - emptySince)
+	if gate <= 0 {
+		return 0
+	}
+	// 硬门：倒地前兆 / 质心骤降 → 绝对否决（真人摔倒照常 floor 兜底）
+	if teleportFallPrecursorPose(ts.LastPose) || teleportFallPrecursorPose(ts.Prev2Pose) {
+		return 0
+	}
+	if n := len(ts.History); n >= 2 && abs(ts.History[n-1].Z-ts.History[n-2].Z) > teleportZDropCm {
+		return 0
+	}
+	n := len(ts.History)
+	if n == 0 {
+		return 0
+	}
+	raw := ghostBornScore(tm.grid.NearestEntryDist(ts.History[n-1].X, ts.History[n-1].Y))
+	if raw <= 0 {
+		return 0 // 门口/负分 → 不划（可能真人在门口逗留）
+	}
+	if raw > ghostLeftMaxLogOdds {
+		raw = ghostLeftMaxLogOdds
+	}
+	exitL := raw * gate
+	tm.logger.Info("ghost_left_suppress",
+		zap.String("device_uid", ts.DeviceAddr), zap.Int("track_id", ts.TrackID),
+		zap.String("logic_id", logicID),
+		zap.Int("pos_x", ts.History[n-1].X), zap.Int("pos_y", ts.History[n-1].Y),
+		zap.Int("door_dist", tm.grid.NearestEntryDist(ts.History[n-1].X, ts.History[n-1].Y)),
+		zap.Int64("empty_since_ms", emptySince), zap.Float64("gate", gate),
+		zap.Float64("exit_logodds", exitL))
+	return exitL
+}
+
 // ========================================================================
 // ProcessFrame：每帧双维度喂（即时流 + 历史流）
 // ========================================================================
@@ -1152,7 +1318,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	defer tm.mu.Unlock()
 
 	if len(frames) > 0 {
-		tm.noTargetSinceMs = 0 // 收到真 track 帧 → 清"无目标"标记
+		tm.devRoomFor(frames[0].DeviceAddr).noTargetMs = 0 // 收到该设备真 track 帧 → 清其"无目标"标记（per-device）
 	}
 
 	activeIDs := make(map[trackKey]bool)
