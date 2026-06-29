@@ -1,10 +1,13 @@
 replay集
 # * case-d5f7-0617-23252357 replay  false stand, lost, 
+# * case-d5f7-0627-17431755 bashroom, ghost,exitRoom, ghost lsot
+
+
 # * case-cabb-0616-17441802	replay  hunzi, bathroom lost,ghost,
 # * case-cd2b-0617-23302345-curtain  bedroom 窗帘误报  这个基本无解  replay  z:有高有低
 # * case-cd2b-0620-11231131  hand-off
 # * case-cd2b-0627-04270442  curtain出生，才豁免，
-
+# * case-cd2b-0628-02280232  fire fall in bed, 
 
 # * case-09e7-0620-22402242   
 # * case-09e7-6021-22162229   1room2radar,reisktime,fall2,9min fall     **success  同房在床，可能睡，不抑制fire报警
@@ -21,7 +24,7 @@ replay集
 
 
 # * case-1797-0627-13261328  mom bathroom ,  stillbox 整体30秒走了500， 要视为stillbox break
-
+# * case-1797-0627-20282033  mom bathroom, 
 
 
 
@@ -171,3 +174,70 @@ BM87224601903（sleepad）	:200 GuestRoom	+120s InBed
 
 Bedroom 的 lost-fall 二义，能不能被 GuestRoom 的 sleepad InBed 解析成"人去隔壁了"（hand-off 宿）？
 ⚠️ 预判：现 hand-off（rhoFor）只认兄弟房 radar GainedReal，sleepad InBed 在别房算不算 hand-off 落点没接 → 大概率 Bedroom lost-fall 留着空兜底、而人其实安全在 GuestRoom 床上 = 跨房 sleepad hand-off 缺口。
+
+
+# * case-cd2b-0628-02280232  fire fall in bed, 
+一、全夜画像:90 分钟里系统 89 分钟是对的
+
+p_fallen 全程 ≈ 0,直到 02:30:25 才第一次抬头
+bed_reading 几乎全程 InBed(中间几次秒级抖动)
+n_r 多数时间 1~2
+关键结论:稳态睡眠被稳稳保护住了——人在床躺了一个半小时,p_fallen 一直贴地。所以"还是超过90min"在生产里其实没成立:床信用在稳态扛住了 90min。问题只发生在最后一个~24 秒的瞬态。这把根因从"久卧阈值"挪到了"瞬态 churn"。
+
+二、转折点:02:26–02:30 轨道暴涨
+时刻	事件
+02:26–02:31 radar + sleepad 合并时间线
+
+time      源    状态                                            标记
+─────────────────────────────────────────────────────────────────────
+02:26:00  雷达  t0:躺@床(a1)  t1:躺(a5)                         t0在床
+02:26:13  垫    InBed  hr=72                                    ← 有心跳在床
+02:26:42  雷达  t0→a255(离床区)  t1:站(a5)
+02:26:42  垫    LeftBed                                         ← 秒级抖动
+02:26:48  雷达  t0:站@a255(冻住)  t1:躺@床(a1)                  床信用换到 t1
+··· 02:26:42–02:28:51  垫 静默 2 分钟(无上报) ···
+02:28:23  雷达  t0:冻@a255  t1@床(a1)  ★t2 出生(无area)         t2 从此无 area_id,固件Bug, 在床但area_id=空
+02:28:51  垫    InBed  hr=68                                    ← 人仍在床有心跳
+02:29:01  垫    InBed  hr=73
+02:29:13  垫    InBed  hr=69                                    ← 直到这秒都 InBed+心跳
+02:29:15  垫    LeftBed  (保持到 fire 不再回)                   ★保护被撤
+02:29:31  雷达  t1@床(a1)  t2:躺(无area)                        t2 第一次躺
+02:29:51  雷达  t2:站                                          (起来)
+02:30:17  雷达  t1@床(a1)  t2:躺(无area)                        t2 再躺→将settle
+02:30:29  雷达  t1@床(a1)  t2:躺  ★t3 出生
+02:30:42  雷达  ☠ t0、t1 同时丢轨    只剩 t2:躺 t3:站           床占用轨 t1 没了!
+02:30:44  雷达  ☠ t2 丢轨  → ▶▶ FIRE (band=lost pose=6 still=23)
+三、fire 解剖(与 alarm evidence 逐字吻合)
+
+02:30:44 CD2B22822912 band=lost cell=AreaBed tfloor=720 still=23 pose=6 (60,160)
+present 段 belief 已爬到 0.99(02:30:40),但只有丢轨那刻 lost 腿才开火 → 印证"loss 时已确认摔的 carry-over"
+同帧 n_r=4:房里 4 条轨,至少 tid=0 是冻死 ghost
+四、根因(被生产数据修正/深化)
+之前我说"床信用只走固件 area_id/sleepad,学习 cell 不喂 SBed"。生产数据补上了真正撑住全夜的那条腿:
+
+全夜的床保护 = sleepad InBed(接触轴)。它撑住了 90min,p_fallen≈0。
+02:29:16 sleepad 翻 LeftBed,把这条唯一有效的保护腿撤了。
+同期 churn:tid=2 这条轨在床区躺定,而它拿不到任何在床信用——sleepad 说 LeftBed、固件床信用此刻在别的轨上、学习 cell=Bed 不喂 SBed。
+于是"躺着不动"被判成"倒在开阔地",23s 冲到 Fallen → lost fire。
+一句话:不是"在床被误判",而是"sleepad 在关键时刻撤了在床信用 + 一条无信用的 churn 轨在床区躺下"。
+
+五、必须查清的两个问题(决定怎么修)
+02:29:16 sleepad 为什么翻 LeftBed? 人真的起床了(那 tid=2 躺床区是 ghost/反射),还是人没走、sleepad 丢接触(经典 [[bed_stale_leftbed_vetoes_radar_inbed]] 陈旧 LeftBed 否决真在床)?——这决定是该信 sleepad 还是信几何。
+tid=0 冻在 (-80,230) 3+ 分钟的 ghost 哪来的? 这房 ghost/反射明显活跃(01:10、01:14 有 ghost_left_suppress),churn 是不是反射体没学进 AreaReflector?
+要我接着拉 sleepace 日志看 02:26–02:31 这张垫子(1641?)的原始 InBed/LeftBed + 心率体动,定位它为什么在 02:29:16 翻 LeftBed 吗?这是解开"信 sleepad 还是信几何"的钥匙。
+
+其实tid=0 站立卡死，实际上走进了bathroom  过一会，以tid=2的身份返回。
+radar性能： fall 场景，只能跟踪2个tick的area_id,
+
+02:28:22.912  radar.track  [{"pose": 4, "area_id": 255, "track_id": 0, "position_x": -170, "position_y": 320, "position_z": 0, "track_count": 3, "remaining_time": 0, "track_confidence": 80}]
+02:28:22.912  radar.track  [{"pose": 4, "area_id": 1, "track_id": 1, "position_x": -10, "position_y": 150, "position_z": 0, "track_count": 3, "remaining_time": 0, "track_confidence": 80}]
+02:28:22.912  radar.track  [{"pose": 4, "event": 1, "track_id": 2, "position_x": -130, "position_y": 0, "position_z": 70, "track_count": 3, "remaining_time": 0, "track_confidence": 80}]
+02:28:23.869  radar.track  [{"pose": 4, "area_id": 255, "track_id": 0, "position_x": -170, "position_y": 320, "position_z": 0, "track_count": 3, "remaining_time": 0, "track_confidence": 80}]
+02:28:23.869  radar.track  [{"pose": 4, "area_id": 1, "track_id": 1, "position_x": -10, "position_y": 150, "position_z": 0, "track_count": 3, "remaining_time": 0, "track_confidence": 80}]
+02:28:23.869  radar.track  [{"pose": 4, "track_id": 2, "position_x": -140, "position_y": 50, "position_z": 98, "track_count": 3, "remaining_time": 0, "track_confidence": 80}]
+02:28:24.876  radar.track  [{"pose": 4, "area_id": 255, "track_id": 0, "position_x": -170, "position_y": 320, "position_z": 0, "track_count": 3, "remaining_time": 0, "track_confidence": 80}]
+02:28:24.876  radar.track  [{"pose": 4, "area_id": 1, "track_id": 1, "position_x": -50, "position_y": 200, "position_z": 0, "track_count": 3, "remaining_time": 0, "track_confidence": 80}]
+02:28:24.876  radar.track  [{"pose": 1, "track_id": 2, "position_x": -140, "position_y": 100, "position_z": 81, "track_count": 3, "remaining_time": 0, "track_confidence": 80}]
+02:28:25.881  radar.track  [{"pose": 4, "area_id": 255, "track_id": 0, "position_x": -170, "position_y": 320, "position_z": 0, "track_count": 3, "remaining_time": 0, "track_confidence": 80}]
+02:28:25.881  radar.track  [{"pose": 4, "area_id": 1, "track_id": 1, "position_x": -90, "position_y": 220, "position_z": 0, "track_count": 3, "remaining_time": 0, "track_confidence": 80}]
+02:28:25.881  radar.track  [{"pose": 1, "track_id": 2, "position_x": -140, "position_y": 100, "position_z": 54, "track_count": 3, "remaining_time": 0, "track_confidence": 80}]

@@ -1523,6 +1523,13 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		if activeIDs[id] {
 			continue
 		}
+		// 社交目击者先验·lost 分支：本轨已 lost（过 presence coast）+ 半径内有活跃真人 witness（2人场景）
+		// → 直接清。lost 轨固件不再送回，旁人会主动呼救，留着续 still-box 只会让 floor 兜底/lost-fall 对幽灵
+		// 开火(FP)。单人 lost 无 witness → 照常 coast 兜底。与下方 lostStillCarryMs 驱逐同为 inline delete。
+		if nowMs-ts.LastObservedMs >= presenceCoastMs && tm.witnessNearby(ts, nowMs, witnessRadiusCm) {
+			delete(tm.tracks, id)
+			continue
+		}
 		dt := float64(nowMs-ts.LastUpdateMs) / 1000.0
 		if dt <= 0 {
 			dt = 1
@@ -1951,6 +1958,44 @@ func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
 
 //
 // 调用位置：processFrameAt 已有 track 分支，Kalman.Update 之后。
+// witnessRadiusCm：社交目击者先验半径——倒地静止轨此半径内有活跃真人即抑制其 still-box 兜底火报。
+const witnessRadiusCm = 200
+
+// witnessNearby 报告 ts 半径 radiusCm 内是否有另一条「活跃在场真人」轨（社交目击者先验）。witness 5 条焊死，
+// 防自家 churn 静止影子轨（~0cm）误当目击者把真摔者本人压掉：
+//
+//	① 非自己 ② Present（本帧真观测，非 coast 幽灵）③ 真在移动（box/path 破 still 阈，排静止同人影子/另一躺者）
+//	④ 非在床（firmware 床区）⑤ 非 ghost（DBNConfidence≥50）且非干扰/瞬移/出生伪迹。
+func (tm *TrackManager) witnessNearby(ts *TrackState, nowMs int64, radiusCm int) bool {
+	sxF, syF := ts.Kalman.Position()
+	sx, sy := int(math.Round(sxF)), int(math.Round(syF))
+	for _, o := range tm.tracks {
+		if o.LogicID == ts.LogicID { // ①
+			continue
+		}
+		if nowMs-o.LastObservedMs >= presenceCoastMs { // ② coast 幽灵不算目击者
+			continue
+		}
+		if o.DBNConfidence < 50 { // ⑤ realness 后验 <50 = ghost，不算目击者
+			continue
+		}
+		if o.SuspectInterferenceSinceMs > 0 || o.FloorArtifactSinceMs > 0 || o.InterferBornSinceMs > 0 { // ⑤ 干扰/瞬移/出生伪迹非真人
+			continue
+		}
+		if tm.fwIsBed(o.LastFwAreaID) { // ④ 在床者不算活动目击者
+			continue
+		}
+		if o.BoxRangeWithinMs(30_000, nowMs) <= stillBoxCm && o.PathLengthWithinMs(30_000, nowMs) <= stillPathCm { // ③ 静止(含 churn 影子/躺者)非目击者
+			continue
+		}
+		oxF, oyF := o.Kalman.Position()
+		if distInt(sx, sy, int(math.Round(oxF)), int(math.Round(oyF))) <= radiusCm {
+			return true
+		}
+	}
+	return false
+}
+
 func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame, nowMs int64) {
 	// ---- StillBox（静止无移动）检测（50×50 per-axis box 判据 + 累计路程闸）----
 	// 用 BoxRangeWithinMs（max(dx,dy)）而非 DisplacementWithinMs（对角线）：50×40 倒地框
@@ -1958,6 +2003,19 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 	// 但 box(max-min) 对"50cm 盒内反复踱步"会误判 still（盒小但累计走好几米）→ 再叠累计
 	// 路程闸 PathLengthWithinMs ≤stillPathCm：踱步累计 >200cm 即破盒,用运动量直接量,不靠 pose。
 	ts.StillBoxBreakDurMs = 0 // 每帧清；仅本帧 break 时设（移动块 MarkDwell 消费）
+	// 社交目击者先验：半径内有活跃真人 → 抑制此轨 still-box 兜底火报。真·2人场景下旁人会主动呼救，
+	// 独留计时火报=FP。进行中的 box 直接清零（非 walk-away,不 emit Sit episode）；未起的不准起。
+	// witness 离开后从 0 重新暖机（真无人呼救满 tFloor 才补火，保留安全网）。
+	if tm.witnessNearby(ts, nowMs, witnessRadiusCm) {
+		if ts.StillBoxRunStart != 0 {
+			ts.StillBoxRunStart = 0
+			ts.StillBoxCellArea = AreaUnknown
+			ts.StillBoxInChair = false
+			ts.StillBoxChairMu, ts.StillBoxChairSigma = 0, 0
+			ts.sitFwMaxMs, ts.sitFwContigStartMs, ts.sitZBest = 0, 0, 0
+		}
+		return
+	}
 	disp := ts.BoxRangeWithinMs(30_000, nowMs)
 	path := ts.PathLengthWithinMs(30_000, nowMs)
 	if disp <= stillBoxCm && path <= stillPathCm && len(ts.History) >= 2 {
