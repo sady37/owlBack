@@ -6,7 +6,8 @@ package service
 // remarks 里的 marker 行。data handle 完调本函数：解析 marker → fire 点(payload raw)转 canvas →
 // 生成"以 fire 为心、rotate=0 正方形" → ① AppendFeedbackObject(layout+firmware+config:card)
 // → 写回 alarm_events.metadata → ③ POST sensor /cell/stamp 即时刷 grid（桥接 reload 窗口）。
-// sticky veto → POST sensor /cell/veto(sticky=true) 清 cell + 永久封自动学习。
+// Clear/Never 否决 → POST sensor /cell/veto：Clear 仅清 cell（sticky=false，可逆）；
+// Never 清 + 永久封自动学习（sticky=true，Never ⊇ Clear）。
 
 import (
 	"context"
@@ -23,6 +24,7 @@ import (
 const (
 	pinFalseAlarmBlockMark = "False Alarm Reason:"
 	pinToken               = "☑ PIN"
+	pinClearLearnMark      = "Clear learned fall suppression here"
 	pinStickyVetoMark      = "Sticky veto: never auto-learn fall suppression here"
 )
 
@@ -73,8 +75,10 @@ func (s *RadarInstall) HandlePinZones(ctx context.Context, eventID, tenantID, de
 		return
 	}
 
-	// sticky veto（verified 真摔人勾"永不在此抑制"）：清 cell + MarkLearnBlocked。需 fire 点 canvas 坐标。
-	sticky := strings.Contains(notes, pinStickyVetoMark)
+	// 真摔否决该处自动抑制（需 fire 点 canvas 坐标）：Never ⊇ Clear。
+	// block=Never（清 + MarkLearnBlocked 永久封）；clear=擦当前学习（Never 已含，故 ||）。
+	block := strings.Contains(notes, pinStickyVetoMark)
+	clear := block || strings.Contains(notes, pinClearLearnMark)
 
 	var pins []pinSpec
 	if operation == "false_alarm" || strings.Contains(notes, pinFalseAlarmBlockMark) {
@@ -92,7 +96,7 @@ func (s *RadarInstall) HandlePinZones(ctx context.Context, eventID, tenantID, de
 		}
 	}
 
-	if len(pins) == 0 && !sticky {
+	if len(pins) == 0 && !clear {
 		return
 	}
 
@@ -111,8 +115,9 @@ func (s *RadarInstall) HandlePinZones(ctx context.Context, eventID, tenantID, de
 	cv := toCanvasCoordinate(radarPt{H: float64(px), V: float64(py), Z: float64(pz)}, rf)
 	cx, cy := int(math.Round(cv.X)), int(math.Round(cv.Y))
 
-	if sticky {
-		s.notifySensorVeto(ctx, deviceHost, cx, cy, true, "sticky_"+eventID)
+	if clear {
+		// 覆盖 fire 点 40×40 足迹（与 pin 方块同 pinHalfCm），非单 10cm cell——火点 cm 级抖动 + 危险点足迹 > 单格。
+		s.notifySensorVeto(ctx, deviceHost, cx-pinHalfCm, cy-pinHalfCm, cx+pinHalfCm, cy+pinHalfCm, block, "veto_"+eventID)
 	}
 
 	for _, spec := range pins {

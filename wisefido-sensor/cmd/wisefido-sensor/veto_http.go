@@ -24,9 +24,11 @@ import (
 
 type cellVetoRequest struct {
 	DeviceAddr string `json:"device_addr"` // /128 device host text
-	X          int    `json:"x"`           // canvas cm
-	Y          int    `json:"y"`           // canvas cm
-	Sticky     bool   `json:"sticky"`      // true=handle "never auto-suppress" → 额外 MarkLearnBlocked
+	X1         int    `json:"x1"`          // canvas cm，fire 点 40×40 足迹左上
+	Y1         int    `json:"y1"`
+	X2         int    `json:"x2"` // 右下
+	Y2         int    `json:"y2"`
+	Sticky     bool   `json:"sticky"` // true=handle "Never re-learn" → 额外 MarkLearnBlocked
 }
 
 // cellStampRequest data 在 layout 写入（pin / FE resize save）后调，被动刷 grid 完整 rect。
@@ -68,20 +70,22 @@ func startVetoHTTPServer(ctx context.Context, addr string, engine *roomengine.En
 		}
 		var req cellVetoRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceAddr == "" {
-			http.Error(w, "bad request (need device_addr + x,y)", http.StatusBadRequest)
+			http.Error(w, "bad request (need device_addr + rect)", http.StatusBadRequest)
 			return
 		}
-		cleared, blocked, ok := engine.VetoCell(req.DeviceAddr, req.X, req.Y, req.Sticky, time.Now().UnixMilli())
+		rect := radarutils.Rect{X1: req.X1, Y1: req.Y1, X2: req.X2, Y2: req.Y2}
+		cleared, blocked, ok := engine.VetoRect(req.DeviceAddr, rect, req.Sticky)
 		if !ok {
-			http.Error(w, "device not routed / cell out of grid", http.StatusNotFound)
+			http.Error(w, "device not routed / grid not built", http.StatusNotFound)
 			return
 		}
 		logger.Info("cell_veto_applied",
-			zap.String("device_addr", req.DeviceAddr), zap.Int("x", req.X), zap.Int("y", req.Y),
-			zap.Bool("sticky", req.Sticky), zap.Bool("cleared", cleared), zap.Bool("learn_blocked", blocked))
+			zap.String("device_addr", req.DeviceAddr),
+			zap.Int("x1", req.X1), zap.Int("y1", req.Y1), zap.Int("x2", req.X2), zap.Int("y2", req.Y2),
+			zap.Bool("sticky", req.Sticky), zap.Int("cleared", cleared), zap.Int("learn_blocked", blocked))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]bool{"cleared": cleared, "learn_blocked": blocked})
+		_ = json.NewEncoder(w).Encode(map[string]int{"cleared": cleared, "learn_blocked": blocked})
 	})
 
 	// data 在 layout 写入后调，被动刷 grid 完整 rect（pin 初始正方形 / FE resize 后完整矩形）。零业务判断。

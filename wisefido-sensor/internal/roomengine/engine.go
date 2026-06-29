@@ -600,24 +600,23 @@ func (e *Engine) ClearPriorRectByDevice(deviceAddr string, rect radarutils.Rect)
 	return true
 }
 
-// VetoCell 清该 cell 非 Human 抑制/deny（ClearNonHumanLearnedZone，→AreaUnknown）。
-// 两个触发都由 data 驱动：(1) 删 layout 上 source='Feedback' object（sticky=false，仅清）；
-// (2) handle 勾 "Never auto-suppress"（sticky=true，额外 MarkLearnBlocked 永久封自动学习，跨重启）。
-// deviceAddr=/128 device host text；x,y=canvas cm。返回 (cleared, blocked, ok=cell 在 grid)。
-func (e *Engine) VetoCell(deviceAddr string, x, y int, sticky bool, nowMs int64) (cleared, blocked, ok bool) {
+// VetoRect 按 rect（fire 点 40×40 足迹）对每个 cell 清非 Human 抑制/deny（→AreaUnknown）；sticky 时
+// 额外 MarkLearnBlocked 永久封自动学习（跨重启）。两触发都由 data 驱动：(1) 删 layout source='Feedback'
+// object（sticky=false 仅清）；(2) handle "Clear/Never auto-suppress"（Clear→sticky=false；Never→
+// sticky=true 含清 + 永久封）。返回 (清/封 cell 数, ok=房路由命中且 grid 存在)。
+func (e *Engine) VetoRect(deviceAddr string, rect radarutils.Rect, sticky bool) (cleared, blocked int, ok bool) {
 	roomID := e.RoomForDevice(deviceAddr)
 	if roomID == "" {
-		return false, false, false
+		return 0, 0, false
 	}
-	ok = e.ApplyToCell(roomID, x, y, nowMs, func(c *Cell) {
-		if c.ClearNonHumanLearnedZone() {
-			cleared = true
-		}
-		if sticky && c.MarkLearnBlocked() {
-			blocked = true
-		}
-	})
-	return cleared, blocked, ok
+	e.mu.RLock()
+	g := e.grids[roomID]
+	e.mu.RUnlock()
+	if g == nil {
+		return 0, 0, false
+	}
+	cleared, blocked = g.VetoRect(rect, sticky)
+	return cleared, blocked, true
 }
 
 func (e *Engine) MapDeviceToRoom(deviceKey, roomID string) {

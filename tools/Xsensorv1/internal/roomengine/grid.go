@@ -146,6 +146,33 @@ func (g *RoomGrid) StampEnters(rects []radarutils.Rect, enterTargets []string) {
 	}
 }
 
+// VetoRect 对 rect 内每个 cell 擦掉非 Human 抑制/deny（ClearNonHumanLearnedZone）；sticky 时额外
+// MarkLearnBlocked 永久封自动学习。返回被清/被封 cell 数。handle "Clear/Never auto-suppress" 按 fire
+// 点足迹（40×40）整片否决，而非单 10cm cell——火点 cm 级抖动 + 真实危险点足迹 > 单格。
+func (g *RoomGrid) VetoRect(rect radarutils.Rect, sticky bool) (cleared, blocked int) {
+	rect = rect.Norm()
+	c1, r1 := g.ToIndex(rect.X1, rect.Y1)
+	c2, r2 := g.ToIndex(rect.X2, rect.Y2)
+	for row := r1; row <= r2; row++ {
+		if row < 0 || row >= g.Height {
+			continue
+		}
+		for col := c1; col <= c2; col++ {
+			if col < 0 || col >= g.Width {
+				continue
+			}
+			c := &g.Cells[row*g.Width+col]
+			if c.ClearNonHumanLearnedZone() {
+				cleared++
+			}
+			if sticky && c.MarkLearnBlocked() {
+				blocked++
+			}
+		}
+	}
+	return cleared, blocked
+}
+
 // SetPrior 对 rect 内所有 cell 的三组 Belief 统一刷 (AreaType, conf, src)
 // 用于 Layout 人标 Bed/Toilet/Enter 等的初始先验注入。
 func (g *RoomGrid) SetPrior(rect radarutils.Rect, t AreaType, conf int, src Source) {

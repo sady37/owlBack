@@ -96,10 +96,10 @@ func (s *RadarInstall) detectAndNotifyFeedbackVetoes(ctx context.Context, spatia
 	}
 }
 
-// notifySensorVeto POST sensor /roomengine/cell/veto {device_addr, x, y, sticky}。best-effort，失败仅 warn。
-// sticky=false（删 layout Feedback 对象）仅清 cell；sticky=true（handle "never auto-suppress"）额外 MarkLearnBlocked。
-func (s *RadarInstall) notifySensorVeto(ctx context.Context, deviceAddr string, x, y int, sticky bool, objID string) {
-	body, _ := json.Marshal(map[string]interface{}{"device_addr": deviceAddr, "x": x, "y": y, "sticky": sticky})
+// notifySensorVeto POST sensor /roomengine/cell/veto {device_addr, x1,y1,x2,y2, sticky}。best-effort，失败仅 warn。
+// sticky=false（Clear / 删 layout Feedback 对象）仅清 rect；sticky=true（handle "Never re-learn"）额外 MarkLearnBlocked。
+func (s *RadarInstall) notifySensorVeto(ctx context.Context, deviceAddr string, x1, y1, x2, y2 int, sticky bool, objID string) {
+	body, _ := json.Marshal(map[string]interface{}{"device_addr": deviceAddr, "x1": x1, "y1": y1, "x2": x2, "y2": y2, "sticky": sticky})
 	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, sensorHTTPBaseURL()+"/roomengine/cell/veto", bytes.NewReader(body))
@@ -121,8 +121,8 @@ func (s *RadarInstall) notifySensorVeto(ctx context.Context, deviceAddr string, 
 		return
 	}
 	s.logger.Info("feedback_veto_notified_sensor",
-		zap.String("device_addr", deviceAddr), zap.String("object_id", objID),
-		zap.Bool("sticky", sticky), zap.Int("x", x), zap.Int("y", y), zap.Int("status", resp.StatusCode))
+		zap.String("device_addr", deviceAddr), zap.String("object_id", objID), zap.Bool("sticky", sticky),
+		zap.Int("x1", x1), zap.Int("y1", y1), zap.Int("x2", x2), zap.Int("y2", y2), zap.Int("status", resp.StatusCode))
 }
 
 // notifySensorClear POST sensor /roomengine/cell/clear：删 Feedback pin 对象时强清该 rect 回 Unknown。
