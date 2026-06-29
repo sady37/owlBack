@@ -19,16 +19,10 @@ import (
 	"go.uber.org/zap"
 )
 
-// marker 字符串契约真相源 = owlFront/src/utils/alarm.ts（与 sensor feedback.go 旧常量同源）。改须同步。
+// marker 字符串契约真相源 = owlFront/src/utils/alarm.ts（PIN_MARKER + FALL_RADAR_REASONS labels）。改须同步。
 const (
 	pinFalseAlarmBlockMark = "False Alarm Reason:"
-	pinFALoungeLongSofa    = "Lying on Sofa / Recliner"
-	pinLoungePermanent     = "Lounge placement: Permanent (update layout)"
-	pinSitMark             = "Sit zone: pin permanently (update layout)"
-	pinReflectorMark       = "Reflector zone: mark permanently (mirror/metal, update layout)"
-	pinInterfereMark       = "Interference zone: mark permanently (curtain/fan, update layout)"
-	pinBlindMark           = "Blind area: mark permanently (no-fall zone, update layout)"
-	pinEnterMark           = "Exit zone: add permanently (update layout)"
+	pinToken               = "☑ PIN"
 	pinStickyVetoMark      = "Sticky veto: never auto-learn fall suppression here"
 )
 
@@ -58,6 +52,20 @@ var (
 	pinSpecEnter     = pinSpec{"feedback_enter_", "Exit (pin)", "Enter", "structure", "#A9EAA9", 0, 4, 99, "pin_enter"}
 )
 
+// reason label → pinSpec（reason↔区 1:1；label 与 FE FALL_RADAR_REASONS 逐字一致）。
+// remark 里行尾带 pinToken（"☑ PIN"）的 reason 行 → 钉对应区类型。
+var pinReasonSpecs = []struct {
+	label string
+	spec  pinSpec
+}{
+	{"Lying on Sofa / Recliner", pinSpecLounge},
+	{"Sit on Chair / Short Sofa", pinSpecSit},
+	{"Metal / Mirror (reflection)", pinSpecReflector},
+	{"Curtain / Fan / Plants", pinSpecInterfere},
+	{"BlindArea / No Fall", pinSpecBlind},
+	{"Enter / Door", pinSpecEnter},
+}
+
 // HandlePinZones 护士 handle+PIN 编排（best-effort，失败仅 warn，不阻塞 handle）。
 // deviceHost = event.DeviceAddr 去 mask；triggerData = alarm_events.payload；notes = handler remarks。
 func (s *RadarInstall) HandlePinZones(ctx context.Context, eventID, tenantID, deviceHost string, triggerData json.RawMessage, operation, notes string) {
@@ -70,23 +78,17 @@ func (s *RadarInstall) HandlePinZones(ctx context.Context, eventID, tenantID, de
 
 	var pins []pinSpec
 	if operation == "false_alarm" || strings.Contains(notes, pinFalseAlarmBlockMark) {
-		if strings.Contains(notes, pinSitMark) {
-			pins = append(pins, pinSpecSit)
-		}
-		if strings.Contains(notes, "☑ "+pinFALoungeLongSofa) && strings.Contains(notes, pinLoungePermanent) {
-			pins = append(pins, pinSpecLounge)
-		}
-		if strings.Contains(notes, pinReflectorMark) {
-			pins = append(pins, pinSpecReflector)
-		}
-		if strings.Contains(notes, pinInterfereMark) {
-			pins = append(pins, pinSpecInterfere)
-		}
-		if strings.Contains(notes, pinBlindMark) {
-			pins = append(pins, pinSpecBlind)
-		}
-		if strings.Contains(notes, pinEnterMark) {
-			pins = append(pins, pinSpecEnter)
+		// 逐行解析：行尾带 pinToken 的 reason 行 → 钉该 reason 对应区（区类型单源 = 勾的 reason label）。
+		for _, line := range strings.Split(notes, "\n") {
+			if !strings.Contains(line, pinToken) {
+				continue
+			}
+			for _, rs := range pinReasonSpecs {
+				if strings.Contains(line, rs.label) {
+					pins = append(pins, rs.spec)
+					break
+				}
+			}
 		}
 	}
 
