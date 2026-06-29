@@ -14,7 +14,7 @@ mqtt:
   
   # 雷达设备MQTT主题配置
   radar_device_mqtt:
-    server: "test.wisefido.com"
+    server: "app.wisefido.com"
     port: 1883
     protocol: 1
     account: "wfiot"
