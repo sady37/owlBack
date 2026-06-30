@@ -90,6 +90,9 @@ type FrameInput struct {
 	//   + 门距 + 时间门；硬门 Δz/pose 否决真摔）。喂 present 分支 logPhi[SLeft]：镜面残留 ghost 在真人
 	//   离房后被划 SLeft → 压 floor 不误火 + 丢轨即 absorbed-drop。nil=无源→0。
 	GhostLeftLogOdds func(logicID string, atMs int64) float64
+	// HardExited 该 LogicID 是否收到逐帧离房事件(byte-14 event==2)。true → engine.Room 即 hard-drop
+	//   该节点（绕过 SLeft 阈，mirror absorbed-drop）+ 回传 EvictTrack。nil=无源→不 drop。
+	HardExited func(logicID string, atMs int64) bool
 }
 
 // Params 派生层参数（form-anchor，标定留 oracle）。

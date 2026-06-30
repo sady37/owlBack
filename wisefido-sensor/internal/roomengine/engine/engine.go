@@ -492,6 +492,10 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 		//   → 离场确认 → drop（非 TTL，cancel 非 fire）。离房趋势已折进 SLeft 后验，不再单列 bool 门。
 		if !ts.Present && mS[belief.SLeft]+mS[belief.SEmpty] >= absorbedThresh {
 			dropIDs = append(dropIDs, ts.LogicID) // dropTrack(census) + 回传 tm evict：停 12s coast re-feed
+		} else if fi.HardExited != nil && fi.HardExited(ts.LogicID, fi.NowMs) {
+			// 逐帧离房事件(byte-14 event==2)硬 drop：门事件权威，绕过 SLeft 累积（治 ExitRoom 8.0 不灌进 SLeft
+			//   的 pre-existing 慢 drop）。真摔固件自己 fire fall，故不读姿态/present。
+			dropIDs = append(dropIDs, ts.LogicID)
 		}
 	}
 	for _, id := range dropIDs {

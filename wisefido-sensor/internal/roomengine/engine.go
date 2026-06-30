@@ -213,7 +213,7 @@ type Engine struct {
 	//   dropped（确认离场/空）→ evict track_manager，停 12s coast re-feed（防 census 重发新 logicID = churn）。
 	// confidence: per-track DBN 置信度（logicID→PReal 0-100），写回 TrackState.TrackConfidence 下发 cardagg
 	//   （第三腿 A·R13/R15.3-2，不门控始终发；不在 fired/dropped 二元里，单独返回）。
-	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds, ghostLeftLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string, confidence map[string]int, firedBands map[string]string)
+	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds, ghostLeftLogOdds func(logicID string, atMs int64) float64, hardExited func(logicID string, atMs int64) bool) (fired, dropped []string, confidence map[string]int, firedBands map[string]string)
 
 	// ── 生产 I/O（从旧 ws engine 焊回；Xsensor replay 道裁掉，生产必需）──
 	srcSeqMu            sync.RWMutex
@@ -872,6 +872,7 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 	if e.OnRoomFrame != nil {
 		var bed card.BedState
 		var exitLogOdds, ghostLeftLogOdds func(logicID string, atMs int64) float64
+		var hardExited func(logicID string, atMs int64) bool
 		tm := e.rooms[roomID]
 		if tm != nil {
 			bed = tm.BedOccupancyState(nowMs) // room 级权威 bed 读数（sleepad+radar 床事件融合）→ B 轴
@@ -880,8 +881,9 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 			exitLogOdds = tm.ExitLogOdds
 			// present 静止 ghost「已离房」SLeft（room-empty 信号 + 门距 + 时间门，硬门否决真摔），喂 present 分支。
 			ghostLeftLogOdds = tm.GhostLeftLogOdds
+			hardExited = tm.HardExited // 逐帧离房事件 hard-drop（绕过 SLeft 阈）
 		}
-		fired, dropped, confidence, firedBands := e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds, ghostLeftLogOdds)
+		fired, dropped, confidence, firedBands := e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds, ghostLeftLogOdds, hardExited)
 		if tm != nil {
 			// 第三腿 confidence（A·R13/R15.3-2，不门控）：DBN per-track PReal 写回 TrackState.TrackConfidence
 			//   → payloadFromTrack → PublishAIEvent → cardagg（旧 adjudicator 已删，DBN 是唯一来源，断则回归）。

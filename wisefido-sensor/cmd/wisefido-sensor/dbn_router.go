@@ -64,7 +64,7 @@ func newDBNRouter(logger *zap.Logger) *dbnRouter {
 // onRoomFrame = Engine.OnRoomFrame 回调（纯裁决）。返回三腿：
 //
 //	fired→PublishAIAlarm（engine 内门控发布）/ dropped→emitGhostVerdict / confidence→TrackConfidence 写回。
-func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds, ghostLeftLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string, confidence map[string]int, firedBands map[string]string) {
+func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds, ghostLeftLogOdds func(logicID string, atMs int64) float64, hardExited func(logicID string, atMs int64) bool) (fired, dropped []string, confidence map[string]int, firedBands map[string]string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -137,6 +137,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		Entrances:   g.entrances,
 		ExitLogOdds:      exitLogOdds,
 		GhostLeftLogOdds: ghostLeftLogOdds,
+		HardExited:       hardExited,
 		Census:           adapter.Census{Night: isRiskTime},
 	}
 

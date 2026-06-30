@@ -209,7 +209,7 @@ type Engine struct {
 	// nil = 不裁决（纯馈送，无下游）。Engine 不 import belief/adapter/engine 包，靠回调解耦。
 	// 返回 (fired, dropped) 的 LogicID：fired → 复位 still-box（belief 已就地复位）；
 	//   dropped（确认离场/空）→ evict track_manager，停 12s coast re-feed（防 census 重发新 logicID = churn）。
-	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds, ghostLeftLogOdds func(logicID string, atMs int64) float64) (fired, dropped []string)
+	OnRoomFrame func(roomID string, bases []TrackStatusBase, bed card.BedState, nowMs int64, exitLogOdds, ghostLeftLogOdds func(logicID string, atMs int64) float64, hardExited func(logicID string, atMs int64) bool) (fired, dropped []string)
 }
 
 // RuntimeConfig 与 owlBack/tools/Xsensorv1/internal/config::RoomEngineConfig 一一对应；
@@ -764,6 +764,7 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 	if e.OnRoomFrame != nil {
 		var bed card.BedState
 		var exitLogOdds, ghostLeftLogOdds func(logicID string, atMs int64) float64
+		var hardExited func(logicID string, atMs int64) bool
 		tm := e.rooms[roomID]
 		if tm != nil {
 			bed = tm.BedOccupancyState(nowMs) // room 级权威 bed 读数（sleepad+radar 床事件融合）→ B 轴
@@ -772,8 +773,9 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 			exitLogOdds = tm.ExitLogOdds
 			// present 静止 ghost「已离房」SLeft（room-empty 信号 + 门距 + 时间门，硬门否决真摔），喂 present 分支。
 			ghostLeftLogOdds = tm.GhostLeftLogOdds
+			hardExited = tm.HardExited // 逐帧离房事件 hard-drop（绕过 SLeft 阈）
 		}
-		fired, dropped := e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds, ghostLeftLogOdds)
+		fired, dropped := e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds, ghostLeftLogOdds, hardExited)
 		if tm != nil {
 			for _, lid := range fired {
 				tm.ResetStillBox(lid) // fall fire → still-box 从 0 热机（belief 已在 DBN 侧就地复位）

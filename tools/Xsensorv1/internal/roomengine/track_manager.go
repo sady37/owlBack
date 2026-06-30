@@ -143,6 +143,10 @@ type TrackManager struct {
 	//   np/ExitRoom 后到的按 LogicID 实时查（见 ExitLogOdds）。由 age(recentBufferMs)淘汰。
 	lostExitInfo map[string]*lostExitRec
 
+	// hardExitedLIDs：逐帧离房事件(byte-14 event==2)命中的 LogicID → 事件 ms。belief 经 OnRoomFrame
+	//   闭包查(HardExited) → engine.Room 即 hard-drop(绕过 SLeft 阈)+ 回传 EvictTrack。age=eventBufferMs。
+	hardExitedLIDs map[string]int64
+
 	// logger：用于 ai.log 输出 ghost / fall 结构化事件。
 	// 默认 zap.NewNop()，engine.Run 会调 SetLogger 注入真 logger。
 	logger *zap.Logger
@@ -261,6 +265,7 @@ func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackMana
 		recentRadarEvents:       make(map[int64]*RadarTrackEvent),
 		recentBufferMs:          5 * 60 * 1000, // 5 min
 		lostExitInfo:            make(map[string]*lostExitRec),
+		hardExitedLIDs:          make(map[string]int64),
 		logger:                  zap.NewNop(),
 		startupMs:               time.Now().UnixMilli(),
 		mirrorBuffer:            make(map[mirrorPairKey]*mirrorPairBuffer),
@@ -1146,6 +1151,23 @@ func (tm *TrackManager) exitTrendRatio(ts *TrackState) float64 {
 //
 // 自锁版（belief 经 OnRoomFrame 闭包调用，不持 tm.mu）。按 LogicID 身份查（多雷达同房 track_id 撞号已用
 // rec.dev+fwTrackID 还原源号匹配 ExitRoom，绝不跨设备误翻）。形态常量留 oracle，replay 标定。
+// HardExited 该 LogicID 是否在硬证据窗(eventBufferMs)内收到逐帧离房事件(byte-14 event==2)。
+// belief 经 OnRoomFrame 闭包查 → engine.Room 即 hard-drop（绕过 SLeft 累积，mirror absorbed-drop）。
+// 自锁版（belief 闭包不持 tm.mu，同 ExitLogOdds）。
+func (tm *TrackManager) HardExited(logicID string, nowMs int64) bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	ms, ok := tm.hardExitedLIDs[logicID]
+	if !ok {
+		return false
+	}
+	if nowMs-ms > eventBufferMs {
+		delete(tm.hardExitedLIDs, logicID)
+		return false
+	}
+	return true
+}
+
 func (tm *TrackManager) ExitLogOdds(logicID string, nowMs int64) float64 {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -1356,15 +1378,17 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	// ========== 段 1: 观测到的 track ==========
 	for _, f := range frames {
 		key := trackKey{f.DeviceAddr, f.TrackID}
-		// 逐帧离房事件（byte-14 event==2）：该 tid 此帧跨门离房 → 0 延时清尸体，不重建不 coast。
-		// pre_tid 精确归属（事件自带 track_id+位置），权威压过姿态：真摔固件自己 fire fall。
-		// 空房 no-target 流不进 ProcessFrame，但离房本身是一条真帧 → 必经此处，无 coast 残迹。
+		// 逐帧离房事件（byte-14 event==2）：该 tid 此帧跨门离房 → 标记 hardExitedLIDs，
+		// 经 OnRoomFrame 闭包让 engine.Room hard-drop（绕过 SLeft 阈，mirror absorbed-drop）+ 回传 EvictTrack，
+		// track 与 belief 两层同 round-trip 0 延时清。pre_tid 精确（事件自带 track_id+位置），权威压姿态：
+		// 真摔固件自己 fire fall。离房是真帧必经此处（空房 no-target 不进 ProcessFrame 是对的）。
 		if f.Event == fwEventLeaveRoom {
-			if _, ok := tm.tracks[key]; ok {
-				tm.logger.Info("exit_event_purge",
+			if ts, ok := tm.tracks[key]; ok {
+				tm.hardExitedLIDs[ts.LogicID] = f.TMs
+				tm.logger.Info("exit_event_hard_drop",
 					zap.String("device_uid", f.DeviceAddr), zap.Int("track_id", f.TrackID),
-					zap.Int("x", f.X), zap.Int("y", f.Y))
-				delete(tm.tracks, key)
+					zap.String("logic_id", ts.LogicID), zap.Int("x", f.X), zap.Int("y", f.Y))
+				activeIDs[key] = true // 本 tick 不当 lost coast，留给 round-trip 清
 			}
 			continue
 		}
