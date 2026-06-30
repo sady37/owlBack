@@ -297,16 +297,20 @@ static reflector 已从 Phase A（只 log）放开到 Phase B：三签名跨独�
 
 > 残留风险：**贴墙 ghost + 真人 >200cm 或不动** → witness 够不着（见 9.2 命门的前奏）。
 
-### 9.2 无真人（空房 / np=0）—— 命门
+### 9.2 无真人（firmware np=0）—— 命门
 
-**witness 空、多人 floor-artifact latch 不触发**（都要"有 present 真人"）→ **孤 ghost 无人压**。此时只剩**不依赖共存**的几条：
+**先厘清物理**：**firmware 报任何一条 track（哪怕 byte-frozen ghost）→ np≥1**；**np=0 ⟺ firmware 一条 track 都不报**。所以"空房里有个 present ghost"**不存在**——会喂 floor 的那条 ghost **永远是 sensor coast 出来的 lost 轨**（firmware 早把它丢成 np=0，sensor 用冻结坐标续 still-box）。
+
+**witness 空、多人 floor-artifact latch 不触发**（都要"有 present 真人"）→ **孤 coast 轨无人压**。只剩**不依赖共存**的几条：
 
 - **interfer-born**（`InterferBornSinceMs`）：出生在 interfer cell + 出生时孤立 → 零 still-box。**孤轨也管用**（不靠 co-existence）。
 - **static reflector → AreaReflector**：cell 学成反射 → floor 整片豁免。**孤迹金属唯一能压它的**（realness 对孤轨 PReal≡1 抓不到）。
 - **split soft 压**：若该 ghost 是 split_group 成员且赖锚点 → `SplitGhostSinceMs`。
 - **B `ghostLeftSuppress`/exitL**：设备报屋空(`deviceEmptySince`) + 静止轨在房深处(门距分) → exitL log-odds 压 floor。
 
-> **这就是 13:57 FP 的洞**：byte-frozen 残迹**既非 interfer-born、又（旧版）没被 split 抓、static 没学到** → 上面全不命中 → 孤轨 coast 11min 满 tFloor 火报。**floor 安全网"无人也从 0 重暖机补火"的设计**（[[witness_prior_suppress_stillbox_floor]]）对真盲摔是兜底、对孤 ghost 就是 FP 源。
+> 🔴 **np=0 绝不能拿来删 coast 轨**：firmware 丢一条轨可能是**人走了**，也可能是**人摔在盲区/降功率被跟丢**——`np=0` 分不开这两者。删了 = 漏掉盲区真摔（lost-carry 续存正是为此 FN-safe 存在）。所以**删的触发只认 ExitRoom（定向穿越离场区的硬证据，确证是"走"非"摔"）**，不认 np=0（见 9.3）。
+
+> **这就是 13:57 FP 的洞**：byte-frozen 残迹**既非 interfer-born、又（旧版）没被 split 抓、static 没学到** → 上面全不命中 → 孤 coast 轨满 tFloor 火报。**floor 安全网"无人也从 0 重暖机补火"的设计**（[[witness_prior_suppress_stillbox_floor]]）对真盲摔是兜底、对孤 ghost 就是 FP 源——而**正因 np=0 可能是盲区摔，这道兜底不能简单关掉**，只能靠 born-signature + ExitRoom 耦合精准删。
 
 ### 9.3 ExitRoom 时（有人→无人 相变）
 
@@ -329,9 +333,11 @@ static reflector 已从 Phase A（只 log）放开到 Phase B：三签名跨独�
 | static→AreaReflector | ✅ | ✅（孤迹金属唯一解）| ✅ |
 | split 软压 | ✅ | ✅（若 group 成员）| ✅ |
 | B exitL 压 floor | — | ✅（屋空深处）| ✅ |
-| **exitCoupledLostResidual 删** | — | —（要 exit 耦合）| ✅ **治本** |
+| **exitCoupledLostResidual 删** | — | ❌ **np=0 不删（怕盲区摔）** | ✅ **治本（认 ExitRoom）** |
 
-**读法**：空房那列**最稀**——孤 ghost 只剩 born-signature(interfer/static/split) + exitL；不带这些签名、又非 exit 耦合的孤静止轨**仍是残留 FN-safe 代价下的 FP 风险**（继续真 case 盯，必要时上 byte-frozen 0-抖动识别）。
+**读法**：
+- **空房(np=0) 那列最稀**——孤 coast 轨只剩 born-signature(interfer/static/split) + exitL 软压；**删不敢删**（np=0 可能是盲区真摔，删=漏报）。
+- **治本只能落在 ExitRoom 那列**：定向离场硬证据确证"走非摔"，才敢 delete。无自身 ExitRoom、只 np=0 掉下来的 coast 残迹，靠"耦合最近一条 ExitRoom ≤30s"接（B17F t2 即如此）；耦不上的孤静止轨**仍是 FN-safe 代价下的残留 FP 风险**（继续真 case 盯，必要时上 byte-frozen 0-抖动识别——0 抖动是物理上人不可能、可与盲区摔区分）。
 
 ---
 
