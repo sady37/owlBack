@@ -168,16 +168,17 @@ interfer-born 的触发是**出生**——那一刻**没有 before**，拿不到
 
 confidence 也不对等：teleport = 运动学不可能（近确定），interfer-born = 空间先验（概率）。**低确定性 + 出生无历史 ⇒ 结构上就不能是 purge**。
 
-### 6.4 四检测器分工（动作 / 确定性 / 归属）
+### 6.4 五检测器分工（动作 / 确定性 / 归属）
 
 | 触发 | 动作 | 确定性 | 归属文件 |
 |---|---|---|---|
 | **teleport 跳变** | hard **PURGE** 删轨 | 运动学（确定）| `teleport_interference.go` |
 | **interfer 出生** | **soft 压制 + 可撤销**（不进 still-box / 掉 $N_r$）| 空间先验（概率）| `static_reflector.go`（fast-path）|
 | **static 持久** | **cell 学习 → AreaReflector**（拿 floor 整片豁免；非 AreaDeny——孤迹无人时 realness 抓不到）| 持久性（慢确认）| `static_reflector.go` |
-| **split 分裂** | hard **PURGE** 删并存伴幽灵（仅 lost 时）| 时机（概率，窗末判）| `split_ghost.go` |
+| **split 分裂** | **soft 压制 `SplitGhostSinceMs`**（vote→spliter 静止门→group→赖锚点者零 still-box，不删轨）| 时机（概率）| `split_ghost.go`（vote-based，已重写）|
+| **ExitRoom 残迹** | hard **delete**（离场耦合 ≤30s + ①interfer-born/②split/③门距 + pose/dz 闸）| 离场硬证据 | `track_manager.go` `exitCoupledLostResidual` |
 
-四者**正交叠加，不是四选一**：一条轨可被 interfer-born 出生软压，之后若又跳 ≥200 仍被 teleport 硬 purge。它们：
+五者**正交叠加，不是五选一**：一条轨可被 interfer-born 出生软压，之后若又跳 ≥200 仍被 teleport 硬 purge，离场又被 exitCoupledLostResidual 删。它们：
 
 - **共享**一个 fall-precursor 撤销闸（pose∈fall / Δz drop → 撤销 / 绝不 purge）——FN 安全网。
 - **共享**一个出口 sink（artifact → 不进 still-box + 掉出 $N_r$），全落 realness 轴。
@@ -198,6 +199,12 @@ confidence 也不对等：teleport = 运动学不可能（近确定），interfe
 ## 第六·二部分 · split-ghost：单人走到墙/干扰区时的分裂收治
 
 代码：[split_ghost.go](../wisefido-sensor/internal/roomengine/split_ghost.go)（fire-neutral，track-lifecycle 轴）。状态：✅ 已实现并接入 track_manager，两棵树 build/vet/gofmt 全绿。
+
+> ⚠️ **已重写为 vote-based（下文 6.6–6.11 描述的早期"≤80cm 邻轨 / 窗末 score / hard purge"设计已被取代）**。现行三段式：
+> **step1** np↑ 出新 offspring(无 EnterRoom)→ t1 各轨投最近 t0(前一tick)→ 得票最多者=**spliter**；
+> **spliter 静止门**（仅 spliter：t-1,t-2 逐轴 dx,dy≤10 = 干扰源不动）；
+> **step2** 投了 spliter 的轨入 `split_group`，锚点=spliter 前一tick位；
+> **step3**（~2s 节流）走开者(净位移>200)=real(`EverWalkedOut` 不可逆)、赖锚点(≤10cm)者=ghost → **soft 压 `SplitGhostSinceMs`**（零 StillBoxSec、不删轨=无 churn、可撤销、露倒地相即解压锁 real）。下文 6.6–6.10 的**场景/安全性论证仍成立**，仅"删除判据"那段(6.9)的 hard-purge 动作换成 soft 压制。
 
 ### 6.6 要解决的场景：tid 会交换的并存分裂
 
@@ -275,11 +282,66 @@ static reflector 已从 Phase A（只 log）放开到 Phase B：三签名跨独�
 
 ---
 
+## 第九部分 · 各 ghost 检出后怎么处置 × 在场场景（有真人 / 无真人 / ExitRoom）
+
+**核心洞**：ghost 的 FP 危险**不均匀分布在三个场景上**——有真人时多重压制基本兜住，**无真人(空房)时孤 ghost 才是命门**（witness/多人闸全失效），ExitRoom 是从"有人"切到"无人"的**相变时刻**、最易留残迹。B17F 13:57 那次 FP 正是「空房 + 离场残迹 coast 11min」漏在这条缝里。
+
+### 9.1 有真人在场（≥1 真人 present 且在动）
+
+多重压制叠加，ghost FP 基本被兜住：
+
+- **witness 先验**（`witnessNearby`，半径 200cm）：有**移动**真人在旁 → 直接 `StillBoxRunStart=0` 清 ghost 的 still-box（旁人会主动呼救，独留计时火报=FP）。**前提是真人在动**（焊死条件③）——静止旁观者不算 witness。
+- **floor-artifact latch**（`maybeLatchFloorArtifact`）：immature(<5s) ghost + **有活轨共存** → `FloorArtifactSinceMs` 零其 still-box。
+- **realness `N_r`**（census）：≥2 轨时 ghost 若被 mirror/co-existence 判低 PReal → 不计入人数（防把镜像当第 2 人改 fall 决策）。
+- **split soft 压**：split_group 的 ghost 成员 → `SplitGhostSinceMs` 零 still-box，real 成员走开 latch 保护。
+
+> 残留风险：**贴墙 ghost + 真人 >200cm 或不动** → witness 够不着（见 9.2 命门的前奏）。
+
+### 9.2 无真人（空房 / np=0）—— 命门
+
+**witness 空、多人 floor-artifact latch 不触发**（都要"有 present 真人"）→ **孤 ghost 无人压**。此时只剩**不依赖共存**的几条：
+
+- **interfer-born**（`InterferBornSinceMs`）：出生在 interfer cell + 出生时孤立 → 零 still-box。**孤轨也管用**（不靠 co-existence）。
+- **static reflector → AreaReflector**：cell 学成反射 → floor 整片豁免。**孤迹金属唯一能压它的**（realness 对孤轨 PReal≡1 抓不到）。
+- **split soft 压**：若该 ghost 是 split_group 成员且赖锚点 → `SplitGhostSinceMs`。
+- **B `ghostLeftSuppress`/exitL**：设备报屋空(`deviceEmptySince`) + 静止轨在房深处(门距分) → exitL log-odds 压 floor。
+
+> **这就是 13:57 FP 的洞**：byte-frozen 残迹**既非 interfer-born、又（旧版）没被 split 抓、static 没学到** → 上面全不命中 → 孤轨 coast 11min 满 tFloor 火报。**floor 安全网"无人也从 0 重暖机补火"的设计**（[[witness_prior_suppress_stillbox_floor]]）对真盲摔是兜底、对孤 ghost 就是 FP 源。
+
+### 9.3 ExitRoom 时（有人→无人 相变）
+
+人走光的**硬证据时刻**，最易留 coast 残迹。三条处置：
+
+- **`exitCoupledLostResidual`（新，治本）**：本设备 ExitRoom 与某轨失锁**耦合 ≤30s** + （①interfer-born / ②split-group / ③门距分 `85*d/150>65`）+ pose∉{fall,sitGnd,walking,sit} + 末2tick dz≤40 → **直接 delete，不 coast**。把"离场残迹续 11min 喂 floor"从根上断掉。
+- **B exitL**：屋空 + 静止深处 → 压 floor（**不删轨**，软压；与新 delete 互补：delete 治"该走的残迹"，exitL 兜"没删但该压的"）。
+- **belief `SLeft`**：ExitRoom 硬证据 → `exitL ≥ exitFlipLogOdds` → **per-room** gate floor（§6.5：全房麻醉，仅在确证离场时用，不拿 per-track 幻影派生）。
+
+> FN 闸（三场景共享）：露**倒地前兆 / Δz 下坠 / lying/sit/walking** 的轨**绝不删/压**——真人贴干扰源、在门口、刚摔倒都被这道闸接住（真盲摔照常走 tFloor 兜底）。
+
+### 9.4 处置矩阵（速查）
+
+| 机制 \ 场景 | 有真人在动 | 空房(np=0) | ExitRoom |
+|---|---|---|---|
+| witness 清 still | ✅ 主力 | ❌ 无 witness | ❌ |
+| floor-artifact latch | ✅（多人+immature）| ❌（要共存）| ❌ |
+| realness $N_r$ | ✅（≥2 轨判低 PReal）| ⚠️ 孤轨 PReal≡1 抓不到 | — |
+| interfer-born 软压 | ✅ | ✅（不靠共存）| ✅ |
+| static→AreaReflector | ✅ | ✅（孤迹金属唯一解）| ✅ |
+| split 软压 | ✅ | ✅（若 group 成员）| ✅ |
+| B exitL 压 floor | — | ✅（屋空深处）| ✅ |
+| **exitCoupledLostResidual 删** | — | —（要 exit 耦合）| ✅ **治本** |
+
+**读法**：空房那列**最稀**——孤 ghost 只剩 born-signature(interfer/static/split) + exitL；不带这些签名、又非 exit 耦合的孤静止轨**仍是残留 FN-safe 代价下的 FP 风险**（继续真 case 盯，必要时上 byte-frozen 0-抖动识别）。
+
+---
+
 ## 第八部分 · 待办
 
 - [x] **Phase 1**：interfer-born 软压制（三闸 + 可撤销）+ 删 floor interfer 豁免——已落地。
 - [x] **Phase 2**：static reflector Phase B（升 AreaReflector）+ demote 兜底覆盖 reflector——6-29 已放开。
-- [x] **split-ghost**（第六·二部分）：`split_ghost.go` 已实现并**接入 track_manager**（出生 stamp / 每帧 latch / lost 窗末 purge），两棵树（sensor + Xsensorv1）build/vet/gofmt 全绿。
+- [x] **split-ghost vote-based 重写**（第六·二部分）：vote→spliter 静止门→group→step3 soft 压 `SplitGhostSinceMs`，已接 track_manager，两棵树全绿。
+- [x] **exitCoupledLostResidual**（第九·三）：ExitRoom 耦合 ≤30s + ①interfer/②split/③门距分 + pose/dz → 删离场残迹；replay 验 faller still 封 83s(was 739)、fire 0。
+- [ ] **byte-frozen 0-抖动识别**：一条轨 N 分钟坐标 byte 完全不变(非 ±jitter)= 固件卡死/静物 → 不喂 floor（空房孤静止轨残留 FP 的兜底，见第九·二）。
 - [ ] **审计 census 判 ghost 时几何项（IsReflection）vs 共生项的权重占比**——确认是否过度依赖几何、而 co-existence/vital 没吃满。
 - [ ] 评估把「持续无 vital 的 co-existing track」接入 census 作 ghost 一票（依赖 [[radar_hr_rr_bed_enter_gated]] 的覆盖范围）。
 - [ ] static reflector 近墙 AreaReflector 整片豁免的残留 FN（摔在已学金属点）——真 case 盯，必要时收窄为按身份压而非整片豁免。
