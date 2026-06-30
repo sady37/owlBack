@@ -223,10 +223,11 @@ type Cell struct {
 	// ≥ sitPromoteTau 升 AreaSit(SourceLearned)；HL DecayParams.SitScoreSec(默认 4d,config 可调) 指数衰减（隔离 episode 自然褪）。
 	SitScore float64
 
-	// ---- Chair 区久坐缓存（per-chair anchor，hydrate 自 28；Xsensorv1 replay 只读不学/不重算，floor tFloor=clamp(μ+1.5σ,[12,90]) 单源）----
-	DwellMu  float64 // 缓存：窗口 μ（秒）；0=冷启
-	DwellSig float64 // 缓存：窗口 σ（秒）
-	DwellN   int     // 缓存：窗口样本数（冷启门控）
+	// ---- Chair 区久坐缓存（per-chair anchor，hydrate 自 28；Xsensorv1 replay 只读不学/不重算，floor tFloor=clamp(max(1.5μ+10min,maxSit),≤90min) 单源）----
+	DwellMu     float64 // 缓存：窗口 μ（秒，AV）；0=冷启
+	DwellSig    float64 // 缓存：窗口 σ（秒）
+	DwellN      int     // 缓存：窗口样本数（冷启门控）
+	DwellMaxSit float64 // false_alarm 反馈棘轮（秒，hydrate 自 28，只读）
 
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState

@@ -54,6 +54,7 @@ type Counters struct {
 	DMu  float64 `json:"dmu,omitempty"` // 缓存窗口 μ 秒 — chair anchor 久坐窗（dwin 原始桶 replay 不需,忽略）
 	DSig float64 `json:"dsg,omitempty"` // 缓存窗口 σ 秒
 	DN   int     `json:"dn,omitempty"`  // 缓存窗口样本数
+	DMS  float64 `json:"dms,omitempty"` // DwellMaxSit 秒 — false_alarm 反馈棘轮（只读 hydrate）
 	ADS int64     `json:"ads,omitempty"`
 	ET  string    `json:"et,omitempty"`
 	IEN int       `json:"ien,omitempty"`
@@ -142,6 +143,7 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 			c.DwellMu = cs.C.DMu
 			c.DwellSig = cs.C.DSig
 			c.DwellN = cs.C.DN
+			c.DwellMaxSit = cs.C.DMS
 			c.AutoDenyQualifiedSinceMs = cs.C.ADS
 			c.EnterTarget = cs.C.ET
 			c.InsideEnterEvidenceN = cs.C.IEN

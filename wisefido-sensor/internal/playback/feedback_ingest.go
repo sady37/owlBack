@@ -31,7 +31,7 @@ import (
 // 解析后落到 grid。返回 (success_count, total_attempted, error)。
 func IngestHistoricalFeedback(ctx context.Context, db *sql.DB, deviceUID string,
 	start, end time.Time, grid *roomengine.RoomGrid, mount radarutils.RadarMount,
-	logger *zap.Logger) (int, int, error) {
+	chairs []radarutils.Rect, sitSpreadCm int, logger *zap.Logger) (int, int, error) {
 
 	if logger == nil {
 		logger = zap.NewNop()
@@ -43,7 +43,8 @@ func IngestHistoricalFeedback(ctx context.Context, db *sql.DB, deviceUID string,
 			extract(epoch from ae.triggered_at)*1000 AS trigger_ms,
 			extract(epoch from COALESCE(ae.hand_time, ae.triggered_at))*1000 AS hand_ms,
 			COALESCE(ae.handler_notes, '') AS notes,
-			COALESCE(ae.payload::text, '') AS payload
+			COALESCE(ae.payload::text, '') AS payload,
+			COALESCE(ae.evidence::text, '') AS evidence
 		FROM alarm_events ae
 		JOIN devices d ON d.device_addr = ae.device_addr
 		WHERE d.device_uid = $1
@@ -62,10 +63,10 @@ func IngestHistoricalFeedback(ctx context.Context, db *sql.DB, deviceUID string,
 	total := 0
 	for rows.Next() {
 		total++
-		var eventID, deviceAddr, eventType, operation, notes, payload string
+		var eventID, deviceAddr, eventType, operation, notes, payload, evidence string
 		var triggerMs, handMs float64
 		if err := rows.Scan(&eventID, &deviceAddr, &eventType, &operation,
-			&triggerMs, &handMs, &notes, &payload); err != nil {
+			&triggerMs, &handMs, &notes, &payload, &evidence); err != nil {
 			continue
 		}
 
@@ -92,6 +93,13 @@ func IngestHistoricalFeedback(ctx context.Context, db *sql.DB, deviceUID string,
 			// PR-9.2: 拆分 target — Chair/Wheelchair → AreaSit；Sofa → AreaBed (lying)
 			if pc.FAChair || pc.FAWheelchair {
 				grid.MarkRestZoneFeedback(canvas.X, canvas.Y, roomengine.AreaSit, int64(handMs))
+				// chair tFloor 棘轮：把本次误报的实际久坐时长(evidence.fire.stillbox_sec)+margin 抬进该椅 anchor maxSit，
+				// 压住"长坐人群同样久坐再误报"。anchor 解析与热路径单源(ChairAnchorCell)。stillbox_sec 缺失=老数据→跳过棘轮。
+				if sec := fireStillboxSec(evidence); sec > 0 {
+					if ac := roomengine.ChairAnchorCell(grid, chairs, sitSpreadCm, canvas.X, canvas.Y); ac != nil {
+						ac.RatchetChairMaxSit(float64(sec))
+					}
+				}
 				applied = true
 			}
 			if pc.FASofa {
@@ -113,6 +121,24 @@ func IngestHistoricalFeedback(ctx context.Context, db *sql.DB, deviceUID string,
 		}
 	}
 	return success, total, rows.Err()
+}
+
+// fireStillboxSec 从 alarm_events.evidence 解 fire.stillbox_sec（fire 时观测到的久坐 still 秒）。
+// 缺失 / 非数 / 非 floor-band 老数据 → 0（调用方跳过棘轮）。
+func fireStillboxSec(evidence string) int {
+	if evidence == "" {
+		return 0
+	}
+	var ev map[string]interface{}
+	if err := json.Unmarshal([]byte(evidence), &ev); err != nil {
+		return 0
+	}
+	fire, ok := ev["fire"].(map[string]interface{})
+	if !ok {
+		return 0
+	}
+	sec, _ := fire["stillbox_sec"].(float64)
+	return int(sec)
 }
 
 // parsedConditions 与 roomengine.ParsedConditions 同义副本（避免 import 循环）

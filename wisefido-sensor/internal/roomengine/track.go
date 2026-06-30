@@ -95,10 +95,10 @@ type TrackState struct {
 	StillBoxStartX, StillBoxStartY, StillBoxStartZ int // box run 起点 canvas（=History[0] 回填点）→ MarkDwell/cell + floor fall 坐标(经 CanvasToRadar 逆算 raw,Z 透传)
 	StillBoxCellArea  AreaType // box 开始那刻 CellAt(StillBoxStart canvas) 锁定的 cell area；久静期 floor/emission 单源读，
 	//                           避免逐帧 Kalman/raw 微动跨格抖动（sit 区边缘被偏读成 active 致误报）。box-break 清回 AreaUnknown。
-	// box 起点锁定的 chair 区 dwell 分布 → floor 连续 tFloor 单源（仅 chair 区）。box-break 清。
-	StillBoxInChair    bool
-	StillBoxChairMu    float64 // dwell EMA 均值（秒）；0=冷启
-	StillBoxChairSigma float64 // dwell EMA σ（秒）
+	// box 起点锁定的 chair 区久坐兜底 → floor 连续 tFloor 单源（仅 chair 区）。box-break 清。
+	StillBoxInChair     bool
+	StillBoxChairMu     float64 // 本椅 14 日久坐均值 AV（秒）；0=冷启
+	StillBoxChairMaxSit float64 // 本椅 false_alarm 反馈棘轮（秒）
 	StillBoxBreakDurMs             int64 // 本帧 still-box 刚 break 的 dwell 时长（0=未 break）→ 移动块 MarkDwell 消费
 
 	// ---- AreaSit 4 通道学习累加器（sit_learning.go；StillBox run = episode，box-break = walk-away emit）----

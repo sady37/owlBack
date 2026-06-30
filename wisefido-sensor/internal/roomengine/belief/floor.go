@@ -73,7 +73,7 @@ func (g *FloorGuard) Step(obs Observation) bool {
 	case contactInBed:
 		return false // 真在床
 	}
-	return obs.StillSec >= tFloorFor(obs.AreaType, obs.RoomType, obs.IsRiskTime, obs.InChair, obs.ChairMu, obs.ChairSigma)
+	return obs.StillSec >= tFloorFor(obs.AreaType, obs.RoomType, obs.IsRiskTime, obs.InChair, obs.ChairMu, obs.ChairMaxSit)
 }
 
 // tFloorFor floor(= §I stillbox 计时器)异常阈。risktime 纯时间轴：μ,σ 不变(物理),只动风险容忍 k——
@@ -81,11 +81,13 @@ func (g *FloorGuard) Step(obs Observation) bool {
 //
 // 分层：
 //   bathroom 房     → bath 阈(20min)，压过一切（占用区紧阈）。
-//   chair 区(inChair)→ 本格学到的 dwell 分布：tFloor=clamp(μ+k·σ,[12min,90min])；冷启(μ≤0)回退 90min。
-//                      只 chair 区走这条（pin 几何 gate，免疫 Belief 翻转）；坐得越久的椅子阈越大。
+//   chair 区(inChair)→ tFloor = clamp(max(1.5·μ+10min, maxSit), ≤90min)；冷启(μ≤0)回退 90min。
+//                      μ=本椅 14 日久坐均值（AV）；maxSit=false_alarm+"Sit on Chair" 反馈棘轮（单调只增的、
+//                      已人工确认安全的久坐时长，抗 14 日窗遗忘致复发）。pin 几何 gate，免疫 Belief 翻转。
+//                      90min 硬顶=刻意守 FN 红线（真摔躺地绝不超 90min 不报）——maxSit 单调增也不破顶。
 //   AreaLying(沙发) → sit 阈(90min) 二值（独立躺区，不并入 chair 学习）。
 //   其余            → default 阈(12min)，快报真摔。
-func tFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairSigma float64) float64 {
+func tFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairMaxSit float64) float64 {
 	k := 1.5
 	if isRiskTime {
 		k = 1.5
@@ -99,11 +101,12 @@ func tFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairSigma
 		if chairMu <= 0 {
 			return tSit // 冷启：声明椅学够前回退 90min
 		}
-		t := chairMu + k*chairSigma
-		if t < tActive {
-			t = tActive
-		} else if t > tSit {
-			t = tSit
+		t := 1.5*chairMu + 600 // 1.5·AV + 10min
+		if chairMaxSit > t {
+			t = chairMaxSit // 反馈棘轮：抬到人工确认过的安全久坐时长之上，压住复发
+		}
+		if t > tSit {
+			t = tSit // 90min 硬顶：守 FN 红线
 		}
 		return t
 	case area == areaLying:
@@ -114,6 +117,6 @@ func tFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairSigma
 }
 
 // TFloorFor 导出版：供 alarm evidence / 日志记录这次 fire 实际用的 floor 阈（秒取整）。
-func TFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairSigma float64) int {
-	return int(tFloorFor(area, roomType, isRiskTime, inChair, chairMu, chairSigma))
+func TFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairMaxSit float64) int {
+	return int(tFloorFor(area, roomType, isRiskTime, inChair, chairMu, chairMaxSit))
 }

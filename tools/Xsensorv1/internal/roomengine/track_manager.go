@@ -928,10 +928,10 @@ type TrackStatusBase struct {
 	Pose                int
 	StillBoxSec         int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动）→ FloorGuard 纯计时器（直立折扣已移 emission）
 	CellAreaType        AreaType
-	// chair 区 dwell 分布（实时读 px,py 的 cell）→ floor 连续 tFloor 单源（仅 chair 区）
+	// chair 区久坐兜底（实时读 px,py 的 cell）→ floor 连续 tFloor 单源（仅 chair 区）
 	InChair             bool
-	ChairMu             float64
-	ChairSigma          float64
+	ChairMu             float64 // 14 日久坐均值 AV
+	ChairMaxSit         float64 // false_alarm 反馈棘轮（人工确认安全久坐下限）
 	FwAreaID            int    // firmware area_id（present=本帧；lost=冻结末值）→ adapter N 床判定
 	EnterTarget         string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
 	MoveActive          bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
@@ -1034,13 +1034,15 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			if c.Belief[0].Type == AreaEnter {
 				base.EnterTarget = c.EnterTarget
 			}
-			// chair 区久坐窗（per-chair，电子云 gate=pin 几何，免疫 Belief 翻转）：读该椅 anchor 格 hydrate 来的缓存 μ/σ；
-			// 在 chair 区且样本够 → 喂 floor 连续阈；冷启(N<min)留 ChairMu=0 → floor 回退 90min。
+			// chair 区久坐兜底（per-chair，电子云 gate=pin 几何，免疫 Belief 翻转）：读该椅 anchor 格 hydrate 来的缓存 μ + maxSit 棘轮；
+			// 在 chair 区且样本够 → 喂 floor 连续阈；冷启(N<min)留 ChairMu=0 → floor 回退 90min（maxSit 棘轮无样本门控,有就读）。
 			if tm.chairPinFieldW(px, py) > 0 {
 				base.InChair = true
-				if ac := tm.chairAnchorCell(px, py); ac != nil && ac.DwellN >= DwellColdMinN {
-					base.ChairMu = ac.DwellMu
-					base.ChairSigma = ac.DwellSig
+				if ac := tm.chairAnchorCell(px, py); ac != nil {
+					base.ChairMaxSit = ac.DwellMaxSit
+					if ac.DwellN >= DwellColdMinN {
+						base.ChairMu = ac.DwellMu
+					}
 				}
 			}
 		}

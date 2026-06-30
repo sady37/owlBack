@@ -222,13 +222,16 @@ type Cell struct {
 	// ≥ sitPromoteTau 升 AreaSit(SourceLearned)；HL DecayParams.SitScoreSec(默认 4d,config 可调) 指数衰减（隔离 episode 自然褪）。
 	SitScore float64
 
-	// ---- Chair 区久坐分布（per-chair：仅 chair anchor 格带；floor 连续 tFloor=clamp(μ+1.5σ,[12,90]) 单源）----
+	// ---- Chair 区久坐兜底（per-chair：仅 chair anchor 格带；floor 连续 tFloor=clamp(max(1.5μ+10min,maxSit),≤90min) 单源）----
 	// 14 日滚动窗：每 >5min walk-away 久坐 episode 进当天桶(AppendDwell)；hourly RecomputeDwell 丢>14天槽+聚合。
 	// 缓存 μ/σ/N 供 floor 热路径 O(1) 读；直方图 Hist(5min bin) 留 median/分位后期用。冷启(N<min)回退 90min。
 	DwellWindow []DwellBucket // 14 日环（只 anchor 格，omitempty）
-	DwellMu     float64       // 缓存：窗口 μ（秒）；0=冷启
+	DwellMu     float64       // 缓存：窗口 μ（秒，AV）；0=冷启
 	DwellSig    float64       // 缓存：窗口 σ（秒）
 	DwellN      int           // 缓存：窗口总样本数（冷启门控 <DwellColdMinN）
+	// DwellMaxSit false_alarm+"Sit on Chair" 反馈棘轮（秒）：人工确认安全的久坐时长下限，单调只增、不随 14 日窗
+	//   遗忘衰减（抗"长坐人群停几天→μ降→阈降→复发"）。90min 硬顶在 floor 算阈处夹，本字段只累不夹。
+	DwellMaxSit float64
 
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
@@ -780,10 +783,11 @@ func (c *Cell) updateRisk(g int) {
 const DwellColdMinN = 3
 
 const (
-	dwellWindowDays = 14 // 久坐窗滚动天数
-	dwellHistBins   = 18 // 5min bin：[0]=[5,10)…[16]=[85,90)，[17]=[90,∞)
-	dwellHistLowMin = 5  // 第一个 bin 下界(min)；<5min 已过滤不入
-	dwellHistBinMin = 5  // bin 宽(min)
+	dwellWindowDays      = 14  // 久坐窗滚动天数
+	dwellHistBins        = 18  // 5min bin：[0]=[5,10)…[16]=[85,90)，[17]=[90,∞)
+	dwellHistLowMin      = 5   // 第一个 bin 下界(min)；<5min 已过滤不入
+	dwellHistBinMin      = 5   // bin 宽(min)
+	dwellMaxSitMarginSec = 600 // maxSit 棘轮在实际久坐时长上加的 10min margin（抬到习惯久坐之上压复发）
 )
 
 // DwellBucket 一天的 >5min 久坐统计：N/Sum/SumSq 精确算 μ+1.5σ；Hist(5min bin) 留 median/分位后期用。
@@ -870,6 +874,17 @@ func (c *Cell) RecomputeDwell(nowMs int64) {
 		v = 0
 	}
 	c.DwellSig = math.Sqrt(v)
+}
+
+// RatchetChairMaxSit false_alarm+"Sit on Chair" 反馈棘轮：把"本次被误报的实际久坐时长 + margin"
+// 抬进本椅 anchor 的 maxSit 下限（单调只增）。sitDurSec=fire 时观测到的久坐 still 秒（evidence.fire.stillbox_sec）。
+// 下次同把椅子坐同样久 → tFloor=max(1.5μ+10min, maxSit) 已抬到该时长之上 → 不再误火。
+// 仅累不夹 90min（硬顶在 tFloorFor 算阈处统一夹，守 FN 红线）。调用方保证本格是 chair anchor。
+func (c *Cell) RatchetChairMaxSit(sitDurSec float64) {
+	v := sitDurSec + dwellMaxSitMarginSec
+	if v > c.DwellMaxSit {
+		c.DwellMaxSit = v
+	}
 }
 
 // ========================================================================
