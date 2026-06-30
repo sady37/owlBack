@@ -74,7 +74,7 @@ func (g *FloorGuard) Step(obs Observation) bool {
 	case contactInBed:
 		return false // 真在床
 	}
-	return obs.StillSec >= tFloorFor(obs.AreaType, obs.RoomType, obs.IsRiskTime, obs.InChair, obs.ChairMu, obs.ChairMaxSit)
+	return obs.StillSec >= tFloorFor(obs.AreaType, obs.RoomType, obs.IsRiskTime, obs.InChair, obs.ChairMu, obs.ChairSigma, obs.ChairMaxSit)
 }
 
 // tFloorFor floor(= §I stillbox 计时器)异常阈。risktime 纯时间轴：μ,σ 不变(物理),只动风险容忍 k——
@@ -82,12 +82,13 @@ func (g *FloorGuard) Step(obs Observation) bool {
 //
 // 分层（镜像 wisefido-sensor 正本）：
 //   bathroom 房     → bath 阈(20min)，压过一切（占用区紧阈）。
-//   chair 区(inChair)→ tFloor = clamp(max(1.5·μ+10min, maxSit), ≤90min)；冷启(μ≤0)回退 90min。
-//                      μ=本椅 14 日久坐均值（AV，hydrate 自 28）；maxSit=false_alarm 反馈棘轮（人工确认安全久坐下限，
-//                      hydrate 自 28，只读不学）。pin 几何 gate，免疫 Belief 翻转。90min 硬顶守 FN 红线。
+//   chair 区(inChair)→ tFloor = clamp(max(μ+1.5σ+10min, maxSit), ≤90min)；冷启(μ≤0)回退 90min。
+//                      μ,σ=本椅 14 日久坐分布（hydrate 自 28，按实测方差定上侧 6.68% 异常阈）；+10min margin 抬到习惯久坐之上；
+//                      maxSit=false_alarm 反馈棘轮（hydrate 自 28，只读不学）。σ=μ/3 时退化为 1.5μ+10min。
+//                      pin 几何 gate，免疫 Belief 翻转。90min 硬顶守 FN 红线。
 //   AreaLying(沙发) → sit 阈(90min) 二值（独立躺区）。
 //   其余            → default 阈(12min)，快报真摔。
-func tFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairMaxSit float64) float64 {
+func tFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairSigma, chairMaxSit float64) float64 {
 	k := 1.5
 	if isRiskTime {
 		k = 1.5
@@ -101,7 +102,7 @@ func tFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairMaxSi
 		if chairMu <= 0 {
 			return tSit // 冷启：声明椅学够前回退 90min
 		}
-		t := 1.5*chairMu + 600 // 1.5·AV + 10min
+		t := chairMu + 1.5*chairSigma + 600 // μ+1.5σ + 10min
 		if chairMaxSit > t {
 			t = chairMaxSit // 反馈棘轮：抬到人工确认过的安全久坐时长之上，压住复发
 		}

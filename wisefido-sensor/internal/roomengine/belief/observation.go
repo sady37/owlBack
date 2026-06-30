@@ -42,10 +42,11 @@ type Observation struct {
 	AreaType int
 
 	// Chair 区久坐兜底（box 起点锁定）：floor 只对 chair 区(InChair)算连续阈
-	//   tFloor = clamp(max(1.5·ChairMu+10min, ChairMaxSit), ≤90min)；冷启(ChairMu≤0)回退 90min。
+	//   tFloor = clamp(max(ChairMu+1.5·ChairSigma+10min, ChairMaxSit), ≤90min)；冷启(ChairMu≤0)回退 90min。
 	// 与 Belief area 解耦：是否 chair 区由 pin 几何定(免疫 UpdateBelief 翻转)，不读 cell.Belief[0].Type。
 	InChair     bool    // 本格在 chair pin 区内（chairPinFieldW>0）
 	ChairMu     float64 // 本椅 14 日久坐均值 AV（秒）；0=冷启(样本不足)
+	ChairSigma  float64 // 本椅 14 日久坐标准差（秒）
 	ChairMaxSit float64 // 本椅 false_alarm 反馈棘轮（秒）：人工确认安全的久坐时长下限，单调只增
 
 	// RadarBedHitMask 逐床 N：firmware area_id 命中该床声明的 areaId（= 雷达判"人在该床上"）。长 numBeds。

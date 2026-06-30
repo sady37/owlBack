@@ -98,6 +98,7 @@ type TrackState struct {
 	// box 起点锁定的 chair 区久坐兜底 → floor 连续 tFloor 单源（仅 chair 区）。box-break 清。
 	StillBoxInChair     bool
 	StillBoxChairMu     float64 // 本椅 14 日久坐均值 AV（秒）；0=冷启
+	StillBoxChairSigma  float64 // 本椅 14 日久坐标准差（秒）
 	StillBoxChairMaxSit float64 // 本椅 false_alarm 反馈棘轮（秒）
 	StillBoxBreakDurMs             int64 // 本帧 still-box 刚 break 的 dwell 时长（0=未 break）→ 移动块 MarkDwell 消费
 

@@ -35,6 +35,7 @@ type RadarTrack struct {
 	// Chair 区久坐兜底（实时读 px,py 的 cell）→ floor 连续 tFloor 单源（仅 chair 区）
 	InChair     bool
 	ChairMu     float64 // 14 日久坐均值 AV
+	ChairSigma  float64 // 14 日久坐标准差
 	ChairMaxSit float64 // false_alarm 反馈棘轮（人工确认安全久坐下限）
 	RoomType   int // 房型(card.RoomType: 1=Bathroom)透传 → emission still CDF (μ,σ) room×cell 保守合并
 	FwAreaID   int // firmware area_id（地面真值，不随 canvas drift）→ 命中床 areaId = N（在床）→ 驱动 emission SBed
@@ -234,6 +235,7 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, bedAre
 		AreaType:            t.AreaType,
 		InChair:             t.InChair,
 		ChairMu:             t.ChairMu,
+		ChairSigma:          t.ChairSigma,
 		ChairMaxSit:         t.ChairMaxSit,
 		RoomType:            t.RoomType,
 		IsRiskTime:          isRiskTime, // risktime 只缩短 floor tFloor(纯时间轴),不进 C_FN

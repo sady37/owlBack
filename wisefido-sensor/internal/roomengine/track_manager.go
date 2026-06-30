@@ -981,6 +981,7 @@ type TrackStatusBase struct {
 	// chair 区久坐兜底（box 起点锁定）→ floor 连续 tFloor 单源（仅 chair 区）
 	InChair             bool
 	ChairMu             float64 // 14 日久坐均值 AV
+	ChairSigma          float64 // 14 日久坐标准差
 	ChairMaxSit         float64 // false_alarm 反馈棘轮（人工确认安全久坐下限）
 	FwAreaID            int    // firmware area_id（present=本帧；lost=冻结末值）→ adapter N 床判定
 	EnterTarget         string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
@@ -1092,11 +1093,13 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			base.CellAreaType = ts.StillBoxCellArea // 久静期:锁定值
 			base.InChair = ts.StillBoxInChair       // 久静期:锁定 chair 久坐兜底
 			base.ChairMu = ts.StillBoxChairMu
+			base.ChairSigma = ts.StillBoxChairSigma
 			base.ChairMaxSit = ts.StillBoxChairMaxSit
 		} else {
 			base.CellAreaType = AreaUnknown // 移动期:不读
 			base.InChair = false            // 移动期:不读
 			base.ChairMu = 0
+			base.ChairSigma = 0
 			base.ChairMaxSit = 0
 		}
 		ts.LastCellArea = base.CellAreaType
@@ -2110,7 +2113,7 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			ts.StillBoxRunStart = 0
 			ts.StillBoxCellArea = AreaUnknown
 			ts.StillBoxInChair = false
-			ts.StillBoxChairMu, ts.StillBoxChairMaxSit = 0, 0
+			ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit = 0, 0, 0
 			ts.sitFwMaxMs, ts.sitFwContigStartMs, ts.sitZBest = 0, 0, 0
 		}
 		return
@@ -2130,7 +2133,7 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			// chair 区久坐兜底锁定（电子云 gate=pin 几何，免疫 Belief 翻转）：读该椅 anchor 格缓存 μ + maxSit 棘轮；
 			// 冷启(窗样本<min)锁 ChairMu=0 → floor 回退 90min（maxSit 棘轮无样本门控，有就读）。box-break 清。
 			ts.StillBoxInChair = tm.chairPinFieldW(ts.StillBoxStartX, ts.StillBoxStartY) > 0
-			ts.StillBoxChairMu, ts.StillBoxChairMaxSit = 0, 0
+			ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit = 0, 0, 0
 			if c := tm.grid.CellAt(ts.StillBoxStartX, ts.StillBoxStartY); c != nil {
 				ts.StillBoxCellArea = c.Belief[0].Type
 			}
@@ -2139,17 +2142,18 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 					ts.StillBoxChairMaxSit = ac.DwellMaxSit
 					if ac.DwellN >= DwellColdMinN {
 						ts.StillBoxChairMu = ac.DwellMu
+						ts.StillBoxChairSigma = ac.DwellSig
 					}
 				}
 			}
 			if tm.logger != nil {
-				tfloor := belief.TFloorFor(int(ts.StillBoxCellArea), tm.roomType, IsNightTime(nowMs, tm.timezone), ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairMaxSit)
+				tfloor := belief.TFloorFor(int(ts.StillBoxCellArea), tm.roomType, IsNightTime(nowMs, tm.timezone), ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit)
 				tm.logger.Debug("still_box_start",
 					zap.Int("track_id", f.TrackID), zap.String("logic_id", ts.LogicID),
 					zap.Int64("start_ms", ts.StillBoxRunStart),
 					zap.Int("canvas_x", ts.StillBoxStartX), zap.Int("canvas_y", ts.StillBoxStartY), zap.Int("canvas_z", ts.StillBoxStartZ),
 					zap.String("locked_area", ts.StillBoxCellArea.Name()),
-					zap.Bool("in_chair", ts.StillBoxInChair), zap.Float64("chair_mu", ts.StillBoxChairMu), zap.Float64("chair_maxsit", ts.StillBoxChairMaxSit),
+					zap.Bool("in_chair", ts.StillBoxInChair), zap.Float64("chair_mu", ts.StillBoxChairMu), zap.Float64("chair_sigma", ts.StillBoxChairSigma), zap.Float64("chair_maxsit", ts.StillBoxChairMaxSit),
 					zap.Int("tfloor_sec", tfloor))
 			}
 		}
@@ -2172,15 +2176,15 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 		startMs := ts.StillBoxRunStart
 		dur := nowMs - startMs
 		lockedArea := ts.StillBoxCellArea
-		lockedInChair, lockedMu, lockedMaxSit := ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairMaxSit
+		lockedInChair, lockedMu, lockedSigma, lockedMaxSit := ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit
 		ts.StillBoxBreakDurMs = dur // 暂存刚结束的 dwell 时长，供 scoreMovement 移动块 MarkDwell
 		ts.StillBoxRunStart = 0
 		ts.StillBoxCellArea = AreaUnknown // box-break：清锁，移动期不读 cell area（floor 不计时/emission 靠 pose）
 		ts.StillBoxInChair = false        // box-break：清锁 chair 久坐兜底
-		ts.StillBoxChairMu, ts.StillBoxChairMaxSit = 0, 0
+		ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit = 0, 0, 0
 		tm.emitSitEpisode(ts, dur, nowMs) // box-break=移动导致=walk-away → emit Sit episode（lost 走 ResetStillBox 不 emit）
 		if tm.logger != nil {
-			tfloor := belief.TFloorFor(int(lockedArea), tm.roomType, IsNightTime(nowMs, tm.timezone), lockedInChair, lockedMu, lockedMaxSit)
+			tfloor := belief.TFloorFor(int(lockedArea), tm.roomType, IsNightTime(nowMs, tm.timezone), lockedInChair, lockedMu, lockedSigma, lockedMaxSit)
 			tm.logger.Debug("still_box_break",
 				zap.Int("track_id", f.TrackID), zap.String("logic_id", ts.LogicID),
 				zap.Int64("start_ms", startMs), zap.Int64("duration_ms", dur),

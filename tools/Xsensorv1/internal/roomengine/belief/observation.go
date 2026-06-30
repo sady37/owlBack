@@ -42,9 +42,10 @@ type Observation struct {
 	AreaType int
 
 	// Chair 区久坐兜底（hydrate 自 28，replay 期不学）：floor 只对 chair 区(InChair)算连续阈
-	//   tFloor=clamp(max(1.5·ChairMu+10min, ChairMaxSit),≤90min)；冷启(ChairMu≤0)回退 90min。pin 几何 gate，免疫 Belief 翻转。
+	//   tFloor=clamp(max(ChairMu+1.5·ChairSigma+10min, ChairMaxSit),≤90min)；冷启(ChairMu≤0)回退 90min。pin 几何 gate，免疫 Belief 翻转。
 	InChair     bool
 	ChairMu     float64 // 本椅 14 日久坐均值 AV（秒）；0=冷启
+	ChairSigma  float64 // 本椅 14 日久坐标准差（秒）
 	ChairMaxSit float64 // 本椅 false_alarm 反馈棘轮（秒，只读 hydrate）
 
 	// RadarBedHitMask 逐床 N：firmware area_id 命中该床声明的 areaId（= 雷达判"人在该床上"）。长 numBeds。

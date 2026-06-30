@@ -931,6 +931,7 @@ type TrackStatusBase struct {
 	// chair 区久坐兜底（实时读 px,py 的 cell）→ floor 连续 tFloor 单源（仅 chair 区）
 	InChair             bool
 	ChairMu             float64 // 14 日久坐均值 AV
+	ChairSigma          float64 // 14 日久坐标准差
 	ChairMaxSit         float64 // false_alarm 反馈棘轮（人工确认安全久坐下限）
 	FwAreaID            int    // firmware area_id（present=本帧；lost=冻结末值）→ adapter N 床判定
 	EnterTarget         string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
@@ -1042,6 +1043,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 					base.ChairMaxSit = ac.DwellMaxSit
 					if ac.DwellN >= DwellColdMinN {
 						base.ChairMu = ac.DwellMu
+						base.ChairSigma = ac.DwellSig
 					}
 				}
 			}

@@ -180,7 +180,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			StillSec: float64(b.StillBoxSec), // still-box raw 时长 → FloorGuard 纯计时器（直立折扣已移 emission 压 SFallen）
 
 			AreaType: int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
-			InChair:  b.InChair, ChairMu: b.ChairMu, ChairMaxSit: b.ChairMaxSit, // chair 区久坐兜底 → floor 连续 tFloor
+			InChair:  b.InChair, ChairMu: b.ChairMu, ChairSigma: b.ChairSigma, ChairMaxSit: b.ChairMaxSit, // chair 区久坐兜底 → floor 连续 tFloor
 			RoomType: d.roomType[roomID],  // 房型 → still CDF room×cell 保守合并(bathroom 一律 20min)
 			FwAreaID: b.FwAreaID,          // firmware area_id（present=本帧/lost=冻结）→ 命中床 areaId = N（在床）
 		}})
