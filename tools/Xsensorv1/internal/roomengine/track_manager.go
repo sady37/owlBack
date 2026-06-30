@@ -1486,6 +1486,16 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			delete(tm.tracks, id)
 			continue
 		}
+		// 正常离房：本轨 firmware track_id 命中 ExitRoom 硬证据（过门事件）→ 该人已跨门，0 延时清尸体。
+		// pre_tid 精确归属：门事件权威，姿态不否决——真摔固件自己 fire fall，近门 FN 兜底落 neighbor hand-off，
+		// 故无需姿态/dz 闸，也无需拿 ghost 形态当代理（区别于设备级耦合的 exitCoupledLostResidual）。
+		if nowMs-ts.LastObservedMs >= presenceCoastMs && tm.exitRoomMatchedLocked(ts.DeviceAddr, ts.TrackID, nowMs) {
+			tm.logger.Info("exit_tid_matched_purge",
+				zap.String("device_uid", ts.DeviceAddr), zap.Int("track_id", ts.TrackID),
+				zap.String("logic_id", ts.LogicID), zap.Int("last_pose", ts.LastPose))
+			delete(tm.tracks, id)
+			continue
+		}
 		// ExitRoom 后 30s 内 lost 的残迹直接清（不 coast 喂 floor）：判据集中在 exitCoupledLostResidual
 		// （interfer-born / split-group +pose+dz），治 byte-frozen 卡死轨/离场残影续 coast 11min 满 tFloor 的 FP。
 		if nowMs-ts.LastObservedMs >= presenceCoastMs && tm.exitCoupledLostResidual(ts, nowMs) {
@@ -1932,6 +1942,30 @@ const witnessRadiusCm = 200
 //	③ born-ghost：出生离门远（85*d/150 >65 ⟺ >~115cm，real 都进门）（+ 共享 pose/dz 闸）。
 //
 // FN 闸：无耦合 ExitRoom 不动；倒地前兆/lying/sit/walking 不在白名单（真摔者、真坐者留）；dz>40 留（下坠保护）。调用方持锁。
+// exitRoomMatchedLocked 本设备本 firmware track_id 在硬证据窗(eventBufferMs)内有过门 ExitRoom，
+// 且未被更晚的 EnterRoom 作废（同 tid 退-进重号 → 人又回来，不算离房）。调用方持 tm.mu。
+// pre_tid 精确归属：固件直接告知是哪条轨跨门，无需拿 ghost 形态当代理。
+func (tm *TrackManager) exitRoomMatchedLocked(devUID string, fwTrackID int, nowMs int64) bool {
+	cutoff := nowMs - eventBufferMs
+	var exitTs, enterTs int64
+	for k, e := range tm.recentRadarEvents {
+		if k < cutoff || e.DeviceUID != devUID || e.TrackID != fwTrackID {
+			continue
+		}
+		switch e.EventName {
+		case alarm.ExitRoom:
+			if k > exitTs {
+				exitTs = k
+			}
+		case alarm.EnterRoom:
+			if k > enterTs {
+				enterTs = k
+			}
+		}
+	}
+	return exitTs > 0 && exitTs >= enterTs
+}
+
 func (tm *TrackManager) exitCoupledLostResidual(ts *TrackState, nowMs int64) bool {
 	d := tm.devRoom[ts.DeviceAddr]
 	if d == nil || d.exitMs == 0 || absI64(d.exitMs-ts.LastObservedMs) > exitCoupledLostMs {
