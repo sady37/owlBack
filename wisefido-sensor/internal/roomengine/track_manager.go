@@ -422,6 +422,20 @@ func ChairAnchorCell(grid *RoomGrid, chairs []radarutils.Rect, sitSpreadCm, x, y
 	return grid.CellAt(ctr.X, ctr.Y)
 }
 
+// RatchetChairMaxSitAt false_alarm+"Sit on Chair" 反馈 live 落地：解析 (x,y canvas) 命中的 chair anchor 格，
+// 棘轮抬 maxSit（实际久坐 sitDurSec + margin，带衰减）。data handle 后经 HTTP 调；落 live grid，下次 5min 快照持久化。
+// 无命中 chair → false（点不在任何椅 pin 内）。
+func (tm *TrackManager) RatchetChairMaxSitAt(x, y int, sitDurSec float64, nowMs int64) bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	ac := tm.chairAnchorCell(x, y)
+	if ac == nil {
+		return false
+	}
+	ac.RatchetChairMaxSit(sitDurSec, nowMs)
+	return true
+}
+
 // RecomputeChairDwell 慢周期(hourly)：对每把椅子的 anchor 格重算久坐窗(丢>14天槽+聚合μ/σ)。engine 定时调。
 func (tm *TrackManager) RecomputeChairDwell(nowMs int64) {
 	tm.mu.Lock()

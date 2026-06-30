@@ -619,6 +619,22 @@ func (e *Engine) VetoRect(deviceAddr string, rect radarutils.Rect, sticky bool) 
 	return cleared, blocked, true
 }
 
+// RatchetChairMaxSitByDevice false_alarm+"Sit on Chair" 反馈 live 落地：解析 device→room→TrackManager，
+// 在 (x,y canvas) 命中的 chair anchor 棘轮抬 maxSit。data handle 后经 HTTP 调。device 未路由 / 无命中 chair → false。
+func (e *Engine) RatchetChairMaxSitByDevice(deviceAddr string, x, y int, sitDurSec float64, nowMs int64) bool {
+	roomID := e.RoomForDevice(deviceAddr)
+	if roomID == "" {
+		return false
+	}
+	e.mu.RLock()
+	tm := e.rooms[roomID]
+	e.mu.RUnlock()
+	if tm == nil {
+		return false
+	}
+	return tm.RatchetChairMaxSitAt(x, y, sitDurSec, nowMs)
+}
+
 func (e *Engine) MapDeviceToRoom(deviceKey, roomID string) {
 	e.mu.Lock()
 	e.deviceRoom[deviceKey] = roomID

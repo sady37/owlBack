@@ -42,6 +42,14 @@ type cellStampRequest struct {
 	Conf       int    `json:"conf"`
 }
 
+// chairMaxSitRequest data 在 handle(false_alarm + "Sit on Chair") 后调，棘轮抬该椅 anchor maxSit。
+type chairMaxSitRequest struct {
+	DeviceAddr string  `json:"device_addr"` // /128 device host text
+	X          int     `json:"x"`           // fire 点 canvas cm（evidence.fire.x）
+	Y          int     `json:"y"`           // evidence.fire.y
+	SitDurSec  float64 `json:"sit_dur_sec"` // 实际久坐 still 秒（evidence.fire.stillbox_sec）
+}
+
 // startVetoHTTPServer 在 addr 起 mux，POST /roomengine/cell/veto → engine.VetoCell。
 // 进程退出（ctx done）时优雅关闭。
 func startVetoHTTPServer(ctx context.Context, addr string, engine *roomengine.Engine, matrix *wiring.MatrixCache, logger *zap.Logger) {
@@ -136,6 +144,31 @@ func startVetoHTTPServer(ctx context.Context, addr string, engine *roomengine.En
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]bool{"cleared": true})
+	})
+
+	// data 在 handle(false_alarm + "Sit on Chair") 后调：把本次误报实际久坐时长棘轮抬进该椅 anchor maxSit。
+	// x,y=fire 点 canvas cm（evidence.fire.x/y）；sit_dur_sec=evidence.fire.stillbox_sec。零业务判断（条件已在 data 侧判）。
+	mux.HandleFunc("/roomengine/chair/maxsit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req chairMaxSitRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceAddr == "" || req.SitDurSec <= 0 {
+			http.Error(w, "bad request (need device_addr + x,y + sit_dur_sec)", http.StatusBadRequest)
+			return
+		}
+		ok := engine.RatchetChairMaxSitByDevice(req.DeviceAddr, req.X, req.Y, req.SitDurSec, time.Now().UnixMilli())
+		if !ok {
+			http.Error(w, "device not routed / point not in any chair pin", http.StatusNotFound)
+			return
+		}
+		logger.Info("chair_maxsit_ratcheted",
+			zap.String("device_addr", req.DeviceAddr), zap.Int("x", req.X), zap.Int("y", req.Y),
+			zap.Float64("sit_dur_sec", req.SitDurSec))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ratcheted": true})
 	})
 
 	// 只读诊断：GET /roomengine/cell/at?device_addr=&x=&y= → 该 canvas 点当前 cell 的 AreaType。

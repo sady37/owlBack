@@ -42,10 +42,12 @@ import (
 //                   加 DWin（anchor 14 日桶：n/sum/sumSq+5min直方图）+ DMu/DSig/DN（缓存 μ/σ/样本数，floor 热路径读）。
 //                   floor 连续 tFloor=clamp(μ+1.5σ,[12,90]) 只对 chair anchor 算,需跨重启保留;否则重启塌回 active(12min)。
 //                   非破坏:旧 v11 快照无 DWin → 冷启回退 90min,14 天内边学边收敛(FN-safe)。
-// v13 (2026-06-30): chair floor 改 tFloor=clamp(max(1.5μ+10min,maxSit),≤90min)——Counters 加 DMS（DwellMaxSit:
-//                   false_alarm+"Sit on Chair" 反馈棘轮,人工确认安全久坐下限,单调只增不衰减,跨重启保留;否则重启丢
-//                   棘轮→长坐人群复发误报)。非破坏:旧快照无 DMS → maxSit=0,只走 1.5μ+10min 自然收敛。
-const SnapshotSchemaVersion = 13 // v10: AreaType 重编号(deny/reflector/monitorbed/interfer/lying，删 shower/toilet)，旧快照 area 值失效须冷启
+// v13 (2026-06-30): chair floor 改 tFloor=clamp(max(μ+1.5σ+10min,maxSit),≤90min)——Counters 加 DMS（DwellMaxSit:
+//                   false_alarm+"Sit on Chair" 反馈棘轮,人工确认安全久坐下限,跨重启保留;否则重启丢棘轮→长坐人群复发误报)。
+//                   非破坏:旧快照无 DMS → maxSit=0,只走 μ+1.5σ+10min 自然收敛。
+// v14 (2026-06-30): maxSit 棘轮加 30 天半衰期慢衰减(治"只升不降→FN 永久退化")——Counters 加 DMSM（DwellMaxSitMs:
+//                   当前 maxSit 值的 as-of 时刻,跨重启保衰减基准)。非破坏:旧 v13 快照无 DMSM → 从加载时刻起算。
+const SnapshotSchemaVersion = 14 // v10: AreaType 重编号(deny/reflector/monitorbed/interfer/lying，删 shower/toilet)，旧快照 area 值失效须冷启
 
 // CellSnapshot 单 cell 的可持久化字段（紧凑 JSON，short keys 节省空间）
 type CellSnapshot struct {
@@ -83,6 +85,7 @@ type Counters struct {
 	DSig float64       `json:"dsg,omitempty"`  // 缓存窗口 σ 秒 (schema_v ≥ 12)
 	DN   int           `json:"dn,omitempty"`   // 缓存窗口样本数 (schema_v ≥ 12)
 	DMS  float64       `json:"dms,omitempty"`  // DwellMaxSit 秒 (schema_v ≥ 13) — false_alarm 反馈棘轮
+	DMSM int64         `json:"dmsm,omitempty"` // DwellMaxSitMs as-of 时刻 (schema_v ≥ 14) — 衰减基准
 	ADS int64     `json:"ads,omitempty"` // AutoDenyQualifiedSinceMs (schema_v ≥ 6)
 
 	// sensor_v2 v7 (决定 15+20):
@@ -200,6 +203,7 @@ func buildCounters(c *Cell) *Counters {
 		DSig: c.DwellSig,
 		DN:   c.DwellN,
 		DMS:  c.DwellMaxSit,
+		DMSM: c.DwellMaxSitMs,
 		ADS: c.AutoDenyQualifiedSinceMs,
 		ET:  c.EnterTarget,
 		IEN: c.InsideEnterEvidenceN,
@@ -299,6 +303,7 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 			c.DwellSig = cs.C.DSig
 			c.DwellN = cs.C.DN
 			c.DwellMaxSit = cs.C.DMS
+			c.DwellMaxSitMs = cs.C.DMSM
 			c.AutoDenyQualifiedSinceMs = cs.C.ADS
 			c.EnterTarget = cs.C.ET
 			c.InsideEnterEvidenceN = cs.C.IEN

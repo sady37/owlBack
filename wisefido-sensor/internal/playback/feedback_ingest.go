@@ -97,7 +97,7 @@ func IngestHistoricalFeedback(ctx context.Context, db *sql.DB, deviceUID string,
 				// 压住"长坐人群同样久坐再误报"。anchor 解析与热路径单源(ChairAnchorCell)。stillbox_sec 缺失=老数据→跳过棘轮。
 				if sec := fireStillboxSec(evidence); sec > 0 {
 					if ac := roomengine.ChairAnchorCell(grid, chairs, sitSpreadCm, canvas.X, canvas.Y); ac != nil {
-						ac.RatchetChairMaxSit(float64(sec))
+						ac.RatchetChairMaxSit(float64(sec), int64(handMs))
 					}
 				}
 				applied = true

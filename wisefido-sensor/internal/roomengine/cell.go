@@ -229,9 +229,10 @@ type Cell struct {
 	DwellMu     float64       // 缓存：窗口 μ（秒，AV）；0=冷启
 	DwellSig    float64       // 缓存：窗口 σ（秒）
 	DwellN      int           // 缓存：窗口总样本数（冷启门控 <DwellColdMinN）
-	// DwellMaxSit false_alarm+"Sit on Chair" 反馈棘轮（秒）：人工确认安全的久坐时长下限，单调只增、不随 14 日窗
-	//   遗忘衰减（抗"长坐人群停几天→μ降→阈降→复发"）。90min 硬顶在 floor 算阈处夹，本字段只累不夹。
-	DwellMaxSit float64
+	// DwellMaxSit false_alarm+"Sit on Chair" 反馈棘轮（秒）：人工确认安全的久坐时长下限，抗"长坐人群停几天→μ降→
+	//   阈降→复发"。30 天半衰期慢衰减（decayMaxSit）→ 一次性异常自愈、习惯长坐再棘轮维持。90min 硬顶在 floor 算阈处夹。
+	DwellMaxSit   float64
+	DwellMaxSitMs int64 // DwellMaxSit 当前值的 as-of 时刻（指数衰减基准；棘轮/hourly 重算时推进）
 
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
@@ -788,7 +789,13 @@ const (
 	dwellHistLowMin      = 5   // 第一个 bin 下界(min)；<5min 已过滤不入
 	dwellHistBinMin      = 5   // bin 宽(min)
 	dwellMaxSitMarginSec = 600 // maxSit 棘轮在实际久坐时长上加的 10min margin（抬到习惯久坐之上压复发）
+	dwellMaxSitFloorSec  = 60  // maxSit 衰减到 <1min 视作归零（清掉残尾，退回 μ+1.5σ 自然兜底）
 )
+
+// dwellMaxSitHalfLifeMs maxSit 反馈棘轮的指数衰减半衰期（30 天，>14 日窗留余量）。
+// 习惯长坐者每隔几周会再误报→再棘轮维持高位（用进废退）；一次性异常 ~30 天淡出 → FN 保护自愈。
+// 衰减回 0 不漏：tFloor 的底永远是 μ+1.5σ+10min（实测分布），maxSit 只是补 14 日窗遗忘的空窗。
+const dwellMaxSitHalfLifeMs = int64(30) * 24 * 3600 * 1000
 
 // DwellBucket 一天的 >5min 久坐统计：N/Sum/SumSq 精确算 μ+1.5σ；Hist(5min bin) 留 median/分位后期用。
 type DwellBucket struct {
@@ -843,8 +850,9 @@ func (c *Cell) AppendDwell(durSec float64, nowMs int64) {
 	b.Hist[dwellHistIdx(durSec)]++
 }
 
-// RecomputeDwell 慢周期(hourly)重算：丢 >14 天槽 → 聚合本窗 → 写缓存 μ/σ/N。调用方持锁。
+// RecomputeDwell 慢周期(hourly)重算：衰减 maxSit 棘轮 + 丢 >14 天槽 → 聚合本窗 → 写缓存 μ/σ/N。调用方持锁。
 func (c *Cell) RecomputeDwell(nowMs int64) {
+	c.decayMaxSit(nowMs) // 棘轮慢衰减（不依赖窗口，空窗也要衰减），须在早返回前
 	if len(c.DwellWindow) == 0 {
 		c.DwellMu, c.DwellSig, c.DwellN = 0, 0, 0
 		return
@@ -877,13 +885,34 @@ func (c *Cell) RecomputeDwell(nowMs int64) {
 }
 
 // RatchetChairMaxSit false_alarm+"Sit on Chair" 反馈棘轮：把"本次被误报的实际久坐时长 + margin"
-// 抬进本椅 anchor 的 maxSit 下限（单调只增）。sitDurSec=fire 时观测到的久坐 still 秒（evidence.fire.stillbox_sec）。
-// 下次同把椅子坐同样久 → tFloor=max(1.5μ+10min, maxSit) 已抬到该时长之上 → 不再误火。
-// 仅累不夹 90min（硬顶在 tFloorFor 算阈处统一夹，守 FN 红线）。调用方保证本格是 chair anchor。
-func (c *Cell) RatchetChairMaxSit(sitDurSec float64) {
-	v := sitDurSec + dwellMaxSitMarginSec
-	if v > c.DwellMaxSit {
+// 抬进本椅 anchor 的 maxSit（取 max）。sitDurSec=fire 时观测到的久坐 still 秒（evidence.fire.stillbox_sec）。
+// 下次同把椅子坐同样久 → tFloor=max(μ+1.5σ+10min, maxSit) 已抬到该时长之上 → 不再误火。
+// 先把已有值衰减到现在再比较抬升（否则旧高值不衰减永久占顶）；仅累不夹 90min（硬顶在 tFloorFor 统一夹）。
+// 调用方保证本格是 chair anchor。
+func (c *Cell) RatchetChairMaxSit(sitDurSec float64, nowMs int64) {
+	c.decayMaxSit(nowMs)
+	if v := sitDurSec + dwellMaxSitMarginSec; v > c.DwellMaxSit {
 		c.DwellMaxSit = v
+	}
+	c.DwellMaxSitMs = nowMs
+}
+
+// decayMaxSit 对 maxSit 棘轮做指数慢衰减（半衰期 dwellMaxSitHalfLifeMs）。DwellMaxSitMs=当前值的 as-of 时刻；
+// 每次衰减后推进到 nowMs（在 RecomputeDwell hourly + 棘轮前调）。旧快照无 dmsm（=0）→ 从现在起算不立即衰减。
+// 衰减到 <1min 归零，退回 μ+1.5σ 自然兜底。调用方持锁。
+func (c *Cell) decayMaxSit(nowMs int64) {
+	if c.DwellMaxSit <= 0 {
+		c.DwellMaxSitMs = 0
+		return
+	}
+	if c.DwellMaxSitMs == 0 || nowMs <= c.DwellMaxSitMs {
+		c.DwellMaxSitMs = nowMs // 初始化/校正 as-of（旧快照迁移 + 时钟回拨防护）
+		return
+	}
+	c.DwellMaxSit *= math.Exp(-math.Ln2 * float64(nowMs-c.DwellMaxSitMs) / float64(dwellMaxSitHalfLifeMs))
+	c.DwellMaxSitMs = nowMs
+	if c.DwellMaxSit < dwellMaxSitFloorSec {
+		c.DwellMaxSit, c.DwellMaxSitMs = 0, 0
 	}
 }
 

@@ -780,6 +780,32 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 	}, nil
 }
 
+// ratchetChairMaxSitOnSensor 读该 fall 告警的 evidence.fire（in_chair / stillbox_sec / x,y canvas），
+// 若是 chair 区误报 → 调 sensor live 端点把实际久坐时长棘轮抬进该椅 anchor maxSit。best-effort（DB/网络失败仅 warn）。
+func (s *alarmEventService) ratchetChairMaxSitOnSensor(ctx context.Context, tenantID, eventID, deviceAddr string) {
+	if s.db == nil || deviceAddr == "" {
+		return
+	}
+	var inChair bool
+	var stillboxSec float64
+	var x, y int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE((evidence->'fire'->>'in_chair')::bool, false),
+		       COALESCE((evidence->'fire'->>'stillbox_sec')::numeric, 0),
+		       COALESCE((evidence->'fire'->>'x')::int, 0),
+		       COALESCE((evidence->'fire'->>'y')::int, 0)
+		FROM alarm_events WHERE event_id::text = $1`, eventID).Scan(&inChair, &stillboxSec, &x, &y)
+	if err != nil {
+		s.logger.Warn("ratchetChairMaxSit: read evidence.fire failed (maxSit not ratcheted)",
+			zap.String("event_id", eventID), zap.Error(err))
+		return
+	}
+	if !inChair || stillboxSec <= 0 {
+		return // 非 chair 区误报 / 无久坐时长 → 不棘轮（floor 自然公式照常）
+	}
+	notifySensorChairMaxSit(ctx, s.logger, deviceAddr, x, y, stillboxSec)
+}
+
 // HandleAlarmEvent 处理报警事件
 func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlarmEventRequest) (*HandleAlarmEventResponse, error) {
 	// 参数验证
@@ -880,6 +906,12 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 		zap.String("alarm_status", req.AlarmStatus),
 		zap.String("handler_id", req.CurrentUserID),
 	)
+
+	// chair tFloor 反馈棘轮：标 false_alarm + "Sit on Chair" → 把本次误报实际久坐时长抬进该椅 anchor maxSit（live 落地）。
+	// best-effort，不阻断 handle 返回（失败下次同样误报会再棘轮）。
+	if operation == "false_alarm" && strings.Contains(req.Remarks, "Sit on Chair") {
+		s.ratchetChairMaxSitOnSensor(ctx, req.TenantID, req.EventID, event.DeviceAddr)
+	}
 
 	// 构建响应：包含前端和cardagg都需要的信息
 	response := &HandleAlarmEventResponse{

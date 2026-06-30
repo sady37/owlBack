@@ -227,7 +227,8 @@ type Cell struct {
 	DwellMu     float64 // 缓存：窗口 μ（秒，AV）；0=冷启
 	DwellSig    float64 // 缓存：窗口 σ（秒）
 	DwellN      int     // 缓存：窗口样本数（冷启门控）
-	DwellMaxSit float64 // false_alarm 反馈棘轮（秒，hydrate 自 28，只读）
+	DwellMaxSit   float64 // false_alarm 反馈棘轮（秒，hydrate 自 28，只读；衰减在 sensor 侧已落值）
+	DwellMaxSitMs int64   // 棘轮值 as-of 时刻（hydrate 自 28；Xsensorv1 不重算不衰减，仅保字段 1:1）
 
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState

@@ -96,6 +96,37 @@ func (s *RadarInstall) detectAndNotifyFeedbackVetoes(ctx context.Context, spatia
 	}
 }
 
+// notifySensorChairMaxSit POST sensor /roomengine/chair/maxsit {device_addr, x, y, sit_dur_sec}。
+// handle(false_alarm + "Sit on Chair") 后调：把本次误报实际久坐时长棘轮抬进该椅 anchor maxSit（live 落地）。
+// 包级函数（alarmEventService 与 RadarInstall 都可调）；best-effort，失败仅 warn（下次同样误报会再棘轮）。
+func notifySensorChairMaxSit(ctx context.Context, logger *zap.Logger, deviceAddr string, x, y int, sitDurSec float64) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"device_addr": deviceAddr, "x": x, "y": y, "sit_dur_sec": sitDurSec,
+	})
+	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, sensorHTTPBaseURL()+"/roomengine/chair/maxsit", bytes.NewReader(body))
+	if err != nil {
+		logger.Warn("notifySensorChairMaxSit: build request", zap.Error(err))
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		logger.Warn("notifySensorChairMaxSit: call sensor failed (maxSit not ratcheted; will retry on next false alarm)",
+			zap.String("device_addr", deviceAddr), zap.Error(err))
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		logger.Warn("notifySensorChairMaxSit: sensor rejected (route/version mismatch / point not in chair pin)",
+			zap.String("device_addr", deviceAddr), zap.Int("x", x), zap.Int("y", y), zap.Int("status", resp.StatusCode))
+		return
+	}
+	logger.Info("chair_maxsit_notified_sensor",
+		zap.String("device_addr", deviceAddr), zap.Int("x", x), zap.Int("y", y), zap.Float64("sit_dur_sec", sitDurSec))
+}
+
 // notifySensorVeto POST sensor /roomengine/cell/veto {device_addr, x1,y1,x2,y2, sticky}。best-effort，失败仅 warn。
 // sticky=false（Clear / 删 layout Feedback 对象）仅清 rect；sticky=true（handle "Never re-learn"）额外 MarkLearnBlocked。
 func (s *RadarInstall) notifySensorVeto(ctx context.Context, deviceAddr string, x1, y1, x2, y2 int, sticky bool, objID string) {
