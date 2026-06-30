@@ -32,6 +32,11 @@ type TrackOutput struct {
 // 内部 grid/cell/fall 算法使用；RawH/RawV/RawZ 是 firmware 直发的雷达本地坐标，
 // **不参与算法**，仅在 alarm/event publish 时作为"parent track" 原样上抛
 // （契约：对外 position_x/y/z 永远 == firmware 原始值，跟 monitor_stream 同语义）。
+// firmware 逐帧人员事件 byte-14 取值。
+const (
+	fwEventLeaveRoom = 2 // 离房（跨门外出）
+)
+
 type TrackFrame struct {
 	TrackID          int
 	DeviceAddr       string
@@ -39,6 +44,7 @@ type TrackFrame struct {
 	RawH, RawV, RawZ int // firmware raw 雷达本地坐标（对外契约用，保持不变）
 	Pose             int
 	AreaType         int // 雷达给的 area_id（保留兼容字段，engine 不信其判定，用 cell.AreaType）
+	Event            int // firmware 逐帧人员事件 byte-14：0 无 / 1 进房 / 2 离房 / 3 进区 / 4 离区
 	TMs              int64
 
 	// 用于 StillBox（静止无移动）检测的辅助字段（每个值是 firmware 给的原始信号）
@@ -1350,6 +1356,18 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	// ========== 段 1: 观测到的 track ==========
 	for _, f := range frames {
 		key := trackKey{f.DeviceAddr, f.TrackID}
+		// 逐帧离房事件（byte-14 event==2）：该 tid 此帧跨门离房 → 0 延时清尸体，不重建不 coast。
+		// pre_tid 精确归属（事件自带 track_id+位置），权威压过姿态：真摔固件自己 fire fall。
+		// 空房 no-target 流不进 ProcessFrame，但离房本身是一条真帧 → 必经此处，无 coast 残迹。
+		if f.Event == fwEventLeaveRoom {
+			if _, ok := tm.tracks[key]; ok {
+				tm.logger.Info("exit_event_purge",
+					zap.String("device_uid", f.DeviceAddr), zap.Int("track_id", f.TrackID),
+					zap.Int("x", f.X), zap.Int("y", f.Y))
+				delete(tm.tracks, key)
+			}
+			continue
+		}
 		// 瞬移干扰压制：已判 artifact 的 tid 仍滞留漂移点 → 丢弃该帧不重建 track（防固件重报刷回）。
 		if tm.interferenceSuppressed(key, f, nowMs) {
 			continue
@@ -1483,16 +1501,6 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 		// → 直接清。lost 轨固件不再送回，旁人会主动呼救，留着续 still-box 只会让 floor 兜底/lost-fall 对幽灵
 		// 开火(FP)。单人 lost 无 witness → 照常 coast 兜底。与下方 lostStillCarryMs 驱逐同为 inline delete。
 		if nowMs-ts.LastObservedMs >= presenceCoastMs && tm.witnessNearby(ts, nowMs, witnessRadiusCm) {
-			delete(tm.tracks, id)
-			continue
-		}
-		// 正常离房：本轨 firmware track_id 命中 ExitRoom 硬证据（过门事件）→ 该人已跨门，0 延时清尸体。
-		// pre_tid 精确归属：门事件权威，姿态不否决——真摔固件自己 fire fall，近门 FN 兜底落 neighbor hand-off，
-		// 故无需姿态/dz 闸，也无需拿 ghost 形态当代理（区别于设备级耦合的 exitCoupledLostResidual）。
-		if nowMs-ts.LastObservedMs >= presenceCoastMs && tm.exitRoomMatchedLocked(ts.DeviceAddr, ts.TrackID, nowMs) {
-			tm.logger.Info("exit_tid_matched_purge",
-				zap.String("device_uid", ts.DeviceAddr), zap.Int("track_id", ts.TrackID),
-				zap.String("logic_id", ts.LogicID), zap.Int("last_pose", ts.LastPose))
 			delete(tm.tracks, id)
 			continue
 		}
@@ -1942,30 +1950,6 @@ const witnessRadiusCm = 200
 //	③ born-ghost：出生离门远（85*d/150 >65 ⟺ >~115cm，real 都进门）（+ 共享 pose/dz 闸）。
 //
 // FN 闸：无耦合 ExitRoom 不动；倒地前兆/lying/sit/walking 不在白名单（真摔者、真坐者留）；dz>40 留（下坠保护）。调用方持锁。
-// exitRoomMatchedLocked 本设备本 firmware track_id 在硬证据窗(eventBufferMs)内有过门 ExitRoom，
-// 且未被更晚的 EnterRoom 作废（同 tid 退-进重号 → 人又回来，不算离房）。调用方持 tm.mu。
-// pre_tid 精确归属：固件直接告知是哪条轨跨门，无需拿 ghost 形态当代理。
-func (tm *TrackManager) exitRoomMatchedLocked(devUID string, fwTrackID int, nowMs int64) bool {
-	cutoff := nowMs - eventBufferMs
-	var exitTs, enterTs int64
-	for k, e := range tm.recentRadarEvents {
-		if k < cutoff || e.DeviceUID != devUID || e.TrackID != fwTrackID {
-			continue
-		}
-		switch e.EventName {
-		case alarm.ExitRoom:
-			if k > exitTs {
-				exitTs = k
-			}
-		case alarm.EnterRoom:
-			if k > enterTs {
-				enterTs = k
-			}
-		}
-	}
-	return exitTs > 0 && exitTs >= enterTs
-}
-
 func (tm *TrackManager) exitCoupledLostResidual(ts *TrackState, nowMs int64) bool {
 	d := tm.devRoom[ts.DeviceAddr]
 	if d == nil || d.exitMs == 0 || absI64(d.exitMs-ts.LastObservedMs) > exitCoupledLostMs {

@@ -85,6 +85,7 @@ func ParseRadarTracks(dv interface{}, deviceAddr string, mount radarutils.RadarM
 			RawZ:            localZ,
 			Pose:            pose,
 			AreaType:        areaID,
+			Event:           intFromAny(item["event"]),
 			TMs:             frameTs,
 			TrackConfidence: intFromAny(item["track_confidence"]),
 			RemainingTime:   intFromAny(item["remaining_time"]),
