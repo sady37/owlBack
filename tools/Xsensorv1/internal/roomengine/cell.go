@@ -214,7 +214,7 @@ type Cell struct {
 
 	// StaticReflectorCount: 静止金属反射体自学习（运动镜像之外的另一类）——一条 track 长期钉死在
 	// 此 cell（金属把手/淋浴架直射回波）+ 同时另一真人 track 在别处游走（corroboration）时累加。
-	// 跨多次独立 episode ≥ StaticReflectorPromoteThreshold 升 AreaReflector（Phase B；Phase A 仅累计+log）。
+	// 跨多次独立 episode ≥ StaticReflectorPromoteThreshold 升 AreaReflector（拿 floor 整片豁免）。
 	// 这类点人工标不了（幻影坐标依赖雷达角度/材质/多径，非肉眼可预知），只能自动学。
 	StaticReflectorCount  int
 	LastStaticReflectorMs int64

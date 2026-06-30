@@ -497,12 +497,15 @@ func (g *RoomGrid) MarkMirrorBounce(x, y int, nowMs int64) {
 	}
 }
 
-// StaticReflectorPromoteThreshold 静止反射体 cell 晋升 AreaDeny+SourceLearned 的独立 episode 阈值。
+// StaticReflectorPromoteThreshold 静止反射体 cell 晋升 AreaReflector+SourceLearned 的独立 episode 阈值。
 const StaticReflectorPromoteThreshold = 3
 
-// MarkStaticReflector 静止金属反射体累加（static_reflector.go 检测命中调）。
-// **Phase A：仅累计 + 时戳，不晋升 AreaDeny / 不改 verdict**（log-only 验证标点是否正确）。
-// 验证后 Phase B 再放开：≥ StaticReflectorPromoteThreshold 升 AreaDeny（SourceHuman 不覆盖）+ 该 cell 出生即 ghost。
+// MarkStaticReflector 静止金属反射体累加 + 晋升（static_reflector.go 检测命中调）。
+// 达 StaticReflectorPromoteThreshold 即 promote Belief[0]=AreaReflector+SourceLearned（已是 SourceHuman/
+// SourceFeedback 的不动）。升 AreaReflector 而非 AreaDeny：金属幻影常**孤迹**（无人在房，roamer=-1）→
+// realness co-existence 抓不到（需 ≥2 轨），唯一能压住 floor FP 的是 areaReflector 的 floor 整片豁免
+// （floor.go：AreaDeny 走 default tFloor=12min 等于不压）。demote 由 cell_learning hasRealActivity 兜底
+// （真人真走过 → 退回 Unknown，自纠误学）。
 func (g *RoomGrid) MarkStaticReflector(x, y int, nowMs int64) {
 	c := g.CellAt(x, y)
 	if c == nil {
@@ -510,6 +513,11 @@ func (g *RoomGrid) MarkStaticReflector(x, y int, nowMs int64) {
 	}
 	c.StaticReflectorCount++
 	c.LastStaticReflectorMs = nowMs
+	if c.StaticReflectorCount >= StaticReflectorPromoteThreshold && !c.LearnBlocked &&
+		c.Belief[0].Source != SourceHuman && c.Belief[0].Source != SourceFeedback {
+		c.Belief[0] = BeliefState{Type: AreaReflector, Confidence: 70, Source: SourceLearned}
+		c.AreaType = AreaReflector
+	}
 	c.LastUpdateMs = nowMs
 }
 

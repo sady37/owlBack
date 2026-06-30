@@ -129,3 +129,18 @@
 
 **Why**：协作者只读中文/英文；夹杂其它语言 = 沟通成本与误读风险。
 
+---
+
+## 规则 #5 — replay/分析一律走标准脚本，落在 case 目录
+
+所有 replay 与排查分析**必须在该 case 目录内、用标准脚本产出标准产物**，禁止手敲 ad-hoc SQL / 逐帧 psql 拼凑去复盘。
+
+- **三件标准脚本**（唯一入口）：
+  1. `tools/export/export.sh case-<last4>-<MMDD>-<startHHMM><endHHMM> --tz <IANA>` → 建 `doc/cases/<case>/`（window.json + room_layout + meta）。
+  2. `tools/replay-validate.sh <case 目录> [speed] [room-grep]` → 重启 xsensor(新 build) + replay，产出 **`/home/wisefido/owl/log/Xsensor.log`**（= 标准 `xsensor.log`）。
+  3. `tools/timeline_from_xray.py <case 目录> <room_prefix>`（`CASE_TZ=<IANA>`）→ 产出 **`doc/cases/<case>/track_event_timeline.md`**（每 tick per-track belief 全景）。
+- **窗口选取**：按"轨进入 stillbox 前 ~2min"定窗（fire time 无用，见规则 #3）；先从已落地的 `Xsensor.log` / `track_event_timeline.md` 读出入箱时刻，再决定是否重导，**不靠猜也不靠散查**。
+- **产物归位**：`track_event_timeline.md` 与 `xsensor.log` 是该 case 的标准交付，留在 case 目录可复核；分析结论引用它们的行，不另起一套查询。
+
+**Why**：散敲 SQL 既烧 token 又不可复核，且每人查法不同 = 结论不可比、易错（坐标系/track_id churn/时区随手查就翻车）。标准脚本 = 单一入口、确定产物、可回放可比对——排查的诚实性挂在"同一套脚本同一份产物"上。
+

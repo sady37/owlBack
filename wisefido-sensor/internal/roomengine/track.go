@@ -109,6 +109,20 @@ type TrackState struct {
 	// DBNConfidence：DBN per-track 置信度（realness PReal 0-100，S0.c-4 第三腿 A·R13/R15.3-2，
 	// 经 SetTrackConfidence 每帧写回）。<0 = DBN 未设 → payloadFromTrack TrackConfidence 取 0。
 	DBNConfidence int
+
+	// ---- split-ghost 时机（split_ghost.go；vote→spliter→group→step3 软压）----
+	// SplitObservingSinceMs：split_group 成员标记起点 ms（0=非 group 轨）。出生时 step1 vote 命中 spliter
+	// 且 spliter 静止门通过 + offspring 无 EnterRoom 时，由 stampSplitGroupOnBirth 给组内各成员打。
+	SplitObservingSinceMs int64
+	// SplitSpliterX/Y：本 group 的 spliter（静止干扰源）锚点（前一tick位）。成员到此 ≤glue 即赖着不走=ghost。
+	SplitSpliterX, SplitSpliterY int
+	// SplitLastLatchMs：step3 ~2s 节流上次时刻（见 splitLatchIntervalMs）。
+	SplitLastLatchMs int64
+	// SplitEverWalkedOut：净位移曾 > splitWalkOutCm(200) = 真人 walk → 永久 real，不被后续 still 翻案。
+	SplitEverWalkedOut bool
+	// SplitGhostSinceMs：赖在 spliter 锚点不走的 ghost 软压 latch（>0 → SnapshotTrackStatuses 零其
+	// StillBoxSec 不喂 floor）。可撤销：离开锚点/走开/露倒地相即清。不删轨（避免 firmware 重报 churn）。
+	SplitGhostSinceMs int64
 }
 
 // Track 生命周期常量

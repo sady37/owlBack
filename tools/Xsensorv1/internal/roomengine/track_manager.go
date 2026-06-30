@@ -558,6 +558,16 @@ const (
 	// 1Hz 固件下精度做不了 lost 判定，靠时长累积兜底真摔；撤销由 belief SLeft 压 floor 承担（人走了不兜底），
 	// 超此上限或固件明示无目标(88)才删 track。
 	lostStillCarryMs = int64(1_500_000)
+	// exitCoupledLostMs：本设备 ExitRoom 与本轨失锁时刻耦合窗（exit 前后此窗内失锁 = 离场churn残迹）。
+	exitCoupledLostMs = int64(30_000)
+	// exitLostMaxDz：耦合驱逐的末2tick垂直位移上限（≤此 = 无倒地式下坠，FN-safe）。
+	exitLostMaxDz = 40
+	// born-ghost 门距分（③，独立 0→100，不动 ghostBornScore/realness）：85*d/150，>65 ⟺ 出生 >~115cm 离门
+	// = real 都进门、远门凭空出现疑似 ghost。9999=NearestEntryDist 无 enter 区 → 跳过③（测不了门距，FN-safe）。
+	bornGhostDoorGain       = 85.0
+	bornGhostDoorScaleCm    = 150.0
+	bornGhostEvictThresh    = 65.0
+	bornGhostNoDoorSentinel = 9999
 )
 
 // sleepadInBed 检查同房间任一 sleepad 在 30s 内报告 InBed（不要求 HR/RR）。
@@ -1015,8 +1025,8 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
 		}
-		// 瞬移嫌疑待删窗 / immature-coast 反射伪迹 / interfer 出生孤迹：从 floor/blind-faller still-box 累积排除（不得误火）。
-		if ts.SuspectInterferenceSinceMs > 0 || ts.FloorArtifactSinceMs > 0 || ts.InterferBornSinceMs > 0 {
+		// 瞬移嫌疑待删窗 / immature-coast 反射伪迹 / interfer 出生孤迹 / split 赖锚点 ghost：从 floor/blind-faller still-box 累积排除（不得误火）。
+		if ts.SuspectInterferenceSinceMs > 0 || ts.FloorArtifactSinceMs > 0 || ts.InterferBornSinceMs > 0 || ts.SplitGhostSinceMs > 0 {
 			base.StillBoxSec = 0
 		}
 		if c := tm.grid.CellAt(px, py); c != nil {
@@ -1368,8 +1378,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				ts.LogicID = makeLogicID(tm.devUIDHex(f.DeviceAddr), f.TrackID, f.TMs)
 			}
 			// 孤儿 fresh 出生（无进门事件 + 无近邻继承）= 独立伪迹签名 → 若落 interfer cell 且出生时孤立则软压。
+			// 与 split-ghost 几何互斥：interfer-born 要孤立（≥120cm），split 要贴 present 邻轨（≤80cm）。
 			if !enteredRecently && !inherited {
 				tm.stampInterferBornIfIsolated(ts, f, nowMs)
+				tm.stampSplitGroupOnBirth(ts, f, nowMs)
 			}
 			tm.tracks[key] = ts
 			ts.PrevCore = RadarPoseToCore(f.Pose)
@@ -1407,6 +1419,9 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 
 			// 连续指标（StillBox 静止），在 Kalman update 之后维护
 			tm.updateContinuousIndicators(ts, f, nowMs)
+
+			// split-ghost step3：group 成员定 real(走开)/ghost(赖锚点)→ 软压 SplitGhostSinceMs。
+			tm.updateSplitGhost(ts, f, nowMs)
 
 			// 维度 A: 即时流（still-box / dwell / 久静量 + Lie 状态机）
 			tm.scoreMovement(ts, f.X, f.Y, nowMs, f.Pose)
@@ -1467,6 +1482,16 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			delete(tm.tracks, id)
 			continue
 		}
+		// ExitRoom 后 30s 内 lost 的残迹直接清（不 coast 喂 floor）：判据集中在 exitCoupledLostResidual
+		// （interfer-born / split-group +pose+dz），治 byte-frozen 卡死轨/离场残影续 coast 11min 满 tFloor 的 FP。
+		if nowMs-ts.LastObservedMs >= presenceCoastMs && tm.exitCoupledLostResidual(ts, nowMs) {
+			tm.logger.Info("exit_lost_residual_purge",
+				zap.String("device_uid", ts.DeviceAddr), zap.Int("track_id", ts.TrackID),
+				zap.String("logic_id", ts.LogicID), zap.Int("last_pose", ts.LastPose),
+				zap.Int("birth_x", ts.BirthPos.X), zap.Int("birth_y", ts.BirthPos.Y))
+			delete(tm.tracks, id)
+			continue
+		}
 		dt := float64(nowMs-ts.LastUpdateMs) / 1000.0
 		if dt <= 0 {
 			dt = 1
@@ -1489,7 +1514,11 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 
 		// immature-coast 反射伪迹 floor 抑制：真实寿命极短 + 无倒地前兆 + 有活轨共存 → latch（不删轨，
 		// 仅 SnapshotTrackStatuses 零其 StillBoxSec 不喂 floor；lid389 类 1-tick 远墙反射）。
-		tm.maybeLatchFloorArtifact(ts, id, nowMs)
+		// split_group 成员屏蔽此 latch：ghost 走自己的 SplitGhostSinceMs 软压，real 成员须保留 floor 网
+		// （误 latch 抹零真人 = 自关 silent-fall 兜底漏报）。
+		if ts.SplitObservingSinceMs == 0 {
+			tm.maybeLatchFloorArtifact(ts, id, nowMs)
+		}
 
 		// 驱逐：续 still-box 期间保留到 lostStillCarryMs 上限（让 still 累积到 floor 兜底）。
 		//   不用 noTargetSustained(固件 88 无目标)删——它分不清"人走了"vs"跟丢摔倒的人"，删了=漏摔；
@@ -1522,7 +1551,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 	tm.scanMirrorGhostPairs(nowMs)
 
 	// ========== 段 4e: 静止金属反射体自学习（near-wall + 长期静止 + 游走真人共存）==========
-	// Phase A：仅累计 StaticReflectorCount + log static_reflector_candidate，不改 verdict。详 static_reflector.go。
+	// 累计 StaticReflectorCount + log；达 StaticReflectorPromoteThreshold 升 cell→AreaReflector。详 static_reflector.go。
 	tm.scanStaticReflectors(nowMs)
 
 	// 瞬移干扰压制集 GC：消失 tid 的条目回收（NoTarget 后 TTL 内）。常态 0–2 条。
@@ -1890,6 +1919,67 @@ func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
 // 调用位置：processFrameAt 已有 track 分支，Kalman.Update 之后。
 // witnessRadiusCm：社交目击者先验半径——倒地静止轨此半径内有活跃真人即抑制其 still-box 兜底火报。
 const witnessRadiusCm = 200
+
+// exitCoupledLostResidual 本轨失锁是否与本设备 ExitRoom 耦合（≤30s）且命中删除判据之一 → 直接清（不 coast 喂 floor）。
+// 离场churn 残迹/byte-frozen 卡死轨：人走光硬证据下，残留静止轨续 coast 11min 满 tFloor = FP。三判据单一入口：
+//
+//	① interfer 区且生于 interfer 区（InterferBornSinceMs；走出 interfer 已被 revoke 清，故 >0 = 仍在）。
+//	② split_group 成员（+ 下方共享 pose/dz 闸）。
+//	③ born-ghost：出生离门远（85*d/150 >65 ⟺ >~115cm，real 都进门）（+ 共享 pose/dz 闸）。
+//
+// FN 闸：无耦合 ExitRoom 不动；倒地前兆/lying/sit/walking 不在白名单（真摔者、真坐者留）；dz>40 留（下坠保护）。调用方持锁。
+func (tm *TrackManager) exitCoupledLostResidual(ts *TrackState, nowMs int64) bool {
+	d := tm.devRoom[ts.DeviceAddr]
+	if d == nil || d.exitMs == 0 || absI64(d.exitMs-ts.LastObservedMs) > exitCoupledLostMs {
+		return false
+	}
+	if ts.InterferBornSinceMs > 0 { // ①
+		return true
+	}
+	if !poseEvictable(ts.LastPose) || last2Dz(ts) > exitLostMaxDz {
+		return false // ②③ 共享 pose/dz 闸
+	}
+	if ts.SplitObservingSinceMs > 0 { // ②
+		return true
+	}
+	if tm.grid != nil { // ③ born-ghost 门距分
+		if bd := tm.grid.NearestEntryDist(ts.BirthPos.X, ts.BirthPos.Y); bd < bornGhostNoDoorSentinel &&
+			bornGhostDoorGain*float64(bd)/bornGhostDoorScaleCm > bornGhostEvictThresh {
+			return true
+		}
+	}
+	return false
+}
+
+// last2Dz 末 2 个真实观测 tick（排 coast 冻结点）的 z range = 末2tick 垂直位移。<2 真点返回 0。
+func last2Dz(ts *TrackState) int {
+	zs := make([]int, 0, 3)
+	for i := len(ts.History) - 1; i >= 0 && len(zs) < 3; i-- {
+		if ts.History[i].TMs <= ts.LastObservedMs {
+			zs = append(zs, ts.History[i].Z)
+		}
+	}
+	if len(zs) < 2 {
+		return 0
+	}
+	mn, mx := zs[0], zs[0]
+	for _, z := range zs {
+		if z < mn {
+			mn = z
+		}
+		if z > mx {
+			mx = z
+		}
+	}
+	return mx - mn
+}
+
+func absI64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
 
 // witnessNearby 报告 ts 半径 radiusCm 内是否有另一条「活跃在场真人」轨（社交目击者先验）。witness 5 条焊死，
 // 防自家 churn 静止影子轨（~0cm）误当目击者把真摔者本人压掉：

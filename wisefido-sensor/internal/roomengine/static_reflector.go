@@ -6,13 +6,13 @@
 //
 // 与 mirror_detect 分工：mirror 抓"跟真人同步运动"的反射对；本检测抓"静止直射"伪迹。
 //
-// 金属位三签名（用户 2026-06-04 定，全满足才记一次 candidate；Phase A 仅累计+log，不改 verdict）：
+// 金属位三签名（用户 2026-06-04 定，全满足才记一次 candidate；命中累计，达阈即升 AreaReflector）：
 //   ① 出生即在此 ——BirthPos ≈ 当前位置（金属一出生就在金属点；**人是从门口出生走进来的**，
 //                  BirthPos 在门口不在墙边 → 这条比 z≈0 更干净地排除"贴墙洗漱的真人"）
 //   ② 从不移走   ——出生后一直没离开出生点，且存活够久（人迟早走开，金属永远不走）
 //   ③ 近墙       ——金属支架螺墙上（有高度，故**不**卡 z≈0，否则漏墙上金属）
 // 游走真人共存只作 log 信息**不 gate**（否则漏掉无人时纯金属幻影）。
-// 跨独立 episode 累 ≥ StaticReflectorPromoteThreshold → 升 AreaDeny（Phase B）；
+// 跨独立 episode 累 ≥ StaticReflectorPromoteThreshold → 升 AreaReflector（拿 floor 整片豁免）；
 // demote 仍由 cell_learning hasRealActivity 兜底（真人真走过 → 退回 Unknown，误学自纠）。
 
 package roomengine
@@ -33,7 +33,8 @@ const (
 	staticReflectorMarkIntervalMs = 60_000  // 同一 track 去抖：每 60s 最多记一次（=独立 episode 计数）
 )
 
-// scanStaticReflectors 每帧调用（processFrameAt 内，调用方持锁）。Phase A：仅累计 + log，不改 verdict。
+// scanStaticReflectors 每帧调用（processFrameAt 内，调用方持锁）。命中累计 StaticReflectorCount + log；
+// 达 StaticReflectorPromoteThreshold 时 MarkStaticReflector 内升 cell→AreaReflector（floor 整片豁免）。
 func (tm *TrackManager) scanStaticReflectors(nowMs int64) {
 	if len(tm.wallPolygon) < 3 || tm.grid == nil {
 		return
@@ -74,7 +75,7 @@ func (tm *TrackManager) scanStaticReflectors(nowMs int64) {
 		if c := tm.grid.CellAt(px, py); c != nil {
 			count = c.StaticReflectorCount
 		}
-		tm.logger.Info("static_reflector_candidate", // Phase A：log-only，不改 verdict
+		tm.logger.Info("static_reflector_candidate", // 累计；count≥promote 时 MarkStaticReflector 已升 AreaReflector
 			zap.Int("track_id", ts.TrackID),
 			zap.Int("x", px), zap.Int("y", py),
 			zap.Int("birth_x", ts.BirthPos.X), zap.Int("birth_y", ts.BirthPos.Y),

@@ -2,7 +2,7 @@
 
 状态：**设计/原理底稿**。用途：(1) 厘清当前 ghost 反射检测的四条防线各自的物理原理；(2) 从数学上证明 mirror_detect 的**适用边界**——它只对「单一稳定镜面」有效，对「离散多反射体」结构性失效；(3) 给出治理方向：把判据权重从「几何对称」迁到「共生 + 生命体征」这些**对几何不敏感**的轴上。
 
-关联：[[mirror_detect_single_mirror_boundary]]（本文核心结论的记忆索引）、[[reflection_cells_areareflector_static_phaseA]]（mirror_detect 升格 AreaReflector / static Phase A）、[[teleport_interference_purge_mechanism]]（≥200 瞬移 PURGE）、[[realness_axis_redefined_real_vs_mirror]]（realness 轴 = Real vs Mirror，主职 N_r 排 ghost）、[[realness_never_vetoes_fall]]（铁律：realness 绝不否决 fall）、[[two_radar_mirror_gate_samedevice]]（镜像门控同设备）、[[gatelist_retired_ghost_single_source_census]]（census 单源 PReal）、[[cell_dbn_timescales_stillbox_single_source]]（still-box 单源）、[[radar_hr_rr_bed_enter_gated]]（radar vital gated）。
+关联：[[mirror_detect_single_mirror_boundary]]（本文核心结论的记忆索引）、[[reflection_cells_areareflector_static_phaseA]]（mirror_detect 升 AreaDeny / static 6-29 已放 Phase B 升 AreaReflector）、[[teleport_interference_purge_mechanism]]（≥200 瞬移 PURGE）、[[realness_axis_redefined_real_vs_mirror]]（realness 轴 = Real vs Mirror，主职 N_r 排 ghost）、[[realness_never_vetoes_fall]]（铁律：realness 绝不否决 fall）、[[two_radar_mirror_gate_samedevice]]（镜像门控同设备）、[[gatelist_retired_ghost_single_source_census]]（census 单源 PReal）、[[cell_dbn_timescales_stillbox_single_source]]（still-box 单源）、[[radar_hr_rr_bed_enter_gated]]（radar vital gated）。
 
 ---
 
@@ -12,12 +12,13 @@
 
 所以判 ghost 的核心命题始终是同一句：**这两条 track 是不是一对镜像？** 当前系统有四条防线在从不同角度回答它。
 
-| 防线 | 文件 | 抓什么形态的 ghost | 依赖 | 接线状态 (6-27) |
+| 防线 | 文件 | 抓什么形态的 ghost | 依赖 | 接线状态 (6-29) |
 |---|---|---|---|---|
-| **Mirror 检测** | [mirror_detect.go](../wisefido-sensor/internal/roomengine/mirror_detect.go) | 单一稳定镜面 + 连续运动 | 几何对称（轴 + 速率同步） | ✅ 生效，命中升 AreaDeny |
+| **Mirror 检测** | [mirror_detect.go](../wisefido-sensor/internal/roomengine/mirror_detect.go) | 单一稳定镜面 + 连续运动 | 几何对称（轴 + 速率同步） | ✅ 生效，命中升 AreaDeny（其 ghost 有真人伴随 → realness 可抓） |
 | **IsReflection** | [census.go](../wisefido-sensor/internal/roomengine/adapter/census.go) `reflectSep()` | 出生瞬间、墙外镜像 | 几何（连线穿墙） | ✅ 生效，喂 realness 观测 |
 | **Teleport purge** | [teleport_interference.go](../wisefido-sensor/internal/roomengine/teleport_interference.go) | 跳变 / 瞬移 | 运动学（人类速度上限） | ✅ **生效，真 PURGE 删轨**（track_manager.go:1158/1200/1329，无 flag 默认开） |
-| **Static reflector** | [static_reflector.go](../wisefido-sensor/internal/roomengine/static_reflector.go) | 静止金属反射体 | 持久性（出生位 + 久驻 + 近墙） | ⚠️ **Phase A，只 log 不升格**（scan 在 track_manager.go:1326 每帧跑，MarkStaticReflector 只 `Count++`，无 ≥3 升 AreaDeny；待真 case 验标点后放 Phase B） |
+| **Static reflector** | [static_reflector.go](../wisefido-sensor/internal/roomengine/static_reflector.go) | 静止金属反射体 | 持久性（出生位 + 久驻 + 近墙） | ✅ **生效（6-29 放 Phase B）**：scan 每帧跑（track_manager.go:1602），三签名累计跨独立 episode ≥3（`StaticReflectorPromoteThreshold`）→ `MarkStaticReflector` 升 cell→**AreaReflector**（拿 floor 整片豁免）；demote 由 cell_learning hasRealActivity 兜底 |
+| **Split ghost** | [split_ghost.go](../wisefido-sensor/internal/roomengine/split_ghost.go) | 单人走墙/干扰区 firmware 分裂的并存幽灵 | 时机（出生贴 present 邻轨 + lost 窗末打分） | ✅ **生效，已接 track_manager**（出生 `stampSplitObservingIfCoexist` / 每帧 `updateSplitWalkLatch` / lost `maybePurgeSplitGhost`，hard PURGE 复用 teleport interferenceSuppress） |
 
 ---
 
@@ -167,15 +168,16 @@ interfer-born 的触发是**出生**——那一刻**没有 before**，拿不到
 
 confidence 也不对等：teleport = 运动学不可能（近确定），interfer-born = 空间先验（概率）。**低确定性 + 出生无历史 ⇒ 结构上就不能是 purge**。
 
-### 6.4 三检测器分工（动作 / 确定性 / 归属）
+### 6.4 四检测器分工（动作 / 确定性 / 归属）
 
 | 触发 | 动作 | 确定性 | 归属文件 |
 |---|---|---|---|
 | **teleport 跳变** | hard **PURGE** 删轨 | 运动学（确定）| `teleport_interference.go` |
 | **interfer 出生** | **soft 压制 + 可撤销**（不进 still-box / 掉 $N_r$）| 空间先验（概率）| `static_reflector.go`（fast-path）|
-| **static 持久** | **cell 学习 → AreaReflector/AreaDeny** | 持久性（慢确认）| `static_reflector.go` |
+| **static 持久** | **cell 学习 → AreaReflector**（拿 floor 整片豁免；非 AreaDeny——孤迹无人时 realness 抓不到）| 持久性（慢确认）| `static_reflector.go` |
+| **split 分裂** | hard **PURGE** 删并存伴幽灵（仅 lost 时）| 时机（概率，窗末判）| `split_ghost.go` |
 
-三者**正交叠加，不是三选一**：一条轨可被 interfer-born 出生软压，之后若又跳 ≥200 仍被 teleport 硬 purge。它们：
+四者**正交叠加，不是四选一**：一条轨可被 interfer-born 出生软压，之后若又跳 ≥200 仍被 teleport 硬 purge。它们：
 
 - **共享**一个 fall-precursor 撤销闸（pose∈fall / Δz drop → 撤销 / 绝不 purge）——FN 安全网。
 - **共享**一个出口 sink（artifact → 不进 still-box + 掉出 $N_r$），全落 realness 轴。
@@ -189,7 +191,72 @@ confidence 也不对等：teleport = 运动学不可能（近确定），interfe
 - **语义错配**：`SLeft` = 人朝门走出去、房腾空（由 ExitRoom / hand-off 驱动）。artifact 是「**从来就不是人**」= realness 轴，不是「离场」轴。phantom-only 的房归宿是 `SEmpty`，不是 `SLeft`。
 - **作用域错**：artifact 是 per-track，`SLeft` 是 per-room。floor 被 `exitL < exitFlipLogOdds` gate——抬全房离场信念会**给全房关 floor**，1 真人 + 1 伪迹共存时会压掉真人的 floor 网。per-track 的 PURGE/软压只抹掉幻影自己的 still 贡献，**共存真摔的网完好**。
 - **决定性**：PURGE/软压是**外科切除**（per-track），SLeft 是**全房麻醉**（per-room）；floor 是盲摔最后一道网，拿幻影派生的 SLeft 去 gate 它 = 捅洞。
-- **其实已在正确的层统一**：census `Nr()` 是 **present-only + PReal≥0.5** 过滤。teleport 删轨 → $N_r$ 自动减；static Phase B → AreaReflector/Deny + 出生即 ghost → PReal 被压 → 掉 $N_r$；interfer-born → ghost → 掉 $N_r$。三条**已汇到同一出口**（realness/$N_r$），无需新建 SLeft。铁律 [[realness_never_vetoes_fall]]：artifact 只削 $N_r$、绝不碰 fall 否决；SLeft 恰恰会碰。
+- **其实已在正确的层统一**：census `Nr()` 是 **present-only + PReal≥0.5** 过滤。teleport 删轨 → $N_r$ 自动减；static Phase B → AreaReflector → floor 整片豁免（孤迹金属幻影无伴随真人，realness 抓不到，靠 floor 豁免压 FP）；interfer-born → ghost → 掉 $N_r$。多条**汇到同一出口**（realness/$N_r$ 或 floor 豁免），无需新建 SLeft。铁律 [[realness_never_vetoes_fall]]：artifact 只削 $N_r$、绝不碰 fall 否决；SLeft 恰恰会碰。
+
+---
+
+## 第六·二部分 · split-ghost：单人走到墙/干扰区时的分裂收治
+
+代码：[split_ghost.go](../wisefido-sensor/internal/roomengine/split_ghost.go)（fire-neutral，track-lifecycle 轴）。状态：✅ 已实现并接入 track_manager，两棵树 build/vet/gofmt 全绿。
+
+### 6.6 要解决的场景：tid 会交换的并存分裂
+
+室内仅 1 人，走近墙边 / interfer zone（帘、扇、金属外凸）时，firmware 偶把一条真轨**分裂成 2~3 条并存 track**（1 real + 1~2 ghost）。前述四类检测器都不覆盖它：
+
+- **mirror** 要「贴真人同步运动」的 5 帧不变量；split ghost 常钉死墙边、不同步。
+- **static** 要 300s 存活；split 几秒钟就要判。
+- **teleport** 要 ≥200cm/s 单 tick 跳变；split 是「贴住原处冒出来」不是「跳过去」。
+- **interfer-born** 只软压 floor 不删；split 要删并存伴幽灵以防 FP。
+
+**核心难点：tid 会交换。** firmware 可能把 **tid 留给即将解散的 ghost**，真人换**新 tid** 走开。故 [[split_no_tid_priority]]：**绝不能按 tid 大小 / 出生先后认 real**，只能纯行为证伪。
+
+### 6.7 为什么「只留一个」是安全的：FN 兜底不在本层（对象逻辑真值表）
+
+直觉上「分裂现场只保留一条、删其余」是危险的。但真值表表明：**无论删的是真 A 还是 ghost，真人摔倒永不漏，因为 FN 兜底责任根本不在 split 层**，而在两条独立线（firmware / tFloor）。
+
+| 情况 | 谁兜底 | 在哪条独立线 |
+|---|---|---|
+| ① A 是真人 | 真对了 | DBN 正常 |
+| ② A 倒，真人 fall，**firmware fire** | firmware pose5 | **独立 alarm stream**（engine `runAlarmLoop`）——本层删 `tm.tracks` map 碰不到它 |
+| ③ A 倒，真人 **silent fall**（fw 未 fire）| tFloor | A 这真人扑地静止 → 攒满 floor 在对的位置兜底 |
+| ④ A 倒，真人 **exitRoom**（np=0），A lost | teleport / np=0 | 沿离场逻辑 purge，本层不另处理 |
+
+### 6.8 ③ 的命门与漏洞补丁：真 A 绝不被 latch / A 游走防误锁
+
+- **③ 命门：真·1 人 A 绝不被 `StillBoxSec=0` latch。** interfer-born/FloorArtifact 的动作是「留轨 + 抹 floor」；split 是**相反语义**——若误把真 A 也 latch 抹 floor，③ 的 silent-fall 兜底被自己关掉 → 漏报。故 **split 观察轨屏蔽 `maybeLatchFloorArtifact`**（已在 track_manager lost 循环按 `SplitObservingSinceMs==0` gate）。
+- **漏洞补丁：A 游走被误当 real。** 若真 A 在 interfer zone 内小范围游走，会被误锁成「活的 real」→ 真人 silent fall lost 后系统仍以为「还有人在」→ 漏。补丁 [[split_ghost_walk_anchored_score]]：A 的「游走」必须被「**锚定在 interfer zone 的程度**」打折——ghost 游走 = confine 内贴 interfer；real walk = **走出 confine、远离 interfer**。
+- **关键 FN 锁 [[split_everwalkedout_irreversible]]：`EverWalkedOut` 一旦置位不可逆。** 净位移曾 > walk-out(200) = 真人 → 永久 latch real，**后续 still / near-interfer 不得翻案**。`pFallReal≡1.0` 同理：正证据必 latch，不被后续 still 翻。
+
+### 6.9 删除判据与 FN 硬闸
+
+只删 **lost** 的轨（**present 真人永不删**）：
+
+```
+lost(过 presence coast) ∧ ghost_score ≥ promote(100) ∧ gate1NoPrecursorFrozen
+  → PURGE + interferenceSuppress 反压（born 点位 drift，防 fw ~30s 滞报 churn）
+```
+
+- **FN 硬闸 `gate1NoPrecursorFrozen`**（复用 teleport 闸1）：末帧防 fall-precursor / Z 骤降 → **绝不删**（墙边摔者交 floor 兜底）。
+- **「等」的省算 [[split_defer_score_to_window_end]]**：多数 ghost 在 window(10s) 内自然 lost 时解。观察期只维护廉价的 `EverWalkedOut` latch（1 次 distInt，无 grid 扫描）；沉贵的 interfer 距离打分推迟到 lost 时一次性算（`splitGhostScoreNow` 的 O(rad²) grid 探测仅此一次）。
+- **latch 节流 [[split_latch_step_hold_safe]]**：walk-out latch per-track 节流（`splitLatchIntervalMs=2s`）。FN-safe 依据：walk-out 的真净位移 `distInt(born, now)` 是**持续保持**量而非脉冲——真人走出 200cm 后停下，净位移持续 >200，任何后续扫描都能捕到，不漏 latch。
+
+### 6.10 已否决的两个激进简化
+
+- ❌ **「10 秒后只处理 firmware fire」**：silent fall 真定义就是 fw 不 fire，此规等于把 ③ 的 tFloor 兜底关掉。
+- ❌ **「滤掉 bed/lying zone 的 fire」**：床边 / lying zone 边缘跌倒（老人高发跌倒之一）会被误滤，踩 FN-safe 红线。
+
+### 6.11 确定性梯度上的正确位置
+
+split 的「等」不是通用技巧，而是**安全梯度上那个位置的正确选择**——每个检测器的等待尺度已匹配其证据类型：
+
+| 检测器 | 证据类型 | 等待尺度 | 处置 |
+|---|---|---|---|
+| teleport | 运动学（确定）| **即时**（单 tick）| hard PURGE |
+| split | 时机（概率）| **窗末**（10s）| hard PURGE（仅 lost）|
+| static | 持久（慢确认）| **300s** | cell 学习 → AreaReflector |
+| interfer-born | 空间先验（概率）| **出生即** | 软压 + 可撤销 |
+
+split 复用 teleport 的「hard PURGE + 反压重建」动作，但触发是**出生分裂 + 窗末时机**而非运动学跳变；独立 `split_ghost.go`，与 teleport/static fast-path 并存，共享 fall-precursor 闸（闸1）与出口 sink（删轨 → $N_r$ 自动减）。
 
 ---
 
@@ -197,21 +264,22 @@ confidence 也不对等：teleport = 运动学不可能（近确定），interfe
 
 两步走，按"先利用已知标签、再放开自动学习"的风险次序：
 
-### Phase 1 — 开始 interfer-born
-实现第六部分的 per-track interfer-born 软压制（**三闸 + 可撤销**），并**删掉 [floor.go:69-72](../wisefido-sensor/internal/roomengine/belief/floor.go) 的 interfer 无条件豁免**（interfer → default 12min，只留 reflector 豁免）。
-- 它**利用已存在的 interfer 标签**（人 pin / AreaType 声明），风险低，立刻解 6.1 的 FN。
-- 落点：track_manager 出生钩子盖 provisional ghost → still-box 入口闸 + 掉 $N_r$；放 `static_reflector.go` fast-path，共享 confinement-revocation。
+### Phase 1 — interfer-born（✅ 已落地）
+第六部分的 per-track interfer-born 软压制（**三闸 + 可撤销**）已实现：出生钩子 `stampInterferBornIfIsolated`（落 interfer cell + 出生孤立 ≥120cm）+ `revokeInterferBornIfMoved`（走出区/摔倒前兆即撤）；并已**删掉 floor.go 的 interfer 无条件豁免**——[floor.go:69-72](../wisefido-sensor/internal/roomengine/belief/floor.go) 现只留 `areaReflector` 整片豁免，interfer 走 default 12min（杂波区走进去摔的真人不再被漏）。
 
-### Phase 2 — 启动 static reflector + interfer-born
-把 static reflector 从 **Phase A（只 log）放开到 Phase B**（cell 命中 ≥ `StaticReflectorPromoteThreshold` 升 AreaReflector/AreaDeny，[[reflection_cells_areareflector_static_phaseA]]），与 interfer-born **联动上线**。
-- 二者是 **发现 → 利用** 的闭环：static reflector **发现并标**出新的反射/干扰 cell，这些新标签**正是 interfer-born 的输入**。
-- 先 Phase 1 后 Phase 2 的理由：interfer-born 吃既有标签、可独立验证收益；static Phase B 是更激进的自动改 cell（[[cell_dbn_timescales_stillbox_single_source]] 单源约束下），待 interfer-born 验稳、且 static 标点经真 case 核准后再放，并与 interfer-born 同时上以形成闭环。
+### Phase 2 — static reflector Phase B（✅ 6-29 已放开，与 interfer-born 联动）
+static reflector 已从 Phase A（只 log）放开到 Phase B：三签名跨独立 episode 累 ≥ `StaticReflectorPromoteThreshold`(3) → `MarkStaticReflector` 升 cell→**AreaReflector**+SourceLearned（[grid.go](../wisefido-sensor/internal/roomengine/grid.go)），拿 floor 整片豁免；demote 由 [cell_learning.go](../wisefido-sensor/internal/roomengine/cell_learning.go) `hasRealActivity` 兜底（真人走过 → 退回 Unknown）。
+- **升 AreaReflector 而非 AreaDeny**：金属幻影常孤迹（无人在房），realness co-existence 抓不到（需 ≥2 轨）；`tFloorFor(AreaDeny)` 走 default 12min 等于不压，唯一能压住 FP 的是 areaReflector 的 floor 整片豁免。mirror 仍升 AreaDeny（其 ghost 有真人伴随，realness 可抓）。
+- 二者是 **发现 → 利用** 的闭环：static reflector **发现并标**出新的反射 cell，这些新标签可作 interfer-born 的输入（[[cell_dbn_timescales_stillbox_single_source]] 单源约束下）。
+- ⚠️ **残留 FN 须真 case 盯**：近墙 AreaReflector 整片豁免，若真人正好摔在已学的金属点（扑地静止不 traverse → demote 不触发）→ floor 漏。demote 只对"走过"自纠，"摔在原地"是该豁免的固有二义。
 
 ---
 
 ## 第八部分 · 待办
 
-- [ ] **Phase 1**：实现 interfer-born 软压制（三闸 + 可撤销）+ 删 floor interfer 豁免。
-- [ ] **Phase 2**：放开 static reflector Phase B + 与 interfer-born 联动（发现→利用闭环）。
+- [x] **Phase 1**：interfer-born 软压制（三闸 + 可撤销）+ 删 floor interfer 豁免——已落地。
+- [x] **Phase 2**：static reflector Phase B（升 AreaReflector）+ demote 兜底覆盖 reflector——6-29 已放开。
+- [x] **split-ghost**（第六·二部分）：`split_ghost.go` 已实现并**接入 track_manager**（出生 stamp / 每帧 latch / lost 窗末 purge），两棵树（sensor + Xsensorv1）build/vet/gofmt 全绿。
 - [ ] **审计 census 判 ghost 时几何项（IsReflection）vs 共生项的权重占比**——确认是否过度依赖几何、而 co-existence/vital 没吃满。
 - [ ] 评估把「持续无 vital 的 co-existing track」接入 census 作 ghost 一票（依赖 [[radar_hr_rr_bed_enter_gated]] 的覆盖范围）。
+- [ ] static reflector 近墙 AreaReflector 整片豁免的残留 FN（摔在已学金属点）——真 case 盯，必要时收窄为按身份压而非整片豁免。

@@ -1,0 +1,172 @@
+// split_ghost.go — 单人贴静止干扰源时 firmware tid 交换/分裂的收治（track-lifecycle 轴，fire-neutral）。
+//
+// 物理：室内有强干扰源（金属/反射，**基本不动**）。真人走近时 firmware 把 tid 标签在「真人」与
+// 「干扰源幻影」之间交换/分裂——**tid 会交换**，不能按 tid 大小/出生先后认 real，只能纯行为证伪。
+//
+// 三段式（对象=split group，不 per-tid 各算）：
+//   step1 找 spliter：np↑ 出新 offspring（无 EnterRoom）时，t1 各轨投最近的 t0（前一tick）轨；得票最多者=spliter。
+//   spliter 静止门（仅 spliter 受限，因干扰源不动）：spliter 在 t-1,t-2 逐轴位移 ≤ splitSpliterStillCm。
+//   step2 建 split_group：投了 spliter 的 t1 轨入组，锚点=spliter 前一tick位。offspring 不设距离约束（真人可乱走）。
+//   step3 每帧维护、~2s 节流：走开者(净位移>walkout)=real（EverWalkedOut 永久锁）；赖在锚点不走者=ghost
+//         → 软压 SplitGhostSinceMs（SnapshotTrackStatuses 零其 StillBoxSec，不喂 floor，不删轨=无 churn）。
+//
+// 安全性：软压**可撤销**（离开锚点/走开 → 清）；露倒地相（fall-precursor pose）立即解压并锁 real（FN-safe，
+// 真人贴干扰源摔倒绝不被压）。purge 一律不用（EvictTrack→firmware 重报→每帧重建 lid churn）。
+// FN 兜底仍在 firmware fire / tFloor 两条独立线（真人 silent fall 走开后正常攒 floor）。
+
+package roomengine
+
+import (
+	"go.uber.org/zap"
+)
+
+const (
+	splitLatchIntervalMs = 2_000 // step3 节流：每轨每 ~2s 算一次（净位移/glue 是保持量，不漏）
+	splitSpliterStillCm  = 10    // spliter t-1,t-2 逐轴位移 ≤此 = 静止干扰源（雷达噪声 ±5-10cm 地板）
+	splitGhostGlueCm     = 10    // 成员到 spliter 锚点 ≤此 = 赖在干扰源点 = ghost → 软压
+	splitWalkOutCm       = 200   // 成员净位移(born→now) >此 = 真人 walk → EverWalkedOut 永久 real
+	splitMinVotes        = 2     // spliter 至少 2 票（自身续 + offspring）才算 split（一源裂多轨）
+)
+
+func splitAbs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// histPos 取 History 倒数第 (ticksAgo+1) 个点（ticksAgo=0 当前帧 / 1 前一tick / 2 前二tick）。
+func histPos(ts *TrackState, ticksAgo int) (x, y int, ok bool) {
+	idx := len(ts.History) - 1 - ticksAgo
+	if idx < 0 {
+		return 0, 0, false
+	}
+	p := ts.History[idx]
+	return p.X, p.Y, true
+}
+
+// stampSplitGroupOnBirth 出生钩子（调用方已判：offspring 无 EnterRoom + 无继承）。step1 vote → spliter
+// 静止门 → step2 标 group。offspring 尚未入 tm.tracks（调用方随后加），故 range 不含它，直接在 ts 上打标。
+func (tm *TrackManager) stampSplitGroupOnBirth(offspring *TrackState, f TrackFrame, nowMs int64) {
+	// t0：同设备已存在轨在「前一tick」的坐标
+	type t0c struct {
+		ts     *TrackState
+		px, py int
+	}
+	var t0 []t0c
+	for _, o := range tm.tracks {
+		if o.DeviceAddr != f.DeviceAddr || o.Kalman == nil {
+			continue
+		}
+		if px, py, ok := histPos(o, 1); ok {
+			t0 = append(t0, t0c{o, px, py})
+		}
+	}
+	if len(t0) == 0 {
+		return
+	}
+	// t1：offspring（当前帧位）+ 已存在轨（当前 Kalman 位）
+	type t1c struct {
+		ts   *TrackState
+		x, y int
+	}
+	t1 := []t1c{{offspring, f.X, f.Y}}
+	for _, o := range tm.tracks {
+		if o.DeviceAddr != f.DeviceAddr || o.Kalman == nil {
+			continue
+		}
+		ox, oy := o.Kalman.Position()
+		t1 = append(t1, t1c{o, int(ox), int(oy)})
+	}
+	// 投票：每条 t1 投给最近 t0；并列(相等)不投
+	votes := map[*TrackState]int{}
+	pick := map[*TrackState]*TrackState{}
+	for _, a := range t1 {
+		bestD, tie := 1<<30, false
+		var best *TrackState
+		for i := range t0 {
+			d := distInt(a.x, a.y, t0[i].px, t0[i].py)
+			if d < bestD {
+				bestD, best, tie = d, t0[i].ts, false
+			} else if d == bestD {
+				tie = true
+			}
+		}
+		if best != nil && !tie {
+			votes[best]++
+			pick[a.ts] = best
+		}
+	}
+	// spliter = 得票最多
+	var spliter *TrackState
+	top := 0
+	for ts, v := range votes {
+		if v > top {
+			top, spliter = v, ts
+		}
+	}
+	if spliter == nil || top < splitMinVotes {
+		return
+	}
+	// spliter 静止门（仅 spliter）：t-1,t-2 逐轴 ≤ splitSpliterStillCm（动了=非干扰源,交 teleport/static）
+	x1, y1, ok1 := histPos(spliter, 1)
+	x2, y2, ok2 := histPos(spliter, 2)
+	if !ok1 || !ok2 || splitAbs(x1-x2) > splitSpliterStillCm || splitAbs(y1-y2) > splitSpliterStillCm {
+		return
+	}
+	// step2 标 group：投了 spliter 的 t1 轨，锚点=spliter 前一tick位
+	n := 0
+	for ts, sp := range pick {
+		if sp != spliter {
+			continue
+		}
+		ts.SplitObservingSinceMs = nowMs
+		ts.SplitSpliterX, ts.SplitSpliterY = x1, y1
+		n++
+	}
+	tm.logger.Info("split_group_formed",
+		zap.String("device_uid", f.DeviceAddr),
+		zap.Int("spliter_track_id", spliter.TrackID),
+		zap.Int("anchor_x", x1), zap.Int("anchor_y", y1),
+		zap.Int("group_size", n),
+		zap.Int("offspring_track_id", offspring.TrackID),
+	)
+}
+
+// updateSplitGhost step3（每观测帧调，~2s 节流）：group 成员定 real/ghost。
+//   - 露倒地相 → 解压 + 锁 real（FN-safe，真人贴干扰源摔绝不被压）。
+//   - 净位移 >walkout → 真人 walk → EverWalkedOut 永久 real，清软压。
+//   - 赖在 spliter 锚点 ≤glue → ghost → SplitGhostSinceMs 软压（可撤销：离开锚点即清）。
+func (tm *TrackManager) updateSplitGhost(ts *TrackState, f TrackFrame, nowMs int64) {
+	if ts.SplitObservingSinceMs == 0 {
+		return
+	}
+	if ts.SplitEverWalkedOut {
+		ts.SplitGhostSinceMs = 0
+		return
+	}
+	if teleportFallPrecursorPose(f.Pose) {
+		ts.SplitGhostSinceMs = 0
+		ts.SplitEverWalkedOut = true
+		return
+	}
+	if nowMs-ts.SplitLastLatchMs < splitLatchIntervalMs {
+		return
+	}
+	ts.SplitLastLatchMs = nowMs
+	if distInt(ts.BirthPos.X, ts.BirthPos.Y, f.X, f.Y) > splitWalkOutCm {
+		ts.SplitEverWalkedOut = true
+		ts.SplitGhostSinceMs = 0
+		tm.logger.Info("split_real_latched",
+			zap.String("device_uid", f.DeviceAddr),
+			zap.Int("track_id", ts.TrackID),
+			zap.String("logic_id", ts.LogicID),
+		)
+		return
+	}
+	if distInt(f.X, f.Y, ts.SplitSpliterX, ts.SplitSpliterY) <= splitGhostGlueCm {
+		ts.SplitGhostSinceMs = nowMs
+	} else {
+		ts.SplitGhostSinceMs = 0
+	}
+}

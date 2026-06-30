@@ -111,6 +111,11 @@ func teleportFallPrecursorPose(pose int) bool {
 		pose == observation.PoseSuspectedSitGround || pose == observation.PoseSitGround
 }
 
+// poseEvictable 离场残迹可删白名单：排倒地前兆(fall/sitGnd) + walking + sitting（真摔者/行走/真坐者绝不按残迹删）。
+func poseEvictable(pose int) bool {
+	return !teleportFallPrecursorPose(pose) && pose != observation.PoseWalking && pose != observation.PoseSitting
+}
+
 // teleportGate1NoPrecursor 闸1：跳变帧 + 跳前 2 帧无摔倒前兆，全满足才允许删。
 // 调用方持锁；读 ts.LastPose(N-1)/Prev2Pose(N-2)/History tail Z(N-1,N-2)，均 O(1)。
 func teleportGate1NoPrecursor(ts *TrackState, f TrackFrame) bool {
