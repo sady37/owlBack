@@ -45,7 +45,7 @@ import (
 // v13 (2026-06-30): chair floor 改 tFloor=clamp(max(μ+1.5σ+10min,maxSit),≤90min)——Counters 加 DMS（DwellMaxSit:
 //                   false_alarm+"Sit on Chair" 反馈棘轮,人工确认安全久坐下限,跨重启保留;否则重启丢棘轮→长坐人群复发误报)。
 //                   非破坏:旧快照无 DMS → maxSit=0,只走 μ+1.5σ+10min 自然收敛。
-// v14 (2026-06-30): maxSit 棘轮加 30 天半衰期慢衰减(治"只升不降→FN 永久退化")——Counters 加 DMSM（DwellMaxSitMs:
+// v14 (2026-06-30): maxSit 棘轮加 14 天半衰期慢衰减(对齐久坐学习窗;治"只升不降→FN 永久退化")——Counters 加 DMSM（DwellMaxSitMs:
 //                   当前 maxSit 值的 as-of 时刻,跨重启保衰减基准)。非破坏:旧 v13 快照无 DMSM → 从加载时刻起算。
 const SnapshotSchemaVersion = 14 // v10: AreaType 重编号(deny/reflector/monitorbed/interfer/lying，删 shower/toilet)，旧快照 area 值失效须冷启
 

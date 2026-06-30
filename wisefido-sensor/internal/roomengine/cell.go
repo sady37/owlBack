@@ -230,7 +230,7 @@ type Cell struct {
 	DwellSig    float64       // 缓存：窗口 σ（秒）
 	DwellN      int           // 缓存：窗口总样本数（冷启门控 <DwellColdMinN）
 	// DwellMaxSit false_alarm+"Sit on Chair" 反馈棘轮（秒）：人工确认安全的久坐时长下限，抗"长坐人群停几天→μ降→
-	//   阈降→复发"。30 天半衰期慢衰减（decayMaxSit）→ 一次性异常自愈、习惯长坐再棘轮维持。90min 硬顶在 floor 算阈处夹。
+	//   阈降→复发"。14 天半衰期慢衰减（decayMaxSit，对齐久坐学习窗）→ 一次性异常自愈、习惯长坐窗内自学接管。90min 硬顶在 floor 算阈处夹。
 	DwellMaxSit   float64
 	DwellMaxSitMs int64 // DwellMaxSit 当前值的 as-of 时刻（指数衰减基准；棘轮/hourly 重算时推进）
 
@@ -792,10 +792,10 @@ const (
 	dwellMaxSitFloorSec  = 60  // maxSit 衰减到 <1min 视作归零（清掉残尾，退回 μ+1.5σ 自然兜底）
 )
 
-// dwellMaxSitHalfLifeMs maxSit 反馈棘轮的指数衰减半衰期（30 天，>14 日窗留余量）。
-// 习惯长坐者每隔几周会再误报→再棘轮维持高位（用进废退）；一次性异常 ~30 天淡出 → FN 保护自愈。
-// 衰减回 0 不漏：tFloor 的底永远是 μ+1.5σ+10min（实测分布），maxSit 只是补 14 日窗遗忘的空窗。
-const dwellMaxSitHalfLifeMs = int64(30) * 24 * 3600 * 1000
+// dwellMaxSitHalfLifeMs maxSit 反馈棘轮的指数衰减半衰期（14 天，对齐 14 日久坐学习窗，统一时间尺度）。
+// 习惯长坐者窗内自学会→自然公式接管;一次性异常与窗同步淡出→FN 保护更快自愈。
+// 衰减回 0 不漏：tFloor 的底永远是 μ+1.5σ+10min（实测分布），maxSit 只是补 14 日窗遗忘的短期空窗。
+const dwellMaxSitHalfLifeMs = int64(dwellWindowDays) * 24 * 3600 * 1000
 
 // DwellBucket 一天的 >5min 久坐统计：N/Sum/SumSq 精确算 μ+1.5σ；Hist(5min bin) 留 median/分位后期用。
 type DwellBucket struct {
