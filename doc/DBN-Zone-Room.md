@@ -654,3 +654,22 @@ $$\Delta L_{sit} = \underbrace{+2.0}_{\text{resolution}} + \underbrace{0.4\,\max
 **升格**：cell `SitScore`（log-odds 累加，HL≈4d 衰减）`≥ τ=6.0` → `MarkRestZoneByFeedback(AreaSit, SourceLearned)`。N 隐含：角落 episode（z=0、固件非 Sitting）ΔL≈+3.0 → **~2 次自走长坐**升格；正常椅子 ΔL≈+4.0。
 
 **Sit/Active/Unknown 同框竞争**，Sit 权重 > Active（治"走过 2 次 Active 直升赢"）；**Bed/Lying 算-但-哑**（Source=Shadow，DBN 当 Unknown，人 handle 永久 pin AreaBed 才生效，无 2H）；curtain/绿植杂波靠 realness 并存测试（§G）→ AreaDeny，不误入 Sit。红线：lost-break 永不 emit、dwell<5min 不计 Sit、z 只正向、Bed 永远 human。
+
+### §O lost/静止残迹 floor 兜底的三道压制 + 单人盲区 FN 边界（2026-06-29~30，b197 实证）
+
+**问题**：人站定后固件丢轨（转 no-target / np=0，**无 ExitRoom**），引擎 coast 那条静止残迹，`StillBoxSec` 靠冻结坐标续爬（① lost 续算，`track_manager.go` 段2）→ 撞 `tFloor` → floor 兜底 fire。真人若已走进死角=FP；若在死角摔=真报。**看不见就分不清**，是纯风险权衡，非可判问题。三道压制按覆盖场景分工（非叠加）：
+
+**① 社交目击者先验（witness-prior，per-track 删/清；多人场景）—— commit a7ea5ab（06-29）**
+- 一条已过 presence-coast 的 lost 静止轨，若半径内有**在动的活跃真人 witness** → 直接删（`delete(tm.tracks)`，段2 sweep）+ 进行中 still-box 清零（`updateContinuousIndicators` witness 分支，静默复位 `StillBoxRunStart=0` 不打 `still_box_break`）。
+- **witness 6 闸（全满足才算，`witnessNearby`）**：① 非自己（LogicID≠）② 近观测（未过 presence-coast，coast 幽灵不算）③ PReal≥0.5（ghost 不算）④ 非 artifact（suspect/floor-art/interfer flag 全 0）⑤ 非在床 ⑥ **在动**（30s box-range > `stillBoxCm`，静止影子/躺者不算）+ 半径内。
+- **理据**：多人场景旁人会主动呼救 → 静止 lost 残迹的 floor 兜底=FP。**FN-safe 命门**=witness 必须"在动的真人"，静止旁观者不算（否则两条静止残迹互当 witness 互删真摔）。
+- **单人 lost → 无 witness → 不删**（留 floor 网，FN-safe）。
+
+**② exitL≥flip floor 撤销（belief 层，人真走了）**
+- floor gate = `fg.Step(floorObs) && exitL < exitFlipLogOdds`（`engine/engine.go`）。`exitL`（`ExitLogOdds`）= **ExitRoom 硬证据（8.0）** + trend×np 软。exitL≥flip = 有离房证据 → **不 floor-fire**（人走了不兜底）。
+- 无 ExitRoom、np 软不够顶到 flip → exitL<flip → floor 照 fire。
+
+**③ GhostLeftLogOdds（present 静止 ghost「已离房」→ 注入 SLeft）**
+- **仅 present 轨**（固件持续发冻结 present 轨那种）。详见 [ghost-reflection-detection.md §6.6](ghost-reflection-detection.md)。人若丢轨（present=False）→ **不适用**。
+
+**🔴 单人盲区 FN 边界（b197-0630 实证）**：单人 lost + 无 ExitRoom + 无 witness + 已丢轨 → 三道**全不触发** → floor 在 724s 真开火（per-track `d.Fire=true, band=floor`，触发 `firedLogicIDs → ResetStillBox` 清 still-box + History，故 xray 里 stillbox 在 tFloor 撞点归 0）→ **但房级 `aggregate` 因 belief 已漂 Empty（F1 占用 `PReal≥0.5 ∧ S∉{Empty,Left}` = 0）把这炮压成 `room fire=false`**。这道 belief-Empty 房级 gate **分不清"走进死角站着"和"走进死角摔了"**——两者都单人 lost、firmware 同样 np=0/no-target、belief 同样漂 Empty → 都被压。**单人盲区真摔在此路径是真实 FN 风险**，witness-prior/exitL/GhostLeft 三道均覆盖不到。（唯一残余网 = Unit UD timer / neighbor handoff，若也无则 deadline 前静默。）

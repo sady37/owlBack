@@ -14,13 +14,14 @@ replay集
 
 # * case-d523-0622-13341336   D523,椅子后80s lost, 120s 101guest sleepad inbed handoff  **success
 # * case-d523-0627-15351540   D523，重启， stillbox learn sit 持久化，避免重启丢失。 stillbox >5min后 平均数，tFloor=media*1.5
+# * case-d523-0629-17021705   03:30 04:01 瞬间移动
 
 # * case-B197-0624-09180932  livingRoom 2人， 有Ghost, 有2次fall. 
 # * case-B197-0624-08430856  livingRoom  ExitRoom,  BlindArea, 12min  handle->Enter/Door  Exit zone: add permanently  
 # * case-b197-0626-15371540  livingRoom   镜面/反射 ghost 签名(一条假轨长期挂在固定小区,跟真人并存）
 # * casse-B197-0627-09280932  livingRoom  openArea  lost  有一边是开放空间
 # * casse-B197-0627-15311535  livingRoom  openArea  lost  有一边是开放空间
-
+#* case-b197-0630-08020806   livingRoom  openArea  lost  有一边是开放空间
 
 
 # * case-1797-0627-13261328  mom bathroom ,  stillbox 整体30秒走了500， 要视为stillbox break
@@ -29,6 +30,8 @@ replay集
 
 
 # * case-B17F-0626-13321344  kitchen, 1个静止interfer, real split 2 track,  其中一个在island still
+
+
 
 # * case-0777-0624-12001201  sandiego  learning area,  重复sitonground fire
 

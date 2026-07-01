@@ -119,23 +119,20 @@ func (e *Engine) publishAIMessage(ctx context.Context, p AIPayload,
 		eventStatus = "instant"
 	}
 	item := observation.NewEventItem(nowMs, eventStatus)
-	item.TrackID = p.Track.TrackID
+	item.TrackID = observation.IntPtr(p.Track.TrackID) // *int+omitempty：track_id=0 照发（不再被吃）
 	if p.Track.Pose != 0 {
-		item.Pose = p.Track.Pose
+		item.Pose = observation.IntPtr(p.Track.Pose)
 	}
 	if p.Track.HeartRate != 0 {
-		item.HeartRate = p.Track.HeartRate
+		item.HeartRate = observation.IntPtr(p.Track.HeartRate)
 	}
 	if p.Track.RespiratoryRate != 0 {
-		item.RespiratoryRate = p.Track.RespiratoryRate
+		item.RespiratoryRate = observation.IntPtr(p.Track.RespiratoryRate)
 	}
 	fields, _ := observation.EventItemToDataMap(&item)
 	if fields == nil {
 		fields = make(map[string]interface{})
 	}
-	// 显式补 track_id：EventItem.TrackID 是 omitempty，track_id=0（合法雷达 track）会被省，
-	// 致下游 cardagg ai_override（按 (device,track_id) 键）收不到 track_id=0 的 track → FE 透明度失效。
-	fields[observation.FieldTrackID] = p.Track.TrackID
 	// alarm_level 不由 sensor 盖：由 cardagg 从 device_config 单点决定（alarm_router Resolve）。
 	// sensor 只在源头 gate is_enabled（发 alarm vs event）+ 时间型阈值，不碰 level。
 	// sensor-specific 业务扩展字段平铺

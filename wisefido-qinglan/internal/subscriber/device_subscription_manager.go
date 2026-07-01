@@ -728,7 +728,7 @@ func (m *DeviceSubscriptionManager) UpdateLastSeenByType(deviceUID, topicType st
 				go func() {
 					ctx := context.Background()
 					item := observation.NewEventItem(time.Now().UnixMilli(), "end")
-					item.TrackID = observation.TrackDevice
+					item.TrackID = observation.IntPtr(observation.TrackDevice)
 					data, _ := observation.EventItemToDataMap(&item)
 					if data == nil {
 						data = make(map[string]interface{})
@@ -867,7 +867,7 @@ func (m *DeviceSubscriptionManager) autoSubscribeOnFirstMessage(ctx context.Cont
 		go func() {
 			pubCtx := context.Background()
 			item := observation.NewEventItem(time.Now().UnixMilli(), "end")
-			item.TrackID = observation.TrackDevice
+			item.TrackID = observation.IntPtr(observation.TrackDevice)
 			data, _ := observation.EventItemToDataMap(&item)
 			if data == nil {
 				data = make(map[string]interface{})

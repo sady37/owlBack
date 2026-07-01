@@ -560,7 +560,6 @@ func buildEnter2OutTrack(m map[string]interface{}) map[string]interface{} {
 		"track_id":   toInt(m["track_id"]),
 		"event":      event,
 		"area_type":  areaType,
-		"area_id":    toInt(m["area_id"]),
 	}
 }
 

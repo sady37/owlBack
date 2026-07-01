@@ -535,7 +535,7 @@ func (m *DeviceSubscriptionManager) publishDeviceAlarm(ctx context.Context, tena
 		eventStatus = "end"
 	}
 	item := observation.NewEventItem(ts, eventStatus)
-	item.TrackID = observation.TrackDevice
+	item.TrackID = observation.IntPtr(observation.TrackDevice)
 	data, err := observation.EventItemToDataMap(&item)
 	if err != nil {
 		m.logger.Warn("EventItemToDataMap failed", zap.String("device_uid", deviceUID), zap.Error(err))

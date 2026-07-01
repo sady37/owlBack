@@ -312,7 +312,7 @@ func (s *RadarService) publishDeviceFailure(ctx context.Context, deviceUID strin
 	}
 	ts := time.Now().UnixMilli()
 	item := observation.NewEventItem(ts, "start")
-	item.TrackID = observation.TrackDevice
+	item.TrackID = observation.IntPtr(observation.TrackDevice)
 	data, derr := observation.EventItemToDataMap(&item)
 	if derr != nil {
 		s.logger.Warn("publishDeviceFailure: EventItemToDataMap", zap.String("device", deviceUID), zap.Error(derr))

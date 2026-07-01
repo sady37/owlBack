@@ -288,7 +288,7 @@ func (h *HealthCheck) probeOne(ctx context.Context, b *card.DeviceBaseline) {
 		eventName = alarm.AlarmTypeOffline
 		item = observation.NewEventItem(tsMs, "start")
 	}
-	item.TrackID = observation.TrackDevice
+	item.TrackID = observation.IntPtr(observation.TrackDevice)
 	alarmData, _ := observation.EventItemToDataMap(&item)
 	if alarmData == nil {
 		alarmData = make(map[string]any)

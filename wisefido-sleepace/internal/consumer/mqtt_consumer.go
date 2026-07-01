@@ -358,7 +358,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 					eventName = alarm.AlarmTypeOffline
 					item = observation.NewEventItem(tsMs, "start")
 				}
-				item.TrackID = observation.TrackDevice
+				item.TrackID = observation.IntPtr(observation.TrackDevice)
 				alarmData, _ := observation.EventItemToDataMap(&item)
 				if alarmData == nil {
 					alarmData = make(map[string]any)
@@ -457,12 +457,9 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 					categoryBed = alarm.LeftBed // 1=离床
 				}
 				evItem := observation.NewEventItem(ts, "start")
-				evItem.TrackID = d.LeftRight
+				evItem.TrackID = observation.IntPtr(d.LeftRight)
+				evItem.BedStatus = observation.IntPtr(d.BedStatus) // 0=在床, 1=离床
 				evData, _ := observation.EventItemToDataMap(&evItem)
-				if evData == nil {
-					evData = make(map[string]any)
-				}
-				evData[observation.FieldBedStatus] = d.BedStatus // int: 0=在床, 1=离床
 				evMsg := redis.NewIoTStreamMessageWithData(deviceAddr, deviceUID, deviceType, nowMs, "event", categoryBed, evData)
 				if canIoT {
 					if err := c.publisher.PublishEvent(ctx, evMsg); err != nil {
@@ -492,12 +489,9 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			categoryInBed = alarm.LeftBed // 1=离床
 		}
 		item := observation.NewEventItem(ts, "instant")
-		item.TrackID = d.LeftRight
+		item.TrackID = observation.IntPtr(d.LeftRight)
+		item.BedStatus = observation.IntPtr(d.InbedStatus)
 		out, _ := observation.EventItemToDataMap(&item)
-		if out == nil {
-			out = make(map[string]any)
-		}
-		out[observation.FieldBedStatus] = d.InbedStatus
 		if canIoT {
 			c.publisher.PublishEvent(ctx, redis.NewIoTStreamMessageWithData(deviceAddr, deviceUID, deviceType, nowMs, "event", categoryInBed, out))
 			c.logger.Info("inBedStatus", zap.String("category", categoryInBed), zap.String("device_uid", deviceUID), zap.Int("status", d.InbedStatus), zap.Int("lr", d.LeftRight))
@@ -524,12 +518,9 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			c.statusTracker.UpdateSleepStage(deviceUID, stage)
 		}
 		item := observation.NewEventItem(ts, "instant")
-		item.TrackID = d.LeftRight
+		item.TrackID = observation.IntPtr(d.LeftRight)
+		item.SleepStage = observation.IntPtr(stage)
 		out, _ := observation.EventItemToDataMap(&item)
-		if out == nil {
-			out = make(map[string]any)
-		}
-		out[observation.FieldSleepStage] = stage
 		msg := redis.NewIoTStreamMessageWithData(deviceAddr, deviceUID, deviceType, nowMs, "event", alarm.SleepStage, out)
 		if canIoT {
 			c.publisher.PublishEvent(ctx, msg)
@@ -571,7 +562,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			eventStatus = "end"
 		}
 		item := observation.NewEventItem(ts, eventStatus)
-		item.TrackID = observation.TrackDevice
+		item.TrackID = observation.IntPtr(observation.TrackDevice)
 		out, _ := observation.EventItemToDataMap(&item)
 		if out == nil {
 			out = make(map[string]any)
@@ -604,7 +595,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			eventStatus = "end"
 		}
 		item := observation.NewEventItem(ts, eventStatus)
-		item.TrackID = observation.TrackDevice
+		item.TrackID = observation.IntPtr(observation.TrackDevice)
 		out, _ := observation.EventItemToDataMap(&item)
 		if out == nil {
 			out = make(map[string]any)
@@ -630,7 +621,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			streamUserID = deviceUID
 		}
 		item := observation.NewEventItem(ts, "instant")
-		item.TrackID = observation.TrackDevice
+		item.TrackID = observation.IntPtr(observation.TrackDevice)
 		out, _ := observation.EventItemToDataMap(&item)
 		if out == nil {
 			out = make(map[string]any)
@@ -664,7 +655,7 @@ func (c *MQTTConsumer) dispatch(ctx context.Context, m *ReceivedMessage) {
 			progress = d.Offset * 100 / d.Length
 		}
 		item := observation.NewEventItem(ts, "instant")
-		item.TrackID = observation.TrackDevice
+		item.TrackID = observation.IntPtr(observation.TrackDevice)
 		out, _ := observation.EventItemToDataMap(&item)
 		if out == nil {
 			out = make(map[string]any)
@@ -755,7 +746,7 @@ func (c *MQTTConsumer) handleAlarmNotify(ctx context.Context, deviceAddr netip.A
 	// EventPayload 之前装的 raw 复本是 100% 冗余，删掉让下游直接读 envelope/EventItem。
 	item := observation.NewEventItem(tsPayload, eventStatus)
 	item.EventID = strconv.FormatInt(d.Id, 10)
-	item.TrackID = am.TrackID
+	item.TrackID = observation.IntPtr(am.TrackID)
 	if d.RelieveReason != "" {
 		item.EventReason = d.RelieveReason
 	}

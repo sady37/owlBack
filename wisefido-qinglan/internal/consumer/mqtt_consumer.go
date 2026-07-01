@@ -1114,31 +1114,26 @@ func (c *MQTTConsumer) handleStatMessage(uid string, message map[string]interfac
 // publishStatActivity 发布老人活动性状态汇总到 iot:event:stream，payload 符合 EventItem 格式，activity 字段平铺。
 func (c *MQTTConsumer) publishStatActivity(ctx context.Context, addr netip.Addr, cid string, ts int64, m map[string]interface{}) error {
 	item := observation.NewEventItem(ts, "instant")
-	item.TrackID = observation.TrackUnknownPerson
+	item.EventType = 9
+	item.TrackID = observation.IntPtr(observation.TrackUnknownPerson)
+	if v, ok := m["walk_distance"]; ok {
+		item.WalkDistance = observation.IntPtr(asInt(v))
+	}
+	if v, ok := m["walk_duration"]; ok {
+		item.WalkDuration = observation.IntPtr(asInt(v))
+	}
+	if v, ok := m["lie_duration"]; ok {
+		item.LieDuration = observation.IntPtr(asInt(v))
+	}
+	if v, ok := m["stand_duration"]; ok {
+		item.StandDuration = observation.IntPtr(asInt(v))
+	}
+	if v, ok := m["multi_person_duration"]; ok {
+		item.MultiPersonDuration = observation.IntPtr(asInt(v))
+	}
 	data, err := observation.EventItemToDataMap(&item)
 	if err != nil {
 		return err
-	}
-	if data == nil {
-		data = make(map[string]interface{})
-	}
-	if v, ok := m["people_count"]; ok {
-		data[observation.FieldTrackCount] = asInt(v)
-	}
-	if v, ok := m["walk_distance"]; ok {
-		data[observation.FieldWalkDistance] = asInt(v)
-	}
-	if v, ok := m["walk_duration"]; ok {
-		data[observation.FieldWalkDuration] = asInt(v)
-	}
-	if v, ok := m["lie_duration"]; ok {
-		data[observation.FieldLieDuration] = asInt(v)
-	}
-	if v, ok := m["stand_duration"]; ok {
-		data[observation.FieldStandDuration] = asInt(v)
-	}
-	if v, ok := m["multi_person_duration"]; ok {
-		data[observation.FieldMultiPersonDuration] = asInt(v)
 	}
 	msg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "event", observation.FieldActivity, data)
 	return c.streamPublisher.PublishEvent(ctx, msg)
@@ -1153,26 +1148,22 @@ func (c *MQTTConsumer) publishStatSleep(ctx context.Context, addr netip.Addr, ci
 	heartState := asInt(m["heart_state"]) & 0x03
 	vitalSignsState := asInt(m["vital_signs_state"]) & 0x03
 
-	// 业务字段（heart_rate / respiratory_rate / weak_biometric_signal）按 category 平铺到 dataValue 顶层。
-	// HR/RR 升级为 EventItem first-class 字段（NewEventItem 默认 -1=未测量）；
-	// HR 类告警 publisher 显式填 item.HeartRate；RR 类告警 publisher 显式填 item.RespiratoryRate。
-	publishAlarm := func(category string, hr, rr int, weakSignal int64, eventReason string) error {
+	// vital 告警 payload：track_id + 触发实测值（heart_rate / respiratory_rate / weak_biometric_signal），指针忠实。
+	publishAlarm := func(category string, hr, rr, weakSignal int, eventReason string) error {
 		item := observation.NewEventItem(ts, "instant")
+		item.EventType = 16
 		item.EventReason = eventReason
-		item.TrackID = observation.TrackUnknownPerson
+		item.TrackID = observation.IntPtr(observation.TrackUnknownPerson)
 		if hr >= 0 {
-			item.HeartRate = hr
+			item.HeartRate = observation.IntPtr(hr)
 		}
 		if rr >= 0 {
-			item.RespiratoryRate = rr
-		}
-		alarmData, _ := observation.EventItemToDataMap(&item)
-		if alarmData == nil {
-			alarmData = make(map[string]interface{})
+			item.RespiratoryRate = observation.IntPtr(rr)
 		}
 		if weakSignal > 0 {
-			alarmData[observation.FieldWeakBiometricSignal] = weakSignal
+			item.WeakBiometricSignal = observation.IntPtr(weakSignal)
 		}
+		alarmData, _ := observation.EventItemToDataMap(&item)
 		alarmMsg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "alarm", category, alarmData)
 		return c.streamPublisher.PublishAlarm(ctx, alarmMsg)
 	}
@@ -1209,22 +1200,25 @@ func (c *MQTTConsumer) publishStatSleep(ctx context.Context, addr netip.Addr, ci
 		_ = publishAlarm(alarm.HeartRateAlertHigh, hr, -1, 0, fmt.Sprintf("avgHeart=%d", avgHeart))
 	}
 	if vitalSignsState == 3 {
-		_ = publishAlarm(alarm.WeakBiometricSignal, -1, -1, int64(vitalSignsState)*20, alarm.WeakBiometricSignal)
+		_ = publishAlarm(alarm.WeakBiometricSignal, -1, -1, vitalSignsState*20, alarm.WeakBiometricSignal)
 	}
 
 	if breathState != 0 || heartState != 0 || vitalSignsState == 3 {
 		return nil
 	}
-	data := make(map[string]interface{}, len(m)+4)
-	for k, v := range m {
-		data[k] = v
+	// 正常睡眠统计 event：只留 track_id + 归一 sleep_stage + 分钟级均值（瞬时 HR/RR/sleep_flag/状态码等不带）。
+	item := observation.NewEventItem(ts, "instant")
+	item.EventType = 16
+	item.TrackID = observation.IntPtr(observation.TrackUnknownPerson)
+	item.SleepStage = observation.IntPtr(radarSleepStageToSleepad(asInt(m["sleep_state"])))
+	if v, ok := m["avg_heart_rate"]; ok {
+		item.AvgHeartRate = observation.IntPtr(asInt(v))
 	}
-	data["event_name"] = alarm.SleepStage
-	data["event_since"] = ts
-	data["event_status"] = "instant"
-	data["track_id"] = observation.TrackUnknownPerson
-	cat := alarm.SleepStage // 与 Sleepad sleepStage 统一为 sleep-stage
-	msg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "event", cat, data)
+	if v, ok := m["avg_respiratory_rate"]; ok {
+		item.AvgRespiratoryRate = observation.IntPtr(asInt(v))
+	}
+	data, _ := observation.EventItemToDataMap(&item)
+	msg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "event", alarm.SleepStage, data)
 	return c.streamPublisher.PublishEvent(ctx, msg)
 }
 
@@ -1286,26 +1280,12 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 		eventType := asInt(m["event_type"])
 
 		item := observation.NewEventItem(ts, "start")
+		item.EventType = eventType
 		switch eventType {
 		case 1:
-			item.TrackID = asInt(m["track_id"])
-		case 2:
-			item.TrackID = asInt(m["track_id"])
-		case 3:
-			item.TrackID = observation.TrackSpace
-		case 5, 7, 8:
-			item.TrackID = observation.TrackDevice
-		default:
-			continue
-		}
-		data, err := observation.EventItemToDataMap(&item)
-		if err != nil {
-			continue
-		}
-		if data == nil {
-			data = make(map[string]interface{})
-		}
-		switch eventType {
+			item.TrackID = observation.IntPtr(asInt(m["track_id"]))
+			item.Event = observation.IntPtr(asInt(m["event"]))
+			item.AreaType = observation.IntPtr(asInt(m["area_type"]))
 		case 2:
 			// 4 个 pose-class category 各自保留（不再合并 SuspectedFall→Fall）：
 			//   - SuspectedFall          (pose=2)  firmware 第一帧检测 → 下游 WARNING
@@ -1351,12 +1331,10 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 			}
 			if alarmCat != "" {
 				eventItem := observation.NewEventItem(ts, alarmStatus)
-				eventItem.TrackID = asInt(m["track_id"])
-				eventItem.Pose = alarmPose
+				eventItem.EventType = 2
+				eventItem.TrackID = observation.IntPtr(asInt(m["track_id"]))
+				eventItem.Pose = observation.IntPtr(alarmPose)
 				eventData, _ := observation.EventItemToDataMap(&eventItem)
-				if eventData == nil {
-					eventData = make(map[string]interface{})
-				}
 				evMsg := rediscommon.NewSingleItemMessage(addr, cid, DeviceTypeRadar, ts, "event", alarmCat, eventData)
 				if err := c.streamPublisher.PublishEvent(ctx, evMsg); err != nil {
 					c.logger.Warn("publish fall event", zap.String("device", uid), zap.String("cat", alarmCat), zap.String("status", alarmStatus), zap.Error(err))
@@ -1364,14 +1342,22 @@ func (c *MQTTConsumer) handleEventMessage(uid string, message map[string]interfa
 				}
 				continue
 			}
-			if v, ok := m["pose"]; ok {
-				data[observation.FieldPose] = asInt(v)
-			}
+			item.TrackID = observation.IntPtr(asInt(m["track_id"]))
+			item.Pose = observation.IntPtr(asInt(m["pose"]))
 		case 3:
-			if v, ok := m[observation.FieldNumberPeople]; ok {
-				data[observation.FieldNumberPeople] = asInt(v)
-			}
+			item.NumberPeople = observation.IntPtr(asInt(m[observation.FieldNumberPeople]))
 		case 5, 7, 8:
+			// 设备状态：无 first-class 业务字段；状态在下方经 status_type/value map-write 保留
+		default:
+			continue
+		}
+
+		data, _ := observation.EventItemToDataMap(&item)
+		if data == nil {
+			data = make(map[string]interface{})
+		}
+		// 设备状态 type=5/7/8：Category 单独不足以区分在线/离线（恢复），状态经 status_type/value map-write 保留
+		if eventType == 5 || eventType == 7 || eventType == 8 {
 			if v, ok := m["status_type"]; ok {
 				if s, ok := v.(string); ok {
 					data[s] = asInt(m["status_value"])
