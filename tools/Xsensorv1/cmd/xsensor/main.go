@@ -174,7 +174,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 
 	tracks := make([]adapter.TrackObs, 0, len(bases)+1)
 	for _, b := range bases {
-		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, RadarTrack: adapter.RadarTrack{
+		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, SplitConvicted: b.SplitConvicted, RadarTrack: adapter.RadarTrack{
 			TrackID: b.TrackID, // logicID↔track_id 反查源（ExitRoom 按号反查丢轨人）
 			Online:  b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
 			StillSec: float64(b.StillBoxSec), // still-box raw 时长 → FloorGuard 纯计时器（直立折扣已移 emission 压 SFallen）

@@ -7,8 +7,9 @@
 //   step1 找 spliter：np↑ 出新 offspring（无 EnterRoom）时，t1 各轨投最近的 t0（前一tick）轨；得票最多者=spliter。
 //   spliter 静止门（仅 spliter 受限，因干扰源不动）：spliter 在 t-1,t-2 逐轴位移 ≤ splitSpliterStillCm。
 //   step2 建 split_group：投了 spliter 的 t1 轨入组，锚点=spliter 前一tick位。offspring 不设距离约束（真人可乱走）。
-//   step3 每帧维护、~2s 节流：走开者(净位移>walkout)=real（EverWalkedOut 永久锁）；赖在锚点不走者=ghost
-//         → 软压 SplitGhostSinceMs（SnapshotTrackStatuses 零其 StillBoxSec，不喂 floor，不删轨=无 churn）。
+//   step3 每帧维护、~2s 节流：按**离锚点净距**三档——≥200 走开=real（EverWalkedOut 永久锁）／≤50 赖锚点
+//         连续 3 tick 坐实=ghost → 单调软压 SplitGhostSinceMs（SnapshotTrackStatuses 零其 StillBoxSec，
+//         不喂 floor，不删轨=无 churn）／50~200 HOLD 存疑不动。
 //
 // 安全性：软压**可撤销**（离开锚点/走开 → 清）；露倒地相（fall-precursor pose）立即解压并锁 real（FN-safe，
 // 真人贴干扰源摔倒绝不被压）。purge 一律不用（EvictTrack→firmware 重报→每帧重建 lid churn）。
@@ -21,10 +22,11 @@ import (
 )
 
 const (
-	splitLatchIntervalMs = 2_000 // step3 节流：每轨每 ~2s 算一次（净位移/glue 是保持量，不漏）
+	splitLatchIntervalMs = 2_000 // step3 节流：每轨每 ~2s 算一次（离锚点净距是保持量，不漏）
 	splitSpliterStillCm  = 10    // spliter t-1,t-2 逐轴位移 ≤此 = 静止干扰源（雷达噪声 ±5-10cm 地板）
-	splitGhostGlueCm     = 10    // 成员到 spliter 锚点 ≤此 = 赖在干扰源点 = ghost → 软压
-	splitWalkOutCm       = 200   // 成员净位移(born→now) >此 = 真人 walk → EverWalkedOut 永久 real
+	splitGluedCm         = 50    // 离锚点净距 ≤此 = GLUED（对齐 stillbox 50×50 半框，吸收旧 glue 10 + 噪声）
+	splitWalkOutCm       = 200   // 离锚点净距 ≥此 = WALKOUT 真人 walk → EverWalkedOut 永久 real
+	splitConvictTicks    = 3     // GLUED 连续 ≥此 tick（~6s）坐实 → SplitGhostSinceMs 单调置位（抗噪）
 	splitMinVotes        = 2     // spliter 至少 2 票（自身续 + offspring）才算 split（一源裂多轨）
 )
 
@@ -133,16 +135,21 @@ func (tm *TrackManager) stampSplitGroupOnBirth(offspring *TrackState, f TrackFra
 	)
 }
 
-// updateSplitGhost step3（每观测帧调，~2s 节流）：group 成员定 real/ghost。
-//   - 露倒地相 → 解压 + 锁 real（FN-safe，真人贴干扰源摔绝不被压）。
-//   - 净位移 >walkout → 真人 walk → EverWalkedOut 永久 real，清软压。
-//   - 赖在 spliter 锚点 ≤glue → ghost → SplitGhostSinceMs 软压（可撤销：离开锚点即清）。
+// updateSplitGhost step3（每观测帧调，~2s 节流）：group 成员按「离锚点净距」三档定 real/ghost。
+// 基准=离锚点(spliter 前一tick位)净距，**非离出生点**——续轨旧 BirthPos 是 split 前走过的污染源
+// （把 split 前的位移误当 split 后走出 → 秒判 real）；且绕锚点画圈的慢漂 ghost 骗得过离出生点净距。
+//   - ≥200 WALKOUT → 真人 walk → SplitEverWalkedOut 永久 real，解压。
+//   - ≤50  GLUED   → 喂 split 本地 3-tick 棘轮；连续坐实 → SplitGhostSinceMs 单调置位（软压）。
+//   - 50~200 HOLD  → 存疑：不定罪（断棘轮）、不清既有定罪（穿过 HOLD）。
+// 压制 SplitGhostSinceMs 单调，只由 walkout / 倒地相两个永久口解除——无逐帧 glue-flap（漂进 HOLD 松压
+// 会让慢漂 ghost 复活）。露倒地相 → 解压 + 锁 real（FN-safe，真人贴干扰源摔绝不被压）。
+// 注：不复用 census 的 ghostSustainRun（:481-483，其被 SetTrackPReal 按 p_mirror 逐帧清零，孤迹 ghost
+// ρ 低撑不住；且置 MaxGhostSustained 会改 lost_fall 删除判据=Stage 2/3），故 split 走本地棘轮。
 func (tm *TrackManager) updateSplitGhost(ts *TrackState, f TrackFrame, nowMs int64) {
 	if ts.SplitObservingSinceMs == 0 {
 		return
 	}
 	if ts.SplitEverWalkedOut {
-		ts.SplitGhostSinceMs = 0
 		return
 	}
 	if teleportFallPrecursorPose(f.Pose) {
@@ -154,19 +161,31 @@ func (tm *TrackManager) updateSplitGhost(ts *TrackState, f TrackFrame, nowMs int
 		return
 	}
 	ts.SplitLastLatchMs = nowMs
-	if distInt(ts.BirthPos.X, ts.BirthPos.Y, f.X, f.Y) > splitWalkOutCm {
+
+	d := distInt(f.X, f.Y, ts.SplitSpliterX, ts.SplitSpliterY)
+	switch {
+	case d >= splitWalkOutCm:
 		ts.SplitEverWalkedOut = true
 		ts.SplitGhostSinceMs = 0
+		ts.splitGlueRun = 0
 		tm.logger.Info("split_real_latched",
 			zap.String("device_uid", f.DeviceAddr),
 			zap.Int("track_id", ts.TrackID),
 			zap.String("logic_id", ts.LogicID),
+			zap.Int("anchor_dist_cm", d),
 		)
-		return
-	}
-	if distInt(f.X, f.Y, ts.SplitSpliterX, ts.SplitSpliterY) <= splitGhostGlueCm {
-		ts.SplitGhostSinceMs = nowMs
-	} else {
-		ts.SplitGhostSinceMs = 0
+	case d <= splitGluedCm:
+		ts.splitGlueRun++
+		if ts.splitGlueRun >= splitConvictTicks && ts.SplitGhostSinceMs == 0 {
+			ts.SplitGhostSinceMs = nowMs
+			tm.logger.Info("split_ghost_convicted",
+				zap.String("device_uid", f.DeviceAddr),
+				zap.Int("track_id", ts.TrackID),
+				zap.String("logic_id", ts.LogicID),
+				zap.Int("anchor_dist_cm", d),
+			)
+		}
+	default:
+		ts.splitGlueRun = 0 // HOLD：断棘轮（需重新 3 连坐实）；既有定罪 SplitGhostSinceMs 不清
 	}
 }

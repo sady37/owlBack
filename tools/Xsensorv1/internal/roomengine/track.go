@@ -124,10 +124,12 @@ type TrackState struct {
 	SplitSpliterX, SplitSpliterY int
 	// SplitLastLatchMs：step3 ~2s 节流上次时刻（见 splitLatchIntervalMs）。
 	SplitLastLatchMs int64
-	// SplitEverWalkedOut：净位移曾 > splitWalkOutCm(200) = 真人 walk → 永久 real，不被后续 still 翻案。
+	// SplitEverWalkedOut：离锚点净距曾 ≥ splitWalkOutCm(200) = 真人 walk → 永久 real，不被后续 still 翻案。
 	SplitEverWalkedOut bool
-	// SplitGhostSinceMs：赖在 spliter 锚点不走的 ghost 软压 latch（>0 → SnapshotTrackStatuses 零其
-	// StillBoxSec 不喂 floor）。可撤销：离开锚点/走开/露倒地相即清。不删轨（避免 firmware 重报 churn）。
+	// splitGlueRun：GLUED(离锚点≤50) 连续 tick 计数（split 本地 3-tick 坐实棘轮；HOLD/WALKOUT 断则清零）。
+	splitGlueRun int
+	// SplitGhostSinceMs：赖在 spliter 锚点的 ghost 软压 latch（>0 → SnapshotTrackStatuses 零其 StillBoxSec
+	// 不喂 floor）。**单调**：坐实(3-tick GLUED)置位，只由 walkout/露倒地相解除；穿过 HOLD 不清。不删轨（避免 churn）。
 	SplitGhostSinceMs int64
 }
 

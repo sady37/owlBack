@@ -32,8 +32,9 @@ func DefaultTrackCensusParams() TrackCensusParams {
 // TrackObs 一帧一条 raw track（§57 步2 全量：纯雷达量）——既数 N_r 又驱动 per-track 滤波。
 // 桶二（§69）：IsReflection 由 census 本层几何算（出生位 + 墙 + 雷达坐标），不再外部标注透传。
 type TrackObs struct {
-	RadarTrack        // Online/Pose/X,Y,Z/HR,RR/StillSec（X,Y 经嵌入提升供 census 速度/realness 几何）
-	LogicID    string // tm 出生锚定的唯一逻辑身份（nearestAliveTrack 最小作功距离继承+EnterRoom 门）；census 不再按位置重造 int logicID，直接引用此
+	RadarTrack             // Online/Pose/X,Y,Z/HR,RR/StillSec（X,Y 经嵌入提升供 census 速度/realness 几何）
+	LogicID        string  // tm 出生锚定的唯一逻辑身份（nearestAliveTrack 最小作功距离继承+EnterRoom 门）；census 不再按位置重造 int logicID，直接引用此
+	SplitConvicted bool    // roomengine split 运动学坐实(SplitGhostSinceMs>0)→ 喂 realness mEv 降 PReal（孤迹 latch 也开）
 }
 
 type censusTrack struct {
@@ -171,12 +172,15 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 
 	for i, o := range obs {
 		t := c.tracks[ids[i]]
-		if nowMs-t.birthMs <= c.p.MirrorWindowMs {
-			// 出生窗（≤5s）：喂 realness 判定（ghost 只能出生时判，过期难判）。**reflectSep（最贵的穿墙求交）
-			// 仅 coexist>0=track==2 才算**（成本：ghost 仅 track==2；孤轨 mEv=Coexist×(…)=0,跳过 reflectSep 结果中性）。
+		// split 坐实(运动学 3-tick 赖锚点)是持续判决 → 即便出生窗后也须续喂 realness 排干 bR（否则冻结在窗末 PReal=1，
+		// nr 顶 2）；其率不依赖几何/Coexist(见 belief.Update)，故跳过 reflectSep。窗内轨照旧走几何+sync 判定。
+		inWindow := nowMs-t.birthMs <= c.p.MirrorWindowMs
+		if inWindow || o.SplitConvicted {
+			// reflectSep（最贵的穿墙求交）仅出生窗内 coexist>0=track==2 才算（成本：ghost 仅 track==2；
+			// 孤轨 mEv=Coexist×(…)=0,跳过结果中性）；窗后的 split-convicted 靠 rcWSplit 率，不需几何。
 			sep := 0.0
 			wallMargin := 0.0
-			if coexistOf[i] > 0 {
+			if inWindow && coexistOf[i] > 0 {
 				sep = reflectSep(o.X, o.Y, radar, walls, c.p.ReflSepCm) // 桶二：墙外反射裕度 cm（0=墙内/非反射）
 				if sep > 0 {
 					if wallMargin = sep / float64(c.p.WallScaleCm); wallMargin > 1 {
@@ -187,12 +191,13 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 			t.isRefl = sep > 0
 			later := laterOf[i]
 			t.rt.Update(belief.RealnessObs{
-				Displaced:  math.Hypot(float64(o.X-t.birthX), float64(o.Y-t.birthY)) > float64(c.p.MoveCm),
-				CoexistRho: rhoOf[i],
-				LaterBorn:  later,
-				WallMargin: wallMargin,
-				Coexist:    coexistOf[i],
-				DtMs:       nowMs - t.lastMs,
+				Displaced:      math.Hypot(float64(o.X-t.birthX), float64(o.Y-t.birthY)) > float64(c.p.MoveCm),
+				CoexistRho:     rhoOf[i],
+				LaterBorn:      later,
+				WallMargin:     wallMargin,
+				Coexist:        coexistOf[i],
+				SplitConvicted: o.SplitConvicted,
+				DtMs:           nowMs - t.lastMs,
 			})
 			t.fSep, t.fWallMargin, t.fRho, t.fLater = sep, wallMargin, rhoOf[i], later // forensic
 		} else {

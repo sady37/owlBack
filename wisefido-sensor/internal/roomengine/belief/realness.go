@@ -23,6 +23,9 @@ const (
 	rcWAuto       = 1.5   // 自主独立移动 real 率权
 	rcWWall       = 1.5   // 墙外反射 mirror 率权（× Coexist：ghost 仅 track==2）
 	rcWSync       = 1.2   // 同步移动 mirror 率权（× Coexist：需配对）
+	rcWSplit      = 1.5   // split 坐实(roomengine 运动学 3-tick)mirror 率权：**不 ×Coexist**（开孤轨 latch 口，冻死孤迹 Coexist=0 也 R→M）。
+	//                     配套 Update 里 split-convicted 时扣掉 autonomous rEv（见下）：否则 rEv≈1.52 与 mEv 在离散跳变下
+	//                     顶到 bR=pMR/(pRM+pMR)≈0.44 knife-edge（mEv=∞ 也垫不下去）→nr 抖。扣 rEv 后 bR_ss≈0.02 稳沉。
 )
 
 // RealnessObs 一帧 realness 软证据(census 由 墙/门几何 + 同步度 + 配对译入)。door_d 已移出(出生先验,见 NewRealnessTrack)。
@@ -32,6 +35,7 @@ type RealnessObs struct {
 	LaterBorn  bool    // §9.1 成对中后到者(ghost 候选)：破同步对称——同步 ρ 双 track 共享，只归后到者
 	WallMargin float64 // §9.2 墙外反射裕度[0,1](穿墙交点距/尺度；0=墙内非反射/非 track==2)
 	Coexist    float64 // co-existence 配对存在[0,1](孤轨=0 → mEv=0 → ghost 仅 track==2)
+	SplitConvicted bool // roomengine split 运动学坐实(赖锚点 3-tick，track-lifecycle 轴非镜像轴)→ mEv +rcWSplit(不 ×Coexist)
 	DtMs       int64   // 距上帧 ms(率→概率时间积分；单 tick dt 小→跳变概率≈0→§9.4 自然忽略)
 }
 
@@ -71,9 +75,16 @@ func (r *RealnessTrack) Update(o RealnessObs) {
 		sync = rcWSync * o.CoexistRho
 	}
 	mEv := o.Coexist * (rcWWall*o.WallMargin + sync)
+	if o.SplitConvicted {
+		// split 坐实是 track-lifecycle 轴独立判决（census 镜像轴 ≥2轨 ρ 高抓不到冻死孤迹）→ 直接加 R→M 率，
+		// 绕过 ×Coexist 的孤轨 latch（否则 Coexist=0→mEv=0→永 Real，nr 顶 2）。单源守：仍 realness 算 PReal，split 只多喂一条率。
+		mEv += rcWSplit
+	}
 	// real 跳变率：baseline 恢复 + 自主独立移动(ρ 低)。door_d 已移出 → 出生先验(NewRealnessTrack)。
+	// split 坐实后不吃 autonomous-real：冻死 ghost 离 census 出生位远→Displaced=true 是**伪** autonomous（续轨旧身份污染，
+	// 同 Stage1 walkout-BirthPos 那类），喂了会与 split mEv 顶到 bR≈0.44 knife-edge。真人走开=Stage1 walkout 先解 SplitConvicted→rEv 复原。
 	rEv := rcRealBase
-	if o.Displaced {
+	if o.Displaced && !o.SplitConvicted {
 		rEv += rcWAuto * (1 - o.CoexistRho)
 	}
 	// 转移（跳变过程，保归一）：Real 吸收当 mEv=0（latch）。
