@@ -135,7 +135,7 @@ func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
 	return AIPayload{
 		DeviceAddr: ts.DeviceAddr,
 		RoomID:     ts.RoomID,
-		CellArea:   ts.LastCellArea,
+		CellArea:   clampCellArea(ts.LastCellArea),
 		Track: observation.Track{
 			BedStatus:       observation.BedStatusUnchanged,
 			TrackID:         ts.TrackID,
@@ -223,12 +223,35 @@ func (tm *TrackManager) trackByLogicID(lid string) *TrackState {
 	return nil
 }
 
+// clampCellArea LastCellArea(-1=无效) → 发布层 area_type 需有效枚举，无效夹成 AreaUnknown。
+func clampCellArea(a int) AreaType {
+	if a < 0 {
+		return AreaUnknown
+	}
+	return AreaType(a)
+}
+
+// lastCellAreaName LastCellArea 区名（-1 → "invalid"）。
+func lastCellAreaName(a int) string {
+	if a < 0 {
+		return "invalid"
+	}
+	return AreaType(a).Name()
+}
+
+// isLyingZoneVetoPose 落 AreaLying 区应否决转发的固件报警姿态：疑似/确认跌倒 (2,5)、疑似/确认坐地 (7,8)。
+func isLyingZoneVetoPose(pose int) bool {
+	return pose == observation.PoseSuspectedFall || pose == observation.PoseFallen ||
+		pose == observation.PoseSuspectedSitGround || pose == observation.PoseSitGround
+}
+
 // PublishDBNFall DBN fire 发布腿（S0.c-4，A·R12.3）：fired logicID → 构 payload → emitAIAlarm(alarm.Fall)。
 // DBN_MODE 门控在 engine 内 dbnSelfFireEnabledFor（本方法只发，调用方已判门控）。
 func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 	tm.mu.Lock()
 	ts := tm.trackByLogicID(lid)
 	var p AIPayload
+	vetoLying := false
 	if ts != nil {
 		p = tm.payloadFromTrack(ts)
 		// Occurred = still-box 起点（= nowMs − stillSec·1000）；moving-collapse 无 still run 时留 0 退化 incident==alerted。
@@ -253,13 +276,13 @@ func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 		exitLO, exitHasEvent, exitTrend := tm.exitLogOddsLocked(lid, nowMs)
 		fireEv := map[string]interface{}{
 			"band":              band,
-			"cell_area":         int(ts.LastCellArea),
-			"cell_area_name":    ts.LastCellArea.Name(),
+			"cell_area":         ts.LastCellArea,
+			"cell_area_name":    lastCellAreaName(ts.LastCellArea),
 			"in_chair":          ts.StillBoxInChair,
 			"chair_mu":          ts.StillBoxChairMu,
 			"chair_sigma":       ts.StillBoxChairSigma,
 			"chair_maxsit":      ts.StillBoxChairMaxSit,
-			"tfloor_sec":        belief.TFloorFor(int(ts.LastCellArea), tm.roomType, IsNightTime(nowMs, tm.timezone), ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit),
+			"tfloor_sec":        belief.TFloorFor(ts.LastCellArea, tm.roomType, IsNightTime(nowMs, tm.timezone), ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit),
 			"stillbox_start_ms": ts.StillBoxRunStart,
 			"x":                 cx,
 			"y":                 cy,
@@ -309,14 +332,23 @@ func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 		tfloorSec, _ := fireEv["tfloor_sec"].(int)
 		tm.logger.Info("dbn_fall_fire",
 			zap.String("logic_id", lid), zap.String("band", band),
-			zap.String("cell_area", ts.LastCellArea.Name()),
+			zap.String("cell_area", lastCellAreaName(ts.LastCellArea)),
 			zap.Int("tfloor_sec", tfloorSec), zap.Int("stillbox_sec", stillSec),
 			zap.Int("x", cx), zap.Int("y", cy), zap.Int("z", ts.LastZ), zap.Int("pose", ts.LastPose),
 			zap.Int("room_np", tm.roomNpLocked()), zap.String("pin", pinName),
 			zap.Float64("exit_logodds", exitLO))
+		// B 方案扩展（dbn_mode≥2）：pose 驱动的固件 fall/坐地 fire 落人标 AreaLying 区（沙发/躺椅）→ 否决转发。
+		//   躺椅上小动作被固件误报 fall/坐地（band=repeat/report）在此拦下；floor 90min 久躺兜底（band="floor"）
+		//   不在列 → 真摔久躺安全网保留。lying 是 layout 确定事实，直接 gate 全局 dbnMode，不挂冷启 cap。
+		if dbnMode == 2 && band != "floor" && isLyingZoneVetoPose(ts.LastPose) && ts.LastCellArea == int(AreaLying) {
+			vetoLying = true
+			tm.logger.Info("dbn_fall_vetoed_lying_zone",
+				zap.String("logic_id", lid), zap.String("band", band), zap.Int("pose", ts.LastPose),
+				zap.Int("x", cx), zap.Int("y", cy), zap.Int64("ts_ms", nowMs))
+		}
 	}
 	tm.mu.Unlock()
-	if ts == nil {
+	if ts == nil || vetoLying {
 		return
 	}
 	p.Reason = "dbn." + alarm.Fall
@@ -337,11 +369,32 @@ func (tm *TrackManager) EmitDBNGhostVerdict(lid string, nowMs int64) {
 
 // SetTrackConfidence 写回 DBN per-track 置信度（第三腿 A·R13/R15.3-2，不门控）：
 // logicID → ts.TrackConfidence（0-100），供 payloadFromTrack 下发 cardagg 实时 DBN 置信度。
-func (tm *TrackManager) SetTrackConfidence(lid string, conf int) {
+func (tm *TrackManager) SetTrackConfidence(lid string, conf, roomNp int) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	if ts := tm.trackByLogicID(lid); ts != nil {
-		ts.DBNConfidence = conf
+	ts := tm.trackByLogicID(lid)
+	if ts == nil {
+		return
+	}
+	ts.DBNConfidence = conf
+	// lost_fall delete 判据信号（§10.3-b）：p_mirror=1-PReal（realness 2 态互补，conf=PReal*100）。
+	if roomNp > ts.MaxRoomNp { // ① born→now 房 np 峰值（≥2=曾有共存伙伴）
+		ts.MaxRoomNp = roomNp
+	}
+	g := 1.0 - float64(conf)/100.0 // ② 生涯 ghost：EnterBorn 未重绑 → 禁 ghost>50
+	if ts.EnterBorn && !ts.LidRebound && g > 0.5 {
+		g = 0.5
+	}
+	if g > ts.MaxGhost {
+		ts.MaxGhost = g
+	}
+	if g >= 0.8 { // sustained ≥3 tick（真镜像帧帧成立；巧合并排走撑不住）
+		ts.ghostSustainRun++
+		if ts.ghostSustainRun >= 3 {
+			ts.MaxGhostSustained = true
+		}
+	} else {
+		ts.ghostSustainRun = 0
 	}
 }
 

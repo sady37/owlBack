@@ -48,15 +48,15 @@ for line in open(log_path):
 ticks.sort(key=lambda r: r['ts'])
 tick_ts = [r['ts'] for r in ticks]
 
-# 全局 (dev,track_id)->lid(引擎只给被采用的 base track 发 lid;未被采用的雷达 → 无 lid)
-dev_tid_lid = {}
-for r in ticks:
-    for tid, lid in r['tidlid'].items():
-        dev_tid_lid[(lid[:4], tid)] = lid  # lid 前 4 = uid 后 4(出生设备)
-
 def belief_at(ts):
     i = bisect.bisect_right(tick_ts, ts) - 1
     return ticks[i] if i >= 0 else (ticks[0] if ticks else None)
+
+# 每帧 lid 按其所在 tick 解析（time-aware）：track_id 复用时（如两人先后都 track_id=0）
+# 各时段正确归各自 lid，不被全局 map 末值覆盖。引擎未在该 tick 给该 tid 发 lid → '-'。
+def lid_at(ts, tid):
+    b = belief_at(ts)
+    return b['tidlid'].get(tid, '-') if b else '-'
 
 # ── 2) window.json 双雷达 raw track 帧 + 离散事件 ────────────────────────────
 win = json.load(open(f'{case_dir}/window.json'))
@@ -77,13 +77,13 @@ for r in win:
                 # 不滤:firmware 无目标/心跳帧(88/11)也出行(标 no-target),否则 lost coast 整段在报告里消失。
                 rows.append([ts, 1, u4, tid, '-', '88', '-', None, 'no-target(88)'])
                 continue
-            rows.append([ts, 1, u4, tid, dev_tid_lid.get((u4, tid), '-'),
+            rows.append([ts, 1, u4, tid, lid_at(ts, tid),
                          pose_name(t.get('pose',0)), t.get('position_z',0), None,
                          pose_name(t.get('pose',0))])
     elif cat in EVT_RDR and dtype == 'Radar':
         evtid = next((t['track_id'] for t in (r['data_value'] or [])
                       if isinstance(t, dict) and t.get('track_id') is not None), None)
-        evlid = dev_tid_lid.get((u4, evtid), '-') if evtid is not None else '-'
+        evlid = lid_at(ts, evtid) if evtid is not None else '-'
         rows.append([ts, 0, u4, f'E{evtid}' if evtid is not None else 'E', evlid, '-', 0, None, f'{cat}(rdr)'])
     elif cat == 'number_people' and dtype == 'Radar':
         for t in (r['data_value'] or []):
@@ -165,7 +165,9 @@ for row in rows:
     devtid = f"{dev}.{tid}"
     nr = b.get('n_r')
     nrs = str(nr) if nr is not None else '-'
-    line = (f"{hhmmss(ts):8} {devtid:8} {lid:13} {pose:7} {z:<4} {b['bed']:8} "
+    # bed 列：只有真实床态(InBed/LeftBed)才出值；NoReport/无床房(如 bathroom)一律 '-' = 不适用/无。
+    bed_disp = b['bed'] if b['bed'] in ('InBed', 'LeftBed') else '-'
+    line = (f"{hhmmss(ts):8} {devtid:8} {lid:13} {pose:7} {z:<4} {bed_disp:8} "
             f"{event:18} {src:4} {pr:4} {b['top']:10} {nrs:3} {b['still']:<5} "
             f"{sm['SFall']:.2f}  {sm['SBed']:.2f}  {sm['SOpen']:.2f}  "
             f"{sm['SBliR']:.2f}  {sm['SEmpt']:.2f}  {sm['SLeft']:.2f}")
@@ -205,6 +207,36 @@ fired = sum(1 for t in ticks if t['fire'])
 out.append(f"**汇总**: xray tick {len(ticks)} | fire {fired} | Fall 事件 {len(fall_ts)} "
            f"({', '.join(hhmmss(t) for t in fall_ts)}) | 结论 = "
            f"{'FN(看到 Fall 但 fire=0)' if fired==0 and fall_ts else ('fire 命中' if fired else '无 Fall 无 fire')}")
+
+# ── 尾部：完整原始记录（window + sleepad + alarm 全 category，data_value 全文，每条 item 一行，按时间升序）──
+out.append("")
+out.append("## 完整原始记录（按时间排序，data_value 全文不删字段）")
+out.append("```")
+out.append(f"{'time':8} {'ms':14} {'device.tid':12} {'event':14} {'x':6} {'y':6} {'z':5} 原始记录")
+raw_all = []  # (ts, uid4, category, item)
+for fn in ('window.json', 'window_sleepad.json', 'alarm.json'):
+    p = f'{case_dir}/{fn}'
+    try:
+        recs = json.load(open(p))
+    except (FileNotFoundError, json.JSONDecodeError):
+        continue
+    for r in recs:
+        u4 = r.get('device_uid', '????')[-4:].upper()
+        if allow is not None and u4 not in allow: continue
+        dv = r.get('data_value')
+        items = dv if isinstance(dv, list) else [dv]
+        for it in (items or [None]):
+            raw_all.append((r['timestamp'], u4, r.get('category', '?'), it))
+def _g(it, k):
+    return it.get(k) if isinstance(it, dict) else None
+for ts, u4, cat, it in sorted(raw_all, key=lambda z: z[0]):
+    tid = _g(it, 'track_id')
+    devtid = f"{u4}.{tid}" if tid is not None else u4
+    x, y, z = _g(it, 'position_x'), _g(it, 'position_y'), _g(it, 'position_z')
+    out.append(f"{hhmmss(ts):8} {ts:<14} {devtid:12} {cat:14} "
+               f"{str(x) if x is not None else '-':6} {str(y) if y is not None else '-':6} "
+               f"{str(z) if z is not None else '-':5} {json.dumps(it, ensure_ascii=False)}")
+out.append("```")
 
 dst = f'{case_dir}/track_event_timeline.md'
 open(dst, 'w').write('\n'.join(out) + '\n')

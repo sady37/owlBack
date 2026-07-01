@@ -661,6 +661,10 @@ const (
 	exitCoupledLostMs = int64(30_000)
 	// exitLostMaxDz：耦合驱逐的末2tick垂直位移上限（≤此 = 无倒地式下坠，FN-safe）。
 	exitLostMaxDz = 40
+	// mirrorResidualConfineWindowMs / Cm：confirmedMirrorResidual 的 R≤120 近期静止窗（§10.3-b 条件3）。
+	//   用近期 box range 非 birth→now——镜像 ghost 随真人走动位移大、settle 后近期赖着不动才是残迹。
+	mirrorResidualConfineWindowMs = int64(30_000)
+	mirrorResidualConfineCm       = 120
 	// born-ghost 门距分（③，独立 0→100，不动 ghostBornScore/realness）：85*d/150，>65 ⟺ 出生 >~115cm 离门
 	// = real 都进门、远门凭空出现疑似 ghost。9999=NearestEntryDist 无 enter 区 → 跳过③（测不了门距，FN-safe）。
 	bornGhostDoorGain       = 85.0
@@ -832,23 +836,18 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 	tm.forwardFirmwareFall(a) // S0.c 焊回：固件 Fall 即时转 iot:alarm:stream（ground floor，DBN observation 之外）
 }
 
-// vetoFirmwareFallLying B 方案「否决固件」轴（dbn_mode=2）：固件即时摔的 track 当前位置落 AreaLying 区 →
+// vetoFirmwareFallLying B 方案「否决固件」轴（dbn_mode=2）：固件即时 fall/坐地的 track 落 AreaLying 区 →
 // 否决转发（沙发即时摔不报）。floor 90min 自发腿走 PublishDBNFall（Band="floor"），不经此腿、不受影响 →
 // 久躺兜底仍在。lying 是 layout 确定事实（非 DBN 学习判定）→ 直接 gate 全局 dbnMode，不挂冷启 cap。
-// track 不在管 / 无 grid → 不否决（照转发，FN-safe）。调用方不持 tm.mu。
+// 判据与 DBN 自发腿（PublishDBNFall）统一：dbnMode==2 + isLyingZoneVetoPose + ts.LastCellArea==AreaLying
+//（读解耦后的落格真值，非 Kalman 重查/Belief[0]）。track 不在管 → 不否决（照转发，FN-safe）。调用方不持 tm.mu。
 func (tm *TrackManager) vetoFirmwareFallLying(a RadarFallAlarm) bool {
-	if dbnMode < 2 {
+	if dbnMode != 2 || !isLyingZoneVetoPose(a.Pose) {
 		return false
 	}
 	tm.mu.Lock()
 	ts, ok := tm.tracks[trackKey{a.DeviceUID, a.TrackID}]
-	if !ok || tm.grid == nil {
-		tm.mu.Unlock()
-		return false
-	}
-	pxF, pyF := ts.Kalman.Position()
-	cell := tm.grid.CellAt(int(math.Round(pxF)), int(math.Round(pyF)))
-	inLying := cell != nil && cell.Belief[0].Type == AreaLying
+	inLying := ok && ts.LastCellArea == int(AreaLying)
 	tm.mu.Unlock()
 	if inLying && tm.logger != nil {
 		tm.logger.Info("firmware_fall_vetoed_lying_zone",
@@ -1111,8 +1110,9 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		if n := len(ts.History); n > 0 {
 			rawCx, rawCy = ts.History[n-1].X, ts.History[n-1].Y
 		}
-		if c := tm.grid.CellAt(rawCx, rawCy); c != nil && c.Belief[0].Type == AreaEnter {
-			base.EnterTarget = c.EnterTarget
+		cell := tm.grid.CellAt(rawCx, rawCy)
+		if cell != nil && cell.Belief[0].Type == AreaEnter {
+			base.EnterTarget = cell.EnterTarget
 		}
 		if ts.StillBoxRunStart != 0 {
 			base.CellAreaType = ts.StillBoxCellArea // 久静期:锁定值
@@ -1121,13 +1121,18 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			base.ChairSigma = ts.StillBoxChairSigma
 			base.ChairMaxSit = ts.StillBoxChairMaxSit
 		} else {
-			base.CellAreaType = AreaUnknown // 移动期:不读
+			base.CellAreaType = AreaUnknown // 移动期:不读（决策输入，躲逐帧跨格抖动）
 			base.InChair = false            // 移动期:不读
 			base.ChairMu = 0
 			base.ChairSigma = 0
 			base.ChairMaxSit = 0
 		}
-		ts.LastCellArea = base.CellAreaType
+		// LastCellArea = 当前落格真实区型（与决策锁定解耦，供上报/evidence/veto）。-1 = 越界/无格。
+		if cell != nil {
+			ts.LastCellArea = int(cell.AreaType)
+		} else {
+			ts.LastCellArea = -1
+		}
 		// 诊断(久静≥60s):锁定 area vs raw/Kalman 落格对比(验证锁定躲开跨格抖动)
 		if base.StillBoxSec >= 60 {
 			rcol, rrow := tm.grid.ToIndex(rawCx, rawCy)
@@ -1495,11 +1500,19 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			// 重用/跳变/分裂 → 继承最近存活 track 的 logic_id（跨 track_id 数据关联，
 			// 让"漂走/重编"的同一逻辑目标保持身份连续，供 ghost/lost-fall 按 logic_id 聚合）。
 			enteredRecently := tm.hasRecentEnterRoom(f.TMs)
+			ts.EnterBorn = enteredRecently // 合法进门真人 → 禁 ghost>50（除非 lid 重绑定，见下）
 			inherited := false
 			if !enteredRecently {
 				if parent := tm.nearestAliveTrack(f.X, f.Y, f.DeviceAddr, f.TMs, frameKeys); parent != nil {
 					ts.LogicID = parent.LogicID
 					inherited = true
+					// tid 交换=同一逻辑身份延续 → ghost 历史跟随 lid（否则 churn 清零 MaxGhostSustained 让 ghost 逃判据）。
+					ts.EnterBorn = parent.EnterBorn // 继承进门血缘（lid 亲和在新 tid 出生时比效）
+					ts.LidRebound = true            // lid 重绑到新 tid → 解禁 EnterBorn 的 ghost 上限
+					ts.MaxGhost = parent.MaxGhost
+					ts.MaxGhostSustained = parent.MaxGhostSustained
+					ts.ghostSustainRun = parent.ghostSustainRun
+					ts.MaxRoomNp = parent.MaxRoomNp
 					tm.logger.Info("logic_id_inherited_no_enter",
 						zap.String("device_uid", f.DeviceAddr),
 						zap.Int("track_id", f.TrackID),
@@ -1620,6 +1633,15 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 				zap.String("device_uid", ts.DeviceAddr), zap.Int("track_id", ts.TrackID),
 				zap.String("logic_id", ts.LogicID), zap.Int("last_pose", ts.LastPose),
 				zap.Int("birth_x", ts.BirthPos.X), zap.Int("birth_y", ts.BirthPos.Y))
+			delete(tm.tracks, id)
+			continue
+		}
+		// lost_fall delete §10.3-b 条件2④ 路径：确诊持续镜像 + 曾有共存源 → 删（exitCoupledLostResidual 的 ①②③ 之外补"镜像反射残迹"）。
+		if nowMs-ts.LastObservedMs >= presenceCoastMs && tm.confirmedMirrorResidual(ts, nowMs) {
+			tm.logger.Info("confirmed_mirror_residual_purge",
+				zap.String("device_uid", ts.DeviceAddr), zap.Int("track_id", ts.TrackID),
+				zap.String("logic_id", ts.LogicID), zap.Float64("max_ghost", ts.MaxGhost),
+				zap.Int("max_np", ts.MaxRoomNp), zap.Int("last_pose", ts.LastPose))
 			delete(tm.tracks, id)
 			continue
 		}
@@ -2087,6 +2109,28 @@ func (tm *TrackManager) exitCoupledLostResidual(ts *TrackState, nowMs int64) boo
 		}
 	}
 	return false
+}
+
+// confirmedMirrorResidual lost_fall delete §10.3-b 条件2④ 路径：确诊持续镜像 + 曾有共存源 + 近期静止残迹 → 删。
+// 补 exitCoupledLostResidual 的 ①interfer/②split/③门距 之外的"镜像反射"路径：源真人已离场，ghost 被固件
+// 冻结成孤轨残迹（realness 已被 ForceReal 转正 p_real≡1，靠 EverGhost 闩 MaxGhostSustained 追溯定性）。
+func (tm *TrackManager) confirmedMirrorResidual(ts *TrackState, nowMs int64) bool {
+	// 条件1-A：本设备 ExitRoom 与本轨失锁耦合 ≤30s（镜像路径 max_np≥2 → 条件1-B soloPhantom 不适用）。
+	// present-frozen 磨 12min 再 lost 的残迹距 ExitRoom ≫30s → 落空，判据放过（FN-safe 边界，见 §10.4 选项 A）。
+	d := tm.devRoom[ts.DeviceAddr]
+	if d == nil || d.exitMs == 0 || absI64(d.exitMs-ts.LastObservedMs) > exitCoupledLostMs {
+		return false
+	}
+	if ts.EnterBorn && !ts.LidRebound { // 进门真人受保护（除非 lid 重绑）
+		return false
+	}
+	if !ts.MaxGhostSustained || ts.MaxRoomNp < 2 { // 条件2④ sustained mirror + 条件1 曾有共存源(是某真人反射)
+		return false
+	}
+	if !poseEvictable(ts.LastPose) || last2Dz(ts) > exitLostMaxDz { // 条件3 pose/dz FN 闸（露倒地相绝不删）
+		return false
+	}
+	return ts.BoxRangeWithinMs(mirrorResidualConfineWindowMs, nowMs) <= mirrorResidualConfineCm // 条件3 R≤120 近期赖着没走
 }
 
 // last2Dz 末 2 个真实观测 tick（排 coast 冻结点）的 z range = 末2tick 垂直位移。<2 真点返回 0。

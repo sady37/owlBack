@@ -887,8 +887,14 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 		if tm != nil {
 			// 第三腿 confidence（A·R13/R15.3-2，不门控）：DBN per-track PReal 写回 TrackState.TrackConfidence
 			//   → payloadFromTrack → PublishAIEvent → cardagg（旧 adjudicator 已删，DBN 是唯一来源，断则回归）。
+			roomNp := 0 // 本 tick 房观测 np = 在场 track 数（含 ghost）；镜像 Xsensorv1 只数 Present（非 len(confidence) 含 coasting）
+			for _, b := range bases {
+				if b.Present {
+					roomNp++
+				}
+			}
 			for lid, conf := range confidence {
-				tm.SetTrackConfidence(lid, conf)
+				tm.SetTrackConfidence(lid, conf, roomNp)
 				tm.EmitTrackConfidence(lid, nowMs) // 周期发 DBN conf → cardagg ai_override → FE 透明度（治 present ghost 只写不发 gap，节流 20s）
 			}
 			// S0.c-4 fire→Publish（A·R12.3）：DBN 唯一 fire 权威在 engine 内闭环。

@@ -194,6 +194,19 @@ confidence 也不对等：teleport = 运动学不可能（近确定），interfe
 - **决定性**：PURGE/软压是**外科切除**（per-track），SLeft 是**全房麻醉**（per-room）；floor 是盲摔最后一道网，拿幻影派生的 SLeft 去 gate 它 = 捅洞。
 - **其实已在正确的层统一**：census `Nr()` 是 **present-only + PReal≥0.5** 过滤。teleport 删轨 → $N_r$ 自动减；static Phase B → AreaReflector → floor 整片豁免（孤迹金属幻影无伴随真人，realness 抓不到，靠 floor 豁免压 FP）；interfer-born → ghost → 掉 $N_r$。多条**汇到同一出口**（realness/$N_r$ 或 floor 豁免），无需新建 SLeft。铁律 [[realness_never_vetoes_fall]]：artifact 只削 $N_r$、绝不碰 fall 否决；SLeft 恰恰会碰。
 
+### 6.5-b · GhostLeftLogOdds — 离场者的滞留 ghost（present 静止，**走 SLeft**，与 §6.5 反射伪迹恰相反）
+
+§6.5 说反射伪迹（mirror / interfer / static）「**从来不是人**」→ realness / `SEmpty`、**不走** SLeft。但有**第三类**长得像、语义却相反：**离场者的滞留 ghost**——一个真人**走了**，固件仍在原位吐**冻结的 present 轨**。它「**曾是人、现已离场**」，归宿正是 `SLeft`（不是 SEmpty、不是 realness）。这不是"路由 artifact 进 SLeft"（§6.5 否决的那件事），而是"离场语义本就归 SLeft"。
+
+- **判据（`GhostLeftLogOdds`，[track_manager.go:1290](../tools/Xsensorv1/internal/roomengine/track_manager.go)）**：**present** 静止占用轨，在 room-empty 信号（ExitRoom / np=0 / tid=88）**之后**，按
+  - **门距分桶** $P_{born}$：门口逗留（<110cm）→ 负分不划（护门口真人）；房深处滞留（≥140cm）→ 正分；
+  - × **时间门** $g(\Delta t)$：距 room-empty 信号 Δt 的乘性门（<15s 太早=给真人重获机会=0；[15,45s] 线性升至满权；>45s 陈旧=0 退回 floor 兜底）
+  → 累 SLeft 对数几率（单发≈门距分，封顶 `ghostLeftMaxLogOdds=8.0`，攒够顶过 `absorbedThresh` → absorbed-drop purge）。
+- **硬门否决真摔**：注入前查 pose/Δz——**露过倒地前兆（fall pose / z 骤降）→ 不注入**（真摔者绝不被软清；[[realness_never_vetoes_fall]] 的 SLeft 版护栏）。**这是 FN-safe 命门**。
+- **与 §6.5 不冲突**：反射伪迹 = per-track PURGE（外科切除，realness 轴）；GhostLeft = per-track SLeft 注入（离场轴，belief）。**两者都 per-track、都不全房麻醉**——§6.5 顾虑的"SLeft 全房关 floor、压掉共存真摔"，在这里被 **per-track absorbed-drop 只撤自己那条轨**化解（不动同房其它 track 的 floor 网）。
+- **同设备 scope**：ghost 反射必与投射它的真人同设备，故 GhostLeft 按 same-device 判（[[per_device_np_latch_no_crossradar_clobber]]）。
+- **🔴 适用边界 = 仅 present 轨**：人若**丢轨**（固件转 no-target、present=False）→ GhostLeft **不适用**。此时走 [DBN-Zone-Room §O](DBN-Zone-Room.md) 的 belief-Empty 房级路径——**单人 lost 盲区真摔的 FN 风险在那条路径，GhostLeft 覆盖不到**（b197-0630 实证：08:07:41 丢轨转 present=False → GhostLeft 失效 → 靠 belief 漂 Empty + F1 占用 gate 压 floor，而"站着"和"摔了"同样漂 Empty，不可分）。
+
 ---
 
 ## 第六·二部分 · split-ghost：单人走到墙/干扰区时的分裂收治
@@ -341,13 +354,115 @@ static reflector 已从 Phase A（只 log）放开到 Phase B：三签名跨独�
 
 ---
 
+## 第十部分 · lost_track 判据扩展：live-frozen residual + EverGhost 闩（d5f7-0630 驱动）
+
+case：`case-d5f7-0630-19021918`，room `fd00:0:3:111:3:300`（浴室，layout 已声明 `mirror`(Interfere)+`Reflector (marked)`(MetalCan)），ghost = lid `D5F711158099`（下称 58099），真人 = lid `...36288`。生产 19:15:50 报 Fall-Cloud，replay 复现机制（窗口太短未 fire，按规则 #3 只验机制）。
+
+本部分扩展 §6.4 的 `exitCoupledLostResidual` 与 §9 的三场景处置——现行删除全部 gated 在**「轨已 lost（固件停报）」**上，58099 暴露了一条绕过全部防线的新缝。
+
+### 10.1 新洞：present-but-byte-frozen residual —— 固件不停报，永远进不了 lost 分支
+
+58099 出生 19:11:58（np 1→2，**无 EnterRoom**），census 共存期正确判镜像（p_mirror 0.42→**0.94**，p_real 压到 **0.06**）。真人 19:16:02 ExitRoom 离场后，固件**继续逐帧照发** 58099——byte 冻结在 (180,−40)、Δ=0、np 掉到 1（**不是 0**）——直到 19:18:37 才消失，其间 still_sec 一路涨到 **167s** 还在涨（导出窗末），生产里就此撞 tFloor。
+
+**代码级根因**（[track_manager.go:1514](../tools/Xsensorv1/internal/roomengine/track_manager.go)）：
+
+```go
+for id, ts := range tm.tracks {
+    if activeIDs[id] { continue }   // ← 本帧被固件观测到 = 跳过整段驱逐
+    ... exitCoupledLostResidual / witnessNearby / lostStillCarry 全在此下 ...
+}
+```
+
+`exitCoupledLostResidual`、witness-lost 清、lostStillCarry 驱逐**全部在 `!activeIDs`（未观测）分支内**。58099 每帧 `activeIDs[id]==true`（固件照发），`continue` 直接跳过 → **一条驱逐都不求值**。§9.2 说「喂 floor 的永远是 sensor coast 的 lost 轨」——d5f7 是**反例**：一条**固件持续上报的 present 冻结 ghost**（np≥1）也能磨 still-box 喂 floor。这正是待办 `byte-frozen 0-抖动识别` 要收的形态，且必须在 **present 分支**判，不能只在 lost 分支。
+
+### 10.2 第二个洞：软压随「孤镜面转正」蒸发 —— 判 ghost 必须取 ever/peak
+
+58099 的 p_real 弧线：born 0.58 → 共存期 **0.06**（census 咬死镜像）→ 真人一走 → **秒跳 1.00 并锁死**（[[realness_axis_redefined_real_vs_mirror]] 孤镜面 p_real≡1，mirror 配对需 ≥2 轨，孤轨配不上对）。
+
+**唯一识破它的信号（0.06），恰在它变危险（孤轨磨 floor）的瞬间蒸发。** 现行 split/interfer/mirror 软压都是**「当前状态成立才压」**——孤轨转正后条件消失、压制解除。故 fire 闸**不能信 fire-时刻的瞬时 p_real**，必须信**历史峰值**。
+
+> **EverGhost 闩**：共存期一旦 `p_mirror ≥ 0.8`（持续 ≥N tick）且**无出生证**（born 无 EnterRoom）→ 置 `EverGhostSinceMs`（单调、**不随 p_real 翻 1.0 而清**）。fire 闸只查这个闩。撤销唯一口：`EverWalkedOut`（净位移>200，镜像不会脱离本体独走）或摔倒前兆（pose/Δz，[[realness_never_vetoes_fall]] 护栏）。
+
+### 10.3 判据各轴的 FN 权重（**定稿判据见 §10.3-b，本节只给各轴的 FN 依据**）
+
+58099 是**多轴擦线选手**——每条现行硬闸都差 10~15cm：门距 100cm（<115 驱逐阈、<120 先验 floor 阈）、离真人轨 108cm（>80 split 阈、<120 interfer 阈，落**正中死区**）。故单调任一阈值都误伤真人；§10.3-b 的联合判据即为此。下表列各轴 FN 权重（供 §10.5 量化引用）：
+
+| 轴 | 语义 | 反-FN 作用 |
+|---|---|---|
+| 无出生证（born ghost>50） | 出生无 EnterRoom + born p_mirror>0.5 | **主闸**：真人必走门→需固件漏发进门（~3%）|
+| Max ghost>80（EverGhost 闩）| 生涯峰值 p_mirror>0.8 | **主闸**：真人被判持续镜像需巧合几何对称（~2%）|
+| R<120 | 净位移<120cm=赖锚点没走开 | 弱：摔倒本就原地（~70%）|
+| dz≤40 | 末2tick 垂直≤40cm=无掉高 | 软：固件 z 会撒谎（~20%）|
+| pose∉{fall,lying} | 无摔姿 | 软：固件 pose 会撒谎（~30%）|
+
+### 10.3-b `lost_fall delete` 定稿判据（用户定，逐字）
+
+> 权威判据，按此实现。`delete = 条件1 ∧ 条件2 ∧ 条件3`。
+
+**条件1（生命周期，二选一）**：
+```
+ExitRoom ≤30s  lost_track
+  或
+ExitRoom == null  &&  全程 np == 1
+```
+
+**条件2（出生/ghost 证据，四选一）**：
+```
+1. interfer-born
+2. split
+3. EnterRoom == null  &&  born_ghost 门距分 = 80*d/150 >= 60      (d = 出生地→最近门 cm；阈 d ≥ 112.5)
+4. census p_mirror ≥ 0.8 且 sustained ≥3 tick      (非峰值——真镜像帧帧成立，两真人巧合并排走的尖峰撑不过 3 帧)
+```
+
+**条件3（FN 硬闸，全满足）**：
+```
+pose ∉ {2, 5, 6, 7, 8}      /* 2 susfall, 5 fall, 6 lying, 7/8 sitOnGround */
+&&  dz  <= 40
+&&  R   <= 120
+```
+
+> 对照现行 `exitCoupledLostResidual`（§9.3）：条件1 的 `ExitRoom≤30s lost` = A 分支（已生效）；`ExitRoom==null && 全程np==1` = B 分支（**新增**：无离场硬证据、单人全程的孤影自生自灭，present∨lost 都查，治 58099 那种 present-frozen 永不 lost）。条件2 的 ①②③ 已在 exitCoupledLostResidual，④ `Max ghost>80`（EverGhost 闩）为**新增**。条件3 与现行 pose/dz 闸一致，另加 `R≤120`（净位移 confined）。
+
+### 10.4 三场景处置（A/B/C 对应 §9 的 有人/空房/ExitRoom）
+
+| 场景 | 定义 | 处置 | FOR≈ |
+|---|---|---|---|
+| **A** | 无出生证 + **ExitRoom 耦合** lost | **删**（= 现行 `exitCoupledLostResidual`，扩到 present-frozen：EverGhost 命中即删）；留 `EverWalkedOut` 撤销 | ~10⁻³ |
+| **B** | 空房无 EnterRoom 凭空 born → 无 ExitRoom 直接 vanish **+ 有配对源轨** | **无条件删**：守恒论证——realness 守恒于配对源，删「影」留「本体」，真人当场尚存 | ~10⁻⁴ |
+| **C** | 有人时消失，但**无配对 / 在场者是旁观** | **走 witness 5 条焊死**（[[witness_prior_suppress_stillbox_floor]]），**不无脑删**——在场者可能是旁观、消失的可能是第二真人摔倒 | 显著↑ |
+
+**B 的守恒论证**（为何可无条件删）：`Max ghost>80` 本身要求存在配对轨 → 58099 是某真人轨的反射；census 把 95% 判给源、5% 判给影；删 5% 的影、留 95% 的本体，**真人一条不丢**。「如果 b 也是真人」三重兜底：① 真摔多半 dz>40/pose=fall → 违判据不删；② 两独立真人撑不起 mirror>80；③ 静默摔也有在场真人当 witness。
+
+**边界（别混轴）**：B 只管「配得上对的影」。**孤幽灵**（真孤轨、无配对）算不出 mirror>80、进不了 B，归 §6 出生地先验轴（[[mirror_detect_single_mirror_boundary]] 孤迹 PReal≡1）。
+
+### 10.5 FN 量化（术语对齐）
+
+混淆矩阵（阳性=发火报警）：**FP=假阳性/误报**（ghost 不删→floor 误火，要压的）；**FN=假阴性/漏报**（把真摔当 ghost 删）。Pa/Pb 是后验 **FOR（假遗漏率）= P(真摔 | 已判ghost删) = 1−NPV**。
+
+删除判据被真摔全部命中的联合概率（各闸连乘）：
+
+$$\text{FNR} \approx \underbrace{0.03}_{\text{无门}}\times\underbrace{0.02}_{\text{镜像}}\times\underbrace{0.7}_{\text{confined}}\times\underbrace{0.2}_{dz}\times\underbrace{0.3}_{pose} \approx 2.5\times10^{-5}$$
+
+保守版（软闸 dz/pose 不给信用，固件对静默摔全程撒谎）：`0.03×0.02×0.7 ≈ 4×10⁻⁴`。故 **FNR ∈ [10⁻⁵, 10⁻⁴]**，主闸是前两条（无门×镜像=6×10⁻⁴）。车队换算（1000 老人×~1.5 真摔/年）：**每 ~7 年 fleet 级漏 1 次**（带宽 1.7~27 年）。
+
+> ⚠️ 结构量级估计非实测——[[fall_data_is_artificial_test]] 标不出「固件漏进门率 / 镜像误标率 / pose 撒谎率」三个关键输入。落地焊死须拿生产 event_log/monitor_stream 回测这三项（待办新增）。
+
+### 10.6 与现行五检测器的关系（扩展非替换）
+
+- **扩 `exitCoupledLostResidual`**：触发从「lost」放宽到「present ∨ lost」——EverGhost 命中的 present-frozen 轨也走同款删除（现行只在 lost 分支）。
+- **扩软压为闩**：split/interfer/mirror 的软压结论一旦达 `Max ghost>80`+无出生证，升格 `EverGhostSinceMs`（不蒸发），治「孤镜面转正解除软压」。
+- **共享**同一 fall-precursor 撤销闸（pose∈fall/Δz drop 绝不删）与出口 sink（still-box 零 / 掉 $N_r$），与 §6.4 五检测器正交叠加。
+
+---
+
 ## 第八部分 · 待办
 
 - [x] **Phase 1**：interfer-born 软压制（三闸 + 可撤销）+ 删 floor interfer 豁免——已落地。
 - [x] **Phase 2**：static reflector Phase B（升 AreaReflector）+ demote 兜底覆盖 reflector——6-29 已放开。
 - [x] **split-ghost vote-based 重写**（第六·二部分）：vote→spliter 静止门→group→step3 soft 压 `SplitGhostSinceMs`，已接 track_manager，两棵树全绿。
 - [x] **exitCoupledLostResidual**（第九·三）：ExitRoom 耦合 ≤30s + ①interfer/②split/③门距分 + pose/dz → 删离场残迹；replay 验 faller still 封 83s(was 739)、fire 0。
-- [ ] **byte-frozen 0-抖动识别**：一条轨 N 分钟坐标 byte 完全不变(非 ±jitter)= 固件卡死/静物 → 不喂 floor（空房孤静止轨残留 FP 的兜底，见第九·二）。
+- [ ] **byte-frozen 0-抖动识别 / EverGhost 闩**（判据见第十部分，d5f7-0630 驱动）：① `EverGhostSinceMs` 单调闩（共存期 p_mirror≥0.8+无出生证，不随 p_real 翻 1.0 而清）；② fire 闸在 **present 分支**（非只 lost）查闩 → 5 条 AND 判据命中即删/零 still-box；③ A/B 删、C 走 witness。空房孤静止轨残留 FP 的兜底。
+- [ ] **FN 三输入回测脚本**（第十·五）：扫生产 event_log/monitor_stream 数出「固件漏 EnterRoom 率 / 镜像误标率 / pose 撒谎率」→ 把 FNR 从结构估计（~10⁻⁴）变实测。
 - [ ] **审计 census 判 ghost 时几何项（IsReflection）vs 共生项的权重占比**——确认是否过度依赖几何、而 co-existence/vital 没吃满。
 - [ ] 评估把「持续无 vital 的 co-existing track」接入 census 作 ghost 一票（依赖 [[radar_hr_rr_bed_enter_gated]] 的覆盖范围）。
 - [ ] static reflector 近墙 AreaReflector 整片豁免的残留 FN（摔在已学金属点）——真 case 盯，必要时收窄为按身份压而非整片豁免。

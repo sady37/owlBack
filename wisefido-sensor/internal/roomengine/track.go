@@ -66,9 +66,11 @@ type TrackState struct {
 	// LastFwAreaID firmware 直发的 area_id（present 帧更新；miss tick 不更新 = 冻结末值）。
 	// 床判定 N：命中某床 areaId → 该床占用。255=声明区外/0=无区。
 	LastFwAreaID int
-	// LastCellArea 最近一次 SnapshotTrackStatuses 在画布坐标查到的 cell 区域类型（单源）。
-	// 发布层 area_type 复用此值，禁用 raw 坐标重新 CellAt（帧错 + 双写 drift）。
-	LastCellArea AreaType
+	// LastCellArea 最近一次 SnapshotTrackStatuses 在画布坐标查到的 cell 真实区域类型（几何事实，单源）。
+	// -1 = 无效（越界 / 无格）。与决策锁定值 base.CellAreaType 解耦：本字段永远是当前落格真值，
+	// 不随 still-box 锁定/移动期抹成 Unknown（Unknown(0) 是有效区型不是缺省哨兵）。
+	// 发布层 / evidence / veto 复用此值，禁用 raw 坐标重新 CellAt（帧错 + 双写 drift）。
+	LastCellArea int
 	// firmware 直发的最后一帧 raw 雷达本地坐标。仅用于 alarm/event publish 时作 parent track 原样上抛；
 	// 内部算法（grid/cell/fall）一律读 Kalman 后的画布坐标，不读这里。
 	LastRawH, LastRawV, LastRawZ int
@@ -110,6 +112,20 @@ type TrackState struct {
 	// DBNConfidence：DBN per-track 置信度（realness PReal 0-100，S0.c-4 第三腿 A·R13/R15.3-2，
 	// 经 SetTrackConfidence 每帧写回）。<0 = DBN 未设 → payloadFromTrack TrackConfidence 取 0。
 	DBNConfidence int
+
+	// ---- lost_fall delete 判据信号（doc/ghost-reflection-detection.md §10.3-b）----
+	// EnterBorn：出生有 EnterRoom 配对 = 合法进门真人 → 禁 ghost>50（除非 lid 重绑定，见 LidRebound）。
+	EnterBorn bool
+	// LidRebound：LogicID 出生后被换绑到新 tid（身份重绑）→ 解禁 EnterBorn 的 ghost 上限。
+	LidRebound bool
+	// MaxGhost：生涯峰值 census p_mirror（EnterBorn 未重绑时钳在 ≤0.5）。p_mirror=1-PReal（realness 2 态互补）。
+	MaxGhost float64
+	// ghostSustainRun：当前连续 p_mirror≥0.8 的 tick 数（断则清零）。
+	ghostSustainRun int
+	// MaxGhostSustained：曾达 p_mirror≥0.8 持续 ≥3 tick（条件2④ 定稿：sustained 非峰值）。
+	MaxGhostSustained bool
+	// MaxRoomNp：born→now 期间本房观测到的最大 np。≥2 = 曾有共存伙伴（某真人的反射佐证）。
+	MaxRoomNp int
 
 	// ---- split-ghost 时机（split_ghost.go；vote→spliter→group→step3 软压）----
 	// SplitObservingSinceMs：split_group 成员标记起点 ms（0=非 group 轨）。出生时 step1 vote 命中 spliter

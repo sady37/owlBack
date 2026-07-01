@@ -26,6 +26,20 @@ type TrackState struct {
 	// 1-tick lag（Tick 后写、下帧读），与 SetRoomRadarPeople 同模式。未注入（no-layout 房不 Tick）→ 0。
 	PReal float64
 
+	// ---- lost_fall delete 判据信号（doc/ghost-reflection-detection.md §10.3-b；先埋信号，删除待接）----
+	// EnterBorn：出生有 EnterRoom 配对 = 合法进门真人 → 禁 ghost>50（除非 lid 重绑定，见 LidRebound）。
+	EnterBorn bool
+	// LidRebound：LogicID 出生后被换绑到新 tid（身份重绑）→ 解禁 EnterBorn 的 ghost 上限。
+	LidRebound bool
+	// MaxGhost：生涯峰值 census p_mirror（EnterBorn 未重绑时钳在 ≤0.5）。
+	MaxGhost float64
+	// ghostSustainRun：当前连续 p_mirror≥0.8 的 tick 数（断则清零）。
+	ghostSustainRun int
+	// MaxGhostSustained：曾达 p_mirror≥0.8 持续 ≥3 tick（条件2④ 定稿：sustained 非峰值）。
+	MaxGhostSustained bool
+	// MaxRoomNp：born→now 期间本房观测到的最大 np（跨设备聚合）。≥2 = 曾有共存伙伴（某真人的反射佐证）。
+	MaxRoomNp int
+
 	// ---- 出生档案 ----
 	BirthPos TimedPoint
 

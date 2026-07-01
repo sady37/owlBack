@@ -248,8 +248,14 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		// P1 单 setter（契约 §3 / §9.3 裁定）：Nr 折叠 + uncovered-sleepad（撑占用，修缺陷①漏算）。
 		//   只进 RealPeopleInRoom(P1 占用/alone)；P2 census.Nr→C_FN 不动（睡着的人不进 fall 风险，§9.4）。
 		d.eng.SetRoomRadarPeople(roomID, fr.Decision.PeopleCount+uncovered)
+		roomNp := 0 // 本 tick 房观测 np = 在场 track 数（含 ghost）；喂 lost_fall delete 的 MaxRoomNp 信号（§10.3-b）
 		for _, t := range fr.Tracks {
-			d.eng.SetTrackPReal(roomID, t.LogicID, t.PReal) // ghost 单源回灌：census PReal → TrackState（cell 占用/床区学习读）
+			if t.Present {
+				roomNp++
+			}
+		}
+		for _, t := range fr.Tracks {
+			d.eng.SetTrackPReal(roomID, t.LogicID, t.PReal, t.PMirror, roomNp) // ghost 单源回灌 + lost_fall delete 信号
 		}
 		realPeople = d.eng.RealPeopleInRoom(roomID)
 		// de-absorption no-silent-caps（§9.4）：主 radar 离床+垫仍 InBed 时 LOG，标明 V5/V6 stale/fresh 仲裁
@@ -284,6 +290,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	}
 	dbn := make([]map[string]interface{}, 0, len(fr.Tracks))
 	for _, t := range fr.Tracks {
+		enterBorn, ghostSust, maxGhost, maxNp, _ := d.eng.GhostSignals(roomID, t.LogicID) // lost_fall delete 信号(§10.3-b)
 		dbn = append(dbn, map[string]interface{}{
 			"lid": t.LogicID, "present": t.Present, "p_real": t.PReal, "p_mirror": t.PMirror,
 			"is_refl": t.IsReflection, "p_fallen": t.PFallen,
@@ -292,6 +299,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			"door_d": t.DoorD, "track_confidence": int(t.PReal*100 + 0.5),
 			"repeat_r": t.RepeatR, "self_recovered": t.SelfRecovered, "still_sec": t.StillSec,
 			"s_marg": t.SMarg, "covers": t.Covers, // per-track S 边缘 + per-device covers(MM)：看 D523 自身 SBed + covers=0
+			"enter_born": enterBorn, "max_ghost": maxGhost, "ghost_sust": ghostSust, "max_np": maxNp,
 		})
 	}
 	pad := make([]map[string]interface{}, 0, len(padAbs))

@@ -389,7 +389,7 @@ func (e *Engine) SetRoomRadarPeople(roomID string, n int) {
 
 // SetTrackPReal belief 层每 tick 把某轨 census realness 后验按 LogicID 回灌该房 TrackManager
 //（ghost 单源：cell 占用 / 床区学习读 TrackState.PReal）。roomID netip 归一查找同 RealPeopleInRoom。
-func (e *Engine) SetTrackPReal(roomID, logicID string, pReal float64) bool {
+func (e *Engine) SetTrackPReal(roomID, logicID string, pReal, pMirror float64, roomNp int) bool {
 	want, err := netip.ParsePrefix(roomID)
 	if err != nil {
 		return false
@@ -408,7 +408,30 @@ func (e *Engine) SetTrackPReal(roomID, logicID string, pReal float64) bool {
 	if tm == nil {
 		return false
 	}
-	return tm.SetTrackPReal(logicID, pReal)
+	return tm.SetTrackPReal(logicID, pReal, pMirror, roomNp)
+}
+
+// GhostSignals lost_fall delete 判据信号读出（§10.3-b；forensic/xray），按 roomID+logicID。
+func (e *Engine) GhostSignals(roomID, logicID string) (enterBorn, sustained bool, maxGhost float64, maxNp int, found bool) {
+	want, err := netip.ParsePrefix(roomID)
+	if err != nil {
+		return false, false, 0, 0, false
+	}
+	e.mu.RLock()
+	tm := e.rooms[roomID]
+	if tm == nil {
+		for k, t := range e.rooms {
+			if kp, perr := netip.ParsePrefix(k); perr == nil && kp == want {
+				tm = t
+				break
+			}
+		}
+	}
+	e.mu.RUnlock()
+	if tm == nil {
+		return false, false, 0, 0, false
+	}
+	return tm.GhostSignals(logicID)
 }
 
 // SnapshotSleepads 按 roomID 取本房在场 sleepad 占用身份快照（forensic + 后续吸纳；只读身份不进裁决）。
