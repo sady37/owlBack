@@ -18,6 +18,8 @@
 package roomengine
 
 import (
+	"math"
+
 	"go.uber.org/zap"
 )
 
@@ -35,6 +37,30 @@ func splitAbs(v int) int {
 		return -v
 	}
 	return v
+}
+
+// glueState 离锚点净距三档（§4）：GLUED 赖锚点=删除/定罪候选 / HOLD 存疑（压制信宽、删除信严，两消费者反向处置）/ WALKOUT 走开=real。
+type glueState int
+
+const (
+	glueGLUED glueState = iota
+	glueHOLD
+	glueWALKOUT
+)
+
+// kinematicGlued 当前位（Kalman 末次滤波位）离锚点净距三档，纯几何瞬时判定（无时间/latch 态）。
+// 锚点每路语义不同（§3.2）：split=spliter 前一tick位（SplitSpliterX/Y）、interfer/门距=出生点。复用 Stage1 的 splitGluedCm/splitWalkOutCm。
+func kinematicGlued(ts *TrackState, anchorX, anchorY int) glueState {
+	xF, yF := ts.Kalman.Position()
+	d := distInt(int(math.Round(xF)), int(math.Round(yF)), anchorX, anchorY)
+	switch {
+	case d >= splitWalkOutCm:
+		return glueWALKOUT
+	case d <= splitGluedCm:
+		return glueGLUED
+	default:
+		return glueHOLD
+	}
 }
 
 // histPos 取 History 倒数第 (ticksAgo+1) 个点（ticksAgo=0 当前帧 / 1 前一tick / 2 前二tick）。

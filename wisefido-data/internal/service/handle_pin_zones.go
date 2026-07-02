@@ -17,6 +17,8 @@ import (
 	"net/netip"
 	"strings"
 
+	"owl-common/observation"
+
 	"go.uber.org/zap"
 )
 
@@ -36,7 +38,7 @@ const pinHalfCm = 20
 type pinSpec struct {
 	idPrefix string
 	name     string
-	typeName string
+	objectType string
 	category string
 	color    string
 	height   int
@@ -133,8 +135,8 @@ func (s *RadarInstall) applyPinZone(ctx context.Context, eventID, deviceHost str
 	objJSON, err := json.Marshal(map[string]interface{}{
 		"id":        objID,
 		"name":      spec.name,
-		"typeName":  spec.typeName,
-		"typeValue": spec.area, // = observation.AreaType（单源，对齐 FE FURNITURE_CONFIGS）
+		"ObjectType": spec.objectType,
+		"AreaType": spec.area, // = observation.AreaType（单源，对齐 FE FURNITURE_CONFIGS）
 		"source":    "Feedback",
 		"geometry": map[string]interface{}{
 			"type": "rectangle",
@@ -150,24 +152,24 @@ func (s *RadarInstall) applyPinZone(ctx context.Context, eventID, deviceHost str
 		},
 		"visual":      map[string]interface{}{"color": spec.color, "transparent": false, "reflectivity": 30},
 		"interactive": map[string]interface{}{"selected": false, "locked": false},
-		"device":      map[string]interface{}{"category": spec.category, "type": spec.typeName},
+		"device":      map[string]interface{}{"category": spec.category, "type": spec.objectType},
 		"height":      spec.height,
 	})
 	if err != nil {
-		s.logger.Warn("applyPinZone: marshal object", zap.String("type", spec.typeName), zap.Error(err))
+		s.logger.Warn("applyPinZone: marshal object", zap.String("type", spec.objectType), zap.Error(err))
 		return
 	}
 
 	if _, err := s.AppendFeedbackObject(ctx, deviceHost, objID, string(objJSON)); err != nil {
 		s.logger.Warn("applyPinZone: AppendFeedbackObject failed",
-			zap.String("event_id", eventID), zap.String("type", spec.typeName), zap.Error(err))
+			zap.String("event_id", eventID), zap.String("type", spec.objectType), zap.Error(err))
 		return
 	}
 
 	s.appendPinNote(ctx, eventID, spec, cx, cy)
 	s.notifySensorStamp(ctx, deviceHost, cx-pinHalfCm, cy-pinHalfCm, cx+pinHalfCm, cy+pinHalfCm, spec.area, spec.conf)
 
-	s.logger.Info("pin_zone_applied", zap.String("event_id", eventID), zap.String("type", spec.typeName),
+	s.logger.Info("pin_zone_applied", zap.String("event_id", eventID), zap.String("type", spec.objectType),
 		zap.String("log_key", spec.logKey), zap.Int("area", spec.area), zap.Int("cx", cx), zap.Int("cy", cy))
 }
 
@@ -176,7 +178,7 @@ func (s *RadarInstall) applyPinZone(ctx context.Context, eventID, deviceHost str
 func (s *RadarInstall) appendPinNote(ctx context.Context, eventID string, spec pinSpec, cx, cy int) {
 	h := pinHalfCm
 	line := fmt.Sprintf("\nfall(%d,%d) add %s(%d,%d;%d,%d;%d,%d;%d,%d)",
-		cx, cy, spec.typeName,
+		cx, cy, spec.objectType,
 		cx-h, cy-h, cx+h, cy-h, cx-h, cy+h, cx+h, cy+h)
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE alarm_events SET handler_notes = COALESCE(handler_notes, '') || $2 WHERE event_id = $1`,
@@ -238,8 +240,8 @@ func (s *RadarInstall) stampCanvasCells(ctx context.Context, canvas []byte) {
 		return // 该 canvas 无雷达对象，无法路由到 room grid（如 /128 纯 feedback 行，靠 applyPinZone 显式刷）
 	}
 	for _, o := range doc.Objects {
-		area := engineAreaType(o.TypeName)
-		if area == 0 {
+		at := observation.AreaTypeFrom(o.AreaType)
+		if at == observation.AreaUnknown {
 			continue // Wall / Radar / 未识别：无 cell
 		}
 		verts := objectVertices(o)
@@ -248,10 +250,10 @@ func (s *RadarInstall) stampCanvasCells(ctx context.Context, canvas []byte) {
 		}
 		x1, y1, x2, y2 := boundsOf(verts)
 		conf := 99
-		if o.TypeName == "Chair" {
+		if at == observation.AreaSit {
 			conf = 80
 		}
-		s.notifySensorStamp(ctx, deviceAddr, x1, y1, x2, y2, area, conf)
+		s.notifySensorStamp(ctx, deviceAddr, x1, y1, x2, y2, int(at), conf)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"owl-common/layout"
 	"owl-common/observation"
 	"owl-common/radarutils"
 
@@ -38,27 +39,15 @@ type cvRadar struct {
 	Boundary     cvBoundary `json:"boundary"`
 }
 
-type cvGeometry struct {
-	Type string          `json:"type"`
-	Data json.RawMessage `json:"data"`
-}
+// cvObject 全用 owl-common/layout 权威 schema（BE 只读语义视图）；radar 私有配置从 Device.IOT.Radar(raw) 解析。
+type cvObject = layout.CanvasObject
 
-type cvObject struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	TypeName   string  `json:"typeName"`
-	Angle      float64 `json:"angle"`
-	Source     string  `json:"source"`
-	DeviceAddr string  `json:"device_addr"`
-	Device     struct {
-		Category string `json:"category"`
-		IOT      struct {
-			Radar      *cvRadar `json:"radar"`
-			DeviceUID  string   `json:"device_uid"` // 设备终身身份(logMAC)；declare 下发认这个，免疫 device_addr 漂移
-			DeviceAddr string   `json:"deviceAddr"` // 设备实测绑定 addr(来自设备查询)；仅 display，非顶层 copy-leftover device_addr
-		} `json:"iot"`
-	} `json:"device"`
-	Geometry cvGeometry `json:"geometry"`
+// rotationOf 平面旋转角（*float64 缺省 0）。
+func rotationOf(o cvObject) float64 {
+	if o.Rotation != nil {
+		return *o.Rotation
+	}
+	return 0
 }
 
 type cvDoc struct {
@@ -83,11 +72,11 @@ type radarPt struct {
 	Z float64
 }
 
-// declareArea 单个区域的下发产物。
+// declareArea 单个区域的下发产物。AreaType=区域语义(判据/显示单源)，FwType=下发固件码(对账)。
 type declareArea struct {
 	AreaID     int
 	FwType     int
-	TypeName   string
+	AreaType   observation.AreaType
 	ObjectID   string
 	ObjectName string
 	Vertices   [4]radarPt
@@ -97,42 +86,16 @@ type declareArea struct {
 type declareSkip struct {
 	ObjectID   string
 	ObjectName string
-	TypeName   string
+	AreaType   observation.AreaType
 	Reason     string
 	DeviceUID  string // 所属雷达 uid（供 verify 把 not-sent 对象并到对应雷达）
 	Vertices   [4]radarPt
 }
 
-// engineAreaType typeName → 引擎 AreaType(0-9)（not-sent 对象在 verify 显引擎类型，如 Chair=7 Sit）。
-func engineAreaType(typeName string) int {
-	switch typeName {
-	case "Bed":
-		return 2
-	case "MonitorBed":
-		return 5
-	case "Enter":
-		return 4
-	case "Mirror", "MetalCan":
-		return 3
-	case "Curtain", "WheelChair", "Interfere":
-		return 6
-	case "Chair":
-		return 7
-	case "Recliner", "LongSofa":
-		return 8
-	case "BlindArea":
-		return 9
-	case "Furniture", "Deny":
-		return 1
-	default: // Wall 等
-		return 0
-	}
-}
-
 // declareDrop 本该下发但超 16 槽被优先级挤掉的区域（→ 回客户端截断提示）。
 type declareDrop struct {
 	ObjectID string
-	TypeName string
+	AreaType observation.AreaType
 	FwType   int
 	Vertices [4]radarPt
 }
@@ -160,22 +123,22 @@ func declareKeepPriority(fwType int) int {
 
 // firmwarePolicy 按 typeName 决定下发码与是否下发（§2.1 权威）。
 // isMonitorBed=Bed∩Radar 派生。Chair(Sit)/BlindArea/Wall 不下发；其余按表。
-func firmwarePolicy(typeName string, isMonitorBed bool) (code int, send bool) {
-	switch typeName {
-	case "Bed":
+func firmwarePolicy(at observation.AreaType, isMonitorBed bool) (code int, send bool) {
+	switch at {
+	case observation.AreaBed:
 		if isMonitorBed {
 			return 5, true
 		}
 		return 2, true
-	case "MonitorBed":
+	case observation.AreaMonitorBed:
 		return 5, true
-	case "Enter":
+	case observation.AreaEnter:
 		return 4, true
-	case "MetalCan", "Mirror", "Curtain", "WheelChair", "Interfere":
+	case observation.AreaReflector, observation.AreaInterfer: // 镜/金属/帘/轮椅 → masking(3)
 		return 3, true
-	case "Recliner", "Furniture":
+	case observation.AreaLying, observation.AreaDeny: // 沙发躺/家具 → custom(1)
 		return 1, true
-	default: // Chair / BlindArea / Wall / 未识别
+	default: // AreaSit(Chair)/AreaActive(BlindArea)/AreaUnknown(Wall/未识别) 不下发
 		return 0, false
 	}
 }
@@ -224,12 +187,12 @@ func objectVertices(o cvObject) []cvPoint {
 		}
 		v := d.Vertices
 		ordered := []cvPoint{v[0], v[1], v[3], v[2]}
-		if o.Angle == 0 {
+		if rotationOf(o) == 0 {
 			return ordered
 		}
 		cx := (v[0].X + v[3].X) / 2
 		cy := (v[0].Y + v[3].Y) / 2
-		a := o.Angle * math.Pi / 180
+		a := rotationOf(o) * math.Pi / 180
 		cosA, sinA := math.Cos(a), math.Sin(a)
 		out := make([]cvPoint, 4)
 		for i, p := range ordered {
@@ -373,21 +336,25 @@ func objectVerticesInRadar(o cvObject, r radarFrame) []radarPt {
 }
 
 func radarFrameOf(o cvObject) (radarFrame, bool) {
-	if o.TypeName != "Radar" || o.Geometry.Type != "point" || o.Device.IOT.Radar == nil {
+	// 雷达对象 = 带 Device.IOT.Radar 的 point；不靠字符串 typeName（对象种类识别单源=IOT.Radar）。
+	if o.Device.IOT == nil || len(o.Device.IOT.Radar) == 0 || o.Geometry.Type != "point" {
 		return radarFrame{}, false
 	}
 	var c cvPoint
 	if json.Unmarshal(o.Geometry.Data, &c) != nil {
 		return radarFrame{}, false
 	}
-	rc := o.Device.IOT.Radar
+	var rc cvRadar
+	if json.Unmarshal(o.Device.IOT.Radar, &rc) != nil {
+		return radarFrame{}, false
+	}
 	im := rc.InstallModel
 	if im == "" {
 		im = "ceiling"
 	}
 	return radarFrame{
 		id: o.ID, deviceUID: o.Device.IOT.DeviceUID, deviceAddr: o.Device.IOT.DeviceAddr,
-		center: c, angle: o.Angle, installModel: im, boundary: rc.Boundary,
+		center: c, angle: rotationOf(o), installModel: im, boundary: rc.Boundary,
 	}, true
 }
 
@@ -445,10 +412,11 @@ func computeDeclareSet(canvas []byte) (map[string][]declareArea, map[string]stri
 			for k := 0; k < 4 && k < len(rv); k++ {
 				verts[k] = rv[k]
 			}
-			isMB := o.TypeName == "Bed" && bedContainsAnyRadar(o, radars)
-			code, send := firmwarePolicy(o.TypeName, isMB)
+			at := observation.AreaTypeFrom(o.AreaType)
+			isMB := at == observation.AreaBed && bedContainsAnyRadar(o, radars)
+			code, send := firmwarePolicy(at, isMB)
 			if !send {
-				skips = append(skips, declareSkip{ObjectID: o.ID, ObjectName: o.Name, TypeName: o.TypeName, Reason: "policy:not-sent", DeviceUID: r.deviceUID, Vertices: verts})
+				skips = append(skips, declareSkip{ObjectID: o.ID, ObjectName: o.Name, AreaType: at, Reason: "policy:not-sent", DeviceUID: r.deviceUID, Vertices: verts})
 				continue
 			}
 			sendable = append(sendable, candidate{o: o, code: code, verts: verts})
@@ -459,14 +427,14 @@ func computeDeclareSet(canvas []byte) (map[string][]declareArea, map[string]stri
 				return declareKeepPriority(sendable[i].code) < declareKeepPriority(sendable[j].code)
 			})
 			for _, c := range sendable[maxDeclareAreasData:] {
-				drops = append(drops, declareDrop{ObjectID: c.o.ID, TypeName: c.o.TypeName, FwType: c.code, Vertices: c.verts})
+				drops = append(drops, declareDrop{ObjectID: c.o.ID, AreaType: observation.AreaTypeFrom(c.o.AreaType), FwType: c.code, Vertices: c.verts})
 			}
 			sendable = sendable[:maxDeclareAreasData]
 		}
 		// 顺序占槽 0..N-1（确定性）：旧/新均如此编号，删旧=DELETE 尾部 [N..M-1]，无需追踪设备态。
 		areas := make([]declareArea, 0, len(sendable))
 		for i, c := range sendable {
-			areas = append(areas, declareArea{AreaID: i, FwType: c.code, TypeName: c.o.TypeName, ObjectID: c.o.ID, ObjectName: c.o.Name, Vertices: c.verts})
+			areas = append(areas, declareArea{AreaID: i, FwType: c.code, AreaType: observation.AreaTypeFrom(c.o.AreaType), ObjectID: c.o.ID, ObjectName: c.o.Name, Vertices: c.verts})
 		}
 		perRadar[r.deviceUID] = areas
 	}
@@ -487,14 +455,13 @@ type radarDownlinkResult struct {
 type SaveRoomLayoutResult struct {
 	Warnings []string              `json:"warnings,omitempty"`
 	Downlink []radarDownlinkResult `json:"downlink,omitempty"`
-	Verify   []RadarZonesVerify    `json:"verify,omitempty"` // 下发后 db↔iot 态，FE save 完直接显示（Q2a）
 }
 
 // ZoneInfo 单个权威声明区（供 FE status 显示，单源 = data 对 canvas 的编排结果）。
 type ZoneInfo struct {
 	AreaID     int       `json:"area_id"`
 	Type       int       `json:"type"`
-	TypeName   string    `json:"type_name"`
+	AreaName   string    `json:"area_name"`
 	ObjectID   string    `json:"object_id"`
 	ObjectName string    `json:"object_name,omitempty"`
 	Vertices   [4][2]int `json:"vertices"`
@@ -530,7 +497,7 @@ func (s *RadarInstall) GetRoomZones(ctx context.Context, tenantID, roomID string
 		for _, a := range areas {
 			v := a.Vertices
 			rz.Zones = append(rz.Zones, ZoneInfo{
-				AreaID: a.AreaID, Type: a.FwType, TypeName: a.TypeName, ObjectID: a.ObjectID, ObjectName: a.ObjectName,
+				AreaID: a.AreaID, Type: a.FwType, AreaName: a.AreaType.Name(), ObjectID: a.ObjectID, ObjectName: a.ObjectName,
 				Vertices: [4][2]int{
 					{int(v[0].H), int(v[0].V)}, {int(v[1].H), int(v[1].V)},
 					{int(v[2].H), int(v[2].V)}, {int(v[3].H), int(v[3].V)},
@@ -600,12 +567,13 @@ type ZoneVerify struct {
 	OnDevice       bool      `json:"on_device"`
 	Synced         bool      `json:"synced"`
 	IntentType     int       `json:"intent_type"`
-	IntentTypeName string    `json:"intent_type_name"`
+	IntentAreaName string    `json:"intent_area_name"`
 	ObjectID       string    `json:"object_id,omitempty"`
 	ObjectName     string    `json:"object_name,omitempty"`
 	DeviceType     int       `json:"device_type"`
 	DeviceVertices [4][2]int `json:"device_vertices"` // dm RAW（设备原值，不 ×10）
 	NotNeed        bool      `json:"not_need,omitempty"` // 引擎用、不下发固件（Chair 等）→ FE 显 "-"
+	Line           string    `json:"line,omitempty"`     // BE 拼好的成品显示行（单源）；FE 直吐不再重造
 }
 
 type RadarZonesVerify struct {
@@ -637,10 +605,6 @@ func (s *RadarInstall) GetRoomZonesVerify(ctx context.Context, tenantID, roomID 
 	}
 	for uid, areas := range intentPerRadar {
 		rv := RadarZonesVerify{DeviceAddr: uidAddr[uid], DeviceUID: uid, Zones: []ZoneVerify{}}
-		intentByID := make(map[int]declareArea, len(areas))
-		for _, a := range areas {
-			intentByID[a.AreaID] = a
-		}
 		deviceByID := map[int]deviceZone{}
 		switch {
 		case uid == "":
@@ -658,40 +622,12 @@ func (s *RadarInstall) GetRoomZonesVerify(ctx context.Context, tenantID, roomID 
 				deviceByID = parseDeviceDeclareArea(da)
 			}
 		}
-		ids := map[int]bool{}
-		for id := range intentByID {
-			ids[id] = true
-		}
-		for id := range deviceByID {
-			ids[id] = true
-		}
-		sortedIDs := make([]int, 0, len(ids))
-		for id := range ids {
-			sortedIDs = append(sortedIDs, id)
-		}
-		sort.Ints(sortedIDs)
-		for _, id := range sortedIDs {
-			ia, onIntent := intentByID[id]
-			dz, onDevice := deviceByID[id]
-			zv := ZoneVerify{AreaID: id, OnIntent: onIntent, OnDevice: onDevice}
-			if onIntent {
-				zv.IntentType, zv.IntentTypeName, zv.ObjectID, zv.ObjectName = ia.FwType, ia.TypeName, ia.ObjectID, ia.ObjectName
-			}
-			if onDevice {
-				zv.DeviceType = dz.Type
-				zv.DeviceVertices = dz.V // 设备 RAW dm，原值不转换
-			}
-			if onIntent && onDevice && rv.Reachable {
-				it, iv := intentToDM(ia)
-				zv.Synced = it == dz.Type && iv == dz.V
-			}
-			rv.Zones = append(rv.Zones, zv)
-		}
+		rv.Zones = buildVerifyFromDevice(areas, deviceByID, rv.Reachable)
 		result.Radars = append(result.Radars, rv)
 	}
 	// B：not-sent 对象（Chair 等引擎用）并进对应雷达，标 not_need → FE 显 "-"。
 	for _, sk := range skips {
-		zv := ZoneVerify{OnIntent: true, NotNeed: true, IntentType: engineAreaType(sk.TypeName), IntentTypeName: sk.TypeName, ObjectID: sk.ObjectID, ObjectName: sk.ObjectName}
+		zv := ZoneVerify{OnIntent: true, NotNeed: true, IntentType: int(sk.AreaType), IntentAreaName: sk.AreaType.Name(), ObjectID: sk.ObjectID, ObjectName: sk.ObjectName}
 		for i := range result.Radars {
 			if result.Radars[i].DeviceUID == sk.DeviceUID {
 				result.Radars[i].Zones = append(result.Radars[i].Zones, zv)
@@ -756,26 +692,16 @@ func (s *RadarInstall) applyDeclare(ctx context.Context, tenantID, prefix string
 		s.logger.Info("declare: radar areas", fields...)
 	}
 	for _, sk := range skips {
-		s.logger.Info("declare: skip", zap.String("prefix", prefix), zap.String("typeName", sk.TypeName), zap.String("reason", sk.Reason))
+		s.logger.Info("declare: skip", zap.String("prefix", prefix), zap.String("areaName", sk.AreaType.Name()), zap.String("reason", sk.Reason))
 	}
 	if len(drops) > 0 {
 		for _, dp := range drops {
-			s.logger.Warn("declare: DROPPED over-16", zap.String("prefix", prefix), zap.String("typeName", dp.TypeName), zap.Int("type", dp.FwType))
+			s.logger.Warn("declare: DROPPED over-16", zap.String("prefix", prefix), zap.String("areaName", dp.AreaType.Name()), zap.Int("type", dp.FwType))
 		}
 		result.Warnings = append(result.Warnings, fmt.Sprintf("Zone limit reached: %d lower-priority zone(s) were dropped to fit the device's 16-zone limit. Beds, doors, and interfer zones were kept.", len(drops)))
 	}
-	result.Downlink, result.Verify = s.downlinkDeclares(ctx, newPerRadar, uidAddr, computeInstallProps(newCanvas))
-	// B：not-sent 对象（Chair 等引擎用）并进对应雷达 verify，标 not_need → FE 显 "-"。
-	for _, sk := range skips {
-		zv := ZoneVerify{OnIntent: true, NotNeed: true, IntentType: engineAreaType(sk.TypeName), IntentTypeName: sk.TypeName, ObjectID: sk.ObjectID, ObjectName: sk.ObjectName}
-		for i := range result.Verify {
-			if result.Verify[i].DeviceUID == sk.DeviceUID {
-				result.Verify[i].Zones = append(result.Verify[i].Zones, zv)
-				break
-			}
-		}
-	}
-	s.storeBaseline(ctx, prefix, result.Verify) // save 时把设备 baseline(db↔iot 态)存进 layout
+	// 下发路径只管下发；verify（含 not-sent 汇总）完全解耦到 GetRoomZonesVerify（FE 主动 query）。
+	result.Downlink = s.downlinkDeclares(ctx, newPerRadar, uidAddr, computeInstallProps(newCanvas))
 	for _, d := range result.Downlink {
 		if !d.OK {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("Couldn't write zones to device %s: %s", d.DeviceUID, d.Error))
@@ -806,25 +732,6 @@ func buildDeclareDiff(newAreas []declareArea, deviceByID map[int]deviceZone) (st
 		}
 	}
 	return strings.Join(parts, ","), len(parts)
-}
-
-// storeBaseline 把设备 baseline（下发后 db↔iot 态）存进 layout 的 canvas->'device_baseline'（jsonb_set）。
-// 不动 objects/canvas_hash/version：device_baseline 是 data 旁路记录设备态，不影响 dedup/编排。
-func (s *RadarInstall) storeBaseline(ctx context.Context, prefix string, verify []RadarZonesVerify) {
-	if s.db == nil || len(verify) == 0 {
-		return
-	}
-	b, err := json.Marshal(verify)
-	if err != nil {
-		return
-	}
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE room_visual_layout
-		SET canvas = jsonb_set(canvas, '{device_baseline}', $2::jsonb, true)
-		WHERE spatial_prefix = $1::inet
-	`, prefix, string(b)); err != nil {
-		s.logger.Warn("storeBaseline failed", zap.String("prefix", prefix), zap.Error(err))
-	}
 }
 
 func installModelCode(m string) int {
@@ -881,50 +788,90 @@ func computeInstallProps(canvas []byte) map[string]map[string]interface{} {
 	return out
 }
 
-// buildVerifyZones 下发后 db↔iot 态：成功→设备=意图(全 ✓)；失败→意图对 baseline(差异/残留显 X)。
-func buildVerifyZones(areas []declareArea, deviceByID map[int]deviceZone, ok bool) []ZoneVerify {
-	zones := make([]ZoneVerify, 0, len(areas))
-	intentIDs := map[int]bool{}
+// buildVerifyFromDevice 意图(areas) ∪ 设备实际态(deviceByID) 逐槽 diff → db↔iot verify（✓/X）。
+// 设备真值来自回查（不再乐观假设"下发成功=设备=意图"）。downlinkDeclares 回查腿与 GetRoomZonesVerify 单源共用。
+func buildVerifyFromDevice(areas []declareArea, deviceByID map[int]deviceZone, reachable bool) []ZoneVerify {
+	intentByID := make(map[int]declareArea, len(areas))
 	for _, a := range areas {
-		intentIDs[a.AreaID] = true
-		it, iv := intentToDM(a)
-		zv := ZoneVerify{AreaID: a.AreaID, OnIntent: true, IntentType: a.FwType, IntentTypeName: a.TypeName, ObjectID: a.ObjectID}
-		if ok {
-			zv.OnDevice, zv.Synced, zv.DeviceType, zv.DeviceVertices = true, true, it, iv
-		} else if dz, on := deviceByID[a.AreaID]; on {
-			zv.OnDevice, zv.DeviceType, zv.DeviceVertices = true, dz.Type, dz.V
-			zv.Synced = dz.Type == it && dz.V == iv
-		}
-		zones = append(zones, zv)
+		intentByID[a.AreaID] = a
 	}
-	if !ok { // 失败：设备残留仍在 → X
-		for id, dz := range deviceByID {
-			if !intentIDs[id] {
-				zones = append(zones, ZoneVerify{AreaID: id, OnDevice: true, DeviceType: dz.Type, DeviceVertices: dz.V})
-			}
+	ids := map[int]bool{}
+	for id := range intentByID {
+		ids[id] = true
+	}
+	for id := range deviceByID {
+		ids[id] = true
+	}
+	sortedIDs := make([]int, 0, len(ids))
+	for id := range ids {
+		sortedIDs = append(sortedIDs, id)
+	}
+	sort.Ints(sortedIDs)
+	zones := make([]ZoneVerify, 0, len(sortedIDs))
+	for _, id := range sortedIDs {
+		ia, onIntent := intentByID[id]
+		dz, onDevice := deviceByID[id]
+		zv := ZoneVerify{AreaID: id, OnIntent: onIntent, OnDevice: onDevice}
+		if onIntent {
+			zv.IntentType, zv.IntentAreaName, zv.ObjectID, zv.ObjectName = ia.FwType, ia.AreaType.Name(), ia.ObjectID, ia.ObjectName
 		}
+		if onDevice {
+			zv.DeviceType = dz.Type
+			zv.DeviceVertices = dz.V
+		}
+		if onIntent && onDevice && reachable {
+			it, iv := intentToDM(ia)
+			zv.Synced = it == dz.Type && iv == dz.V
+		}
+		zv.Line = formatVerifyLine(zv)
+		zones = append(zones, zv)
 	}
 	return zones
 }
 
+// formatVerifyLine 成品显示行（单源，FE 直吐不再重造）：Area {id}, {AreaType名}, {对象名} {设备原始declare} iot: ✓/X。
+// declare 用设备真值 dm→cm(×10)，与设备上报同量纲；无意图槽名显 "--"，无设备槽 declare 省略。
+func formatVerifyLine(z ZoneVerify) string {
+	areaName := "--"
+	if z.OnIntent {
+		areaName = z.IntentAreaName
+	}
+	line := fmt.Sprintf("Area %d, %s", z.AreaID, areaName)
+	if z.ObjectName != "" {
+		line += ", " + z.ObjectName
+	}
+	if z.OnDevice {
+		var b strings.Builder
+		fmt.Fprintf(&b, "{%d,%d", z.AreaID, z.DeviceType)
+		for _, p := range z.DeviceVertices {
+			fmt.Fprintf(&b, ",%d,%d", p[0]*10, p[1]*10)
+		}
+		b.WriteString("}")
+		line += " " + b.String()
+	}
+	mark := "X"
+	if z.Synced {
+		mark = "✓"
+	}
+	return line + " iot: " + mark
+}
+
 // downlinkDeclares 每雷达 addr→UID，读 baseline→diff 只发变化+删残留+安装配置→qinglan；返回下发结果 + db↔iot verify。
-func (s *RadarInstall) downlinkDeclares(ctx context.Context, newPerRadar map[string][]declareArea, uidAddr map[string]string, installProps map[string]map[string]interface{}) ([]radarDownlinkResult, []RadarZonesVerify) {
+func (s *RadarInstall) downlinkDeclares(ctx context.Context, newPerRadar map[string][]declareArea, uidAddr map[string]string, installProps map[string]map[string]interface{}) []radarDownlinkResult {
 	var results []radarDownlinkResult
-	var verifyList []RadarZonesVerify
 	if s.qinglanClient == nil {
 		for uid, areas := range newPerRadar {
 			results = append(results, radarDownlinkResult{DeviceAddr: uidAddr[uid], DeviceUID: uid, AreaCount: len(areas), Error: "qinglan client not available"})
 		}
-		return results, verifyList
+		return results
 	}
+	// 阶段1：逐雷达下发（读设备 baseline → 只发变化 diff → SetDeviceProperties）。
+	// Downlink 结果 = success send to device（指令是否成功发到设备/ACK），不代表固件已生效。
 	for uid, areas := range newPerRadar {
 		res := radarDownlinkResult{DeviceAddr: uidAddr[uid], DeviceUID: uid, AreaCount: len(areas)}
-		rv := RadarZonesVerify{DeviceAddr: uidAddr[uid], DeviceUID: uid, Zones: []ZoneVerify{}}
 		if uid == "" {
 			res.Error = "radar object has no device_uid binding"
-			rv.Error = res.Error
 			results = append(results, res)
-			verifyList = append(verifyList, rv)
 			continue
 		}
 
@@ -934,7 +881,6 @@ func (s *RadarInstall) downlinkDeclares(ctx context.Context, newPerRadar map[str
 		var declStr string
 		var changed int
 		if dp, perr := s.qinglanClient.GetDeviceProperties(ctx, uid, []string{"declare_area", "rectangle", "radar_install_height", "install_model"}); perr == nil {
-			rv.Reachable = true
 			deviceProps = dp
 			if da, ok := dp["declare_area"].(string); ok {
 				deviceByID = parseDeviceDeclareArea(da)
@@ -955,11 +901,9 @@ func (s *RadarInstall) downlinkDeclares(ctx context.Context, newPerRadar map[str
 			}
 			props[k] = v
 		}
-		if len(props) == 0 { // 区域无变化 + 无安装配置 → 不下发，设备已=意图
+		if len(props) == 0 { // 区域无变化 + 无安装配置 → 不下发
 			res.OK = true
-			rv.Zones = buildVerifyZones(areas, deviceByID, true)
 			results = append(results, res)
-			verifyList = append(verifyList, rv)
 			continue
 		}
 		code, derr := s.qinglanClient.SetDeviceProperties(ctx, uid, props)
@@ -971,11 +915,11 @@ func (s *RadarInstall) downlinkDeclares(ctx context.Context, newPerRadar map[str
 		} else {
 			s.logger.Info("declare downlink ok (diff)", zap.String("uid", uid), zap.Int("changed", changed), zap.Int("total", len(areas)))
 		}
-		rv.Zones = buildVerifyZones(areas, deviceByID, res.OK)
 		results = append(results, res)
-		verifyList = append(verifyList, rv)
 	}
-	return results, verifyList
+
+	// 下发即返回，不阻塞、不回查。verify 完全解耦到 GetRoomZonesVerify（FE save 后主动 query，隔几秒等固件生效）。
+	return results
 }
 
 // buildDeclareAreaString 拼 {id,type,h1,v1,..} 串（dm）：加新 0..N-1 + 删 [N..15]（type0 清所有未用槽）。
@@ -1008,15 +952,13 @@ func verticesLine(v [4]radarPt) string {
 }
 
 func declareAreaLine(a declareArea) string {
-	at := observation.AreaType(a.FwType)
 	b, _ := json.Marshal(struct {
 		ID    int    `json:"id"`
-		Type  int    `json:"type"`
-		TName string `json:"typeName"`
+		Type  int    `json:"type"` // 下发固件码(0-5)
 		AName string `json:"areaName"`
 		V     string `json:"v"`
 	}{
-		ID: a.AreaID, Type: a.FwType, TName: a.TypeName, AName: at.Name(), V: verticesLine(a.Vertices),
+		ID: a.AreaID, Type: a.FwType, AName: a.AreaType.Name(), V: verticesLine(a.Vertices),
 	})
 	return string(b)
 }

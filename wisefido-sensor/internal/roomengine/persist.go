@@ -126,16 +126,11 @@ func LayoutHash(cfg RoomConfig) string {
 	_ = enc.Encode(cfg.EnterHeights)
 	_ = enc.Encode(cfg.EnterTargets) // sensor_v2 决定 15：EnterTarget 变更视作 layout 变更，invalidate grid
 	_ = enc.Encode(cfg.RoomType)     // sensor_v2 决定 16：RoomType 变更（default↔bathroom）触发完整重学
+	_ = enc.Encode(cfg.AreaZones) // 空间轴单源（含各区 Rect+AreaType）：layout 变更检测
 	_ = enc.Encode(cfg.Beds)
 	_ = enc.Encode(cfg.BedHeights)
-	_ = enc.Encode(cfg.Toilets)
-	_ = enc.Encode(cfg.ToiletHeights)
-	_ = enc.Encode(cfg.Showers)
-	_ = enc.Encode(cfg.ShowerHeights)
 	_ = enc.Encode(cfg.Chairs)
 	_ = enc.Encode(cfg.ChairHeights)
-	_ = enc.Encode(cfg.Furnitures)
-	_ = enc.Encode(cfg.FurnitureHeights)
 	_ = enc.Encode(cfg.Interferes)
 	_ = enc.Encode(cfg.InterfereHeights)
 	_ = enc.Encode(cfg.Radar)

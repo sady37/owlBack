@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 
+	commonlayout "owl-common/layout"
 	"owl-common/radarutils"
 )
 
@@ -47,121 +48,80 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 
 	for _, objRaw := range layout.Objects {
 		var hdr struct {
+			commonlayout.CanvasObject                 // ObjectType/AreaType 单源（owl-common/layout）
 			ID          string          `json:"id"`
-			TypeName    string          `json:"typeName"`
 			Geometry    json.RawMessage `json:"geometry"`
-			Angle       *float64        `json:"angle,omitempty"`
+			Rotation    *float64        `json:"angle,omitempty"` // 平面旋转角（0-360°）
 			Device      json.RawMessage `json:"device,omitempty"`
-			Height      *int            `json:"height,omitempty"`       // 物体顶部高度 cm；缺失时按 typeName 默认值
+			Height      *int            `json:"height,omitempty"`
 			EnterTarget string          `json:"enter_target,omitempty"` // sensor_v2 决定 15：""/inside_enter / "outside" / "bathroom"
 		}
 		if err := json.Unmarshal(objRaw, &hdr); err != nil {
 			continue
 		}
+		objectType := hdr.ObjectType
+		areaTypeVal := hdr.AreaType
 
 		// height：优先 JSON 字段；缺失时取 typeName 默认；都没有则 0
-		objHeight := defaultHeightForType(hdr.TypeName)
+		objHeight := defaultHeightForType(objectType)
 		if hdr.Height != nil && *hdr.Height >= 0 {
 			objHeight = *hdr.Height
 		}
 
-		// typeName 大小写不敏感（统一 ToLower）：Bed/bed/BED、MonitorBed/monitorbed 等
-		// 都正确归类 → floor 豁免/区域判据不因大小写漏判。
-		switch strings.ToLower(hdr.TypeName) {
+		// ObjectType 大小写不敏感（ToLower）。rules.md #S2：ObjectType 只做物理归类，不定空间语义。
+		ot := strings.ToLower(objectType)
+
+		// 非区域物理对象（radar/wall/sleepad）：只记物理几何，不进空间轴。
+		switch ot {
 		case "radar":
-			m, err := parseRadarMount(hdr.Geometry, hdr.Angle, hdr.Device)
-			if err == nil {
+			if m, err := parseRadarMount(hdr.Geometry, hdr.Rotation, hdr.Device); err == nil {
 				cfg.Radar = m
 			}
-
+			continue
 		case "wall":
-			// Wall 可能是 line 段或 rectangle —— 把所有涉及的顶点收进来
-			// （Wall 自身有高度但当前 RoomEngine 不消费，先不存）
 			pts := parseWallPoints(hdr.Geometry)
 			wallPoints = append(wallPoints, pts...)
 			allObjectPoints = append(allObjectPoints, pts...)
-
-		case "enter":
-			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
-				cfg.Enters = append(cfg.Enters, *rect)
-				cfg.EnterHeights = append(cfg.EnterHeights, objHeight)
-				cfg.EnterTargets = append(cfg.EnterTargets, hdr.EnterTarget) // sensor_v2 决定 15
-				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
-			}
-
-		case "bed", "monitorbed", "recliner":
-			// 都进 cfg.Beds 供 covers/MM 几何；cell 区域按 typeName 分（大小写不敏感）：
-			//   Bed→AreaBed(豁免) / MonitorBed→AreaMonitorBed(豁免+vital) / Recliner→AreaLying(90min,非床躺)。
-			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
-				cfg.Beds = append(cfg.Beds, *rect)
-				cfg.BedHeights = append(cfg.BedHeights, objHeight)
-				at := AreaLying // Recliner / 不含 bed
-				switch strings.ToLower(hdr.TypeName) {
-				case "bed":
-					at = AreaBed
-				case "monitorbed":
-					at = AreaMonitorBed
-				}
-				cfg.BedAreaTypes = append(cfg.BedAreaTypes, at)
-				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
-			}
-
-		case "toilet":
-			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
-				cfg.Toilets = append(cfg.Toilets, *rect)
-				cfg.ToiletHeights = append(cfg.ToiletHeights, objHeight)
-				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
-			}
-
-		case "shower":
-			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
-				cfg.Showers = append(cfg.Showers, *rect)
-				cfg.ShowerHeights = append(cfg.ShowerHeights, objHeight)
-				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
-			}
-
-		case "chair":
-			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
-				cfg.Chairs = append(cfg.Chairs, *rect)
-				cfg.ChairHeights = append(cfg.ChairHeights, objHeight)
-				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
-			}
-
-		case "furniture", "blindarea":
-			// 家具→AreaDeny(12min)；blindarea=护士标的遮挡盲区→AreaActive(默认桶 12min，
-			// 快速兜底盲区内真摔；非 deny——盲区里 track 当可能真人，不当假)。
-			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
-				cfg.Furnitures = append(cfg.Furnitures, *rect)
-				cfg.FurnitureHeights = append(cfg.FurnitureHeights, objHeight)
-				at := AreaDeny
-				if strings.ToLower(hdr.TypeName) == "blindarea" {
-					at = AreaActive
-				}
-				cfg.FurnitureAreaTypes = append(cfg.FurnitureAreaTypes, at)
-				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
-			}
-
-		case "interfere", "metalcan", "mirror", "wheelchair", "curtain":
-			// 反射体(金属/镜子 → AreaReflector,豁免) vs 运动干扰(帘/轮椅/泛 → AreaInterfer,豁免)。
-			// 下发固件都走 masking(3)；内部分开=floor 豁免 vs 兜底。注意：吊灯走 Interfere，height>200 空中不阻挡。
-			if rect := parseRectFromGeometry(hdr.Geometry, hdr.Angle); rect != nil {
-				cfg.Interferes = append(cfg.Interferes, *rect)
-				cfg.InterfereHeights = append(cfg.InterfereHeights, objHeight)
-				at := AreaInterfer
-				switch strings.ToLower(hdr.TypeName) {
-				case "metalcan", "mirror":
-					at = AreaReflector
-				}
-				cfg.InterfereAreaTypes = append(cfg.InterfereAreaTypes, at)
-				allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
-			}
-
+			continue
 		case "sleepad":
-			// Sleepad 是 point 几何，记位置供事件路由 + 可视化
 			if pt := parsePointFromGeometry(hdr.Geometry); pt != nil {
 				cfg.Sleepads = append(cfg.Sleepads, *pt)
 				allObjectPoints = append(allObjectPoints, *pt)
 			}
+			continue
+		}
+
+		// 矩形区域对象：先解析几何，按需 append 物理桶（有物理行为者），再统一 append 空间轴 AreaZones。
+		rect := parseRectFromGeometry(hdr.Geometry, hdr.Rotation)
+		if rect == nil {
+			continue // 非矩形（measure_dots 等）不进区域
+		}
+		allObjectPoints = append(allObjectPoints, rectCorners(*rect)...)
+
+		switch ot { // 物理轴：仅有 AreaType 之外行为的对象留几何（门口/covers+床闸/tm）
+		case "enter":
+			cfg.Enters = append(cfg.Enters, *rect)
+			cfg.EnterHeights = append(cfg.EnterHeights, objHeight)
+			cfg.EnterTargets = append(cfg.EnterTargets, hdr.EnterTarget)
+		case "bed", "monitorbed", "recliner":
+			cfg.Beds = append(cfg.Beds, *rect)
+			cfg.BedHeights = append(cfg.BedHeights, objHeight)
+			cfg.BedAreaTypes = append(cfg.BedAreaTypes, AreaTypeFrom(areaTypeVal))
+		case "chair":
+			cfg.Chairs = append(cfg.Chairs, *rect)
+			cfg.ChairHeights = append(cfg.ChairHeights, objHeight)
+		case "interfere", "metalcan", "mirror", "wheelchair", "curtain":
+			cfg.Interferes = append(cfg.Interferes, *rect)
+			cfg.InterfereHeights = append(cfg.InterfereHeights, objHeight)
+		}
+
+		// 空间轴单源：每个区域对象一条 AreaZone（AreaType 跟对象走 = typeValue）。Chair 置信 80，其余 99。
+		if at := AreaTypeFrom(areaTypeVal); at != AreaUnknown {
+			conf := 99
+			if ot == "chair" {
+				conf = chairPriorConf
+			}
+			cfg.AreaZones = append(cfg.AreaZones, AreaZone{Rect: *rect, AreaType: at, Conf: conf})
 		}
 	}
 

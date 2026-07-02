@@ -2083,11 +2083,12 @@ func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
 const witnessRadiusCm = 200
 
 // exitCoupledLostResidual 本轨失锁是否与本设备 ExitRoom 耦合（≤30s）且命中删除判据之一 → 直接清（不 coast 喂 floor）。
-// 离场churn 残迹/byte-frozen 卡死轨：人走光硬证据下，残留静止轨续 coast 11min 满 tFloor = FP。三判据单一入口：
+// 离场churn 残迹/byte-frozen 卡死轨：人走光硬证据下，残留静止轨续 coast 11min 满 tFloor = FP。三路（都无 EnterRoom 出生）单一入口，
+// 均先过 pose/dz 硬闸（§4.2 统管三路），再各自锚点 kinematicGlued==GLUED（HOLD/WALKOUT 一票否决删除，FN 侧信得严）：
 //
-//	① interfer 区且生于 interfer 区（InterferBornSinceMs；走出 interfer 已被 revoke 清，故 >0 = 仍在）。
-//	② split_group 成员（+ 下方共享 pose/dz 闸）。
-//	③ born-ghost：出生离门远（85*d/150 >65 ⟺ >~115cm，real 都进门）（+ 共享 pose/dz 闸）。
+//	① interfer 区出生伪迹（InterferBornSinceMs；走出 interfer 已被 revoke 清，故 >0 = 仍在），锚点=出生点。
+//	② split_group 成员，锚点=spliter 外部位（SplitSpliterX/Y）；GLUED 独扛定罪替换旧 membership（Gap1 关闭，WALKOUT 赢家真人天然排除）。
+//	③ born-ghost：出生离门远（85*d/150 >65 ⟺ >~115cm，real 都进门），锚点=出生点。
 //
 // FN 闸：无耦合 ExitRoom 不动；倒地前兆/lying/sit/walking 不在白名单（真摔者、真坐者留）；dz>40 留（下坠保护）。调用方持锁。
 func (tm *TrackManager) exitCoupledLostResidual(ts *TrackState, nowMs int64) bool {
@@ -2095,18 +2096,19 @@ func (tm *TrackManager) exitCoupledLostResidual(ts *TrackState, nowMs int64) boo
 	if d == nil || d.exitMs == 0 || absI64(d.exitMs-ts.LastObservedMs) > exitCoupledLostMs {
 		return false
 	}
-	if ts.InterferBornSinceMs > 0 { // ①
-		return true
-	}
 	if !poseEvictable(ts.LastPose) || last2Dz(ts) > exitLostMaxDz {
-		return false // ②③ 共享 pose/dz 闸
+		return false // ①②③ 共享 pose/dz 硬闸（§4.2 统管三路，倒地相/下坠绝不删）
 	}
-	if ts.SplitObservingSinceMs > 0 { // ②
+	if ts.InterferBornSinceMs > 0 && kinematicGlued(ts, ts.BirthPos.X, ts.BirthPos.Y) == glueGLUED { // ①
 		return true
 	}
-	if tm.grid != nil { // ③ born-ghost 门距分
+	if ts.SplitObservingSinceMs > 0 && kinematicGlued(ts, ts.SplitSpliterX, ts.SplitSpliterY) == glueGLUED { // ②
+		return true
+	}
+	if tm.grid != nil { // ③ born-ghost 门距分 ∧ 赖出生点 GLUED
 		if bd := tm.grid.NearestEntryDist(ts.BirthPos.X, ts.BirthPos.Y); bd < bornGhostNoDoorSentinel &&
-			bornGhostDoorGain*float64(bd)/bornGhostDoorScaleCm > bornGhostEvictThresh {
+			bornGhostDoorGain*float64(bd)/bornGhostDoorScaleCm > bornGhostEvictThresh &&
+			kinematicGlued(ts, ts.BirthPos.X, ts.BirthPos.Y) == glueGLUED {
 			return true
 		}
 	}

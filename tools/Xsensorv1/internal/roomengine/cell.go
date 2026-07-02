@@ -29,6 +29,14 @@ const (
 	NumAreaTypes
 )
 
+// AreaTypeFrom 区域语义唯一入口：layout AreaType 原始值 / 固件 area_type → 受校验 AreaType（越界→AreaUnknown）。
+func AreaTypeFrom(v int) AreaType {
+	if v < 0 || v >= int(NumAreaTypes) {
+		return AreaUnknown
+	}
+	return AreaType(v)
+}
+
 // Source 类型信息来源
 type Source uint8
 

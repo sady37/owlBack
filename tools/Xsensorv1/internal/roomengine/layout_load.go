@@ -96,24 +96,17 @@ func BuildRoomConfigFromCanvases(roomID string, canvases []DeviceCanvas, logger 
 		if len(merged.WallPolygon) == 0 {
 			merged.WallPolygon = cfg.WallPolygon
 		}
+		merged.AreaZones = append(merged.AreaZones, cfg.AreaZones...)
 		merged.Enters = append(merged.Enters, cfg.Enters...)
 		merged.EnterTargets = append(merged.EnterTargets, cfg.EnterTargets...)
 		merged.EnterHeights = append(merged.EnterHeights, cfg.EnterHeights...)
 		merged.Beds = append(merged.Beds, cfg.Beds...)
 		merged.BedHeights = append(merged.BedHeights, cfg.BedHeights...)
 		merged.BedAreaTypes = append(merged.BedAreaTypes, cfg.BedAreaTypes...)
-		merged.Toilets = append(merged.Toilets, cfg.Toilets...)
-		merged.ToiletHeights = append(merged.ToiletHeights, cfg.ToiletHeights...)
-		merged.Showers = append(merged.Showers, cfg.Showers...)
-		merged.ShowerHeights = append(merged.ShowerHeights, cfg.ShowerHeights...)
 		merged.Chairs = append(merged.Chairs, cfg.Chairs...)
 		merged.ChairHeights = append(merged.ChairHeights, cfg.ChairHeights...)
-		merged.Furnitures = append(merged.Furnitures, cfg.Furnitures...)
-		merged.FurnitureHeights = append(merged.FurnitureHeights, cfg.FurnitureHeights...)
-		merged.FurnitureAreaTypes = append(merged.FurnitureAreaTypes, cfg.FurnitureAreaTypes...)
 		merged.Interferes = append(merged.Interferes, cfg.Interferes...)
 		merged.InterfereHeights = append(merged.InterfereHeights, cfg.InterfereHeights...)
-		merged.InterfereAreaTypes = append(merged.InterfereAreaTypes, cfg.InterfereAreaTypes...)
 		merged.Sleepads = append(merged.Sleepads, cfg.Sleepads...)
 	}
 	if parsed == 0 {

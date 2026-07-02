@@ -150,26 +150,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 	grid.StampRadar(cfg.Radar)
 	grid.StampEnters(cfg.Enters, cfg.EnterTargets)
-	for _, r := range cfg.Enters {
-		grid.SetPrior(r, roomengine.AreaEnter, 99, roomengine.SourceHuman)
-	}
-	for _, r := range cfg.Beds {
-		grid.SetPrior(r, roomengine.AreaBed, 99, roomengine.SourceHuman)
-	}
-	for _, r := range cfg.Toilets {
-		grid.SetPrior(r, roomengine.AreaSit, 99, roomengine.SourceHuman)
-	}
-	for _, r := range cfg.Showers {
-		grid.SetPrior(r, roomengine.AreaActive, 99, roomengine.SourceHuman)
-	}
-	for _, r := range cfg.Chairs {
-		grid.SetPrior(r, roomengine.AreaSit, 80, roomengine.SourceHuman)
-	}
-	for _, r := range cfg.Furnitures {
-		grid.SetPrior(r, roomengine.AreaDeny, 99, roomengine.SourceHuman)
-	}
-	for _, r := range cfg.Interferes {
-		grid.SetPrior(r, roomengine.AreaDeny, 99, roomengine.SourceHuman)
+	for _, z := range cfg.AreaZones {
+		grid.SetPrior(z.Rect, z.AreaType, z.Conf, roomengine.SourceHuman)
 	}
 
 	tm := roomengine.NewTrackManager(opts.RoomID, grid, nil)

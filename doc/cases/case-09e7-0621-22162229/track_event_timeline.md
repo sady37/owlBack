@@ -1,1018 +1,2248 @@
-# case-09e7-0621-22162229 — 卧室(09E7+D523 双雷达同房) 每 tick belief 时间线
+# case-09e7-0621-22162229 — 每 tick belief 时间线 (room fd00:0:3:111:3:101, TZ America/Denver)
 
 dev.tid=uid后4.track_id(雷达 raw track 帧,**两台雷达都出行**)。lid=引擎采用的 base track 出生身份。
 **belief 列现为 per-track**:src=trk → 该 lid 自己的 s_marg(pR=该轨 p_real);src=room → 该行无 lid,回退房级 s_dist。
 于是「摔的那条轨自己的 SFall 是否起来」一眼可见(对照 top=房级裁决态)。
-Fall:30s  Pose:on  SittingOnGround:90s  BedSitUp:off;  HR:50-95  RR:8-24
-Area 0, 4=Enter Enter{0,4,270,-200,300,-200,270,200,300,200}
-Area 1, 4=Enter Enter{1,4,270,-200,300,-200,270,200,300,200}
-Area 2, 2=Bed   Normal Bed{2,2,-70,-190,40,-190,-70,10,40,10}
 
 ```
 time     dev.tid  lid           pose    z    bed      event              src  pR   top        nr  still SFall SBed  SOpen SBliR SEmpt SLeft
-22:16:01 D523.0   D52301601002  stand   0    NoReport stand              trk  0.50 Empty      1   0     0.00  0.03  0.08  0.00  0.85  0.04
-22:16:01 D523.0   D52301601002  stand   79   NoReport stand              trk  0.51 Empty      1   0     0.00  0.04  0.10  0.00  0.82  0.01
-22:16:02 D523.0   D52301601002  stand   0    NoReport stand              trk  0.52 Empty      1   1     0.00  0.04  0.11  0.01  0.76  0.01
-22:16:03 D523.0   D52301601002  stand   0    NoReport stand              trk  0.53 Empty      1   2     0.00  0.05  0.12  0.01  0.71  0.01
-22:16:04 D523.0   D52301601002  stand   0    NoReport stand              trk  0.54 Empty      1   3     0.00  0.06  0.14  0.03  0.62  0.01
-22:16:05 D523.0   D52301601002  stand   0    NoReport stand              trk  0.55 Empty      1   4     0.01  0.06  0.14  0.04  0.58  0.01
-22:16:06 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   5     0.01  0.07  0.14  0.04  0.54  0.01
-22:16:07 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   6     0.01  0.07  0.15  0.05  0.51  0.02
-22:16:08 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   7     0.01  0.07  0.15  0.06  0.49  0.02
-22:16:09 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   8     0.01  0.08  0.15  0.06  0.46  0.02
-22:16:10 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   9     0.01  0.08  0.15  0.07  0.44  0.02
-22:16:11 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   10    0.02  0.08  0.15  0.07  0.42  0.02
-22:16:12 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   11    0.02  0.09  0.15  0.08  0.38  0.02
-22:16:13 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   12    0.03  0.09  0.15  0.09  0.35  0.02
-22:16:14 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   13    0.03  0.09  0.15  0.10  0.34  0.02
-22:16:15 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   14    0.03  0.09  0.15  0.10  0.33  0.02
-22:16:16 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   15    0.03  0.10  0.15  0.10  0.31  0.02
-22:16:17 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   16    0.03  0.10  0.16  0.10  0.30  0.02
-22:16:18 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   17    0.04  0.10  0.16  0.11  0.30  0.02
-22:16:19 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   18    0.04  0.10  0.15  0.11  0.29  0.02
-22:16:20 D523.0   D52301601002  stand   59   NoReport stand              trk  1.00 Empty      1   19    0.04  0.10  0.15  0.11  0.28  0.02
-22:16:21 D523.0   D52301601002  stand   76   NoReport stand              trk  1.00 Empty      1   20    0.04  0.10  0.15  0.11  0.27  0.02
-22:16:22 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   21    0.05  0.10  0.15  0.12  0.27  0.02
-22:16:23 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   22    0.05  0.10  0.15  0.12  0.26  0.02
-22:16:24 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   23    0.05  0.10  0.15  0.12  0.25  0.02
-22:16:25 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   24    0.05  0.10  0.15  0.12  0.25  0.02
-22:16:26 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   25    0.06  0.10  0.15  0.12  0.25  0.02
-22:16:27 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   26    0.06  0.10  0.15  0.12  0.24  0.02
-22:16:28 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   27    0.06  0.10  0.15  0.12  0.24  0.02
-22:16:29 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   28    0.06  0.10  0.15  0.12  0.23  0.02
-22:16:30 D523.0   D52301601002  stand   65   NoReport stand              trk  1.00 Empty      1   29    0.07  0.10  0.15  0.12  0.23  0.02
-22:16:31 D523.0   D52301601002  stand   102  NoReport stand              trk  1.00 Empty      1   30    0.07  0.10  0.15  0.12  0.23  0.02
-22:16:32 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   31    0.07  0.10  0.15  0.13  0.22  0.02
-22:16:32 09E7.E   -             -       0    NoReport EnterRoom(rdr)     room -    Empty      1   31    0.07  0.10  0.15  0.13  0.22  0.02
-22:16:32 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Empty      2   31    0.00  0.02  0.26  0.00  0.69  0.03
-22:16:32 09E7.0   09E701632678  stand   51   NoReport stand              trk  1.00 Empty      2   31    0.00  0.02  0.52  0.00  0.40  0.01
-22:16:33 09E7.0   09E701632678  stand   32   NoReport stand              trk  1.00 Empty      2   32    0.00  0.02  0.70  0.00  0.18  0.02
-22:16:33 D523.0   D52301601002  stand   75   NoReport stand              trk  1.00 Empty      2   32    0.08  0.11  0.15  0.13  0.21  0.02
-22:16:34 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Empty      2   33    0.00  0.02  0.83  0.00  0.03  0.02
-22:16:34 D523.0   D52301601002  stand   54   NoReport stand              trk  1.00 Empty      2   33    0.08  0.11  0.15  0.13  0.21  0.02
-22:16:35 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Empty      2   34    0.00  0.02  0.85  0.00  0.01  0.02
-22:16:35 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      2   34    0.09  0.11  0.15  0.13  0.21  0.02
-22:16:36 09E7.0   09E701632678  stand   24   NoReport stand              trk  1.00 Empty      2   35    0.00  0.03  0.81  0.00  0.02  0.02
-22:16:36 D523.0   D52301601002  stand   56   NoReport stand              trk  1.00 Empty      2   35    0.09  0.10  0.15  0.13  0.20  0.02
-22:16:37 09E7.0   09E701632678  stand   69   NoReport stand              trk  1.00 Empty      2   36    0.00  0.02  0.84  0.00  0.01  0.02
-22:16:37 D523.0   D52301601002  stand   105  NoReport stand              trk  1.00 Empty      2   36    0.10  0.10  0.15  0.13  0.20  0.02
-22:16:38 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Empty      2   37    0.00  0.02  0.85  0.00  0.01  0.02
-22:16:38 D523.0   D52301601002  stand   96   NoReport stand              trk  1.00 Empty      2   0     0.10  0.10  0.15  0.13  0.20  0.02
-22:16:39 09E7.0   09E701632678  stand   82   NoReport stand              trk  1.00 Empty      2   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:16:39 D523.0   D52301601002  stand   85   NoReport stand              trk  1.00 Empty      2   0     0.10  0.10  0.15  0.13  0.20  0.02
-22:16:40 09E7.0   09E701632678  stand   83   NoReport stand              trk  1.00 Empty      2   0     0.00  0.04  0.74  0.00  0.02  0.04
-22:16:40 D523.0   D52301601002  stand   111  NoReport stand              trk  1.00 Empty      2   0     0.11  0.10  0.15  0.13  0.20  0.02
-22:16:41 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Empty      2   0     0.00  0.05  0.65  0.01  0.04  0.03
-22:16:41 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      2   0     0.11  0.10  0.15  0.13  0.19  0.02
-22:16:42 09E7.0   09E701632678  stand   63   NoReport stand              trk  1.00 Empty      2   0     0.01  0.05  0.62  0.02  0.05  0.03
-22:16:42 D523.0   D52301601002  stand   84   NoReport stand              trk  1.00 Empty      2   0     0.11  0.10  0.15  0.13  0.19  0.02
-22:16:43 09E7.0   09E701632678  stand   59   NoReport stand              trk  1.00 Empty      2   0     0.01  0.05  0.61  0.02  0.05  0.03  n_r=2
-22:16:43 D523.0   D52301601002  stand   98   NoReport stand              trk  1.00 Empty      1   0     0.12  0.10  0.15  0.13  0.19  0.02  n_r=1, 运动同步检出
-22:16:44 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.01  0.05  0.61  0.02  0.05  0.03
-22:16:44 D523.0   D52301601002  stand   110  NoReport stand              trk  1.00 Empty      1   0     0.12  0.10  0.15  0.13  0.19  0.02
-22:16:45 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.01  0.05  0.61  0.02  0.05  0.03
-22:16:45 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.13  0.10  0.14  0.13  0.19  0.02
-22:16:46 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.01  0.05  0.61  0.02  0.05  0.03
-22:16:46 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.13  0.10  0.14  0.13  0.19  0.02
-22:16:47 09E7.0   09E701632678  stand   120  NoReport stand              trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:16:47 D523.0   D52301601002  stand   107  NoReport stand              trk  1.00 Empty      1   0     0.13  0.10  0.14  0.12  0.19  0.02
-22:16:48 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.01  0.05  0.61  0.02  0.05  0.03
-22:16:48 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Empty      1   0     0.14  0.10  0.14  0.12  0.19  0.02
-22:16:49 09E7.0   09E701632678  stand   81   NoReport stand              trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:16:49 D523.0   D52301601002  stand   104  NoReport stand              trk  1.00 Empty      1   0     0.14  0.10  0.14  0.12  0.19  0.02
-22:16:50 09E7.0   09E701632678  stand   57   NoReport stand              trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:16:50 D523.0   D52301601002  stand   89   NoReport stand              trk  1.00 Empty      1   0     0.14  0.10  0.14  0.12  0.18  0.02
-22:16:51 09E7.0   09E701632678  stand   64   NoReport stand              trk  1.00 Empty      1   0     0.01  0.05  0.61  0.02  0.05  0.03
-22:16:51 D523.0   D52301601002  stand   105  NoReport stand              trk  1.00 Empty      1   0     0.14  0.10  0.14  0.12  0.18  0.02
-22:16:52 09E7.0   09E701632678  walk    89   NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:16:52 D523.0   D52301601002  stand   97   NoReport stand              trk  1.00 Empty      1   0     0.15  0.10  0.14  0.12  0.18  0.02
-22:16:53 09E7.0   09E701632678  walk    96   NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:16:53 D523.0   D52301601002  walk    112  NoReport walk               trk  1.00 Empty      1   0     0.15  0.10  0.14  0.12  0.18  0.02
-22:16:54 09E7.0   09E701632678  walk    98   NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:16:54 D523.0   D52301601002  walk    114  NoReport walk               trk  1.00 Empty      1   0     0.15  0.10  0.14  0.12  0.18  0.02
-22:16:55 09E7.0   09E701632678  walk    44   NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:16:55 D523.0   D52301601002  walk    81   NoReport walk               trk  1.00 Empty      1   0     0.15  0.10  0.14  0.12  0.18  0.02
-22:16:56 09E7.0   09E701632678  walk    61   NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:16:56 D523.0   D52301601002  walk    88   NoReport walk               trk  1.00 Empty      1   0     0.16  0.10  0.14  0.12  0.18  0.02
-22:16:57 09E7.0   09E701632678  walk    66   NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:16:57 D523.0   D52301601002  walk    77   NoReport walk               trk  1.00 Empty      1   0     0.16  0.10  0.14  0.12  0.18  0.02
-22:16:58 09E7.0   09E701632678  walk    0    NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:16:58 D523.0   D52301601002  walk    83   NoReport walk               trk  1.00 Empty      1   0     0.16  0.10  0.14  0.12  0.18  0.02
-22:16:59 09E7.0   09E701632678  walk    65   NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:16:59 D523.0   D52301601002  walk    75   NoReport walk               trk  1.00 Empty      1   0     0.16  0.10  0.14  0.12  0.18  0.02
-22:17:00 09E7.0   09E701632678  walk    58   NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:00 D523.0   D52301601002  walk    57   NoReport walk               trk  1.00 Empty      1   0     0.17  0.10  0.14  0.12  0.18  0.02
-22:17:01 09E7.0   09E701632678  walk    72   NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:01 D523.0   D52301601002  walk    77   NoReport walk               trk  1.00 Empty      1   0     0.17  0.10  0.14  0.12  0.18  0.02
-22:17:02 09E7.0   09E701632678  walk    78   NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:02 D523.0   D52301601002  walk    103  NoReport walk               trk  1.00 Empty      1   0     0.17  0.10  0.14  0.12  0.18  0.02
-22:17:03 09E7.0   09E701632678  walk    80   NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:03 D523.0   D52301601002  walk    105  NoReport walk               trk  1.00 Empty      1   0     0.17  0.10  0.14  0.12  0.18  0.02
-22:17:04 09E7.0   09E701632678  walk    64   NoReport walk               trk  1.00 Empty      1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:04 D523.0   D52301601002  walk    104  NoReport walk               trk  1.00 Empty      1   0     0.17  0.10  0.14  0.12  0.18  0.02
-22:17:05 09E7.0   09E701632678  walk    75   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03  
-22:17:05 D523.0   D52301601002  walk    118  NoReport walk               trk  1.00 Fallen     1   0     0.18  0.10  0.14  0.12  0.18  0.02
-22:17:06 09E7.0   09E701632678  walk    94   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:06 D523.0   D52301601002  walk    118  NoReport walk               trk  1.00 Fallen     1   0     0.18  0.10  0.14  0.12  0.17  0.02
-22:17:07 09E7.0   09E701632678  walk    76   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:07 D523.0   D52301601002  walk    99   NoReport walk               trk  1.00 Fallen     1   0     0.18  0.10  0.14  0.12  0.17  0.02
-22:17:08 09E7.0   09E701632678  walk    63   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:08 D523.0   D52301601002  walk    100  NoReport walk               trk  1.00 Fallen     1   0     0.18  0.10  0.14  0.12  0.17  0.02
-22:17:09 09E7.0   09E701632678  walk    95   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:09 D523.0   D52301601002  walk    109  NoReport walk               trk  1.00 Fallen     1   0     0.18  0.10  0.14  0.12  0.17  0.02
-22:17:10 09E7.0   09E701632678  walk    57   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:10 D523.0   D52301601002  walk    93   NoReport walk               trk  1.00 Fallen     1   0     0.19  0.09  0.14  0.12  0.17  0.02
-22:17:11 09E7.0   09E701632678  walk    108  NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:11 D523.0   D52301601002  walk    69   NoReport walk               trk  1.00 Fallen     1   0     0.19  0.09  0.14  0.12  0.17  0.02
-22:17:12 09E7.0   09E701632678  walk    76   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:12 D523.0   D52301601002  walk    88   NoReport walk               trk  1.00 Fallen     1   0     0.19  0.09  0.14  0.12  0.17  0.02
-22:17:13 09E7.0   09E701632678  walk    77   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:13 D523.0   D52301601002  walk    92   NoReport walk               trk  1.00 Fallen     1   0     0.19  0.09  0.14  0.12  0.17  0.02
-22:17:14 09E7.0   09E701632678  walk    95   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:14 D523.0   D52301601002  walk    102  NoReport walk               trk  1.00 Fallen     1   0     0.19  0.09  0.14  0.12  0.17  0.02
-22:17:15 09E7.0   09E701632678  walk    58   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:15 D523.0   D52301601002  walk    0    NoReport walk               trk  1.00 Fallen     1   0     0.19  0.09  0.13  0.12  0.17  0.02
-22:17:16 09E7.0   09E701632678  walk    45   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:16 D523.0   D52301601002  walk    105  NoReport walk               trk  1.00 Fallen     1   0     0.19  0.09  0.13  0.11  0.17  0.02
-22:17:17 09E7.0   09E701632678  walk    58   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:17 D523.0   D52301601002  walk    101  NoReport walk               trk  1.00 Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
-22:17:18 09E7.0   09E701632678  walk    125  NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:18 D523.0   D52301601002  walk    107  NoReport walk               trk  1.00 Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
-22:17:19 09E7.0   09E701632678  walk    0    NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:19 D523.0   D52301601002  walk    104  NoReport walk               trk  1.00 Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
-22:17:20 09E7.0   09E701632678  walk    84   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:20 D523.0   D52301601002  walk    99   NoReport walk               trk  1.00 Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
-22:17:21 09E7.0   09E701632678  walk    94   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:21 D523.0   D52301601002  walk    104  NoReport walk               trk  1.00 Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
-22:17:22 09E7.0   09E701632678  walk    74   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:22 D523.0   D52301601002  walk    103  NoReport walk               trk  1.00 Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
-22:17:23 09E7.0   09E701632678  walk    81   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:23 D523.0   D52301601002  walk    113  NoReport walk               trk  1.00 Fallen     1   0     0.20  0.09  0.13  0.11  0.17  0.02
-22:17:24 09E7.0   09E701632678  walk    65   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.05  0.61  0.02  0.05  0.03
-22:17:24 D523.0   D52301601002  walk    99   NoReport walk               trk  1.00 Fallen     1   0     0.21  0.09  0.13  0.11  0.17  0.02
-22:17:25 09E7.0   09E701632678  walk    82   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.04  0.63  0.02  0.05  0.03
-22:17:25 D523.0   D52301601002  walk    0    NoReport walk               trk  1.00 Fallen     1   0     0.21  0.09  0.13  0.11  0.17  0.02
-22:17:26 09E7.0   09E701632678  walk    64   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.03  0.63  0.02  0.06  0.03
-22:17:26 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.21  0.09  0.13  0.11  0.17  0.02
-22:17:27 09E7.0   09E701632678  walk    75   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.03  0.63  0.02  0.06  0.03
-22:17:27 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.21  0.09  0.13  0.11  0.17  0.02
-22:17:28 09E7.0   09E701632678  walk    72   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.03  0.63  0.02  0.06  0.03
-22:17:28 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.21  0.09  0.13  0.11  0.17  0.02
-22:17:29 09E7.0   09E701632678  walk    65   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.03  0.63  0.02  0.06  0.03
-22:17:29 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.21  0.09  0.13  0.11  0.17  0.02
-22:17:30 09E7.0   09E701632678  walk    48   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.03  0.63  0.02  0.06  0.03
-22:17:30 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.21  0.09  0.13  0.11  0.17  0.02
-22:17:31 09E7.0   09E701632678  lying   49   NoReport lying              trk  1.00 Fallen     1   0     0.01  0.12  0.42  0.02  0.07  0.04  *Radar InBed area_id!=2
-22:17:31 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.21  0.09  0.13  0.11  0.17  0.02
-22:17:32 09E7.0   09E701632678  lying   50   NoReport lying              trk  1.00 Fallen     1   0     0.06  0.44  0.16  0.04  0.07  0.02
-22:17:32 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.21  0.09  0.13  0.11  0.17  0.02
-22:17:33 09E7.0   09E701632678  lying   35   NoReport lying              trk  1.00 Fallen     1   0     0.13  0.67  0.06  0.05  0.02  0.01
-22:17:33 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.21  0.09  0.13  0.11  0.17  0.02
-22:17:34 09E7.0   09E701632678  lying   0    NoReport lying              trk  1.00 Fallen     1   0     0.20  0.69  0.03  0.05  0.01  0.01
-22:17:34 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Bed        1   0     0.22  0.09  0.13  0.11  0.17  0.02
-22:17:35 09E7.0   09E701632678  lying   0    NoReport lying              trk  1.00 Bed        1   0     0.27  0.64  0.03  0.04  0.00  0.00
-22:17:35 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Bed        1   0     0.22  0.09  0.13  0.11  0.17  0.02
-22:17:36 09E7.0   09E701632678  lying   0    NoReport lying              trk  1.00 Bed        1   0     0.36  0.56  0.02  0.04  0.00  0.00
-22:17:36 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Bed        1   0     0.22  0.09  0.13  0.11  0.17  0.02
-22:17:37 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   0     0.02  0.92  0.02  0.03  0.00  0.00 *area_id=2, firestime  
-22:17:37 09E7.E   -             -       0    InBed    InBed(rdr)         room -    Fallen     1   0     0.22  0.09  0.13  0.11  0.17  0.02
-22:17:37 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.22  0.09  0.13  0.11  0.17  0.02
-22:17:38 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   0     0.00  0.95  0.02  0.02  0.00  0.00
-22:17:38 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   13    0.22  0.09  0.13  0.11  0.17  0.02
-22:17:39 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   14    0.00  0.95  0.02  0.02  0.00  0.00
-22:17:39 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   14    0.22  0.09  0.13  0.11  0.17  0.02
-22:17:39 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   15    0.00  0.95  0.02  0.02  0.00  0.00
-22:17:40 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   15    0.22  0.09  0.13  0.11  0.16  0.02
-22:17:40 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   16    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:41 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   16    0.22  0.09  0.13  0.11  0.16  0.02
-22:17:41 0978.E   -             -       0    InBed    InBed(pad)         room -    Fallen     1   17    0.22  0.09  0.13  0.11  0.16  0.02  sleepad inBed 晚4s
-22:17:41 0978.E   -             -       0    InBed    InBed(pad)         room -    Fallen     1   17    0.22  0.09  0.13  0.11  0.16  0.02
-22:17:42 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   17    0.00  0.99  0.00  0.00  0.00  0.00  SBed 0.99
-22:17:42 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   17    0.22  0.09  0.13  0.11  0.16  0.02
-22:17:42 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   18    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:43 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   18    0.22  0.09  0.13  0.11  0.16  0.02
-22:17:43 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   19    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:44 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   19    0.22  0.09  0.13  0.11  0.16  0.02
-22:17:44 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   20    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:45 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   20    0.22  0.09  0.13  0.11  0.16  0.02
-22:17:45 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   21    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:46 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   21    0.23  0.09  0.13  0.11  0.16  0.02
-22:17:46 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   22    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:47 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   22    0.23  0.09  0.13  0.11  0.16  0.02
-22:17:47 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   23    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:48 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   23    0.23  0.09  0.13  0.11  0.16  0.02
-22:17:48 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   24    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:49 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   24    0.23  0.09  0.13  0.11  0.16  0.02
-22:17:49 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   25    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:50 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   25    0.23  0.09  0.13  0.11  0.16  0.02
-22:17:50 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   26    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:51 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   26    0.23  0.09  0.13  0.11  0.16  0.02
-22:17:51 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   27    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:52 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   27    0.23  0.09  0.13  0.11  0.16  0.02
-22:17:52 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   28    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:53 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   28    0.23  0.09  0.13  0.11  0.16  0.02
-22:17:53 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   29    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:54 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   29    0.23  0.09  0.13  0.11  0.16  0.02
-22:17:54 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   30    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:55 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   30    0.23  0.09  0.13  0.11  0.16  0.02
-22:17:55 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   31    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:56 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   31    0.23  0.09  0.13  0.11  0.16  0.02
-22:17:56 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   32    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:57 D523.0   D52301601002  stand   0    InBed    stand              trk  1.00 Fallen     1   32    0.23  0.09  0.13  0.11  0.16  0.02
-22:17:57 09E7.0   09E701632678  lying   73   InBed    lying              trk  1.00 Fallen     1   33    0.00  0.99  0.00  0.00  0.00  0.00
-22:17:58 09E7.0   09E701632678  lying   35   InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:17:59 09E7.0   09E701632678  lying   39   InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:00 09E7.0   09E701632678  walk    37   InBed    walk               trk  1.00 Fallen     1   0     0.00  0.97  0.02  0.01  0.00  0.00 *人 fall, 但Area=2,导致stillbox 不工作
-22:18:01 09E7.0   09E701632678  lying   52   InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:02 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:03 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:04 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:05 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:06 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:07 09E7.0   09E701632678  lying   0    InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:08 09E7.0   09E701632678  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.00  0.97  0.02  0.01  0.00  0.00
-22:18:09 09E7.0   09E701632678  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.00  0.96  0.02  0.01  0.00  0.00
-22:18:10 09E7.0   09E701632678  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.00  0.96  0.02  0.01  0.00  0.00
-22:18:11 09E7.0   09E701632678  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.00  0.96  0.02  0.01  0.00  0.00
-22:18:12 09E7.0   09E701632678  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.00  0.96  0.02  0.01  0.00  0.00
-22:18:13 09E7.0   09E701632678  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.00  0.96  0.02  0.01  0.00  0.00
-22:18:14 09E7.0   09E701632678  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.00  0.96  0.02  0.01  0.00  0.00
-22:18:15 09E7.0   09E701632678  stand   59   InBed    stand              trk  1.00 Fallen     1   0     0.00  0.96  0.02  0.01  0.00  0.00
-22:18:16 09E7.0   09E701632678  stand   58   InBed    stand              trk  1.00 Fallen     1   0     0.00  0.96  0.02  0.01  0.00  0.00
-22:18:17 09E7.0   09E701632678  lying   48   InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:18 09E7.0   09E701632678  lying   47   InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:19 09E7.0   09E701632678  walk    0    InBed    walk               trk  1.00 Fallen     1   0     0.00  0.97  0.02  0.01  0.00  0.00
-22:18:20 09E7.0   09E701632678  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.00  0.96  0.02  0.01  0.00  0.00
-22:18:21 09E7.0   09E701632678  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.00  0.96  0.02  0.01  0.00  0.00
-22:18:22 09E7.0   09E701632678  lying   34   InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:23 09E7.0   09E701632678  lying   52   InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:24 09E7.0   09E701632678  lying   52   InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:25 09E7.0   09E701632678  lying   48   InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:26 09E7.0   09E701632678  lying   36   InBed    lying              trk  1.00 Fallen     1   0     0.00  0.99  0.00  0.00  0.00  0.00
-22:18:27 09E7.0   09E701632678  stand   20   InBed    stand              trk  1.00 Fallen     1   0     0.00  0.97  0.02  0.01  0.00  0.00
-22:18:28 09E7.0   09E701632678  stand   12   InBed    stand              trk  1.00 Fallen     1   0     0.00  0.84  0.09  0.06  0.00  0.01
-22:18:29 09E7.0   09E701632678  stand   0    InBed    stand              trk  1.00 Fallen     1   0     0.00  0.76  0.13  0.07  0.00  0.01
-22:18:30 09E7.0   09E701632678  sit     0    InBed    sit                trk  1.00 Fallen     1   0     0.00  0.75  0.09  0.09  0.01  0.01
-22:18:31 09E7.0   09E701632678  sit     0    InBed    sit                trk  1.00 Fallen     1   0     0.00  0.75  0.07  0.09  0.01  0.01
-22:18:32 09E7.0   09E701632678  sit     0    InBed    sit                trk  1.00 Fallen     1   0     0.00  0.74  0.07  0.09  0.01  0.01
-22:18:33 09E7.0   09E701632678  sit     0    InBed    sit                trk  1.00 Fallen     1   0     0.00  0.73  0.06  0.09  0.01  0.01
-22:18:34 09E7.0   09E701632678  sit     0    InBed    sit                trk  1.00 Fallen     1   0     0.00  0.72  0.06  0.09  0.01  0.01
-22:18:35 0978.E   -             -       0    LeftBed  LeftBed(pad)       room -    Fallen     1   0     0.24  0.09  0.13  0.11  0.16  0.02  *sleeap leftBed
-22:18:35 0978.E   -             -       0    LeftBed  LeftBed(pad)       room -    Fallen     1   0     0.24  0.09  0.13  0.11  0.16  0.02  *SBed 0.09 清零
-22:18:35 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.96  0.00  0.00  0.01
-22:18:36 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.96  0.00  0.00  0.01
-22:18:37 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.96  0.00  0.00  0.01
-22:18:38 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.96  0.00  0.00  0.01
-22:18:39 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.96  0.00  0.00  0.01
-22:18:40 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.96  0.00  0.00  0.01
-22:18:41 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.96  0.00  0.00  0.01
-22:18:42 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.96  0.00  0.00  0.01
-22:18:43 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.96  0.00  0.00  0.01
-22:18:44 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.96  0.00  0.00  0.01
-22:18:45 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.96  0.00  0.00  0.01
-22:18:46 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.95  0.00  0.00  0.01
-22:18:47 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.95  0.00  0.00  0.01
-22:18:48 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.95  0.00  0.00  0.01
-22:18:49 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.95  0.00  0.00  0.01
-22:18:50 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.00  0.95  0.00  0.00  0.01
-22:18:51 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   26    0.00  0.00  0.95  0.00  0.00  0.01  30s窗口, stillbox=26 tFloor=12min
-22:18:52 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   27    0.00  0.00  0.95  0.00  0.00  0.01  risktime, StillSec 更快
-22:18:53 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   28    0.00  0.00  0.95  0.00  0.00  0.01
-22:18:54 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   29    0.00  0.00  0.95  0.00  0.00  0.01
-22:18:55 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   30    0.00  0.00  0.95  0.00  0.00  0.01
-22:18:56 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   31    0.00  0.00  0.95  0.00  0.00  0.01
-22:18:57 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   32    0.00  0.00  0.95  0.00  0.00  0.01
-22:18:58 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   33    0.00  0.00  0.95  0.00  0.00  0.01
-22:18:59 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   34    0.00  0.00  0.95  0.00  0.00  0.01
-22:19:00 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   35    0.00  0.00  0.95  0.00  0.00  0.01
-22:19:01 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   36    0.00  0.00  0.95  0.00  0.00  0.01
-22:19:02 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   37    0.00  0.00  0.95  0.00  0.00  0.01
-22:19:03 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   38    0.00  0.00  0.95  0.00  0.00  0.01
-22:19:04 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   39    0.00  0.00  0.95  0.00  0.00  0.01
-22:19:05 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   40    0.00  0.00  0.95  0.00  0.00  0.01
-22:19:06 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   41    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:07 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   42    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:08 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   43    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:09 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   44    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:10 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   45    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:11 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   46    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:12 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   47    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:13 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   48    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:14 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   49    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:15 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   50    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:16 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   51    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:17 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   52    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:18 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   53    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:19 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   54    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:20 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   55    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:21 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   56    0.00  0.00  0.94  0.00  0.00  0.01
-22:19:22 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   57    0.00  0.00  0.93  0.00  0.00  0.01
-22:19:23 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   58    0.00  0.00  0.93  0.00  0.00  0.01
-22:19:24 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   59    0.00  0.00  0.93  0.00  0.00  0.01
-22:19:25 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   60    0.00  0.00  0.93  0.00  0.00  0.01
-22:19:26 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   61    0.00  0.00  0.93  0.00  0.00  0.01
-22:19:27 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   62    0.00  0.00  0.93  0.00  0.00  0.01
-22:19:28 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   63    0.00  0.00  0.93  0.00  0.00  0.01
-22:19:29 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   64    0.00  0.00  0.93  0.00  0.00  0.01
-22:19:30 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   65    0.00  0.00  0.93  0.00  0.00  0.01
-22:19:31 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   66    0.00  0.00  0.93  0.00  0.00  0.01
-22:19:32 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   68    0.00  0.00  0.93  0.00  0.00  0.01
-22:19:33 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   68    0.00  0.00  0.92  0.00  0.00  0.01
-22:19:34 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   69    0.00  0.00  0.92  0.00  0.00  0.01
-22:19:35 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   70    0.00  0.00  0.92  0.00  0.00  0.01
-22:19:36 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   71    0.00  0.00  0.92  0.00  0.00  0.01
-22:19:37 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   72    0.00  0.00  0.92  0.00  0.00  0.01
-22:19:38 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   73    0.00  0.00  0.92  0.00  0.00  0.01
-22:19:39 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   74    0.00  0.00  0.92  0.00  0.00  0.01
-22:19:40 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   75    0.00  0.00  0.92  0.00  0.00  0.01
-22:19:41 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   76    0.00  0.00  0.92  0.00  0.00  0.01
-22:19:42 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   77    0.00  0.00  0.92  0.00  0.00  0.01
-22:19:43 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   78    0.00  0.00  0.91  0.00  0.00  0.01
-22:19:44 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   79    0.00  0.00  0.91  0.00  0.00  0.01
-22:19:45 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   80    0.00  0.00  0.91  0.00  0.00  0.01
-22:19:45 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   81    0.00  0.00  0.91  0.00  0.00  0.01
-22:19:47 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   82    0.00  0.00  0.91  0.00  0.00  0.01
-22:19:47 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   83    0.00  0.00  0.91  0.00  0.00  0.01
-22:19:48 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   84    0.00  0.00  0.91  0.00  0.00  0.01
-22:19:49 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   85    0.00  0.00  0.91  0.00  0.00  0.01
-22:19:50 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   86    0.00  0.00  0.91  0.00  0.00  0.01
-22:19:51 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   87    0.00  0.00  0.90  0.00  0.00  0.01
-22:19:52 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   88    0.00  0.00  0.90  0.00  0.00  0.01
-22:19:53 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   89    0.00  0.00  0.90  0.00  0.00  0.01
-22:19:54 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   90    0.00  0.00  0.90  0.00  0.00  0.01
-22:19:55 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   91    0.00  0.00  0.90  0.00  0.00  0.01
-22:19:56 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   92    0.00  0.00  0.90  0.00  0.00  0.01
-22:19:57 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   93    0.00  0.00  0.90  0.00  0.00  0.01
-22:19:58 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   94    0.00  0.00  0.89  0.00  0.00  0.01
-22:19:59 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   95    0.00  0.00  0.89  0.00  0.00  0.01
-22:20:00 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   96    0.00  0.00  0.89  0.00  0.00  0.01
-22:20:01 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   97    0.00  0.00  0.89  0.00  0.00  0.01
-22:20:02 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   98    0.00  0.00  0.89  0.00  0.00  0.01
-22:20:03 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   99    0.00  0.00  0.89  0.00  0.00  0.01
-22:20:04 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   100   0.00  0.00  0.89  0.00  0.00  0.01
-22:20:05 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   101   0.00  0.00  0.89  0.00  0.00  0.01
-22:20:06 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   102   0.00  0.00  0.88  0.00  0.00  0.02
-22:20:07 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   103   0.00  0.00  0.88  0.00  0.00  0.02
-22:20:08 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   104   0.00  0.00  0.88  0.00  0.00  0.02
-22:20:09 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   105   0.00  0.00  0.88  0.00  0.00  0.02
-22:20:10 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   106   0.00  0.01  0.88  0.00  0.00  0.02
-22:20:11 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   107   0.00  0.01  0.88  0.00  0.00  0.02
-22:20:12 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   108   0.00  0.01  0.88  0.00  0.00  0.02
-22:20:13 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   109   0.00  0.01  0.87  0.00  0.00  0.02
-22:20:14 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   110   0.00  0.01  0.87  0.00  0.00  0.02
-22:20:15 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   111   0.00  0.01  0.87  0.00  0.01  0.02
-22:20:16 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   112   0.00  0.01  0.87  0.00  0.01  0.02
-22:20:17 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   113   0.00  0.01  0.87  0.00  0.01  0.02
-22:20:18 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   114   0.00  0.01  0.87  0.00  0.01  0.02
-22:20:19 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   115   0.00  0.01  0.86  0.00  0.01  0.02
-22:20:20 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   115   0.00  0.01  0.86  0.00  0.01  0.02
-22:20:21 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   116   0.00  0.01  0.86  0.00  0.01  0.02
-22:20:22 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   118   0.00  0.01  0.86  0.00  0.01  0.02
-22:20:23 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   118   0.00  0.01  0.86  0.00  0.01  0.02
-22:20:24 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   119   0.00  0.01  0.85  0.00  0.01  0.02
-22:20:25 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   121   0.00  0.01  0.85  0.00  0.01  0.02
-22:20:26 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   122   0.00  0.01  0.85  0.00  0.01  0.02
-22:20:27 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   123   0.00  0.01  0.84  0.00  0.01  0.02
-22:20:28 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   124   0.00  0.01  0.84  0.00  0.01  0.02
-22:20:29 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   125   0.00  0.01  0.84  0.00  0.01  0.02
-22:20:30 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   125   0.00  0.01  0.84  0.00  0.01  0.02
-22:20:31 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   126   0.00  0.01  0.84  0.00  0.01  0.02
-22:20:32 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   127   0.00  0.01  0.83  0.00  0.01  0.02
-22:20:33 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   128   0.00  0.01  0.83  0.00  0.01  0.02
-22:20:34 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   129   0.00  0.01  0.83  0.00  0.01  0.02
-22:20:35 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   130   0.00  0.01  0.83  0.00  0.01  0.02
-22:20:36 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   131   0.00  0.01  0.83  0.00  0.01  0.02
-22:20:37 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   132   0.00  0.01  0.82  0.00  0.01  0.02
-22:20:38 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   133   0.00  0.01  0.82  0.00  0.01  0.02
-22:20:39 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   134   0.00  0.01  0.82  0.00  0.01  0.02
-22:20:40 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   135   0.00  0.01  0.81  0.00  0.01  0.02
-22:20:41 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   136   0.00  0.01  0.81  0.00  0.01  0.02
-22:20:42 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   137   0.00  0.01  0.81  0.00  0.01  0.02
-22:20:43 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   138   0.00  0.01  0.81  0.00  0.01  0.02
-22:20:44 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   139   0.00  0.01  0.80  0.00  0.01  0.02
-22:20:45 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   140   0.00  0.01  0.80  0.00  0.01  0.02
-22:20:46 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   141   0.00  0.01  0.80  0.00  0.01  0.02
-22:20:47 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   142   0.00  0.01  0.80  0.00  0.01  0.02
-22:20:48 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   143   0.00  0.01  0.79  0.00  0.01  0.02
-22:20:49 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   144   0.00  0.01  0.79  0.00  0.01  0.02
-22:20:50 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   145   0.00  0.01  0.79  0.00  0.01  0.02
-22:20:51 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   146   0.00  0.01  0.78  0.00  0.01  0.02
-22:20:52 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   147   0.00  0.01  0.78  0.00  0.01  0.02
-22:20:53 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   148   0.00  0.02  0.78  0.00  0.01  0.02
-22:20:54 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   149   0.00  0.02  0.77  0.00  0.01  0.02
-22:20:55 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   150   0.00  0.02  0.77  0.00  0.01  0.02
-22:20:56 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   151   0.00  0.02  0.77  0.00  0.01  0.02
-22:20:57 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   152   0.00  0.02  0.76  0.00  0.01  0.02
-22:20:58 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   153   0.00  0.02  0.76  0.00  0.01  0.02
-22:20:59 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   154   0.00  0.02  0.76  0.00  0.01  0.02
-22:21:00 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   155   0.00  0.02  0.75  0.00  0.01  0.02
-22:21:01 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   156   0.00  0.02  0.75  0.00  0.01  0.02
-22:21:02 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   157   0.00  0.02  0.75  0.00  0.01  0.02
-22:21:03 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   158   0.00  0.02  0.74  0.00  0.01  0.02
-22:21:04 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   159   0.00  0.02  0.74  0.00  0.01  0.02
-22:21:05 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   160   0.00  0.02  0.74  0.01  0.01  0.02
-22:21:06 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   161   0.00  0.02  0.73  0.01  0.01  0.02
-22:21:07 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   162   0.00  0.02  0.73  0.01  0.01  0.02
-22:21:08 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   163   0.00  0.02  0.72  0.01  0.01  0.02
-22:21:09 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   164   0.00  0.02  0.72  0.01  0.01  0.02
-22:21:10 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   165   0.00  0.02  0.72  0.01  0.01  0.02
-22:21:11 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   166   0.00  0.02  0.71  0.01  0.02  0.02
-22:21:12 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   167   0.00  0.02  0.71  0.01  0.02  0.02
-22:21:13 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   168   0.00  0.02  0.70  0.01  0.02  0.02
-22:21:14 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   169   0.00  0.02  0.70  0.01  0.02  0.02
-22:21:15 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   170   0.00  0.02  0.70  0.01  0.02  0.02
-22:21:16 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   171   0.00  0.02  0.69  0.01  0.02  0.02
-22:21:17 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   172   0.00  0.02  0.69  0.01  0.02  0.02
-22:21:18 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   173   0.00  0.03  0.68  0.01  0.02  0.02
-22:21:19 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   174   0.00  0.03  0.68  0.01  0.02  0.02
-22:21:20 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   175   0.00  0.03  0.67  0.01  0.02  0.02
-22:21:21 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   176   0.00  0.03  0.67  0.01  0.02  0.02
-22:21:22 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   177   0.00  0.03  0.67  0.01  0.02  0.02
-22:21:23 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   178   0.00  0.03  0.66  0.01  0.02  0.02
-22:21:24 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   179   0.00  0.03  0.66  0.01  0.02  0.02
-22:21:25 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   180   0.00  0.03  0.65  0.01  0.02  0.02
-22:21:26 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   181   0.00  0.03  0.65  0.01  0.02  0.02
-22:21:27 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   182   0.00  0.03  0.64  0.01  0.02  0.02
-22:21:28 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   183   0.00  0.03  0.64  0.01  0.02  0.02
-22:21:29 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   184   0.00  0.03  0.62  0.01  0.02  0.03
-22:21:30 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   185   0.00  0.03  0.62  0.01  0.02  0.03
-22:21:31 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   186   0.00  0.03  0.61  0.01  0.02  0.03
-22:21:32 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   187   0.00  0.03  0.60  0.01  0.02  0.03
-22:21:33 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   188   0.00  0.03  0.60  0.01  0.02  0.03
-22:21:34 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   189   0.00  0.03  0.59  0.01  0.02  0.03
-22:21:35 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   190   0.00  0.03  0.59  0.01  0.02  0.03
-22:21:36 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   191   0.00  0.03  0.58  0.01  0.02  0.03
-22:21:37 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   192   0.00  0.04  0.58  0.01  0.02  0.03
-22:21:38 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   193   0.00  0.04  0.57  0.01  0.02  0.03
-22:21:39 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   194   0.00  0.04  0.57  0.01  0.02  0.03
-22:21:40 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   195   0.00  0.04  0.56  0.01  0.02  0.03
-22:21:41 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   196   0.00  0.04  0.55  0.01  0.02  0.03
-22:21:42 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   197   0.00  0.04  0.54  0.01  0.02  0.03
-22:21:43 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   198   0.00  0.04  0.54  0.01  0.02  0.03
-22:21:44 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   199   0.00  0.04  0.53  0.01  0.02  0.03
-22:21:44 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   200   0.01  0.04  0.52  0.01  0.02  0.03
-22:21:45 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   201   0.01  0.04  0.52  0.01  0.02  0.02
-22:21:46 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   202   0.01  0.04  0.51  0.02  0.02  0.02
-22:21:48 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   203   0.01  0.04  0.50  0.02  0.02  0.02
-22:21:49 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   204   0.01  0.04  0.50  0.02  0.02  0.02
-22:21:50 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   205   0.01  0.04  0.49  0.02  0.02  0.02
-22:21:50 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   206   0.01  0.04  0.49  0.02  0.02  0.02
-22:21:52 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   207   0.01  0.04  0.48  0.02  0.02  0.02
-22:21:53 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   208   0.01  0.04  0.47  0.02  0.02  0.02
-22:21:54 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   209   0.01  0.04  0.47  0.02  0.02  0.02
-22:21:55 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   210   0.01  0.04  0.46  0.02  0.03  0.02
-22:21:56 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   211   0.01  0.04  0.45  0.02  0.03  0.02
-22:21:56 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   212   0.01  0.04  0.45  0.02  0.03  0.02
-22:21:57 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   213   0.01  0.05  0.44  0.02  0.03  0.02
-22:21:58 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   214   0.01  0.05  0.44  0.02  0.03  0.02
-22:21:59 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   215   0.01  0.05  0.43  0.02  0.03  0.02
-22:22:00 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   216   0.01  0.05  0.42  0.02  0.03  0.02
-22:22:01 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   217   0.01  0.05  0.41  0.02  0.03  0.02
-22:22:02 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   218   0.01  0.05  0.41  0.02  0.03  0.02
-22:22:03 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   219   0.01  0.05  0.40  0.02  0.03  0.02
-22:22:04 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   220   0.01  0.05  0.39  0.02  0.03  0.02
-22:22:05 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   221   0.01  0.05  0.39  0.02  0.03  0.02
-22:22:06 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   222   0.01  0.05  0.38  0.02  0.03  0.02
-22:22:07 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   223   0.01  0.05  0.38  0.02  0.03  0.02
-22:22:08 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   224   0.01  0.05  0.37  0.02  0.03  0.02
-22:22:09 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   225   0.01  0.05  0.37  0.02  0.03  0.02
-22:22:10 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   226   0.01  0.05  0.36  0.02  0.03  0.02
-22:22:11 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   227   0.01  0.05  0.36  0.02  0.03  0.02
-22:22:12 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   228   0.01  0.05  0.35  0.02  0.03  0.02
-22:22:13 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   229   0.01  0.05  0.35  0.02  0.03  0.02
-22:22:14 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   230   0.01  0.05  0.34  0.02  0.03  0.02
-22:22:15 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   231   0.01  0.05  0.34  0.02  0.03  0.02
-22:22:16 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   232   0.01  0.05  0.33  0.02  0.03  0.02
-22:22:17 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   233   0.01  0.05  0.33  0.02  0.03  0.02
-22:22:18 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   234   0.01  0.05  0.32  0.03  0.03  0.02
-22:22:19 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   235   0.01  0.05  0.32  0.03  0.03  0.02
-22:22:20 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   236   0.01  0.05  0.31  0.03  0.03  0.02
-22:22:21 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   237   0.01  0.05  0.31  0.03  0.03  0.02
-22:22:22 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   238   0.01  0.06  0.30  0.03  0.03  0.02
-22:22:23 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   239   0.01  0.06  0.30  0.03  0.03  0.02
-22:22:24 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   240   0.01  0.06  0.30  0.03  0.03  0.02
-22:22:25 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   240   0.01  0.06  0.29  0.03  0.03  0.02
-22:22:26 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   241   0.01  0.06  0.29  0.03  0.02  0.02
-22:22:27 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   242   0.01  0.06  0.29  0.03  0.02  0.02
-22:22:28 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   243   0.01  0.06  0.28  0.03  0.02  0.02
-22:22:29 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   244   0.01  0.06  0.28  0.03  0.02  0.02
-22:22:30 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   246   0.01  0.06  0.27  0.03  0.02  0.02
-22:22:31 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   246   0.01  0.06  0.27  0.03  0.02  0.02
-22:22:32 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   247   0.01  0.06  0.26  0.03  0.02  0.02
-22:22:33 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   248   0.01  0.06  0.26  0.03  0.02  0.02
-22:22:34 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   249   0.01  0.06  0.26  0.03  0.02  0.02
-22:22:35 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   250   0.01  0.06  0.25  0.03  0.02  0.02
-22:22:36 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   251   0.01  0.06  0.25  0.03  0.02  0.02
-22:22:37 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   252   0.01  0.06  0.25  0.03  0.02  0.02
-22:22:38 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   253   0.01  0.06  0.24  0.03  0.02  0.02
-22:22:39 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   255   0.01  0.06  0.24  0.03  0.02  0.02
-22:22:40 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   255   0.01  0.06  0.24  0.03  0.02  0.02
-22:22:41 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   256   0.01  0.06  0.23  0.03  0.02  0.02
-22:22:42 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   257   0.01  0.07  0.23  0.03  0.02  0.02
-22:22:43 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   258   0.01  0.07  0.23  0.03  0.02  0.02
-22:22:44 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   259   0.01  0.07  0.23  0.03  0.02  0.02
-22:22:45 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   260   0.01  0.07  0.22  0.03  0.02  0.02
-22:22:46 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   261   0.01  0.07  0.22  0.03  0.02  0.02
-22:22:47 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   262   0.01  0.07  0.22  0.03  0.02  0.02
-22:22:48 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   263   0.01  0.07  0.22  0.03  0.02  0.02
-22:22:49 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   264   0.01  0.07  0.21  0.03  0.02  0.02
-22:22:50 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   265   0.01  0.07  0.21  0.03  0.02  0.02
-22:22:51 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   266   0.01  0.07  0.21  0.03  0.02  0.02
-22:22:52 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   267   0.01  0.07  0.21  0.03  0.02  0.02
-22:22:53 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   268   0.01  0.07  0.21  0.03  0.02  0.02
-22:22:54 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   269   0.01  0.07  0.20  0.03  0.02  0.02
-22:22:55 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   270   0.01  0.07  0.20  0.03  0.02  0.02
-22:22:56 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   271   0.01  0.07  0.20  0.03  0.02  0.02
-22:22:57 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   272   0.01  0.07  0.20  0.03  0.02  0.02
-22:22:58 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   273   0.01  0.07  0.20  0.03  0.02  0.02
-22:22:59 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   274   0.01  0.07  0.20  0.03  0.02  0.02
-22:23:00 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   275   0.01  0.07  0.19  0.03  0.02  0.02
-22:23:01 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   276   0.01  0.08  0.19  0.03  0.02  0.02
-22:23:02 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   277   0.01  0.08  0.19  0.03  0.02  0.02
-22:23:03 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   278   0.01  0.08  0.19  0.03  0.02  0.02
-22:23:04 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   279   0.01  0.08  0.18  0.03  0.02  0.02
-22:23:05 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   280   0.01  0.08  0.18  0.03  0.02  0.02
-22:23:06 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   281   0.01  0.08  0.18  0.03  0.02  0.02
-22:23:07 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   282   0.01  0.08  0.18  0.03  0.02  0.02
-22:23:08 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   283   0.01  0.08  0.18  0.03  0.02  0.02
-22:23:09 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   284   0.01  0.08  0.18  0.03  0.02  0.02
-22:23:10 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   285   0.01  0.08  0.18  0.03  0.02  0.02
-22:23:11 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   286   0.01  0.08  0.17  0.03  0.02  0.02
-22:23:12 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   287   0.01  0.08  0.17  0.03  0.02  0.02
-22:23:13 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   288   0.01  0.08  0.17  0.03  0.02  0.02
-22:23:14 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   289   0.01  0.08  0.17  0.03  0.02  0.02
-22:23:15 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   290   0.01  0.09  0.17  0.03  0.02  0.02
-22:23:16 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   291   0.01  0.09  0.17  0.03  0.02  0.02
-22:23:17 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   292   0.01  0.09  0.17  0.04  0.02  0.02
-22:23:18 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   293   0.01  0.09  0.17  0.04  0.02  0.02
-22:23:19 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   294   0.01  0.09  0.16  0.04  0.02  0.02
-22:23:20 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   295   0.01  0.09  0.16  0.04  0.02  0.02
-22:23:21 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   296   0.01  0.09  0.16  0.04  0.02  0.02
-22:23:22 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   297   0.00  0.09  0.16  0.04  0.02  0.02
-22:23:23 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   298   0.00  0.09  0.16  0.04  0.02  0.02
-22:23:24 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   299   0.00  0.09  0.16  0.04  0.02  0.02
-22:23:25 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   300   0.00  0.09  0.16  0.04  0.02  0.02
-22:23:26 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   301   0.00  0.09  0.16  0.04  0.02  0.02
-22:23:27 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   302   0.00  0.09  0.16  0.04  0.02  0.02
-22:23:28 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   303   0.00  0.09  0.15  0.04  0.02  0.02
-22:23:29 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   304   0.00  0.10  0.15  0.04  0.02  0.02
-22:23:30 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   305   0.00  0.10  0.15  0.04  0.02  0.02
-22:23:31 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   306   0.00  0.10  0.15  0.04  0.02  0.02
-22:23:32 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   307   0.00  0.10  0.15  0.04  0.02  0.02
-22:23:33 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   308   0.00  0.10  0.15  0.04  0.02  0.02
-22:23:34 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   309   0.00  0.10  0.15  0.04  0.02  0.02
-22:23:35 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   310   0.00  0.10  0.15  0.04  0.02  0.02
-22:23:36 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   311   0.00  0.10  0.15  0.04  0.02  0.02
-22:23:37 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   312   0.00  0.10  0.15  0.04  0.02  0.02
-22:23:38 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   313   0.00  0.10  0.14  0.04  0.02  0.02
-22:23:39 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   314   0.00  0.10  0.14  0.04  0.02  0.02
-22:23:40 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   315   0.00  0.11  0.14  0.04  0.02  0.02
-22:23:41 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   316   0.00  0.11  0.14  0.04  0.02  0.02
-22:23:42 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   317   0.00  0.11  0.14  0.04  0.02  0.02
-22:23:43 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   318   0.00  0.11  0.14  0.04  0.02  0.02
-22:23:44 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   319   0.00  0.11  0.14  0.04  0.02  0.02
-22:23:45 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   320   0.00  0.11  0.14  0.04  0.02  0.02
-22:23:46 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   321   0.00  0.11  0.14  0.04  0.02  0.02
-22:23:47 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   322   0.00  0.11  0.14  0.04  0.02  0.02
-22:23:48 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   323   0.00  0.11  0.14  0.04  0.02  0.02
-22:23:49 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   324   0.00  0.11  0.14  0.04  0.02  0.02
-22:23:50 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   325   0.00  0.11  0.13  0.04  0.02  0.02
-22:23:51 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   326   0.00  0.12  0.13  0.04  0.02  0.02
-22:23:52 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   327   0.00  0.12  0.13  0.04  0.02  0.02
-22:23:53 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   328   0.00  0.12  0.13  0.04  0.02  0.02
-22:23:54 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   329   0.00  0.12  0.13  0.04  0.02  0.02
-22:23:55 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   330   0.00  0.12  0.13  0.04  0.02  0.02
-22:23:56 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   331   0.00  0.12  0.13  0.04  0.02  0.02
-22:23:57 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   332   0.00  0.12  0.13  0.04  0.02  0.02
-22:23:57 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   333   0.00  0.12  0.13  0.04  0.02  0.02
-22:23:58 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   334   0.00  0.12  0.13  0.04  0.02  0.02
-22:23:59 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   335   0.00  0.12  0.13  0.04  0.02  0.02
-22:24:00 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   336   0.00  0.12  0.13  0.04  0.02  0.02
-22:24:01 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   337   0.00  0.13  0.13  0.04  0.02  0.02
-22:24:02 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   338   0.00  0.13  0.13  0.04  0.02  0.02
-22:24:03 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   339   0.00  0.13  0.13  0.04  0.02  0.02
-22:24:04 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   340   0.00  0.13  0.13  0.04  0.02  0.02
-22:24:05 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   341   0.00  0.13  0.13  0.04  0.02  0.02
-22:24:06 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   342   0.00  0.13  0.12  0.04  0.02  0.02
-22:24:07 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   343   0.00  0.13  0.12  0.04  0.02  0.02
-22:24:08 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   344   0.00  0.13  0.12  0.04  0.02  0.02
-22:24:09 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   345   0.00  0.14  0.12  0.04  0.02  0.02
-22:24:10 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   346   0.00  0.14  0.12  0.04  0.02  0.02
-22:24:11 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   347   0.00  0.14  0.12  0.04  0.02  0.02
-22:24:12 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   348   0.00  0.14  0.12  0.04  0.02  0.02
-22:24:13 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   349   0.00  0.14  0.12  0.04  0.02  0.02
-22:24:14 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   350   0.00  0.14  0.12  0.04  0.02  0.02
-22:24:15 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   351   0.00  0.14  0.12  0.04  0.02  0.02
-22:24:16 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   352   0.00  0.14  0.12  0.04  0.02  0.02
-22:24:17 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   353   0.00  0.14  0.12  0.04  0.02  0.02
-22:24:18 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   354   0.00  0.15  0.12  0.04  0.02  0.02
-22:24:19 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   355   0.00  0.15  0.12  0.04  0.02  0.02
-22:24:20 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   356   0.00  0.15  0.12  0.04  0.02  0.02
-22:24:21 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   357   0.00  0.15  0.12  0.04  0.02  0.02
-22:24:22 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   358   0.00  0.15  0.12  0.04  0.02  0.02
-22:24:23 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   359   0.00  0.15  0.12  0.04  0.02  0.02
-22:24:24 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   360   0.00  0.15  0.11  0.04  0.02  0.02
-22:24:25 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   361   0.00  0.15  0.11  0.04  0.02  0.02
-22:24:26 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   362   0.00  0.15  0.11  0.04  0.02  0.02
-22:24:27 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   363   0.00  0.16  0.11  0.04  0.02  0.02
-22:24:28 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   364   0.00  0.16  0.11  0.04  0.02  0.02
-22:24:29 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   365   0.00  0.16  0.11  0.04  0.02  0.02
-22:24:30 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   366   0.00  0.16  0.11  0.04  0.02  0.02
-22:24:31 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   367   0.00  0.16  0.11  0.04  0.02  0.02
-22:24:32 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   368   0.00  0.16  0.11  0.04  0.02  0.02
-22:24:33 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   368   0.00  0.16  0.11  0.04  0.02  0.02
-22:24:34 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   369   0.00  0.16  0.11  0.04  0.02  0.02
-22:24:35 09E7.0   09E701632678  sit     32   LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.16  0.13  0.04  0.02  0.02
-22:24:36 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.16  0.14  0.04  0.02  0.02
-22:24:37 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.16  0.14  0.04  0.02  0.02
-22:24:38 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.17  0.13  0.04  0.02  0.02
-22:24:39 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.17  0.12  0.04  0.02  0.02
-22:24:40 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.17  0.11  0.04  0.02  0.02
-22:24:41 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.18  0.11  0.05  0.02  0.02
-22:24:42 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.18  0.11  0.05  0.02  0.02
-22:24:43 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.18  0.11  0.05  0.02  0.02
-22:24:44 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.18  0.11  0.05  0.02  0.02
-22:24:45 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.18  0.11  0.05  0.02  0.02
-22:24:46 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.18  0.11  0.05  0.02  0.02
-22:24:47 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.18  0.11  0.05  0.02  0.02
-22:24:48 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.19  0.11  0.05  0.02  0.02
-22:24:49 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.19  0.10  0.05  0.02  0.02
-22:24:50 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.19  0.10  0.05  0.02  0.02
-22:24:51 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.19  0.10  0.05  0.02  0.02
-22:24:52 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.19  0.10  0.05  0.02  0.02
-22:24:53 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.19  0.10  0.05  0.02  0.02
-22:24:54 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.19  0.10  0.05  0.02  0.02
-22:24:55 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.19  0.10  0.05  0.02  0.02
-22:24:56 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.19  0.10  0.05  0.02  0.02
-22:24:57 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.20  0.10  0.05  0.02  0.02
-22:24:58 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.20  0.10  0.05  0.02  0.02
-22:24:59 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.20  0.10  0.05  0.02  0.02
-22:25:00 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.20  0.10  0.05  0.02  0.02
-22:25:01 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.20  0.10  0.05  0.02  0.02
-22:25:02 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.20  0.10  0.05  0.02  0.02
-22:25:03 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   26    0.00  0.20  0.10  0.05  0.02  0.02
-22:25:04 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   27    0.00  0.20  0.10  0.05  0.02  0.02
-22:25:05 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   28    0.00  0.21  0.10  0.05  0.02  0.02
-22:25:06 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   29    0.00  0.21  0.10  0.05  0.02  0.02
-22:25:07 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   30    0.00  0.21  0.10  0.05  0.02  0.02
-22:25:08 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   31    0.00  0.21  0.10  0.05  0.02  0.02
-22:25:09 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   32    0.00  0.21  0.10  0.05  0.02  0.02
-22:25:10 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   33    0.00  0.21  0.10  0.05  0.02  0.02
-22:25:11 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   34    0.00  0.22  0.10  0.05  0.02  0.02
-22:25:12 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   35    0.00  0.22  0.10  0.05  0.02  0.02
-22:25:13 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   36    0.00  0.22  0.10  0.05  0.02  0.02
-22:25:14 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   37    0.00  0.22  0.10  0.05  0.02  0.02
-22:25:15 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   38    0.00  0.22  0.10  0.05  0.02  0.02
-22:25:16 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   39    0.00  0.22  0.10  0.05  0.02  0.02
-22:25:17 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   40    0.00  0.22  0.10  0.05  0.02  0.02
-22:25:18 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   41    0.00  0.23  0.10  0.05  0.02  0.02
-22:25:19 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   42    0.00  0.23  0.10  0.05  0.02  0.02
-22:25:20 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   43    0.00  0.23  0.10  0.05  0.02  0.02
-22:25:21 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   44    0.00  0.23  0.10  0.05  0.02  0.02
-22:25:22 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   45    0.00  0.23  0.10  0.05  0.02  0.02
-22:25:23 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   46    0.00  0.23  0.10  0.05  0.02  0.02
-22:25:24 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   47    0.00  0.23  0.10  0.05  0.02  0.02
-22:25:25 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   48    0.00  0.23  0.09  0.05  0.02  0.02
-22:25:26 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   49    0.00  0.24  0.09  0.05  0.02  0.02
-22:25:27 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   50    0.00  0.24  0.09  0.05  0.02  0.02
-22:25:28 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   51    0.00  0.24  0.09  0.05  0.02  0.02
-22:25:29 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   52    0.00  0.24  0.09  0.05  0.02  0.02
-22:25:30 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   53    0.00  0.24  0.09  0.05  0.02  0.02
-22:25:31 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   54    0.00  0.24  0.09  0.05  0.02  0.02
-22:25:32 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   55    0.00  0.24  0.09  0.05  0.02  0.02
-22:25:33 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   56    0.00  0.25  0.09  0.05  0.02  0.02
-22:25:34 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   57    0.00  0.25  0.09  0.05  0.02  0.02
-22:25:35 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   58    0.00  0.25  0.09  0.05  0.02  0.02
-22:25:36 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   59    0.00  0.25  0.09  0.05  0.02  0.02
-22:25:37 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   60    0.00  0.25  0.09  0.05  0.02  0.02
-22:25:38 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   61    0.00  0.25  0.09  0.05  0.02  0.02
-22:25:39 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   62    0.00  0.26  0.09  0.05  0.02  0.02
-22:25:40 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   63    0.00  0.26  0.09  0.05  0.02  0.02
-22:25:41 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   64    0.00  0.26  0.09  0.05  0.02  0.02
-22:25:42 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   65    0.00  0.26  0.09  0.05  0.02  0.02
-22:25:43 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   66    0.00  0.26  0.09  0.05  0.02  0.02
-22:25:44 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   67    0.00  0.26  0.09  0.05  0.02  0.02
-22:25:45 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   68    0.00  0.26  0.09  0.05  0.02  0.02
-22:25:46 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   69    0.00  0.27  0.09  0.05  0.02  0.02
-22:25:47 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   70    0.00  0.27  0.09  0.05  0.02  0.02
-22:25:48 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   71    0.00  0.27  0.09  0.05  0.02  0.02
-22:25:49 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   72    0.00  0.27  0.09  0.05  0.02  0.02
-22:25:50 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   73    0.00  0.27  0.09  0.05  0.02  0.02
-22:25:51 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   74    0.00  0.27  0.09  0.05  0.02  0.02
-22:25:52 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   75    0.00  0.27  0.09  0.05  0.02  0.02
-22:25:52 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   76    0.00  0.28  0.09  0.05  0.02  0.02
-22:25:53 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   77    0.00  0.28  0.09  0.05  0.02  0.02
-22:25:54 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   78    0.00  0.28  0.09  0.05  0.02  0.02
-22:25:56 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   79    0.00  0.28  0.09  0.06  0.02  0.02
-22:25:57 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   80    0.00  0.28  0.09  0.06  0.02  0.02
-22:25:58 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   81    0.00  0.28  0.09  0.06  0.02  0.02
-22:25:59 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   82    0.00  0.28  0.09  0.06  0.02  0.02
-22:26:00 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   83    0.00  0.28  0.09  0.06  0.02  0.02
-22:26:01 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   84    0.00  0.29  0.09  0.06  0.02  0.02
-22:26:02 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   85    0.00  0.29  0.09  0.06  0.02  0.02
-22:26:03 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   86    0.00  0.29  0.09  0.06  0.02  0.02
-22:26:04 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   87    0.00  0.29  0.09  0.06  0.02  0.02
-22:26:04 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   88    0.00  0.29  0.09  0.06  0.02  0.02
-22:26:05 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   89    0.00  0.29  0.09  0.06  0.02  0.02
-22:26:06 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   90    0.00  0.29  0.09  0.06  0.02  0.02
-22:26:07 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   91    0.00  0.30  0.09  0.06  0.02  0.02
-22:26:08 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   92    0.00  0.30  0.09  0.06  0.02  0.02
-22:26:09 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   93    0.00  0.30  0.09  0.06  0.02  0.01
-22:26:10 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   94    0.00  0.30  0.09  0.06  0.02  0.01
-22:26:11 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   95    0.00  0.30  0.09  0.06  0.02  0.01
-22:26:12 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   96    0.00  0.30  0.09  0.06  0.02  0.01
-22:26:13 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   97    0.00  0.30  0.09  0.06  0.02  0.01
-22:26:14 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   98    0.00  0.31  0.09  0.06  0.02  0.01
-22:26:15 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   99    0.00  0.31  0.09  0.06  0.02  0.01
-22:26:16 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   100   0.00  0.31  0.09  0.06  0.02  0.01
-22:26:17 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   101   0.00  0.31  0.09  0.06  0.02  0.01
-22:26:18 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   102   0.00  0.31  0.08  0.06  0.02  0.01
-22:26:19 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   103   0.00  0.31  0.08  0.06  0.02  0.01
-22:26:20 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   104   0.00  0.31  0.08  0.06  0.02  0.01
-22:26:21 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   105   0.00  0.32  0.08  0.06  0.02  0.01
-22:26:22 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   106   0.00  0.32  0.08  0.06  0.02  0.01
-22:26:23 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   107   0.00  0.32  0.08  0.06  0.02  0.01
-22:26:24 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   108   0.00  0.32  0.08  0.06  0.02  0.01
-22:26:25 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   109   0.00  0.32  0.08  0.06  0.02  0.01
-22:26:26 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   110   0.00  0.32  0.08  0.06  0.02  0.01
-22:26:27 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   111   0.00  0.32  0.08  0.06  0.02  0.01
-22:26:28 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   112   0.00  0.32  0.08  0.06  0.02  0.01
-22:26:29 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   113   0.00  0.33  0.08  0.06  0.02  0.01
-22:26:30 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   114   0.00  0.33  0.08  0.06  0.02  0.01
-22:26:31 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   115   0.00  0.33  0.08  0.06  0.02  0.01
-22:26:32 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   116   0.00  0.33  0.08  0.06  0.02  0.01
-22:26:33 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   117   0.00  0.33  0.08  0.06  0.02  0.01
-22:26:34 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   118   0.00  0.33  0.08  0.06  0.02  0.01
-22:26:35 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   119   0.00  0.33  0.08  0.06  0.02  0.01
-22:26:36 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   120   0.00  0.33  0.08  0.06  0.02  0.01
-22:26:37 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   121   0.00  0.34  0.08  0.06  0.02  0.01
-22:26:38 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   121   0.00  0.34  0.08  0.06  0.02  0.01
-22:26:39 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   122   0.00  0.34  0.08  0.06  0.02  0.01
-22:26:40 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   123   0.00  0.34  0.08  0.06  0.02  0.01
-22:26:41 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   124   0.00  0.34  0.08  0.06  0.02  0.01
-22:26:42 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   125   0.00  0.34  0.08  0.06  0.02  0.01
-22:26:43 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   126   0.00  0.34  0.08  0.06  0.02  0.01
-22:26:44 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   128   0.00  0.34  0.08  0.06  0.02  0.01
-22:26:45 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   128   0.00  0.34  0.08  0.06  0.02  0.01
-22:26:46 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   129   0.00  0.35  0.08  0.06  0.02  0.01
-22:26:47 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   131   0.00  0.35  0.08  0.06  0.02  0.01
-22:26:48 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   132   0.00  0.35  0.08  0.06  0.02  0.01
-22:26:49 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   132   0.00  0.35  0.08  0.06  0.02  0.01
-22:26:50 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   133   0.00  0.35  0.08  0.06  0.02  0.01
-22:26:51 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   134   0.00  0.35  0.08  0.06  0.02  0.01
-22:26:52 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   135   0.00  0.35  0.08  0.06  0.02  0.01
-22:26:53 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   136   0.00  0.35  0.08  0.06  0.02  0.01
-22:26:54 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   137   0.00  0.36  0.08  0.06  0.02  0.01
-22:26:55 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   138   0.00  0.36  0.08  0.06  0.02  0.01
-22:26:56 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   139   0.00  0.36  0.08  0.06  0.02  0.01
-22:26:57 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   140   0.00  0.36  0.08  0.06  0.02  0.01
-22:26:58 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   141   0.00  0.36  0.08  0.06  0.02  0.01
-22:26:59 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   142   0.00  0.36  0.08  0.06  0.02  0.01
-22:27:00 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   143   0.00  0.36  0.08  0.06  0.02  0.01
-22:27:01 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   144   0.00  0.36  0.08  0.06  0.02  0.01
-22:27:02 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   145   0.00  0.36  0.08  0.06  0.02  0.01
-22:27:03 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   146   0.00  0.36  0.08  0.06  0.02  0.01
-22:27:04 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   147   0.00  0.37  0.08  0.06  0.02  0.01
-22:27:05 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   148   0.00  0.37  0.08  0.06  0.02  0.01
-22:27:06 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   149   0.00  0.37  0.08  0.06  0.02  0.01
-22:27:07 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   150   0.00  0.37  0.08  0.06  0.02  0.01
-22:27:08 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   151   0.00  0.37  0.08  0.06  0.02  0.01
-22:27:09 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   152   0.00  0.37  0.08  0.06  0.02  0.01
-22:27:10 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   153   0.00  0.37  0.08  0.06  0.02  0.01
-22:27:11 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   154   0.00  0.37  0.08  0.06  0.02  0.01
-22:27:12 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   155   0.00  0.37  0.08  0.06  0.02  0.01
-22:27:13 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   156   0.00  0.37  0.08  0.06  0.02  0.01
-22:27:14 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   157   0.00  0.37  0.08  0.06  0.02  0.01
-22:27:15 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   158   0.00  0.38  0.08  0.06  0.02  0.01
-22:27:16 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   159   0.00  0.38  0.08  0.06  0.02  0.01
-22:27:17 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   160   0.00  0.38  0.08  0.06  0.02  0.01
-22:27:18 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   161   0.00  0.38  0.08  0.06  0.02  0.01
-22:27:19 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   162   0.00  0.38  0.08  0.06  0.02  0.01
-22:27:20 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   163   0.00  0.38  0.08  0.06  0.02  0.01
-22:27:21 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   164   0.00  0.38  0.08  0.06  0.02  0.01
-22:27:22 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   165   0.00  0.38  0.08  0.06  0.02  0.01
-22:27:23 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   166   0.00  0.38  0.08  0.06  0.02  0.01
-22:27:24 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   167   0.00  0.39  0.08  0.06  0.02  0.01
-22:27:25 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   168   0.00  0.39  0.08  0.06  0.02  0.01
-22:27:26 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   169   0.00  0.39  0.08  0.06  0.02  0.01
-22:27:27 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   170   0.00  0.39  0.08  0.06  0.02  0.01
-22:27:28 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   171   0.00  0.39  0.08  0.06  0.02  0.01
-22:27:29 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   172   0.00  0.39  0.08  0.06  0.02  0.01
-22:27:30 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   173   0.00  0.39  0.08  0.06  0.02  0.01
-22:27:31 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   174   0.00  0.39  0.08  0.06  0.02  0.01
-22:27:32 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   175   0.00  0.39  0.08  0.06  0.02  0.01
-22:27:33 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   176   0.00  0.39  0.08  0.06  0.02  0.01
-22:27:34 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   177   0.00  0.39  0.08  0.06  0.02  0.01
-22:27:35 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   178   0.00  0.39  0.08  0.06  0.02  0.01
-22:27:36 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   179   0.00  0.39  0.08  0.07  0.02  0.01
-22:27:37 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   180   0.00  0.40  0.08  0.07  0.02  0.01
-22:27:38 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   181   0.00  0.40  0.08  0.07  0.02  0.01
-22:27:39 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   182   0.00  0.40  0.08  0.07  0.02  0.01
-22:27:40 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   183   0.00  0.40  0.08  0.07  0.02  0.01
-22:27:41 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   184   0.00  0.40  0.08  0.07  0.02  0.01
-22:27:42 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   185   0.00  0.40  0.08  0.07  0.02  0.01
-22:27:43 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   186   0.00  0.40  0.08  0.07  0.02  0.01
-22:27:44 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   187   0.00  0.40  0.08  0.07  0.02  0.01
-22:27:45 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   188   0.00  0.40  0.08  0.07  0.02  0.01
-22:27:46 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   189   0.00  0.40  0.08  0.07  0.02  0.01
-22:27:47 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   190   0.00  0.40  0.08  0.07  0.02  0.01
-22:27:48 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   191   0.00  0.40  0.08  0.07  0.02  0.01
-22:27:49 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   192   0.00  0.40  0.08  0.07  0.02  0.01
-22:27:50 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   193   0.00  0.41  0.08  0.07  0.02  0.01
-22:27:51 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   194   0.00  0.41  0.08  0.07  0.02  0.01
-22:27:52 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   195   0.00  0.41  0.08  0.07  0.02  0.01
-22:27:53 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   196   0.00  0.41  0.08  0.07  0.02  0.01
-22:27:54 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   197   0.00  0.41  0.08  0.07  0.02  0.01
-22:27:55 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   198   0.00  0.41  0.08  0.07  0.02  0.01
-22:27:56 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   199   0.00  0.41  0.08  0.07  0.02  0.01
-22:27:57 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   200   0.00  0.41  0.08  0.07  0.02  0.01
-22:27:58 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   201   0.00  0.41  0.08  0.07  0.02  0.01
-22:27:59 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   202   0.00  0.41  0.08  0.07  0.02  0.01
-22:27:59 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   203   0.00  0.41  0.08  0.07  0.02  0.01
-22:28:00 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   204   0.00  0.41  0.08  0.07  0.02  0.01
-22:28:01 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   205   0.00  0.41  0.08  0.07  0.02  0.01
-22:28:02 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   206   0.00  0.41  0.08  0.07  0.02  0.01
-22:28:03 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   207   0.00  0.41  0.08  0.07  0.02  0.01
-22:28:04 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   208   0.00  0.42  0.08  0.07  0.02  0.01
-22:28:05 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:06 09E7.0   09E701632678  sit     23   LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:07 09E7.0   09E701632678  sit     30   LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:08 09E7.0   09E701632678  sit     38   LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:09 09E7.0   09E701632678  sit     49   LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:11 09E7.0   09E701632678  sit     24   LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:11 09E7.0   09E701632678  sit     26   LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:12 09E7.0   09E701632678  sit     24   LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:13 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:14 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:15 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:16 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:17 09E7.0   09E701632678  sit     0    LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:18 09E7.0   09E701632678  sit     18   LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.08  0.07  0.02  0.01
-22:28:19 09E7.0   09E701632678  sit     23   LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.07  0.07  0.02  0.01
-22:28:20 09E7.0   09E701632678  sit     42   LeftBed  sit                trk  1.00 Fallen     1   0     0.00  0.42  0.07  0.07  0.02  0.01
-22:28:21 09E7.0   09E701632678  stand   91   LeftBed  stand              trk  1.00 Fallen     1   0     0.00  0.48  0.17  0.08  0.02  0.01
-22:28:22 09E7.0   09E701632678  stand   76   LeftBed  stand              trk  1.00 Fallen     1   0     0.00  0.50  0.22  0.08  0.02  0.02
-22:28:22 09E7.E   -             -       0    LeftBed  LeftBed(rdr)       room -    Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:28:23 09E7.0   09E701632678  stand   26   NoReport stand              trk  1.00 Fallen     1   0     0.00  0.35  0.34  0.10  0.02  0.02
-22:28:24 09E7.0   09E701632678  stand   16   NoReport stand              trk  1.00 Fallen     1   0     0.01  0.24  0.43  0.10  0.03  0.03
-22:28:25 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.01  0.17  0.49  0.09  0.04  0.03
-22:28:26 09E7.0   09E701632678  sit     0    NoReport sit                trk  1.00 Fallen     1   0     0.01  0.16  0.33  0.09  0.05  0.04
-22:28:27 09E7.E   -             -       0    NoReport Walking(rdr)       room -    Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:28:27 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.04  0.15  0.26  0.10  0.08  0.03
-22:28:28 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.12  0.13  0.21  0.10  0.09  0.03
-22:28:29 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.29  0.10  0.15  0.09  0.09  0.02
-22:28:30 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.55  0.06  0.09  0.06  0.06  0.01
-22:28:31 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.78  0.03  0.04  0.03  0.03  0.01
-22:28:32 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.91  0.01  0.02  0.01  0.01  0.00
-22:28:33 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.97  0.00  0.01  0.00  0.00  0.00
-22:28:34 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.98  0.00  0.00  0.00  0.00  0.00
-22:28:35 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:36 09E7.0   09E701632678  susfall 17   NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:37 09E7.0   09E701632678  susfall 22   NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:38 09E7.0   09E701632678  susfall 40   NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:38 09E7.0   09E701632678  susfall 44   NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:39 09E7.0   09E701632678  sitgnd  46   NoReport sitgnd             trk  1.00 Fallen     1   0     0.99  0.00  0.01  0.00  0.00  0.00
-22:28:39 09E7.0   09E701632678  sit     73   NoReport sit                trk  1.00 Fallen     1   0     0.97  0.00  0.01  0.00  0.00  0.00
-22:28:40 09E7.0   09E701632678  sit     39   NoReport sit                trk  1.00 Fallen     1   0     0.96  0.00  0.02  0.00  0.00  0.00
-22:28:41 09E7.0   09E701632678  sit     33   NoReport sit                trk  1.00 Fallen     1   0     0.95  0.00  0.02  0.00  0.00  0.00
-22:28:42 09E7.0   09E701632678  sit     19   NoReport sit                trk  1.00 Fallen     1   0     0.93  0.00  0.02  0.00  0.00  0.00
-22:28:43 09E7.0   09E701632678  sit     0    NoReport sit                trk  1.00 Fallen     1   0     0.91  0.00  0.03  0.00  0.00  0.00
-22:28:44 09E7.E   -             -       0    NoReport Walking(rdr)       room -    Fallen     1   0     0.91  0.00  0.03  0.00  0.00  0.00
-22:28:44 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.96  0.00  0.01  0.00  0.00  0.00
-22:28:45 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.98  0.00  0.01  0.00  0.00  0.00
-22:28:46 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:47 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:48 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:49 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:50 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:51 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:52 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:53 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:54 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:55 09E7.0   09E701632678  susfall 0    NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:56 09E7.0   09E701632678  susfall 19   NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:57 09E7.0   09E701632678  susfall 34   NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:58 09E7.0   09E701632678  susfall 47   NoReport susfall            trk  1.00 Fallen     1   0     0.99  0.00  0.00  0.00  0.00  0.00
-22:28:58 09E7.0   09E701632678  sitgnd  54   NoReport sitgnd             trk  1.00 Fallen     1   0     0.98  0.00  0.01  0.00  0.00  0.00
-22:28:58 09E7.0   09E701632678  sit     64   NoReport sit                trk  1.00 Fallen     1   0     0.97  0.00  0.01  0.00  0.00  0.00
-22:28:59 09E7.0   09E701632678  stand   70   NoReport stand              trk  1.00 Fallen     1   0     0.95  0.00  0.03  0.00  0.00  0.00
-22:29:00 09E7.0   09E701632678  walk    58   NoReport walk               trk  1.00 Fallen     1   0     0.84  0.00  0.11  0.00  0.00  0.00
-22:29:01 09E7.0   09E701632678  walk    57   NoReport walk               trk  1.00 Fallen     1   0     0.61  0.01  0.26  0.00  0.01  0.01
-22:29:01 D523.0   D52301601002  stand   79   NoReport stand              trk  1.00 Fallen     2   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:02 09E7.0   09E701632678  walk    40   NoReport walk               trk  1.00 Fallen     2   0     0.06  0.05  0.59  0.01  0.04  0.03
-22:29:02 D523.0   D52301601002  walk    59   NoReport walk               trk  1.00 Fallen     2   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:03 09E7.0   09E701632678  walk    34   NoReport walk               trk  1.00 Fallen     2   0     0.01  0.05  0.62  0.02  0.05  0.03
-22:29:03 D523.0   D52301601002  walk    80   NoReport walk               trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:04 09E7.0   09E701632678  walk    64   NoReport walk               trk  1.00 Fallen     1   0     0.00  0.03  0.76  0.01  0.03  0.02
-22:29:04 D523.0   D52301601002  walk    69   NoReport walk               trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:05 09E7.0   09E701632678  walk    0    NoReport walk               trk  1.00 Fallen     1   0     0.00  0.02  0.84  0.00  0.01  0.02
-22:29:05 D523.0   D52301601002  walk    0    NoReport walk               trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:06 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:29:06 D523.0   D52301601002  walk    0    NoReport walk               trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:07 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:29:07 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:08 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:29:08 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:09 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:29:09 D523.0   D52301601002  stand   75   NoReport stand              trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:10 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:29:10 D523.0   D52301601002  stand   77   NoReport stand              trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:11 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:29:11 D523.0   D52301601002  stand   104  NoReport stand              trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:12 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:29:12 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:13 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:29:13 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:14 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:29:14 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:15 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:29:15 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:16 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:29:16 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:17 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:29:17 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.25  0.09  0.13  0.11  0.16  0.01
-22:29:18 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   0     0.00  0.02  0.85  0.00  0.01  0.02
-22:29:18 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   14    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:19 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   14    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:19 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   15    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:20 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   15    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:20 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   16    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:21 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   16    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:21 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   17    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:22 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   17    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:22 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   17    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:23 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   18    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:23 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   18    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:24 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   19    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:24 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   19    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:25 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   20    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:25 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   20    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:26 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   21    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:26 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   21    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:27 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   22    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:27 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   22    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:28 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   23    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:28 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   23    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:29 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   24    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:29 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   24    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:30 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   25    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:30 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   25    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:31 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   26    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:31 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   26    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:32 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   27    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:32 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   27    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:33 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   28    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:33 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   28    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:34 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   29    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:34 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   29    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:35 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   30    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:35 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   30    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:36 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   31    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:36 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   31    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:37 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   32    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:37 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   32    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:38 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   33    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:38 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   33    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:39 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   34    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:39 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   34    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:40 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   35    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:40 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   35    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:41 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   36    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:41 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   36    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:42 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   37    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:42 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   37    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:43 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   38    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:43 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   38    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:44 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   39    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:44 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   39    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:45 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   40    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:45 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   40    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:46 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   41    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:46 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   41    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:47 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   42    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:47 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   42    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:48 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   43    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:48 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   43    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:49 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   44    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:49 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   44    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:50 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   45    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:50 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   45    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:51 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   46    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:51 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   46    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:52 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   47    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:52 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   47    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:53 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   48    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:53 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   48    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:54 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   49    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:54 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   49    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:55 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   50    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:55 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   50    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:56 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   51    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:56 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   51    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:57 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   52    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:57 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   52    0.25  0.09  0.13  0.11  0.16  0.01
-22:29:58 09E7.0   09E701632678  stand   0    NoReport stand              trk  1.00 Fallen     1   53    0.00  0.02  0.85  0.00  0.01  0.02
-22:29:58 D523.0   D52301601002  stand   0    NoReport stand              trk  1.00 Fallen     1   53    0.25  0.09  0.13  0.11  0.16  0.01
 ```
 
-**汇总**: xray tick 1055 | fire 0 | Fall 事件 0 () | 结论 = 无 Fall 无 fire
+## 原始 stream（每雷达逐帧 raw track；x/y/Δ 对照上方 belief 的 stillbox）
+```
+time         dev.tid   pose   area x      y      z     conf Δcm  
+22:16:13.024 09E7.88   88     -    -      -      -     -    -    
+22:16:32.678 09E7.0    stand  None 280    -180   0     80        
+22:16:32.680 09E7.0    stand  None 280    -170   51    80   10   
+22:16:33.543 09E7.0    stand  None 270    -190   32    80   22   
+22:16:34.550 09E7.0    stand  None 270    -170   0     80   20   
+22:16:35.545 09E7.0    stand  None 260    -180   0     80   14   
+22:16:36.549 09E7.0    stand  None 270    -170   24    80   14   
+22:16:37.551 09E7.0    stand  None 270    -140   69    80   30   
+22:16:38.555 09E7.0    stand  None 270    -130   0     80   10   
+22:16:39.569 09E7.0    stand  None 260    -120   82    80   14   
+22:16:40.559 09E7.0    stand  None 260    -110   83    80   10   
+22:16:41.452 09E7.0    stand  None 250    -110   0     80   10   
+22:16:42.443 09E7.0    stand  None 250    -120   63    80   10   
+22:16:43.505 09E7.0    stand  None 240    -90    59    80   31   
+22:16:44.447 09E7.0    stand  None 230    -80    0     80   14   
+22:16:45.448 09E7.0    stand  None 230    -60    0     80   20   
+22:16:46.453 09E7.0    stand  None 230    -70    0     80   10   
+22:16:47.453 09E7.0    stand  None 250    -60    120   80   22   
+22:16:48.463 09E7.0    stand  None 240    -50    0     80   14   
+22:16:49.450 09E7.0    stand  None 250    -50    81    80   10   
+22:16:50.454 09E7.0    stand  None 230    -20    57    80   36   
+22:16:51.456 09E7.0    stand  None 220    20     64    80   41   
+22:16:52.466 09E7.0    walk   None 200    60     89    80   44   
+22:16:53.354 09E7.0    walk   None 180    80     96    80   28   
+22:16:54.349 09E7.0    walk   None 200    80     98    80   20   
+22:16:55.350 09E7.0    walk   None 200    60     44    80   20   
+22:16:56.364 09E7.0    walk   None 200    50     61    80   10   
+22:16:57.350 09E7.0    walk   None 190    10     66    80   41   
+22:16:58.363 09E7.0    walk   None 190    -20    0     80   30   
+22:16:59.353 09E7.0    walk   None 180    -10    65    80   14   
+22:17:00.360 09E7.0    walk   None 200    -10    58    80   20   
+22:17:01.355 09E7.0    walk   None 200    -10    72    80   0    
+22:17:02.359 09E7.0    walk   None 220    10     78    80   28   
+22:17:03.357 09E7.0    walk   None 210    30     80    80   22   
+22:17:04.359 09E7.0    walk   None 180    70     64    80   50   
+22:17:05.270 09E7.0    walk   None 180    80     75    80   10   
+22:17:06.257 09E7.0    walk   None 170    70     94    80   14   
+22:17:07.254 09E7.0    walk   None 180    50     76    80   22   
+22:17:08.265 09E7.0    walk   None 170    70     63    80   22   
+22:17:09.257 09E7.0    walk   None 180    70     95    80   10   
+22:17:10.258 09E7.0    walk   None 190    60     57    80   14   
+22:17:11.260 09E7.0    walk   None 190    30     108   80   30   
+22:17:12.258 09E7.0    walk   None 200    20     76    80   14   
+22:17:13.260 09E7.0    walk   None 190    10     77    80   14   
+22:17:14.281 09E7.0    walk   None 200    20     95    80   14   
+22:17:15.263 09E7.0    walk   None 200    20     58    80   0    
+22:17:16.271 09E7.0    walk   None 200    40     45    80   20   
+22:17:17.157 09E7.0    walk   None 200    50     58    80   10   
+22:17:18.177 09E7.0    walk   None 190    50     125   80   10   
+22:17:19.166 09E7.0    walk   None 170    50     0     80   20   
+22:17:20.169 09E7.0    walk   None 180    60     84    80   14   
+22:17:21.167 09E7.0    walk   None 180    80     94    80   20   
+22:17:22.177 09E7.0    walk   None 160    80     74    80   20   
+22:17:23.164 09E7.0    walk   None 120    70     81    80   41   
+22:17:24.162 09E7.0    walk   None 90     70     65    80   30   
+22:17:25.175 09E7.0    walk   None 40     70     82    80   50   
+22:17:26.169 09E7.0    walk   None 0      70     64    80   40   
+22:17:27.183 09E7.0    walk   None -40    50     75    80   44   
+22:17:28.171 09E7.0    walk   None -60    0      72    80   53   
+22:17:29.065 09E7.0    walk   None -70    -20    65    80   22   
+22:17:30.064 09E7.0    walk   None -30    -40    48    80   44   
+22:17:31.064 09E7.0    lying  None -20    -40    49    80   10   
+22:17:32.071 09E7.0    lying  None -20    -40    50    80   0    
+22:17:33.066 09E7.0    lying  None -30    -10    35    80   31   
+22:17:34.068 09E7.0    lying  None -40    -60    0     80   50   
+22:17:35.068 09E7.0    lying  None -40    -60    0     80   0    
+22:17:36.071 09E7.0    lying  None -20    -120   0     80   63   
+22:17:37.070 09E7.0    lying  2    -30    -110   0     80   14   
+22:17:38.078 09E7.0    lying  2    -30    -120   0     80   10   
+22:17:39.075 09E7.0    lying  2    -40    -120   0     80   10   
+22:17:39.980 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:40.981 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:42.038 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:42.981 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:43.977 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:44.980 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:45.988 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:46.989 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:47.999 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:48.983 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:49.990 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:50.881 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:51.890 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:52.888 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:53.885 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:54.889 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:55.888 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:56.912 09E7.0    lying  2    -40    -120   0     80   0    
+22:17:57.895 09E7.0    lying  2    -40    -110   73    80   10   
+22:17:58.893 09E7.0    lying  2    -40    -60    35    80   50   
+22:17:59.891 09E7.0    lying  2    -40    -30    39    80   30   
+22:18:00.814 09E7.0    walk   2    -50    -30    37    80   10   
+22:18:01.819 09E7.0    lying  2    -50    -40    52    80   10   
+22:18:02.817 09E7.0    lying  2    -50    -20    0     80   20   
+22:18:03.815 09E7.0    lying  2    -40    -10    0     80   14   
+22:18:04.817 09E7.0    lying  2    -40    -10    0     80   0    
+22:18:05.812 09E7.0    lying  2    -40    -10    0     80   0    
+22:18:06.819 09E7.0    lying  2    -50    -70    0     80   60   
+22:18:07.816 09E7.0    lying  2    -40    -90    0     80   22   
+22:18:08.817 09E7.0    stand  2    -60    -110   0     80   28   
+22:18:09.819 09E7.0    stand  2    -60    -110   0     80   0    
+22:18:10.820 09E7.0    stand  2    -50    -110   0     80   10   
+22:18:11.721 09E7.0    stand  2    -40    -100   0     80   14   
+22:18:12.718 09E7.0    stand  2    -40    -140   0     80   40   
+22:18:13.717 09E7.0    stand  2    -40    -140   0     80   0    
+22:18:14.722 09E7.0    stand  2    -40    -100   0     80   40   
+22:18:15.726 09E7.0    stand  2    -30    -110   59    80   14   
+22:18:16.676 09E7.0    stand  2    -30    -120   58    80   10   
+22:18:17.682 09E7.0    lying  2    -20    -50    48    80   70   
+22:18:18.683 09E7.0    lying  2    -40    -40    47    80   22   
+22:18:19.681 09E7.0    walk   2    -40    0      0     80   40   
+22:18:20.686 09E7.0    stand  2    -40    0      0     80   0    
+22:18:21.682 09E7.0    stand  2    -40    0      0     80   0    
+22:18:22.685 09E7.0    lying  2    -20    -20    34    80   28   
+22:18:23.682 09E7.0    lying  2    -30    -70    52    80   50   
+22:18:24.686 09E7.0    lying  2    0      -60    52    80   31   
+22:18:25.687 09E7.0    lying  2    0      -50    48    80   10   
+22:18:26.685 09E7.0    lying  2    10     -60    36    80   14   
+22:18:27.702 09E7.0    stand  2    40     -70    20    80   31   
+22:18:28.583 09E7.0    stand  2    40     -40    12    80   30   
+22:18:29.591 09E7.0    stand  2    40     -30    0     80   10   
+22:18:30.597 09E7.0    sit    2    40     -30    0     80   0    
+22:18:31.610 09E7.0    sit    2    40     -30    0     80   0    
+22:18:32.585 09E7.0    sit    2    40     -30    0     80   0    
+22:18:33.611 09E7.0    sit    2    40     -30    0     80   0    
+22:18:34.613 09E7.0    sit    2    40     -30    0     80   0    
+22:18:35.618 09E7.0    sit    2    40     -30    0     80   0    
+22:18:36.514 09E7.0    sit    2    40     -30    0     80   0    
+22:18:37.536 09E7.0    sit    2    40     -30    0     80   0    
+22:18:38.568 09E7.0    sit    2    40     -30    0     80   0    
+22:18:39.523 09E7.0    sit    2    40     -30    0     80   0    
+22:18:40.527 09E7.0    sit    2    40     -30    0     80   0    
+22:18:41.582 09E7.0    sit    2    40     -30    0     80   0    
+22:18:42.523 09E7.0    sit    2    40     -30    0     80   0    
+22:18:43.522 09E7.0    sit    2    40     -30    0     80   0    
+22:18:44.523 09E7.0    sit    2    40     -30    0     80   0    
+22:18:45.525 09E7.0    sit    2    40     -30    0     80   0    
+22:18:46.548 09E7.0    sit    2    40     -30    0     80   0    
+22:18:47.525 09E7.0    sit    2    40     -30    0     80   0    
+22:18:48.451 09E7.0    sit    2    40     -30    0     80   0    
+22:18:49.422 09E7.0    sit    2    40     -30    0     80   0    
+22:18:50.444 09E7.0    sit    2    40     -30    0     80   0    
+22:18:51.426 09E7.0    sit    2    40     -30    0     80   0    
+22:18:52.425 09E7.0    sit    2    40     -30    0     80   0    
+22:18:53.428 09E7.0    sit    2    40     -30    0     80   0    
+22:18:54.431 09E7.0    sit    2    40     -30    0     80   0    
+22:18:55.428 09E7.0    sit    2    40     -30    0     80   0    
+22:18:56.430 09E7.0    sit    2    40     -30    0     80   0    
+22:18:57.448 09E7.0    sit    2    40     -30    0     80   0    
+22:18:58.429 09E7.0    sit    2    40     -30    0     80   0    
+22:18:59.343 09E7.0    sit    2    40     -30    0     80   0    
+22:19:00.330 09E7.0    sit    2    40     -30    0     80   0    
+22:19:01.331 09E7.0    sit    2    40     -30    0     80   0    
+22:19:02.330 09E7.0    sit    2    40     -30    0     80   0    
+22:19:03.340 09E7.0    sit    2    40     -30    0     80   0    
+22:19:04.338 09E7.0    sit    2    40     -30    0     80   0    
+22:19:05.286 09E7.0    sit    2    40     -30    0     80   0    
+22:19:06.283 09E7.0    sit    2    40     -30    0     80   0    
+22:19:07.288 09E7.0    sit    2    40     -30    0     80   0    
+22:19:08.288 09E7.0    sit    2    40     -30    0     80   0    
+22:19:09.288 09E7.0    sit    2    40     -30    0     80   0    
+22:19:10.287 09E7.0    sit    2    40     -30    0     80   0    
+22:19:11.291 09E7.0    sit    2    40     -30    0     80   0    
+22:19:12.293 09E7.0    sit    2    40     -30    0     80   0    
+22:19:13.294 09E7.0    sit    2    40     -30    0     80   0    
+22:19:14.299 09E7.0    sit    2    40     -30    0     80   0    
+22:19:15.295 09E7.0    sit    2    40     -30    0     80   0    
+22:19:16.295 09E7.0    sit    2    40     -30    0     80   0    
+22:19:17.184 09E7.0    sit    2    40     -30    0     80   0    
+22:19:18.189 09E7.0    sit    2    40     -30    0     80   0    
+22:19:19.188 09E7.0    sit    2    40     -30    0     80   0    
+22:19:20.188 09E7.0    sit    2    40     -30    0     80   0    
+22:19:21.256 09E7.0    sit    2    40     -30    0     80   0    
+22:19:22.241 09E7.0    sit    2    40     -30    0     80   0    
+22:19:23.140 09E7.0    sit    2    40     -30    0     80   0    
+22:19:24.144 09E7.0    sit    2    40     -30    0     80   0    
+22:19:25.142 09E7.0    sit    2    40     -30    0     80   0    
+22:19:26.151 09E7.0    sit    2    40     -30    0     80   0    
+22:19:27.145 09E7.0    sit    2    40     -30    0     80   0    
+22:19:28.143 09E7.0    sit    2    40     -30    0     80   0    
+22:19:29.154 09E7.0    sit    2    40     -30    0     80   0    
+22:19:30.161 09E7.0    sit    2    40     -30    0     80   0    
+22:19:31.171 09E7.0    sit    2    40     -30    0     80   0    
+22:19:32.964 09E7.0    sit    2    40     -30    0     80   0    
+22:19:33.150 09E7.0    sit    2    40     -30    0     80   0    
+22:19:34.171 09E7.0    sit    2    40     -30    0     80   0    
+22:19:35.043 09E7.0    sit    2    40     -30    0     80   0    
+22:19:36.049 09E7.0    sit    2    40     -30    0     80   0    
+22:19:37.053 09E7.0    sit    2    40     -30    0     80   0    
+22:19:38.057 09E7.0    sit    2    40     -30    0     80   0    
+22:19:39.075 09E7.0    sit    2    40     -30    0     80   0    
+22:19:40.052 09E7.0    sit    2    40     -30    0     80   0    
+22:19:41.113 09E7.0    sit    2    40     -30    0     80   0    
+22:19:42.059 09E7.0    sit    2    40     -30    0     80   0    
+22:19:43.077 09E7.0    sit    2    40     -30    0     80   0    
+22:19:44.107 09E7.0    sit    2    40     -30    0     80   0    
+22:19:45.072 09E7.0    sit    2    40     -30    0     80   0    
+22:19:45.974 09E7.0    sit    2    40     -30    0     80   0    
+22:19:47.036 09E7.0    sit    2    40     -30    0     80   0    
+22:19:47.962 09E7.0    sit    2    40     -30    0     80   0    
+22:19:48.972 09E7.0    sit    2    40     -30    0     80   0    
+22:19:49.963 09E7.0    sit    2    40     -30    0     80   0    
+22:19:50.963 09E7.0    sit    2    40     -30    0     80   0    
+22:19:51.966 09E7.0    sit    2    40     -30    0     80   0    
+22:19:52.963 09E7.0    sit    2    40     -30    0     80   0    
+22:19:53.965 09E7.0    sit    2    40     -30    0     80   0    
+22:19:54.965 09E7.0    sit    2    40     -30    0     80   0    
+22:19:55.978 09E7.0    sit    2    40     -30    0     80   0    
+22:19:56.969 09E7.0    sit    2    40     -30    0     80   0    
+22:19:57.862 09E7.0    sit    2    40     -30    0     80   0    
+22:19:58.863 09E7.0    sit    2    40     -30    0     80   0    
+22:19:59.864 09E7.0    sit    2    40     -30    0     80   0    
+22:20:00.861 09E7.0    sit    2    40     -30    0     80   0    
+22:20:01.870 09E7.0    sit    2    40     -30    0     80   0    
+22:20:02.865 09E7.0    sit    2    40     -30    0     80   0    
+22:20:03.865 09E7.0    sit    2    40     -30    0     80   0    
+22:20:04.880 09E7.0    sit    2    40     -30    0     80   0    
+22:20:05.865 09E7.0    sit    2    40     -30    0     80   0    
+22:20:06.871 09E7.0    sit    2    40     -30    0     80   0    
+22:20:07.870 09E7.0    sit    2    40     -30    0     80   0    
+22:20:08.799 09E7.0    sit    2    40     -30    0     80   0    
+22:20:09.777 09E7.0    sit    2    40     -30    0     80   0    
+22:20:10.774 09E7.0    sit    2    40     -30    0     80   0    
+22:20:11.776 09E7.0    sit    2    40     -30    0     80   0    
+22:20:12.777 09E7.0    sit    2    40     -30    0     80   0    
+22:20:13.786 09E7.0    sit    2    40     -30    0     80   0    
+22:20:14.785 09E7.0    sit    2    40     -30    0     80   0    
+22:20:15.777 09E7.0    sit    2    40     -30    0     80   0    
+22:20:16.794 09E7.0    sit    2    40     -30    0     80   0    
+22:20:17.782 09E7.0    sit    2    40     -30    0     80   0    
+22:20:18.789 09E7.0    sit    2    40     -30    0     80   0    
+22:20:19.784 09E7.0    sit    2    40     -30    0     80   0    
+22:20:20.675 09E7.0    sit    2    40     -30    0     80   0    
+22:20:21.681 09E7.0    sit    2    40     -30    0     80   0    
+22:20:22.688 09E7.0    sit    2    40     -30    0     80   0    
+22:20:23.680 09E7.0    sit    2    40     -30    0     80   0    
+22:20:24.685 09E7.0    sit    2    40     -30    0     80   0    
+22:20:25.694 09E7.0    sit    2    40     -30    0     80   0    
+22:20:26.698 09E7.0    sit    2    40     -30    0     80   0    
+22:20:27.718 09E7.0    sit    2    40     -30    0     80   0    
+22:20:28.708 09E7.0    sit    2    40     -30    0     80   0    
+22:20:29.701 09E7.0    sit    2    40     -30    0     80   0    
+22:20:30.594 09E7.0    sit    2    40     -30    0     80   0    
+22:20:31.597 09E7.0    sit    2    40     -30    0     80   0    
+22:20:32.598 09E7.0    sit    2    40     -30    0     80   0    
+22:20:33.604 09E7.0    sit    2    40     -30    0     80   0    
+22:20:34.601 09E7.0    sit    2    40     -30    0     80   0    
+22:20:35.613 09E7.0    sit    2    40     -30    0     80   0    
+22:20:36.600 09E7.0    sit    2    40     -30    0     80   0    
+22:20:37.604 09E7.0    sit    2    40     -30    0     80   0    
+22:20:38.616 09E7.0    sit    2    40     -30    0     80   0    
+22:20:39.602 09E7.0    sit    2    40     -30    0     80   0    
+22:20:40.657 09E7.0    sit    2    40     -30    0     80   0    
+22:20:41.506 09E7.0    sit    2    40     -30    0     80   0    
+22:20:42.511 09E7.0    sit    2    40     -30    0     80   0    
+22:20:43.518 09E7.0    sit    2    40     -30    0     80   0    
+22:20:44.515 09E7.0    sit    2    40     -30    0     80   0    
+22:20:45.510 09E7.0    sit    2    40     -30    0     80   0    
+22:20:46.513 09E7.0    sit    2    40     -30    0     80   0    
+22:20:47.518 09E7.0    sit    2    40     -30    0     80   0    
+22:20:48.524 09E7.0    sit    2    40     -30    0     80   0    
+22:20:49.532 09E7.0    sit    2    40     -30    0     80   0    
+22:20:50.521 09E7.0    sit    2    40     -30    0     80   0    
+22:20:51.516 09E7.0    sit    2    40     -30    0     80   0    
+22:20:52.522 09E7.0    sit    2    40     -30    0     80   0    
+22:20:53.420 09E7.0    sit    2    40     -30    0     80   0    
+22:20:54.421 09E7.0    sit    2    40     -30    0     80   0    
+22:20:55.416 09E7.0    sit    2    40     -30    0     80   0    
+22:20:56.411 09E7.0    sit    2    40     -30    0     80   0    
+22:20:57.378 09E7.0    sit    2    40     -30    0     80   0    
+22:20:58.384 09E7.0    sit    2    40     -30    0     80   0    
+22:20:59.415 09E7.0    sit    2    40     -30    0     80   0    
+22:21:00.383 09E7.0    sit    2    40     -30    0     80   0    
+22:21:01.383 09E7.0    sit    2    40     -30    0     80   0    
+22:21:02.398 09E7.0    sit    2    40     -30    0     80   0    
+22:21:03.389 09E7.0    sit    2    40     -30    0     80   0    
+22:21:04.386 09E7.0    sit    2    40     -30    0     80   0    
+22:21:05.392 09E7.0    sit    2    40     -30    0     80   0    
+22:21:06.394 09E7.0    sit    2    40     -30    0     80   0    
+22:21:07.397 09E7.0    sit    2    40     -30    0     80   0    
+22:21:08.406 09E7.0    sit    2    40     -30    0     80   0    
+22:21:09.281 09E7.0    sit    2    40     -30    0     80   0    
+22:21:10.282 09E7.0    sit    2    40     -30    0     80   0    
+22:21:11.393 09E7.0    sit    2    40     -30    0     80   0    
+22:21:12.300 09E7.0    sit    2    40     -30    0     80   0    
+22:21:13.335 09E7.0    sit    2    40     -30    0     80   0    
+22:21:14.366 09E7.0    sit    2    40     -30    0     80   0    
+22:21:15.319 09E7.0    sit    2    40     -30    0     80   0    
+22:21:16.321 09E7.0    sit    2    40     -30    0     80   0    
+22:21:17.222 09E7.0    sit    2    40     -30    0     80   0    
+22:21:18.240 09E7.0    sit    2    40     -30    0     80   0    
+22:21:19.230 09E7.0    sit    2    40     -30    0     80   0    
+22:21:20.222 09E7.0    sit    2    40     -30    0     80   0    
+22:21:21.228 09E7.0    sit    2    40     -30    0     80   0    
+22:21:22.229 09E7.0    sit    2    40     -30    0     80   0    
+22:21:23.226 09E7.0    sit    2    40     -30    0     80   0    
+22:21:24.230 09E7.0    sit    2    40     -30    0     80   0    
+22:21:25.230 09E7.0    sit    2    40     -30    0     80   0    
+22:21:26.226 09E7.0    sit    2    40     -30    0     80   0    
+22:21:27.236 09E7.0    sit    2    40     -30    0     80   0    
+22:21:28.264 09E7.0    sit    2    40     -30    0     80   0    
+22:21:29.132 09E7.0    sit    2    40     -30    0     80   0    
+22:21:30.127 09E7.0    sit    2    40     -30    0     80   0    
+22:21:31.130 09E7.0    sit    2    40     -30    0     80   0    
+22:21:32.132 09E7.0    sit    2    40     -30    0     80   0    
+22:21:33.158 09E7.0    sit    2    40     -30    0     80   0    
+22:21:34.134 09E7.0    sit    2    40     -30    0     80   0    
+22:21:35.138 09E7.0    sit    2    40     -30    0     80   0    
+22:21:36.134 09E7.0    sit    2    40     -30    0     80   0    
+22:21:37.151 09E7.0    sit    2    40     -30    0     80   0    
+22:21:38.146 09E7.0    sit    2    40     -30    0     80   0    
+22:21:39.139 09E7.0    sit    2    40     -30    0     80   0    
+22:21:40.034 09E7.0    sit    2    40     -30    0     80   0    
+22:21:41.085 09E7.0    sit    2    40     -30    0     80   0    
+22:21:42.077 09E7.0    sit    2    40     -30    0     80   0    
+22:21:43.037 09E7.0    sit    2    40     -30    0     80   0    
+22:21:44.168 09E7.0    sit    2    40     -30    0     80   0    
+22:21:44.997 09E7.0    sit    2    40     -30    0     80   0    
+22:21:45.994 09E7.0    sit    2    40     -30    0     80   0    
+22:21:46.999 09E7.0    sit    2    40     -30    0     80   0    
+22:21:48.003 09E7.0    sit    2    40     -30    0     80   0    
+22:21:49.005 09E7.0    sit    2    40     -30    0     80   0    
+22:21:50.054 09E7.0    sit    2    40     -30    0     80   0    
+22:21:50.999 09E7.0    sit    2    40     -30    0     80   0    
+22:21:52.000 09E7.0    sit    2    40     -30    0     80   0    
+22:21:53.004 09E7.0    sit    2    40     -30    0     80   0    
+22:21:54.004 09E7.0    sit    2    40     -30    0     80   0    
+22:21:55.009 09E7.0    sit    2    40     -30    0     80   0    
+22:21:56.006 09E7.0    sit    2    40     -30    0     80   0    
+22:21:56.902 09E7.0    sit    2    40     -30    0     80   0    
+22:21:57.899 09E7.0    sit    2    40     -30    0     80   0    
+22:21:58.905 09E7.0    sit    2    40     -30    0     80   0    
+22:21:59.900 09E7.0    sit    2    40     -30    0     80   0    
+22:22:00.946 09E7.0    sit    2    40     -30    0     80   0    
+22:22:01.949 09E7.0    sit    2    40     -30    0     80   0    
+22:22:02.952 09E7.0    sit    2    40     -30    0     80   0    
+22:22:03.842 09E7.0    sit    2    40     -30    0     80   0    
+22:22:04.843 09E7.0    sit    2    40     -30    0     80   0    
+22:22:05.852 09E7.0    sit    2    40     -30    0     80   0    
+22:22:06.857 09E7.0    sit    2    40     -30    0     80   0    
+22:22:07.854 09E7.0    sit    2    40     -30    0     80   0    
+22:22:08.862 09E7.0    sit    2    40     -30    0     80   0    
+22:22:09.875 09E7.0    sit    2    40     -30    0     80   0    
+22:22:10.862 09E7.0    sit    2    40     -30    0     80   0    
+22:22:11.865 09E7.0    sit    2    40     -30    0     80   0    
+22:22:12.852 09E7.0    sit    2    40     -30    0     80   0    
+22:22:13.865 09E7.0    sit    2    40     -30    0     80   0    
+22:22:14.855 09E7.0    sit    2    40     -30    0     80   0    
+22:22:15.750 09E7.0    sit    2    40     -30    0     80   0    
+22:22:16.781 09E7.0    sit    2    40     -30    0     80   0    
+22:22:17.771 09E7.0    sit    2    40     -30    0     80   0    
+22:22:18.770 09E7.0    sit    2    40     -30    0     80   0    
+22:22:19.767 09E7.0    sit    2    40     -30    0     80   0    
+22:22:20.768 09E7.0    sit    2    40     -30    0     80   0    
+22:22:21.769 09E7.0    sit    2    40     -30    0     80   0    
+22:22:22.771 09E7.0    sit    2    40     -30    0     80   0    
+22:22:23.774 09E7.0    sit    2    40     -30    0     80   0    
+22:22:24.772 09E7.0    sit    2    40     -30    0     80   0    
+22:22:25.674 09E7.0    sit    2    40     -30    0     80   0    
+22:22:26.674 09E7.0    sit    2    40     -30    0     80   0    
+22:22:27.679 09E7.0    sit    2    40     -30    0     80   0    
+22:22:28.684 09E7.0    sit    2    40     -30    0     80   0    
+22:22:29.678 09E7.0    sit    2    40     -30    0     80   0    
+22:22:30.692 09E7.0    sit    2    40     -30    0     80   0    
+22:22:31.676 09E7.0    sit    2    40     -30    0     80   0    
+22:22:32.680 09E7.0    sit    2    40     -30    0     80   0    
+22:22:33.631 09E7.0    sit    2    40     -30    0     80   0    
+22:22:34.617 09E7.0    sit    2    40     -30    0     80   0    
+22:22:35.622 09E7.0    sit    2    40     -30    0     80   0    
+22:22:36.620 09E7.0    sit    2    40     -30    0     80   0    
+22:22:37.627 09E7.0    sit    2    40     -30    0     80   0    
+22:22:38.611 09E7.0    sit    2    40     -30    0     80   0    
+22:22:39.723 09E7.0    sit    2    40     -30    0     80   0    
+22:22:40.615 09E7.0    sit    2    40     -30    0     80   0    
+22:22:41.624 09E7.0    sit    2    40     -30    0     80   0    
+22:22:42.626 09E7.0    sit    2    40     -30    0     80   0    
+22:22:43.615 09E7.0    sit    2    40     -30    0     80   0    
+22:22:44.615 09E7.0    sit    2    40     -30    0     80   0    
+22:22:45.520 09E7.0    sit    2    40     -30    0     80   0    
+22:22:46.515 09E7.0    sit    2    40     -30    0     80   0    
+22:22:47.514 09E7.0    sit    2    40     -30    0     80   0    
+22:22:48.515 09E7.0    sit    2    40     -30    0     80   0    
+22:22:49.484 09E7.0    sit    2    40     -30    0     80   0    
+22:22:50.476 09E7.0    sit    2    40     -30    0     80   0    
+22:22:51.481 09E7.0    sit    2    40     -30    0     80   0    
+22:22:52.478 09E7.0    sit    2    40     -30    0     80   0    
+22:22:53.483 09E7.0    sit    2    40     -30    0     80   0    
+22:22:54.499 09E7.0    sit    2    40     -30    0     80   0    
+22:22:55.493 09E7.0    sit    2    40     -30    0     80   0    
+22:22:56.487 09E7.0    sit    2    40     -30    0     80   0    
+22:22:57.484 09E7.0    sit    2    40     -30    0     80   0    
+22:22:58.490 09E7.0    sit    2    40     -30    0     80   0    
+22:22:59.490 09E7.0    sit    2    40     -30    0     80   0    
+22:23:00.492 09E7.0    sit    2    40     -30    0     80   0    
+22:23:01.377 09E7.0    sit    2    40     -30    0     80   0    
+22:23:02.380 09E7.0    sit    2    40     -30    0     80   0    
+22:23:03.400 09E7.0    sit    2    40     -30    0     80   0    
+22:23:04.393 09E7.0    sit    2    40     -30    0     80   0    
+22:23:05.390 09E7.0    sit    2    40     -30    0     80   0    
+22:23:06.452 09E7.0    sit    2    40     -30    0     80   0    
+22:23:07.395 09E7.0    sit    2    40     -30    0     80   0    
+22:23:08.400 09E7.0    sit    2    40     -30    0     80   0    
+22:23:09.394 09E7.0    sit    2    40     -30    0     80   0    
+22:23:10.408 09E7.0    sit    2    40     -30    0     80   0    
+22:23:11.400 09E7.0    sit    2    40     -30    0     80   0    
+22:23:12.296 09E7.0    sit    2    40     -30    0     80   0    
+22:23:13.305 09E7.0    sit    2    40     -30    0     80   0    
+22:23:14.295 09E7.0    sit    2    40     -30    0     80   0    
+22:23:15.299 09E7.0    sit    2    40     -30    0     80   0    
+22:23:16.295 09E7.0    sit    2    40     -30    0     80   0    
+22:23:17.309 09E7.0    sit    2    40     -30    0     80   0    
+22:23:18.325 09E7.0    sit    2    40     -30    0     80   0    
+22:23:19.389 09E7.0    sit    2    40     -30    0     80   0    
+22:23:20.310 09E7.0    sit    2    40     -30    0     80   0    
+22:23:21.305 09E7.0    sit    2    40     -30    0     80   0    
+22:23:22.312 09E7.0    sit    2    40     -30    0     80   0    
+22:23:23.302 09E7.0    sit    2    40     -30    0     80   0    
+22:23:24.198 09E7.0    sit    2    40     -30    0     80   0    
+22:23:25.261 09E7.0    sit    2    40     -30    0     80   0    
+22:23:26.208 09E7.0    sit    2    40     -30    0     80   0    
+22:23:27.210 09E7.0    sit    2    40     -30    0     80   0    
+22:23:28.218 09E7.0    sit    2    40     -30    0     80   0    
+22:23:29.206 09E7.0    sit    2    40     -30    0     80   0    
+22:23:30.199 09E7.0    sit    2    40     -30    0     80   0    
+22:23:31.207 09E7.0    sit    2    40     -30    0     80   0    
+22:23:32.212 09E7.0    sit    2    40     -30    0     80   0    
+22:23:33.203 09E7.0    sit    2    40     -30    0     80   0    
+22:23:34.211 09E7.0    sit    2    40     -30    0     80   0    
+22:23:35.216 09E7.0    sit    2    40     -30    0     80   0    
+22:23:36.109 09E7.0    sit    2    40     -30    0     80   0    
+22:23:37.130 09E7.0    sit    2    40     -30    0     80   0    
+22:23:38.101 09E7.0    sit    2    40     -30    0     80   0    
+22:23:39.244 09E7.0    sit    2    40     -30    0     80   0    
+22:23:40.117 09E7.0    sit    2    40     -30    0     80   0    
+22:23:41.126 09E7.0    sit    2    40     -30    0     80   0    
+22:23:42.110 09E7.0    sit    2    40     -30    0     80   0    
+22:23:43.106 09E7.0    sit    2    40     -30    0     80   0    
+22:23:44.138 09E7.0    sit    2    40     -30    0     80   0    
+22:23:45.111 09E7.0    sit    2    40     -30    0     80   0    
+22:23:46.113 09E7.0    sit    2    40     -30    0     80   0    
+22:23:47.113 09E7.0    sit    2    40     -30    0     80   0    
+22:23:48.022 09E7.0    sit    2    40     -30    0     80   0    
+22:23:49.011 09E7.0    sit    2    40     -30    0     80   0    
+22:23:50.005 09E7.0    sit    2    40     -30    0     80   0    
+22:23:51.009 09E7.0    sit    2    40     -30    0     80   0    
+22:23:52.015 09E7.0    sit    2    40     -30    0     80   0    
+22:23:53.036 09E7.0    sit    2    40     -30    0     80   0    
+22:23:54.027 09E7.0    sit    2    40     -30    0     80   0    
+22:23:55.077 09E7.0    sit    2    40     -30    0     80   0    
+22:23:56.026 09E7.0    sit    2    40     -30    0     80   0    
+22:23:57.025 09E7.0    sit    2    40     -30    0     80   0    
+22:23:57.931 09E7.0    sit    2    40     -30    0     80   0    
+22:23:58.923 09E7.0    sit    2    40     -30    0     80   0    
+22:23:59.930 09E7.0    sit    2    40     -30    0     80   0    
+22:24:00.932 09E7.0    sit    2    40     -30    0     80   0    
+22:24:01.961 09E7.0    sit    2    40     -30    0     80   0    
+22:24:02.931 09E7.0    sit    2    40     -30    0     80   0    
+22:24:03.933 09E7.0    sit    2    40     -30    0     80   0    
+22:24:04.945 09E7.0    sit    2    40     -30    0     80   0    
+22:24:05.940 09E7.0    sit    2    40     -30    0     80   0    
+22:24:06.946 09E7.0    sit    2    40     -30    0     80   0    
+22:24:07.935 09E7.0    sit    2    40     -30    0     80   0    
+22:24:08.940 09E7.0    sit    2    40     -30    0     80   0    
+22:24:09.829 09E7.0    sit    2    40     -30    0     80   0    
+22:24:10.837 09E7.0    sit    2    40     -30    0     80   0    
+22:24:11.832 09E7.0    sit    2    40     -30    0     80   0    
+22:24:12.829 09E7.0    sit    2    40     -30    0     80   0    
+22:24:13.830 09E7.0    sit    2    40     -30    0     80   0    
+22:24:14.846 09E7.0    sit    2    40     -30    0     80   0    
+22:24:15.836 09E7.0    sit    2    40     -30    0     80   0    
+22:24:16.837 09E7.0    sit    2    40     -30    0     80   0    
+22:24:17.840 09E7.0    sit    2    40     -30    0     80   0    
+22:24:18.836 09E7.0    sit    2    40     -30    0     80   0    
+22:24:19.841 09E7.0    sit    2    40     -30    0     80   0    
+22:24:20.838 09E7.0    sit    2    40     -30    0     80   0    
+22:24:21.733 09E7.0    sit    2    40     -30    0     80   0    
+22:24:22.733 09E7.0    sit    2    40     -30    0     80   0    
+22:24:23.741 09E7.0    sit    2    40     -30    0     80   0    
+22:24:24.735 09E7.0    sit    2    40     -30    0     80   0    
+22:24:25.734 09E7.0    sit    2    40     -30    0     80   0    
+22:24:26.746 09E7.0    sit    2    40     -30    0     80   0    
+22:24:27.745 09E7.0    sit    2    40     -30    0     80   0    
+22:24:28.744 09E7.0    sit    2    40     -30    0     80   0    
+22:24:29.768 09E7.0    sit    2    40     -30    0     80   0    
+22:24:30.739 09E7.0    sit    2    40     -30    0     80   0    
+22:24:31.745 09E7.0    sit    2    40     -30    0     80   0    
+22:24:32.754 09E7.0    sit    2    40     -30    0     80   0    
+22:24:33.635 09E7.0    sit    2    40     -30    0     80   0    
+22:24:34.637 09E7.0    sit    2    40     -30    0     80   0    
+22:24:35.643 09E7.0    sit    2    30     -100   32    80   70   
+22:24:36.644 09E7.0    sit    2    30     -160   0     80   60   
+22:24:37.643 09E7.0    sit    2    30     -160   0     80   0    
+22:24:38.693 09E7.0    sit    2    40     -150   0     80   14   
+22:24:39.660 09E7.0    sit    2    40     -150   0     80   0    
+22:24:40.649 09E7.0    sit    2    40     -150   0     80   0    
+22:24:41.653 09E7.0    sit    2    40     -150   0     80   0    
+22:24:42.655 09E7.0    sit    2    40     -150   0     80   0    
+22:24:43.656 09E7.0    sit    2    40     -150   0     80   0    
+22:24:44.550 09E7.0    sit    2    40     -150   0     80   0    
+22:24:45.554 09E7.0    sit    2    40     -150   0     80   0    
+22:24:46.549 09E7.0    sit    2    40     -150   0     80   0    
+22:24:47.554 09E7.0    sit    2    40     -150   0     80   0    
+22:24:48.552 09E7.0    sit    2    40     -150   0     80   0    
+22:24:49.564 09E7.0    sit    2    40     -150   0     80   0    
+22:24:50.554 09E7.0    sit    2    40     -150   0     80   0    
+22:24:51.553 09E7.0    sit    2    40     -150   0     80   0    
+22:24:52.554 09E7.0    sit    2    40     -150   0     80   0    
+22:24:53.561 09E7.0    sit    2    40     -150   0     80   0    
+22:24:54.561 09E7.0    sit    2    40     -150   0     80   0    
+22:24:55.564 09E7.0    sit    2    40     -150   0     80   0    
+22:24:56.459 09E7.0    sit    2    40     -150   0     80   0    
+22:24:57.468 09E7.0    sit    2    40     -150   0     80   0    
+22:24:58.475 09E7.0    sit    2    40     -150   0     80   0    
+22:24:59.463 09E7.0    sit    2    40     -150   0     80   0    
+22:25:00.465 09E7.0    sit    2    40     -150   0     80   0    
+22:25:01.465 09E7.0    sit    2    40     -150   0     80   0    
+22:25:02.470 09E7.0    sit    2    40     -150   0     80   0    
+22:25:03.481 09E7.0    sit    2    40     -150   0     80   0    
+22:25:04.475 09E7.0    sit    2    40     -150   0     80   0    
+22:25:05.480 09E7.0    sit    2    40     -150   0     80   0    
+22:25:06.473 09E7.0    sit    2    40     -150   0     80   0    
+22:25:07.362 09E7.0    sit    2    40     -150   0     80   0    
+22:25:08.369 09E7.0    sit    2    40     -150   0     80   0    
+22:25:09.366 09E7.0    sit    2    40     -150   0     80   0    
+22:25:10.365 09E7.0    sit    2    40     -150   0     80   0    
+22:25:11.371 09E7.0    sit    2    40     -150   0     80   0    
+22:25:12.368 09E7.0    sit    2    40     -150   0     80   0    
+22:25:13.369 09E7.0    sit    2    40     -150   0     80   0    
+22:25:14.378 09E7.0    sit    2    40     -150   0     80   0    
+22:25:15.371 09E7.0    sit    2    40     -150   0     80   0    
+22:25:16.372 09E7.0    sit    2    40     -150   0     80   0    
+22:25:17.372 09E7.0    sit    2    40     -150   0     80   0    
+22:25:18.404 09E7.0    sit    2    40     -150   0     80   0    
+22:25:19.269 09E7.0    sit    2    40     -150   0     80   0    
+22:25:20.278 09E7.0    sit    2    40     -150   0     80   0    
+22:25:21.272 09E7.0    sit    2    40     -150   0     80   0    
+22:25:22.271 09E7.0    sit    2    40     -150   0     80   0    
+22:25:23.269 09E7.0    sit    2    40     -150   0     80   0    
+22:25:24.272 09E7.0    sit    2    40     -150   0     80   0    
+22:25:25.296 09E7.0    sit    2    40     -150   0     80   0    
+22:25:26.278 09E7.0    sit    2    40     -150   0     80   0    
+22:25:27.273 09E7.0    sit    2    40     -150   0     80   0    
+22:25:28.279 09E7.0    sit    2    40     -150   0     80   0    
+22:25:29.283 09E7.0    sit    2    40     -150   0     80   0    
+22:25:30.177 09E7.0    sit    2    40     -150   0     80   0    
+22:25:31.183 09E7.0    sit    2    40     -150   0     80   0    
+22:25:32.179 09E7.0    sit    2    40     -150   0     80   0    
+22:25:33.180 09E7.0    sit    2    40     -150   0     80   0    
+22:25:34.189 09E7.0    sit    2    40     -150   0     80   0    
+22:25:35.185 09E7.0    sit    2    40     -150   0     80   0    
+22:25:36.193 09E7.0    sit    2    40     -150   0     80   0    
+22:25:37.189 09E7.0    sit    2    40     -150   0     80   0    
+22:25:38.264 09E7.0    sit    2    40     -150   0     80   0    
+22:25:39.187 09E7.0    sit    2    40     -150   0     80   0    
+22:25:40.191 09E7.0    sit    2    40     -150   0     80   0    
+22:25:41.190 09E7.0    sit    2    40     -150   0     80   0    
+22:25:42.086 09E7.0    sit    2    40     -150   0     80   0    
+22:25:43.086 09E7.0    sit    2    40     -150   0     80   0    
+22:25:44.084 09E7.0    sit    2    40     -150   0     80   0    
+22:25:45.109 09E7.0    sit    2    40     -150   0     80   0    
+22:25:46.124 09E7.0    sit    2    40     -150   0     80   0    
+22:25:47.117 09E7.0    sit    2    40     -150   0     80   0    
+22:25:48.098 09E7.0    sit    2    40     -150   0     80   0    
+22:25:49.103 09E7.0    sit    2    40     -150   0     80   0    
+22:25:50.097 09E7.0    sit    2    40     -150   0     80   0    
+22:25:51.100 09E7.0    sit    2    40     -150   0     80   0    
+22:25:52.099 09E7.0    sit    2    40     -150   0     80   0    
+22:25:52.997 09E7.0    sit    2    40     -150   0     80   0    
+22:25:53.996 09E7.0    sit    2    40     -150   0     80   0    
+22:25:54.998 09E7.0    sit    2    40     -150   0     80   0    
+22:25:56.002 09E7.0    sit    2    40     -150   0     80   0    
+22:25:57.009 09E7.0    sit    2    40     -150   0     80   0    
+22:25:58.003 09E7.0    sit    2    40     -150   0     80   0    
+22:25:59.003 09E7.0    sit    2    40     -150   0     80   0    
+22:26:00.003 09E7.0    sit    2    40     -150   0     80   0    
+22:26:01.008 09E7.0    sit    2    40     -150   0     80   0    
+22:26:02.007 09E7.0    sit    2    40     -150   0     80   0    
+22:26:03.013 09E7.0    sit    2    40     -150   0     80   0    
+22:26:04.014 09E7.0    sit    2    40     -150   0     80   0    
+22:26:04.897 09E7.0    sit    2    40     -150   0     80   0    
+22:26:05.898 09E7.0    sit    2    40     -150   0     80   0    
+22:26:06.903 09E7.0    sit    2    40     -150   0     80   0    
+22:26:07.904 09E7.0    sit    2    40     -150   0     80   0    
+22:26:08.906 09E7.0    sit    2    40     -150   0     80   0    
+22:26:09.906 09E7.0    sit    2    40     -150   0     80   0    
+22:26:10.904 09E7.0    sit    2    40     -150   0     80   0    
+22:26:11.909 09E7.0    sit    2    40     -150   0     80   0    
+22:26:12.916 09E7.0    sit    2    40     -150   0     80   0    
+22:26:13.914 09E7.0    sit    2    40     -150   0     80   0    
+22:26:14.909 09E7.0    sit    2    40     -150   0     80   0    
+22:26:15.913 09E7.0    sit    2    40     -150   0     80   0    
+22:26:16.802 09E7.0    sit    2    40     -150   0     80   0    
+22:26:17.813 09E7.0    sit    2    40     -150   0     80   0    
+22:26:18.806 09E7.0    sit    2    40     -150   0     80   0    
+22:26:19.805 09E7.0    sit    2    40     -150   0     80   0    
+22:26:20.816 09E7.0    sit    2    40     -150   0     80   0    
+22:26:21.813 09E7.0    sit    2    40     -150   0     80   0    
+22:26:22.808 09E7.0    sit    2    40     -150   0     80   0    
+22:26:23.810 09E7.0    sit    2    40     -150   0     80   0    
+22:26:24.812 09E7.0    sit    2    40     -150   0     80   0    
+22:26:25.812 09E7.0    sit    2    40     -150   0     80   0    
+22:26:26.812 09E7.0    sit    2    40     -150   0     80   0    
+22:26:27.813 09E7.0    sit    2    40     -150   0     80   0    
+22:26:28.710 09E7.0    sit    2    40     -150   0     80   0    
+22:26:29.711 09E7.0    sit    2    40     -150   0     80   0    
+22:26:30.729 09E7.0    sit    2    40     -150   0     80   0    
+22:26:31.716 09E7.0    sit    2    40     -150   0     80   0    
+22:26:32.746 09E7.0    sit    2    40     -150   0     80   0    
+22:26:33.722 09E7.0    sit    2    40     -150   0     80   0    
+22:26:34.723 09E7.0    sit    2    40     -150   0     80   0    
+22:26:35.735 09E7.0    sit    2    40     -150   0     80   0    
+22:26:36.733 09E7.0    sit    2    40     -150   0     80   0    
+22:26:37.784 09E7.0    sit    2    40     -150   0     80   0    
+22:26:38.631 09E7.0    sit    2    40     -150   0     80   0    
+22:26:39.640 09E7.0    sit    2    40     -150   0     80   0    
+22:26:40.630 09E7.0    sit    2    40     -150   0     80   0    
+22:26:41.630 09E7.0    sit    2    40     -150   0     80   0    
+22:26:42.633 09E7.0    sit    2    40     -150   0     80   0    
+22:26:43.638 09E7.0    sit    2    40     -150   0     80   0    
+22:26:44.661 09E7.0    sit    2    40     -150   0     80   0    
+22:26:45.636 09E7.0    sit    2    40     -150   0     80   0    
+22:26:46.636 09E7.0    sit    2    40     -150   0     80   0    
+22:26:47.653 09E7.0    sit    2    40     -150   0     80   0    
+22:26:48.663 09E7.0    sit    2    40     -150   0     80   0    
+22:26:49.537 09E7.0    sit    2    40     -150   0     80   0    
+22:26:50.541 09E7.0    sit    2    40     -150   0     80   0    
+22:26:51.544 09E7.0    sit    2    40     -150   0     80   0    
+22:26:52.543 09E7.0    sit    2    40     -150   0     80   0    
+22:26:53.544 09E7.0    sit    2    40     -150   0     80   0    
+22:26:54.551 09E7.0    sit    2    40     -150   0     80   0    
+22:26:55.544 09E7.0    sit    2    40     -150   0     80   0    
+22:26:56.574 09E7.0    sit    2    40     -150   0     80   0    
+22:26:57.559 09E7.0    sit    2    40     -150   0     80   0    
+22:26:58.550 09E7.0    sit    2    40     -150   0     80   0    
+22:26:59.548 09E7.0    sit    2    40     -150   0     80   0    
+22:27:00.555 09E7.0    sit    2    40     -150   0     80   0    
+22:27:01.448 09E7.0    sit    2    40     -150   0     80   0    
+22:27:02.446 09E7.0    sit    2    40     -150   0     80   0    
+22:27:03.444 09E7.0    sit    2    40     -150   0     80   0    
+22:27:04.463 09E7.0    sit    2    40     -150   0     80   0    
+22:27:05.419 09E7.0    sit    2    40     -150   0     80   0    
+22:27:06.412 09E7.0    sit    2    40     -150   0     80   0    
+22:27:07.415 09E7.0    sit    2    40     -150   0     80   0    
+22:27:08.414 09E7.0    sit    2    40     -150   0     80   0    
+22:27:09.426 09E7.0    sit    2    40     -150   0     80   0    
+22:27:10.419 09E7.0    sit    2    40     -150   0     80   0    
+22:27:11.417 09E7.0    sit    2    40     -150   0     80   0    
+22:27:12.422 09E7.0    sit    2    40     -150   0     80   0    
+22:27:13.428 09E7.0    sit    2    40     -150   0     80   0    
+22:27:14.420 09E7.0    sit    2    40     -150   0     80   0    
+22:27:15.426 09E7.0    sit    2    40     -150   0     80   0    
+22:27:16.425 09E7.0    sit    2    40     -150   0     80   0    
+22:27:17.327 09E7.0    sit    2    40     -150   0     80   0    
+22:27:18.324 09E7.0    sit    2    40     -150   0     80   0    
+22:27:19.315 09E7.0    sit    2    40     -150   0     80   0    
+22:27:20.317 09E7.0    sit    2    40     -150   0     80   0    
+22:27:21.365 09E7.0    sit    2    40     -150   0     80   0    
+22:27:22.365 09E7.0    sit    2    40     -150   0     80   0    
+22:27:23.375 09E7.0    sit    2    40     -150   0     80   0    
+22:27:24.258 09E7.0    sit    2    40     -150   0     80   0    
+22:27:25.264 09E7.0    sit    2    40     -150   0     80   0    
+22:27:26.268 09E7.0    sit    2    40     -150   0     80   0    
+22:27:27.268 09E7.0    sit    2    40     -150   0     80   0    
+22:27:28.276 09E7.0    sit    2    40     -150   0     80   0    
+22:27:29.264 09E7.0    sit    2    40     -150   0     80   0    
+22:27:30.265 09E7.0    sit    2    40     -150   0     80   0    
+22:27:31.277 09E7.0    sit    2    40     -150   0     80   0    
+22:27:32.272 09E7.0    sit    2    40     -150   0     80   0    
+22:27:33.274 09E7.0    sit    2    40     -150   0     80   0    
+22:27:34.275 09E7.0    sit    2    40     -150   0     80   0    
+22:27:35.276 09E7.0    sit    2    40     -150   0     80   0    
+22:27:36.166 09E7.0    sit    2    40     -150   0     80   0    
+22:27:37.173 09E7.0    sit    2    40     -150   0     80   0    
+22:27:38.236 09E7.0    sit    2    40     -150   0     80   0    
+22:27:39.169 09E7.0    sit    2    40     -150   0     80   0    
+22:27:40.178 09E7.0    sit    2    40     -150   0     80   0    
+22:27:41.171 09E7.0    sit    2    40     -150   0     80   0    
+22:27:42.170 09E7.0    sit    2    40     -150   0     80   0    
+22:27:43.174 09E7.0    sit    2    40     -150   0     80   0    
+22:27:44.176 09E7.0    sit    2    40     -150   0     80   0    
+22:27:45.172 09E7.0    sit    2    40     -150   0     80   0    
+22:27:46.173 09E7.0    sit    2    40     -150   0     80   0    
+22:27:47.178 09E7.0    sit    2    40     -150   0     80   0    
+22:27:48.068 09E7.0    sit    2    40     -150   0     80   0    
+22:27:49.078 09E7.0    sit    2    40     -150   0     80   0    
+22:27:50.078 09E7.0    sit    2    40     -150   0     80   0    
+22:27:51.087 09E7.0    sit    2    40     -150   0     80   0    
+22:27:52.071 09E7.0    sit    2    40     -150   0     80   0    
+22:27:53.084 09E7.0    sit    2    40     -150   0     80   0    
+22:27:54.077 09E7.0    sit    2    40     -150   0     80   0    
+22:27:55.078 09E7.0    sit    2    40     -150   0     80   0    
+22:27:56.078 09E7.0    sit    2    40     -150   0     80   0    
+22:27:57.079 09E7.0    sit    2    40     -150   0     80   0    
+22:27:58.080 09E7.0    sit    2    40     -150   0     80   0    
+22:27:59.085 09E7.0    sit    2    40     -150   0     80   0    
+22:27:59.977 09E7.0    sit    2    40     -150   0     80   0    
+22:28:00.989 09E7.0    sit    2    40     -150   0     80   0    
+22:28:01.987 09E7.0    sit    2    40     -150   0     80   0    
+22:28:02.988 09E7.0    sit    2    40     -150   0     80   0    
+22:28:03.982 09E7.0    sit    2    40     -150   0     80   0    
+22:28:04.987 09E7.0    sit    2    40     -150   0     80   0    
+22:28:05.984 09E7.0    sit    2    50     -50    0     80   100  
+22:28:06.995 09E7.0    sit    2    40     -80    23    80   31   
+22:28:07.984 09E7.0    sit    2    40     -50    30    80   30   
+22:28:08.986 09E7.0    sit    2    30     -40    38    80   14   
+22:28:09.995 09E7.0    sit    2    50     0      49    80   44   
+22:28:11.007 09E7.0    sit    2    40     10     24    80   14   
+22:28:11.881 09E7.0    sit    2    30     10     26    80   10   
+22:28:12.884 09E7.0    sit    2    20     10     24    80   10   
+22:28:13.884 09E7.0    sit    2    20     10     0     80   0    
+22:28:14.886 09E7.0    sit    2    10     10     0     80   10   
+22:28:15.881 09E7.0    sit    2    10     10     0     80   0    
+22:28:16.907 09E7.0    sit    2    10     20     0     80   10   
+22:28:17.887 09E7.0    sit    2    10     20     0     80   0    
+22:28:18.885 09E7.0    sit    2    10     20     18    80   0    
+22:28:19.891 09E7.0    sit    2    10     20     23    80   0    
+22:28:20.893 09E7.0    sit    2    10     40     42    80   20   
+22:28:21.894 09E7.0    stand  2    10     50     91    80   10   
+22:28:22.894 09E7.0    stand  2    -10    70     76    80   28   
+22:28:23.801 09E7.0    stand  255  -20    80     26    80   14   
+22:28:24.797 09E7.0    stand  255  -50    100    16    80   36   
+22:28:25.797 09E7.0    stand  255  -50    100    0     80   0    
+22:28:26.800 09E7.0    sit    255  -60    100    0     80   10   
+22:28:27.930 09E7.0    susfall 255  -60    100    0     80   0    
+22:28:28.844 09E7.0    susfall 255  -60    100    0     80   0    
+22:28:29.826 09E7.0    susfall 255  -60    100    0     80   0    
+22:28:30.825 09E7.0    susfall 255  -60    100    0     80   0    
+22:28:31.718 09E7.0    susfall 255  -60    100    0     80   0    
+22:28:32.738 09E7.0    susfall 255  -60    100    0     80   0    
+22:28:33.723 09E7.0    susfall 255  -60    100    0     80   0    
+22:28:34.727 09E7.0    susfall 255  -60    100    0     80   0    
+22:28:35.726 09E7.0    susfall 255  -60    100    0     80   0    
+22:28:36.797 09E7.0    susfall 255  -60    100    17    80   0    
+22:28:37.724 09E7.0    susfall 255  -70    100    22    80   10   
+22:28:38.733 09E7.0    susfall 255  -60    90     40    80   14   
+22:28:38.924 09E7.0    susfall 255  -60    90     44    80   0    
+22:28:39.162 09E7.0    sitgnd 255  -60    80     46    80   10   
+22:28:39.728 09E7.0    sit    255  -60    70     73    80   10   
+22:28:40.680 09E7.0    sit    255  -90    30     39    80   50   
+22:28:41.685 09E7.0    sit    255  -100   20     33    80   14   
+22:28:42.683 09E7.0    sit    255  -110   30     19    80   14   
+22:28:43.676 09E7.0    sit    255  -110   30     0     80   0    
+22:28:44.766 09E7.0    susfall 255  -120   30     0     80   10   
+22:28:45.701 09E7.0    susfall 255  -120   30     0     80   0    
+22:28:46.601 09E7.0    susfall 255  -120   30     0     80   0    
+22:28:47.606 09E7.0    susfall 255  -120   30     0     80   0    
+22:28:48.609 09E7.0    susfall 255  -120   30     0     80   0    
+22:28:49.610 09E7.0    susfall 255  -120   30     0     80   0    
+22:28:50.639 09E7.0    susfall 255  -120   30     0     80   0    
+22:28:51.605 09E7.0    susfall 255  -120   30     0     80   0    
+22:28:52.607 09E7.0    susfall 255  -120   30     0     80   0    
+22:28:53.606 09E7.0    susfall 255  -120   30     0     80   0    
+22:28:54.613 09E7.0    susfall 255  -120   30     0     80   0    
+22:28:55.609 09E7.0    susfall 255  -120   30     0     80   0    
+22:28:56.613 09E7.0    susfall 255  -120   30     19    80   0    
+22:28:57.512 09E7.0    susfall 255  -110   20     34    80   14   
+22:28:58.138 09E7.0    susfall 255  -100   30     47    80   14   
+22:28:58.333 09E7.0    sitgnd 255  -100   30     54    80   0    
+22:28:58.620 09E7.0    sit    255  -90    30     64    80   10   
+22:28:59.559 09E7.0    stand  255  -80    60     70    80   31   
+22:29:00.569 09E7.0    walk   255  -40    70     58    80   41   
+22:29:01.573 09E7.0    walk   255  10     60     57    80   50   
+22:29:02.571 09E7.0    walk   255  140    0      40    80   143  
+22:29:03.565 09E7.0    walk   255  210    -90    34    80   114  
+22:29:04.455 09E7.0    walk   255  260    -150   64    80   78   
+22:29:05.461 09E7.0    walk   255  270    -160   0     80   14   
+22:29:06.454 09E7.0    stand  255  260    -150   0     80   14   
+22:29:07.458 09E7.0    stand  255  260    -150   0     80   0    
+22:29:08.460 09E7.0    stand  255  270    -150   0     80   10   
+22:29:09.464 09E7.0    stand  255  290    -150   0     80   20   
+22:29:10.465 09E7.0    stand  255  280    -150   0     80   10   
+22:29:11.461 09E7.0    stand  255  270    -150   0     80   10   
+22:29:12.479 09E7.0    stand  255  270    -160   0     80   10   
+22:29:13.469 09E7.0    stand  255  270    -160   0     80   0    
+22:29:14.478 09E7.0    stand  255  270    -160   0     80   0    
+22:29:15.478 09E7.0    stand  255  270    -160   0     80   0    
+22:29:16.406 09E7.0    stand  255  270    -160   0     80   0    
+22:29:17.368 09E7.0    stand  255  270    -160   0     80   0    
+22:29:18.370 09E7.0    stand  255  270    -160   0     80   0    
+22:29:19.382 09E7.0    stand  255  270    -160   0     80   0    
+22:29:20.366 09E7.0    stand  255  270    -160   0     80   0    
+22:29:21.363 09E7.0    stand  255  270    -160   0     80   0    
+22:29:22.365 09E7.0    stand  255  270    -160   0     80   0    
+22:29:23.369 09E7.0    stand  255  270    -160   0     80   0    
+22:29:24.368 09E7.0    stand  255  270    -160   0     80   0    
+22:29:25.376 09E7.0    stand  255  270    -160   0     80   0    
+22:29:26.365 09E7.0    stand  255  270    -160   0     80   0    
+22:29:27.374 09E7.0    stand  255  270    -160   0     80   0    
+22:29:28.263 09E7.0    stand  255  270    -160   0     80   0    
+22:29:29.265 09E7.0    stand  255  270    -160   0     80   0    
+22:29:30.259 09E7.0    stand  255  270    -160   0     80   0    
+22:29:31.267 09E7.0    stand  255  270    -160   0     80   0    
+22:29:32.279 09E7.0    stand  255  270    -160   0     80   0    
+22:29:33.272 09E7.0    stand  255  270    -160   0     80   0    
+22:29:34.270 09E7.0    stand  255  270    -160   0     80   0    
+22:29:35.270 09E7.0    stand  255  270    -160   0     80   0    
+22:29:36.326 09E7.0    stand  255  270    -160   0     80   0    
+22:29:37.274 09E7.0    stand  255  270    -160   0     80   0    
+22:29:38.297 09E7.0    stand  255  270    -160   0     80   0    
+22:29:39.275 09E7.0    stand  255  270    -160   0     80   0    
+22:29:40.168 09E7.0    stand  255  270    -160   0     80   0    
+22:29:41.168 09E7.0    stand  255  270    -160   0     80   0    
+22:29:42.173 09E7.0    stand  255  270    -160   0     80   0    
+22:29:43.168 09E7.0    stand  255  270    -160   0     80   0    
+22:29:44.218 09E7.0    stand  255  270    -160   0     80   0    
+22:29:45.124 09E7.0    stand  255  270    -160   0     80   0    
+22:29:46.129 09E7.0    stand  255  270    -160   0     80   0    
+22:29:47.146 09E7.0    stand  255  270    -160   0     80   0    
+22:29:48.150 09E7.0    stand  255  270    -160   0     80   0    
+22:29:49.139 09E7.0    stand  255  270    -160   0     80   0    
+22:29:50.132 09E7.0    stand  255  270    -160   0     80   0    
+22:29:51.145 09E7.0    stand  255  270    -160   0     80   0    
+22:29:52.135 09E7.0    stand  255  270    -160   0     80   0    
+22:29:53.139 09E7.0    stand  255  270    -160   0     80   0    
+22:29:54.134 09E7.0    stand  255  270    -160   0     80   0    
+22:29:55.138 09E7.0    stand  255  270    -160   0     80   0    
+22:29:56.152 09E7.0    stand  255  270    -160   0     80   0    
+22:29:57.031 09E7.0    stand  255  270    -160   0     80   0    
+22:29:58.034 09E7.0    stand  255  270    -160   0     80   0    
+
+22:16:01.002 D523.0    stand  1    -300   490    0     80        
+22:16:01.995 D523.0    stand  1    -290   500    79    80   14   
+22:16:02.897 D523.0    stand  1    -290   500    0     80   0    
+22:16:03.888 D523.0    stand  1    -290   500    0     80   0    
+22:16:04.941 D523.0    stand  1    -290   500    0     80   0    
+22:16:05.889 D523.0    stand  1    -290   500    0     80   0    
+22:16:06.958 D523.0    stand  1    -290   500    0     80   0    
+22:16:07.950 D523.0    stand  1    -290   500    0     80   0    
+22:16:08.846 D523.0    stand  1    -290   500    0     80   0    
+22:16:09.841 D523.0    stand  1    -290   500    0     80   0    
+22:16:10.850 D523.0    stand  1    -290   500    0     80   0    
+22:16:11.844 D523.0    stand  1    -290   500    0     80   0    
+22:16:12.857 D523.0    stand  1    -290   500    0     80   0    
+22:16:13.851 D523.0    stand  1    -290   500    0     80   0    
+22:16:14.845 D523.0    stand  1    -290   500    0     80   0    
+22:16:15.852 D523.0    stand  1    -290   500    0     80   0    
+22:16:16.856 D523.0    stand  1    -290   500    0     80   0    
+22:16:17.848 D523.0    stand  1    -290   500    0     80   0    
+22:16:18.848 D523.0    stand  1    -300   500    0     80   10   
+22:16:19.851 D523.0    stand  1    -270   510    0     80   31   
+22:16:20.743 D523.0    stand  1    -300   490    59    80   36   
+22:16:21.749 D523.0    stand  1    -290   500    76    80   14   
+22:16:22.764 D523.0    stand  1    -310   500    0     80   20   
+22:16:23.764 D523.0    stand  1    -280   490    0     80   31   
+22:16:24.764 D523.0    stand  1    -280   490    0     80   0    
+22:16:25.764 D523.0    stand  1    -280   490    0     80   0    
+22:16:26.775 D523.0    stand  1    -280   490    0     80   0    
+22:16:27.767 D523.0    stand  1    -280   490    0     80   0    
+22:16:28.777 D523.0    stand  1    -280   490    0     80   0    
+22:16:29.769 D523.0    stand  1    -280   490    0     80   0    
+22:16:30.669 D523.0    stand  1    -290   500    65    80   14   
+22:16:31.667 D523.0    stand  1    -320   500    102   80   30   
+22:16:32.666 D523.0    stand  1    -320   500    0     80   0    
+22:16:33.667 D523.0    stand  1    -300   500    75    80   20   
+22:16:34.672 D523.0    stand  1    -280   510    54    80   22   
+22:16:35.676 D523.0    stand  1    -310   510    0     80   30   
+22:16:36.678 D523.0    stand  1    -300   490    56    80   22   
+22:16:37.676 D523.0    stand  1    -280   500    105   80   22   
+22:16:38.678 D523.0    stand  1    -260   480    96    80   28   
+22:16:39.674 D523.0    stand  1    -250   460    85    80   22   
+22:16:40.678 D523.0    stand  1    -250   460    111   80   0    
+22:16:41.676 D523.0    stand  1    -250   460    0     80   0    
+22:16:42.570 D523.0    stand  1    -260   440    84    80   22   
+22:16:43.570 D523.0    stand  1    -230   430    98    80   31   
+22:16:44.571 D523.0    stand  1    -220   410    110   80   22   
+22:16:45.574 D523.0    stand  1    -230   410    0     80   10   
+22:16:46.574 D523.0    stand  1    -230   410    0     80   0    
+22:16:47.577 D523.0    stand  1    -220   400    107   80   14   
+22:16:48.573 D523.0    stand  1    -230   400    0     80   10   
+22:16:49.577 D523.0    stand  1    -230   400    104   80   0    
+22:16:50.577 D523.0    stand  1    -210   370    89    80   36   
+22:16:51.578 D523.0    stand  1    -200   330    105   80   41   
+22:16:52.576 D523.0    stand  1    -180   310    97    80   28   
+22:16:53.595 D523.0    walk   1    -170   280    112   80   31   
+22:16:54.473 D523.0    walk   1    -170   290    114   80   10   
+22:16:55.480 D523.0    walk   1    -170   310    81    80   20   
+22:16:56.475 D523.0    walk   1    -170   320    88    80   10   
+22:16:57.477 D523.0    walk   1    -160   340    77    80   22   
+22:16:58.502 D523.0    walk   1    -180   360    83    80   28   
+22:16:59.480 D523.0    walk   1    -180   370    75    80   10   
+22:17:00.482 D523.0    walk   1    -180   390    57    80   20   
+22:17:01.481 D523.0    walk   1    -190   360    77    80   31   
+22:17:02.485 D523.0    walk   1    -190   340    103   80   20   
+22:17:03.484 D523.0    walk   1    -190   310    105   80   30   
+22:17:04.544 D523.0    walk   1    -170   300    104   80   22   
+22:17:05.492 D523.0    walk   1    -150   280    118   80   28   
+22:17:06.392 D523.0    walk   1    -160   300    118   80   22   
+22:17:07.384 D523.0    walk   1    -160   310    99    80   10   
+22:17:08.398 D523.0    walk   1    -140   290    100   80   28   
+22:17:09.381 D523.0    walk   1    -150   300    109   80   14   
+22:17:10.388 D523.0    walk   1    -170   320    93    80   28   
+22:17:11.394 D523.0    walk   1    -170   330    69    80   10   
+22:17:12.398 D523.0    walk   1    -170   350    88    80   20   
+22:17:13.394 D523.0    walk   1    -180   340    92    80   14   
+22:17:14.396 D523.0    walk   1    -170   350    102   80   14   
+22:17:15.399 D523.0    walk   1    -180   340    0     80   14   
+22:17:16.396 D523.0    walk   1    -170   320    105   80   22   
+22:17:17.294 D523.0    walk   1    -170   310    101   80   10   
+22:17:18.290 D523.0    walk   1    -160   310    107   80   10   
+22:17:19.292 D523.0    walk   1    -160   320    104   80   10   
+22:17:20.297 D523.0    walk   1    -160   290    99    80   30   
+22:17:21.297 D523.0    walk   1    -160   290    104   80   0    
+22:17:22.294 D523.0    walk   1    -140   290    103   80   20   
+22:17:23.303 D523.0    walk   1    -70    300    113   80   70   
+22:17:24.302 D523.0    walk   1    -20    300    99    80   50   
+22:17:25.302 D523.0    walk   1    -10    290    0     80   14   
+22:17:26.303 D523.0    stand  1    -10    290    0     80   0    
+22:17:27.299 D523.0    stand  1    -10    290    0     80   0    
+22:17:28.201 D523.0    stand  1    -20    290    0     80   10   
+22:17:29.198 D523.0    stand  1    -20    290    0     80   0    
+22:17:30.205 D523.0    stand  1    -20    290    0     80   0    
+22:17:31.200 D523.0    stand  1    -20    290    0     80   0    
+22:17:32.201 D523.0    stand  1    -20    290    0     80   0    
+22:17:33.212 D523.0    stand  1    -20    290    0     80   0    
+22:17:34.209 D523.0    stand  1    -20    290    0     80   0    
+22:17:35.215 D523.0    stand  1    -20    290    0     80   0    
+22:17:36.208 D523.0    stand  1    -20    290    0     80   0    
+22:17:37.208 D523.0    stand  1    -20    290    0     80   0    
+22:17:38.215 D523.0    stand  1    -20    290    0     80   0    
+22:17:39.235 D523.0    stand  1    -20    290    0     80   0    
+22:17:40.105 D523.0    stand  1    -20    290    0     80   0    
+22:17:41.108 D523.0    stand  1    -20    290    0     80   0    
+22:17:42.105 D523.0    stand  1    -20    290    0     80   0    
+22:17:43.107 D523.0    stand  1    -20    290    0     80   0    
+22:17:44.106 D523.0    stand  1    -20    290    0     80   0    
+22:17:45.108 D523.0    stand  1    -20    290    0     80   0    
+22:17:46.117 D523.0    stand  1    -20    290    0     80   0    
+22:17:47.111 D523.0    stand  1    -20    290    0     80   0    
+22:17:48.114 D523.0    stand  1    -20    290    0     80   0    
+22:17:49.116 D523.0    stand  1    -20    290    0     80   0    
+22:17:50.113 D523.0    stand  1    -20    290    0     80   0    
+22:17:51.115 D523.0    stand  1    -20    290    0     80   0    
+22:17:52.012 D523.0    stand  1    -20    290    0     80   0    
+22:17:53.042 D523.0    stand  1    -20    290    0     80   0    
+22:17:54.018 D523.0    stand  1    -20    290    0     80   0    
+22:17:55.024 D523.0    stand  1    -20    290    0     80   0    
+22:17:56.009 D523.0    stand  1    -20    290    0     80   0    
+22:17:57.011 D523.0    stand  1    -20    290    0     80   0    
+22:17:58.068 D523.88   88     -    -      -      -     -    -    
+22:17:59.025 D523.88   88     -    -      -      -     -    -    
+22:18:00.024 D523.88   88     -    -      -      -     -    -    
+22:18:17.885 D523.88   88     -    -      -      -     -    -    
+22:18:49.544 D523.88   88     -    -      -      -     -    -    
+22:19:21.640 D523.88   88     -    -      -      -     -    -    
+22:19:53.029 D523.88   88     -    -      -      -     -    -    
+22:20:24.919 D523.88   88     -    -      -      -     -    -    
+22:20:56.585 D523.88   88     -    -      -      -     -    -    
+22:21:28.511 D523.88   88     -    -      -      -     -    -    
+22:22:00.073 D523.88   88     -    -      -      -     -    -    
+22:22:32.108 D523.88   88     -    -      -      -     -    -    
+22:23:03.743 D523.88   88     -    -      -      -     -    -    
+22:23:35.305 D523.88   88     -    -      -      -     -    -    
+22:24:07.333 D523.88   88     -    -      -      -     -    -    
+22:24:38.736 D523.88   88     -    -      -      -     -    -    
+22:25:10.925 D523.88   88     -    -      -      -     -    -    
+22:25:42.221 D523.88   88     -    -      -      -     -    -    
+22:26:14.207 D523.88   88     -    -      -      -     -    -    
+22:26:45.788 D523.88   88     -    -      -      -     -    -    
+22:27:17.827 D523.88   88     -    -      -      -     -    -    
+22:27:49.263 D523.88   88     -    -      -      -     -    -    
+22:28:21.105 D523.88   88     -    -      -      -     -    -    
+22:28:52.746 D523.88   88     -    -      -      -     -    -    
+22:29:01.676 D523.0    stand  255  -80    330    79    80   72   
+22:29:02.626 D523.0    walk   255  -190   390    59    80   125  
+22:29:03.626 D523.0    walk   255  -260   470    80    80   106  
+22:29:04.627 D523.0    walk   255  -300   510    69    80   56   
+22:29:05.626 D523.0    walk   255  -340   520    0     80   41   
+22:29:06.625 D523.0    walk   255  -300   500    0     80   44   
+22:29:07.628 D523.0    stand  255  -300   510    0     80   10   
+22:29:08.632 D523.0    stand  255  -300   510    0     80   0    
+22:29:09.632 D523.0    stand  255  -310   490    75    80   22   
+22:29:10.631 D523.0    stand  255  -310   490    77    80   0    
+22:29:11.532 D523.0    stand  255  -290   490    104   80   20   
+22:29:12.541 D523.0    stand  255  -290   490    0     80   0    
+22:29:13.538 D523.0    stand  255  -290   490    0     80   0    
+22:29:14.539 D523.0    stand  255  -290   490    0     80   0    
+22:29:15.534 D523.0    stand  255  -290   490    0     80   0    
+22:29:16.537 D523.0    stand  255  -290   490    0     80   0    
+22:29:17.565 D523.0    stand  255  -290   490    0     80   0    
+22:29:18.578 D523.0    stand  255  -290   490    0     80   0    
+22:29:19.544 D523.0    stand  255  -290   490    0     80   0    
+22:29:20.541 D523.0    stand  255  -290   490    0     80   0    
+22:29:21.542 D523.0    stand  255  -290   490    0     80   0    
+22:29:22.449 D523.0    stand  255  -290   490    0     80   0    
+22:29:23.449 D523.0    stand  255  -290   490    0     80   0    
+22:29:24.444 D523.0    stand  255  -290   490    0     80   0    
+22:29:25.454 D523.0    stand  255  -290   490    0     80   0    
+22:29:26.448 D523.0    stand  255  -290   490    0     80   0    
+22:29:27.411 D523.0    stand  255  -290   490    0     80   0    
+22:29:28.406 D523.0    stand  255  -290   490    0     80   0    
+22:29:29.411 D523.0    stand  255  -290   490    0     80   0    
+22:29:30.414 D523.0    stand  255  -290   490    0     80   0    
+22:29:31.411 D523.0    stand  255  -290   490    0     80   0    
+22:29:32.410 D523.0    stand  255  -290   490    0     80   0    
+22:29:33.413 D523.0    stand  255  -290   490    0     80   0    
+22:29:34.428 D523.0    stand  255  -290   490    0     80   0    
+22:29:35.414 D523.0    stand  255  -290   490    0     80   0    
+22:29:36.419 D523.0    stand  255  -290   490    0     80   0    
+22:29:37.410 D523.0    stand  255  -290   490    0     80   0    
+22:29:38.430 D523.0    stand  255  -290   490    0     80   0    
+22:29:39.308 D523.0    stand  255  -290   490    0     80   0    
+22:29:40.312 D523.0    stand  255  -290   490    0     80   0    
+22:29:41.315 D523.0    stand  255  -290   490    0     80   0    
+22:29:42.320 D523.0    stand  255  -290   490    0     80   0    
+22:29:43.346 D523.0    stand  255  -290   490    0     80   0    
+22:29:44.369 D523.0    stand  255  -290   490    0     80   0    
+22:29:45.336 D523.0    stand  255  -290   490    0     80   0    
+22:29:46.334 D523.0    stand  255  -290   490    0     80   0    
+22:29:47.337 D523.0    stand  255  -290   490    0     80   0    
+22:29:48.335 D523.0    stand  255  -290   490    0     80   0    
+22:29:49.225 D523.0    stand  255  -290   490    0     80   0    
+22:29:50.235 D523.0    stand  255  -290   490    0     80   0    
+22:29:51.232 D523.0    stand  255  -290   490    0     80   0    
+22:29:52.229 D523.0    stand  255  -290   490    0     80   0    
+22:29:53.270 D523.0    stand  255  -290   490    0     80   0    
+22:29:54.235 D523.0    stand  255  -290   490    0     80   0    
+22:29:55.241 D523.0    stand  255  -290   490    0     80   0    
+22:29:56.246 D523.0    stand  255  -320   490    0     80   30   
+22:29:57.237 D523.0    stand  255  -320   490    0     80   0    
+22:29:58.296 D523.0    stand  255  -320   490    0     80   0    
+
+22:16:17.621 D5F7.88   88     -    -      -      -     -    -    
+22:16:49.579 D5F7.88   88     -    -      -      -     -    -    
+22:17:20.838 D5F7.88   88     -    -      -      -     -    -    
+22:17:52.852 D5F7.88   88     -    -      -      -     -    -    
+22:18:24.323 D5F7.88   88     -    -      -      -     -    -    
+22:18:56.306 D5F7.88   88     -    -      -      -     -    -    
+22:19:27.904 D5F7.88   88     -    -      -      -     -    -    
+22:19:59.736 D5F7.88   88     -    -      -      -     -    -    
+22:20:31.307 D5F7.88   88     -    -      -      -     -    -    
+22:21:03.425 D5F7.88   88     -    -      -      -     -    -    
+22:21:34.795 D5F7.88   88     -    -      -      -     -    -    
+22:22:07.022 D5F7.88   88     -    -      -      -     -    -    
+22:22:38.275 D5F7.88   88     -    -      -      -     -    -    
+22:23:10.195 D5F7.88   88     -    -      -      -     -    -    
+22:23:41.864 D5F7.88   88     -    -      -      -     -    -    
+22:24:13.794 D5F7.88   88     -    -      -      -     -    -    
+22:24:45.459 D5F7.88   88     -    -      -      -     -    -    
+22:25:17.108 D5F7.88   88     -    -      -      -     -    -    
+22:25:49.018 D5F7.88   88     -    -      -      -     -    -    
+22:26:20.581 D5F7.88   88     -    -      -      -     -    -    
+22:26:52.636 D5F7.88   88     -    -      -      -     -    -    
+22:27:23.978 D5F7.88   88     -    -      -      -     -    -    
+22:27:55.930 D5F7.88   88     -    -      -      -     -    -    
+22:28:27.477 D5F7.88   88     -    -      -      -     -    -    
+22:28:59.513 D5F7.88   88     -    -      -      -     -    -    
+22:29:30.960 D5F7.88   88     -    -      -      -     -    -    
+
+```
+
+**汇总**: xray tick 0 | fire 0 | Fall 事件 0 () | 结论 = 无 Fall 无 fire
+
+## 完整原始记录（按时间排序，data_value 全文不删字段）
+```
+time     ms             device.tid   event          x      y      z     原始记录
+22:16:01 1782101761002  D523.0       track          -300   490    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -300, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:01 1782101761995  D523.0       track          -290   500    79    {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 79, "remaining_time": 0, "track_confidence": 80}
+22:16:02 1782101762897  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:03 1782101763888  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:04 1782101764902  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101764902, "track_count": 1, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 60, "respiratory_rate": -1, "multi_person_duration": 0}
+22:16:04 1782101764902  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:16:04 1782101764941  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:05 1782101765889  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:06 1782101766958  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:07 1782101767950  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:08 1782101768846  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:09 1782101769841  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:10 1782101770850  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:11 1782101771844  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:12 1782101772744  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:16:12 1782101772744  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101772744, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:16:12 1782101772857  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:13 1782101773024  09E7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:13 1782101773851  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:14 1782101774845  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:15 1782101775852  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:16 1782101776856  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:17 1782101777374  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:16:17 1782101777374  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101777374, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:16:17 1782101777621  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:17 1782101777848  D523.0       track          -290   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:18 1782101778848  D523.0       track          -300   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -300, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:19 1782101779851  D523.0       track          -270   510    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -270, "position_y": 510, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:20 1782101780743  D523.0       track          -300   490    59    {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -300, "position_y": 490, "position_z": 59, "remaining_time": 0, "track_confidence": 80}
+22:16:21 1782101781749  D523.0       track          -290   500    76    {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 76, "remaining_time": 0, "track_confidence": 80}
+22:16:22 1782101782764  D523.0       track          -310   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -310, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:23 1782101783764  D523.0       track          -280   490    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -280, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:24 1782101784764  D523.0       track          -280   490    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -280, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:25 1782101785764  D523.0       track          -280   490    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -280, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:26 1782101786775  D523.0       track          -280   490    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -280, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:27 1782101787767  D523.0       track          -280   490    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -280, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:28 1782101788777  D523.0       track          -280   490    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -280, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:29 1782101789769  D523.0       track          -280   490    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -280, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:30 1782101790669  D523.0       track          -290   500    65    {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -290, "position_y": 500, "position_z": 65, "remaining_time": 0, "track_confidence": 80}
+22:16:31 1782101791667  D523.0       track          -320   500    102   {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -320, "position_y": 500, "position_z": 102, "remaining_time": 0, "track_confidence": 80}
+22:16:32 1782101792347  09E7.10      number_people  -      -      -     {"track_id": 10, "heart_rate": -1, "event_since": 1782101792347, "event_status": "start", "number_people": 1, "respiratory_rate": -1}
+22:16:32 1782101792666  D523.0       track          -320   500    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -320, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:32 1782101792676  09E7         EnterRoom      -      -      -     {"heart_rate": -1, "event_since": 1782101792676, "event_status": "start", "respiratory_rate": -1}
+22:16:32 1782101792678  09E7.0       track          280    -180   0     {"pose": 4, "event": 1, "track_id": 0, "position_x": 280, "position_y": -180, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:32 1782101792680  09E7.0       track          280    -170   51    {"pose": 4, "track_id": 0, "position_x": 280, "position_y": -170, "position_z": 51, "remaining_time": 0, "track_confidence": 80}
+22:16:33 1782101793543  09E7.0       track          270    -190   32    {"pose": 4, "track_id": 0, "position_x": 270, "position_y": -190, "position_z": 32, "remaining_time": 0, "track_confidence": 80}
+22:16:33 1782101793667  D523.0       track          -300   500    75    {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -300, "position_y": 500, "position_z": 75, "remaining_time": 0, "track_confidence": 80}
+22:16:34 1782101794550  09E7.0       track          270    -170   0     {"pose": 4, "track_id": 0, "position_x": 270, "position_y": -170, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:34 1782101794672  D523.0       track          -280   510    54    {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -280, "position_y": 510, "position_z": 54, "remaining_time": 0, "track_confidence": 80}
+22:16:35 1782101795545  09E7.0       track          260    -180   0     {"pose": 4, "track_id": 0, "position_x": 260, "position_y": -180, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:35 1782101795676  D523.0       track          -310   510    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -310, "position_y": 510, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:36 1782101796549  09E7.0       track          270    -170   24    {"pose": 4, "track_id": 0, "position_x": 270, "position_y": -170, "position_z": 24, "remaining_time": 0, "track_confidence": 80}
+22:16:36 1782101796678  D523.0       track          -300   490    56    {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -300, "position_y": 490, "position_z": 56, "remaining_time": 0, "track_confidence": 80}
+22:16:37 1782101797551  09E7.0       track          270    -140   69    {"pose": 4, "track_id": 0, "position_x": 270, "position_y": -140, "position_z": 69, "remaining_time": 0, "track_confidence": 80}
+22:16:37 1782101797676  D523.0       track          -280   500    105   {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -280, "position_y": 500, "position_z": 105, "remaining_time": 0, "track_confidence": 80}
+22:16:38 1782101798555  09E7.0       track          270    -130   0     {"pose": 4, "track_id": 0, "position_x": 270, "position_y": -130, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:38 1782101798678  D523.0       track          -260   480    96    {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -260, "position_y": 480, "position_z": 96, "remaining_time": 0, "track_confidence": 80}
+22:16:39 1782101799569  09E7.0       track          260    -120   82    {"pose": 4, "track_id": 0, "position_x": 260, "position_y": -120, "position_z": 82, "remaining_time": 0, "track_confidence": 80}
+22:16:39 1782101799674  D523.0       track          -250   460    85    {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -250, "position_y": 460, "position_z": 85, "remaining_time": 0, "track_confidence": 80}
+22:16:40 1782101800559  09E7.0       track          260    -110   83    {"pose": 4, "track_id": 0, "position_x": 260, "position_y": -110, "position_z": 83, "remaining_time": 0, "track_confidence": 80}
+22:16:40 1782101800678  D523.0       track          -250   460    111   {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -250, "position_y": 460, "position_z": 111, "remaining_time": 0, "track_confidence": 80}
+22:16:41 1782101801452  09E7.0       track          250    -110   0     {"pose": 4, "track_id": 0, "position_x": 250, "position_y": -110, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:41 1782101801676  D523.0       track          -250   460    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -250, "position_y": 460, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:42 1782101802443  09E7.0       track          250    -120   63    {"pose": 4, "track_id": 0, "position_x": 250, "position_y": -120, "position_z": 63, "remaining_time": 0, "track_confidence": 80}
+22:16:42 1782101802570  D523.0       track          -260   440    84    {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -260, "position_y": 440, "position_z": 84, "remaining_time": 0, "track_confidence": 80}
+22:16:43 1782101803460  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101803460, "track_count": 1, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 9, "respiratory_rate": -1, "multi_person_duration": 0}
+22:16:43 1782101803460  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:16:43 1782101803505  09E7.0       track          240    -90    59    {"pose": 4, "track_id": 0, "position_x": 240, "position_y": -90, "position_z": 59, "remaining_time": 0, "track_confidence": 80}
+22:16:43 1782101803570  D523.0       track          -230   430    98    {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -230, "position_y": 430, "position_z": 98, "remaining_time": 0, "track_confidence": 80}
+22:16:44 1782101804447  09E7.0       track          230    -80    0     {"pose": 4, "track_id": 0, "position_x": 230, "position_y": -80, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:44 1782101804571  D523.0       track          -220   410    110   {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -220, "position_y": 410, "position_z": 110, "remaining_time": 0, "track_confidence": 80}
+22:16:45 1782101805448  09E7.0       track          230    -60    0     {"pose": 4, "track_id": 0, "position_x": 230, "position_y": -60, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:45 1782101805574  D523.0       track          -230   410    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -230, "position_y": 410, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:46 1782101806453  09E7.0       track          230    -70    0     {"pose": 4, "track_id": 0, "position_x": 230, "position_y": -70, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:46 1782101806574  D523.0       track          -230   410    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -230, "position_y": 410, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:47 1782101807453  09E7.0       track          250    -60    120   {"pose": 4, "track_id": 0, "position_x": 250, "position_y": -60, "position_z": 120, "remaining_time": 0, "track_confidence": 80}
+22:16:47 1782101807577  D523.0       track          -220   400    107   {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -220, "position_y": 400, "position_z": 107, "remaining_time": 0, "track_confidence": 80}
+22:16:48 1782101808463  09E7.0       track          240    -50    0     {"pose": 4, "track_id": 0, "position_x": 240, "position_y": -50, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:48 1782101808573  D523.0       track          -230   400    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -230, "position_y": 400, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:49 1782101809208  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101809208, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:16:49 1782101809208  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:16:49 1782101809450  09E7.0       track          250    -50    81    {"pose": 4, "track_id": 0, "position_x": 250, "position_y": -50, "position_z": 81, "remaining_time": 0, "track_confidence": 80}
+22:16:49 1782101809577  D523.0       track          -230   400    104   {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -230, "position_y": 400, "position_z": 104, "remaining_time": 0, "track_confidence": 80}
+22:16:49 1782101809579  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:50 1782101810454  09E7.0       track          230    -20    57    {"pose": 4, "track_id": 0, "position_x": 230, "position_y": -20, "position_z": 57, "remaining_time": 0, "track_confidence": 80}
+22:16:50 1782101810577  D523.0       track          -210   370    89    {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -210, "position_y": 370, "position_z": 89, "remaining_time": 0, "track_confidence": 80}
+22:16:51 1782101811456  09E7.0       track          220    20     64    {"pose": 4, "track_id": 0, "position_x": 220, "position_y": 20, "position_z": 64, "remaining_time": 0, "track_confidence": 80}
+22:16:51 1782101811578  D523.0       track          -200   330    105   {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -200, "position_y": 330, "position_z": 105, "remaining_time": 0, "track_confidence": 80}
+22:16:52 1782101812466  09E7.0       track          200    60     89    {"pose": 1, "track_id": 0, "position_x": 200, "position_y": 60, "position_z": 89, "remaining_time": 0, "track_confidence": 80}
+22:16:52 1782101812576  D523.0       track          -180   310    97    {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -180, "position_y": 310, "position_z": 97, "remaining_time": 0, "track_confidence": 80}
+22:16:53 1782101813354  09E7.0       track          180    80     96    {"pose": 1, "track_id": 0, "position_x": 180, "position_y": 80, "position_z": 96, "remaining_time": 0, "track_confidence": 80}
+22:16:53 1782101813595  D523.0       track          -170   280    112   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -170, "position_y": 280, "position_z": 112, "remaining_time": 0, "track_confidence": 80}
+22:16:54 1782101814349  09E7.0       track          200    80     98    {"pose": 1, "track_id": 0, "position_x": 200, "position_y": 80, "position_z": 98, "remaining_time": 0, "track_confidence": 80}
+22:16:54 1782101814473  D523.0       track          -170   290    114   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -170, "position_y": 290, "position_z": 114, "remaining_time": 0, "track_confidence": 80}
+22:16:55 1782101815350  09E7.0       track          200    60     44    {"pose": 1, "track_id": 0, "position_x": 200, "position_y": 60, "position_z": 44, "remaining_time": 0, "track_confidence": 80}
+22:16:55 1782101815480  D523.0       track          -170   310    81    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -170, "position_y": 310, "position_z": 81, "remaining_time": 0, "track_confidence": 80}
+22:16:56 1782101816364  09E7.0       track          200    50     61    {"pose": 1, "track_id": 0, "position_x": 200, "position_y": 50, "position_z": 61, "remaining_time": 0, "track_confidence": 80}
+22:16:56 1782101816475  D523.0       track          -170   320    88    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -170, "position_y": 320, "position_z": 88, "remaining_time": 0, "track_confidence": 80}
+22:16:57 1782101817350  09E7.0       track          190    10     66    {"pose": 1, "track_id": 0, "position_x": 190, "position_y": 10, "position_z": 66, "remaining_time": 0, "track_confidence": 80}
+22:16:57 1782101817477  D523.0       track          -160   340    77    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -160, "position_y": 340, "position_z": 77, "remaining_time": 0, "track_confidence": 80}
+22:16:58 1782101818363  09E7.0       track          190    -20    0     {"pose": 1, "track_id": 0, "position_x": 190, "position_y": -20, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:16:58 1782101818502  D523.0       track          -180   360    83    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -180, "position_y": 360, "position_z": 83, "remaining_time": 0, "track_confidence": 80}
+22:16:59 1782101819353  09E7.0       track          180    -10    65    {"pose": 1, "track_id": 0, "position_x": 180, "position_y": -10, "position_z": 65, "remaining_time": 0, "track_confidence": 80}
+22:16:59 1782101819480  D523.0       track          -180   370    75    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -180, "position_y": 370, "position_z": 75, "remaining_time": 0, "track_confidence": 80}
+22:17:00 1782101820360  09E7.0       track          200    -10    58    {"pose": 1, "track_id": 0, "position_x": 200, "position_y": -10, "position_z": 58, "remaining_time": 0, "track_confidence": 80}
+22:17:00 1782101820482  D523.0       track          -180   390    57    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -180, "position_y": 390, "position_z": 57, "remaining_time": 0, "track_confidence": 80}
+22:17:01 1782101821355  09E7.0       track          200    -10    72    {"pose": 1, "track_id": 0, "position_x": 200, "position_y": -10, "position_z": 72, "remaining_time": 0, "track_confidence": 80}
+22:17:01 1782101821481  D523.0       track          -190   360    77    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -190, "position_y": 360, "position_z": 77, "remaining_time": 0, "track_confidence": 80}
+22:17:02 1782101822359  09E7.0       track          220    10     78    {"pose": 1, "track_id": 0, "position_x": 220, "position_y": 10, "position_z": 78, "remaining_time": 0, "track_confidence": 80}
+22:17:02 1782101822485  D523.0       track          -190   340    103   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -190, "position_y": 340, "position_z": 103, "remaining_time": 0, "track_confidence": 80}
+22:17:03 1782101823357  09E7.0       track          210    30     80    {"pose": 1, "track_id": 0, "position_x": 210, "position_y": 30, "position_z": 80, "remaining_time": 0, "track_confidence": 80}
+22:17:03 1782101823484  D523.0       track          -190   310    105   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -190, "position_y": 310, "position_z": 105, "remaining_time": 0, "track_confidence": 80}
+22:17:04 1782101824359  09E7.0       track          180    70     64    {"pose": 1, "track_id": 0, "position_x": 180, "position_y": 70, "position_z": 64, "remaining_time": 0, "track_confidence": 80}
+22:17:04 1782101824496  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101824496, "track_count": 1, "event_status": "instant", "lie_duration": 0, "walk_distance": 1, "walk_duration": 10, "stand_duration": 50, "respiratory_rate": -1, "multi_person_duration": 0}
+22:17:04 1782101824496  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:17:04 1782101824544  D523.0       track          -170   300    104   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -170, "position_y": 300, "position_z": 104, "remaining_time": 0, "track_confidence": 80}
+22:17:05 1782101825270  09E7.0       track          180    80     75    {"pose": 1, "track_id": 0, "position_x": 180, "position_y": 80, "position_z": 75, "remaining_time": 0, "track_confidence": 80}
+22:17:05 1782101825492  D523.0       track          -150   280    118   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -150, "position_y": 280, "position_z": 118, "remaining_time": 0, "track_confidence": 80}
+22:17:06 1782101826257  09E7.0       track          170    70     94    {"pose": 1, "track_id": 0, "position_x": 170, "position_y": 70, "position_z": 94, "remaining_time": 0, "track_confidence": 80}
+22:17:06 1782101826392  D523.0       track          -160   300    118   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -160, "position_y": 300, "position_z": 118, "remaining_time": 0, "track_confidence": 80}
+22:17:07 1782101827254  09E7.0       track          180    50     76    {"pose": 1, "track_id": 0, "position_x": 180, "position_y": 50, "position_z": 76, "remaining_time": 0, "track_confidence": 80}
+22:17:07 1782101827384  D523.0       track          -160   310    99    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -160, "position_y": 310, "position_z": 99, "remaining_time": 0, "track_confidence": 80}
+22:17:08 1782101828265  09E7.0       track          170    70     63    {"pose": 1, "track_id": 0, "position_x": 170, "position_y": 70, "position_z": 63, "remaining_time": 0, "track_confidence": 80}
+22:17:08 1782101828398  D523.0       track          -140   290    100   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -140, "position_y": 290, "position_z": 100, "remaining_time": 0, "track_confidence": 80}
+22:17:09 1782101829257  09E7.0       track          180    70     95    {"pose": 1, "track_id": 0, "position_x": 180, "position_y": 70, "position_z": 95, "remaining_time": 0, "track_confidence": 80}
+22:17:09 1782101829381  D523.0       track          -150   300    109   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -150, "position_y": 300, "position_z": 109, "remaining_time": 0, "track_confidence": 80}
+22:17:10 1782101830258  09E7.0       track          190    60     57    {"pose": 1, "track_id": 0, "position_x": 190, "position_y": 60, "position_z": 57, "remaining_time": 0, "track_confidence": 80}
+22:17:10 1782101830388  D523.0       track          -170   320    93    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -170, "position_y": 320, "position_z": 93, "remaining_time": 0, "track_confidence": 80}
+22:17:11 1782101831260  09E7.0       track          190    30     108   {"pose": 1, "track_id": 0, "position_x": 190, "position_y": 30, "position_z": 108, "remaining_time": 0, "track_confidence": 80}
+22:17:11 1782101831394  D523.0       track          -170   330    69    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -170, "position_y": 330, "position_z": 69, "remaining_time": 0, "track_confidence": 80}
+22:17:12 1782101832258  09E7.0       track          200    20     76    {"pose": 1, "track_id": 0, "position_x": 200, "position_y": 20, "position_z": 76, "remaining_time": 0, "track_confidence": 80}
+22:17:12 1782101832398  D523.0       track          -170   350    88    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -170, "position_y": 350, "position_z": 88, "remaining_time": 0, "track_confidence": 80}
+22:17:13 1782101833260  09E7.0       track          190    10     77    {"pose": 1, "track_id": 0, "position_x": 190, "position_y": 10, "position_z": 77, "remaining_time": 0, "track_confidence": 80}
+22:17:13 1782101833394  D523.0       track          -180   340    92    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -180, "position_y": 340, "position_z": 92, "remaining_time": 0, "track_confidence": 80}
+22:17:14 1782101834281  09E7.0       track          200    20     95    {"pose": 1, "track_id": 0, "position_x": 200, "position_y": 20, "position_z": 95, "remaining_time": 0, "track_confidence": 80}
+22:17:14 1782101834396  D523.0       track          -170   350    102   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -170, "position_y": 350, "position_z": 102, "remaining_time": 0, "track_confidence": 80}
+22:17:15 1782101835263  09E7.0       track          200    20     58    {"pose": 1, "track_id": 0, "position_x": 200, "position_y": 20, "position_z": 58, "remaining_time": 0, "track_confidence": 80}
+22:17:15 1782101835399  D523.0       track          -180   340    0     {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -180, "position_y": 340, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:16 1782101836271  09E7.0       track          200    40     45    {"pose": 1, "track_id": 0, "position_x": 200, "position_y": 40, "position_z": 45, "remaining_time": 0, "track_confidence": 80}
+22:17:16 1782101836396  D523.0       track          -170   320    105   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -170, "position_y": 320, "position_z": 105, "remaining_time": 0, "track_confidence": 80}
+22:17:17 1782101837157  09E7.0       track          200    50     58    {"pose": 1, "track_id": 0, "position_x": 200, "position_y": 50, "position_z": 58, "remaining_time": 0, "track_confidence": 80}
+22:17:17 1782101837294  D523.0       track          -170   310    101   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -170, "position_y": 310, "position_z": 101, "remaining_time": 0, "track_confidence": 80}
+22:17:18 1782101838177  09E7.0       track          190    50     125   {"pose": 1, "track_id": 0, "position_x": 190, "position_y": 50, "position_z": 125, "remaining_time": 0, "track_confidence": 80}
+22:17:18 1782101838290  D523.0       track          -160   310    107   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -160, "position_y": 310, "position_z": 107, "remaining_time": 0, "track_confidence": 80}
+22:17:19 1782101839166  09E7.0       track          170    50     0     {"pose": 1, "track_id": 0, "position_x": 170, "position_y": 50, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:19 1782101839292  D523.0       track          -160   320    104   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -160, "position_y": 320, "position_z": 104, "remaining_time": 0, "track_confidence": 80}
+22:17:20 1782101840169  09E7.0       track          180    60     84    {"pose": 1, "track_id": 0, "position_x": 180, "position_y": 60, "position_z": 84, "remaining_time": 0, "track_confidence": 80}
+22:17:20 1782101840297  D523.0       track          -160   290    99    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -160, "position_y": 290, "position_z": 99, "remaining_time": 0, "track_confidence": 80}
+22:17:20 1782101840838  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:21 1782101841167  09E7.0       track          180    80     94    {"pose": 1, "track_id": 0, "position_x": 180, "position_y": 80, "position_z": 94, "remaining_time": 0, "track_confidence": 80}
+22:17:21 1782101841297  D523.0       track          -160   290    104   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -160, "position_y": 290, "position_z": 104, "remaining_time": 0, "track_confidence": 80}
+22:17:22 1782101842177  09E7.0       track          160    80     74    {"pose": 1, "track_id": 0, "position_x": 160, "position_y": 80, "position_z": 74, "remaining_time": 0, "track_confidence": 80}
+22:17:22 1782101842294  D523.0       track          -140   290    103   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -140, "position_y": 290, "position_z": 103, "remaining_time": 0, "track_confidence": 80}
+22:17:23 1782101843164  09E7.0       track          120    70     81    {"pose": 1, "track_id": 0, "position_x": 120, "position_y": 70, "position_z": 81, "remaining_time": 0, "track_confidence": 80}
+22:17:23 1782101843303  D523.0       track          -70    300    113   {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -70, "position_y": 300, "position_z": 113, "remaining_time": 0, "track_confidence": 80}
+22:17:24 1782101844162  09E7.0       track          90     70     65    {"pose": 1, "track_id": 0, "position_x": 90, "position_y": 70, "position_z": 65, "remaining_time": 0, "track_confidence": 80}
+22:17:24 1782101844302  D523.0       track          -20    300    99    {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 300, "position_z": 99, "remaining_time": 0, "track_confidence": 80}
+22:17:25 1782101845175  09E7.0       track          40     70     82    {"pose": 1, "track_id": 0, "position_x": 40, "position_y": 70, "position_z": 82, "remaining_time": 0, "track_confidence": 80}
+22:17:25 1782101845302  D523.0       track          -10    290    0     {"pose": 1, "area_id": 1, "track_id": 0, "position_x": -10, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:26 1782101846169  09E7.0       track          0      70     64    {"pose": 1, "track_id": 0, "position_x": 0, "position_y": 70, "position_z": 64, "remaining_time": 0, "track_confidence": 80}
+22:17:26 1782101846303  D523.0       track          -10    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -10, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:27 1782101847183  09E7.0       track          -40    50     75    {"pose": 1, "track_id": 0, "position_x": -40, "position_y": 50, "position_z": 75, "remaining_time": 0, "track_confidence": 80}
+22:17:27 1782101847299  D523.0       track          -10    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -10, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:28 1782101848171  09E7.0       track          -60    0      72    {"pose": 1, "track_id": 0, "position_x": -60, "position_y": 0, "position_z": 72, "remaining_time": 0, "track_confidence": 80}
+22:17:28 1782101848201  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:29 1782101849065  09E7.0       track          -70    -20    65    {"pose": 1, "track_id": 0, "position_x": -70, "position_y": -20, "position_z": 65, "remaining_time": 0, "track_confidence": 80}
+22:17:29 1782101849198  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:30 1782101850064  09E7.0       track          -30    -40    48    {"pose": 1, "track_id": 0, "position_x": -30, "position_y": -40, "position_z": 48, "remaining_time": 0, "track_confidence": 80}
+22:17:30 1782101850205  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:31 1782101851064  09E7.0       track          -20    -40    49    {"pose": 6, "track_id": 0, "position_x": -20, "position_y": -40, "position_z": 49, "remaining_time": 0, "track_confidence": 80}
+22:17:31 1782101851200  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:32 1782101852071  09E7.0       track          -20    -40    50    {"pose": 6, "track_id": 0, "position_x": -20, "position_y": -40, "position_z": 50, "remaining_time": 0, "track_confidence": 80}
+22:17:32 1782101852201  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:33 1782101853066  09E7.0       track          -30    -10    35    {"pose": 6, "track_id": 0, "position_x": -30, "position_y": -10, "position_z": 35, "remaining_time": 0, "track_confidence": 80}
+22:17:33 1782101853212  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:34 1782101854068  09E7.0       track          -40    -60    0     {"pose": 6, "track_id": 0, "position_x": -40, "position_y": -60, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:34 1782101854209  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:35 1782101855068  09E7.0       track          -40    -60    0     {"pose": 6, "track_id": 0, "position_x": -40, "position_y": -60, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:35 1782101855215  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:36 1782101856071  09E7.0       track          -20    -120   0     {"pose": 6, "track_id": 0, "position_x": -20, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:36 1782101856208  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:37 1782101857070  09E7.0       track          -30    -110   0     {"pose": 6, "event": 3, "area_id": 2, "track_id": 0, "position_x": -30, "position_y": -110, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:37 1782101857111  09E7         InBed          -      -      -     {"heart_rate": -1, "event_since": 1782101857111, "event_status": "start", "respiratory_rate": -1}
+22:17:37 1782101857208  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:38 1782101858078  09E7.0       track          -30    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -30, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:38 1782101858215  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:39 1782101859075  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:39 1782101859235  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:39 1782101859980  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:40 1782101860000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 55, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 19, "track_confidence": 90, "vital_confidence": 0}
+22:17:40 1782101860105  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:40 1782101860981  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:41 1782101861000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 55, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 19, "track_confidence": 90, "vital_confidence": 0}
+22:17:41 1782101861108  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:41 1782101861475  0978         InBed          -      -      -     {"bed_status": 0, "heart_rate": -1, "event_since": 1782101860000, "event_status": "instant", "respiratory_rate": -1}
+22:17:41 1782101861491  0978         sleep-stage    -      -      -     {"heart_rate": -1, "event_since": 1782101860000, "sleep_stage": 1, "event_status": "instant", "respiratory_rate": -1}
+22:17:41 1782101861491  0978         InBed          -      -      -     {"bed_status": 0, "heart_rate": -1, "event_since": 1782101860000, "event_status": "start", "respiratory_rate": -1}
+22:17:41 1782101861999  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101861999, "track_count": 1, "event_status": "instant", "lie_duration": 10, "walk_distance": 4, "walk_duration": 39, "stand_duration": 11, "respiratory_rate": -1, "multi_person_duration": 0}
+22:17:41 1782101861999  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:17:42 1782101862038  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:42 1782101862105  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:42 1782101862981  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:43 1782101863000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 63, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 19, "track_confidence": 90, "vital_confidence": 0}
+22:17:43 1782101863107  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:43 1782101863977  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:44 1782101864106  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:44 1782101864980  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:45 1782101865000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 63, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 19, "track_confidence": 90, "vital_confidence": 0}
+22:17:45 1782101865108  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:45 1782101865988  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:46 1782101866117  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:46 1782101866989  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:47 1782101867000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 87, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 18, "track_confidence": 90, "vital_confidence": 0}
+22:17:47 1782101867111  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:47 1782101867999  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:48 1782101868114  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:48 1782101868983  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:49 1782101869000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 86, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 18, "track_confidence": 90, "vital_confidence": 0}
+22:17:49 1782101869116  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:49 1782101869990  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:50 1782101870113  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:50 1782101870881  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:51 1782101871000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 86, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 18, "track_confidence": 90, "vital_confidence": 0}
+22:17:51 1782101871115  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:51 1782101871890  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:52 1782101872012  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:52 1782101872684  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:17:52 1782101872684  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101872684, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:17:52 1782101872852  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:52 1782101872888  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:53 1782101873000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 83, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 18, "track_confidence": 90, "vital_confidence": 0}
+22:17:53 1782101873042  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:53 1782101873885  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:54 1782101874018  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:54 1782101874889  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:55 1782101875000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 82, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 17, "track_confidence": 90, "vital_confidence": 0}
+22:17:55 1782101875024  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:55 1782101875888  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:56 1782101876009  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:56 1782101876912  09E7.0       track          -40    -120   0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -120, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:57 1782101877000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 78, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 17, "track_confidence": 90, "vital_confidence": 0}
+22:17:57 1782101877011  D523.0       track          -20    290    0     {"pose": 4, "area_id": 1, "track_id": 0, "position_x": -20, "position_y": 290, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:57 1782101877895  09E7.0       track          -40    -110   73    {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -110, "position_z": 73, "remaining_time": 0, "track_confidence": 80}
+22:17:58 1782101878029  D523.10      number_people  -      -      -     {"track_id": 10, "heart_rate": -1, "event_since": 1782101878029, "event_status": "start", "number_people": 0, "respiratory_rate": -1}
+22:17:58 1782101878068  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:58 1782101878893  09E7.0       track          -40    -60    35    {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -60, "position_z": 35, "remaining_time": 0, "track_confidence": 80}
+22:17:59 1782101879025  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:17:59 1782101879891  09E7.0       track          -40    -30    39    {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -30, "position_z": 39, "remaining_time": 0, "track_confidence": 80}
+22:18:00 1782101880000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 77, "init_status": 0, "pose_confidence": 90, "track_confidence": 90, "vital_confidence": 0}
+22:18:00 1782101880024  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:00 1782101880814  09E7.0       track          -50    -30    37    {"pose": 1, "area_id": 2, "track_id": 0, "position_x": -50, "position_y": -30, "position_z": 37, "remaining_time": 0, "track_confidence": 80}
+22:18:01 1782101881819  09E7.0       track          -50    -40    52    {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -50, "position_y": -40, "position_z": 52, "remaining_time": 0, "track_confidence": 80}
+22:18:02 1782101882000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 1, "turn_over": 0, "bed_status": 0, "heart_rate": 77, "init_status": 0, "pose_confidence": 90, "track_confidence": 90, "vital_confidence": 0}
+22:18:02 1782101882817  09E7.0       track          -50    -20    0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -50, "position_y": -20, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:03 1782101883815  09E7.0       track          -40    -10    0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -10, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:04 1782101884000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 1, "bed_status": 0, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 17, "track_confidence": 90, "vital_confidence": 0}
+22:18:04 1782101884817  09E7.0       track          -40    -10    0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -10, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:05 1782101885812  09E7.0       track          -40    -10    0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -10, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:06 1782101886000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 17, "track_confidence": 90, "vital_confidence": 0}
+22:18:06 1782101886819  09E7.0       track          -50    -70    0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -50, "position_y": -70, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:07 1782101887816  09E7.0       track          -40    -90    0     {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -90, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:08 1782101888000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 16, "track_confidence": 90, "vital_confidence": 0}
+22:18:08 1782101888817  09E7.0       track          -60    -110   0     {"pose": 4, "area_id": 2, "track_id": 0, "position_x": -60, "position_y": -110, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:09 1782101889000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 77, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 16, "track_confidence": 90, "vital_confidence": 0}
+22:18:09 1782101889819  09E7.0       track          -60    -110   0     {"pose": 4, "area_id": 2, "track_id": 0, "position_x": -60, "position_y": -110, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:10 1782101890000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 77, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 16, "track_confidence": 90, "vital_confidence": 0}
+22:18:10 1782101890820  09E7.0       track          -50    -110   0     {"pose": 4, "area_id": 2, "track_id": 0, "position_x": -50, "position_y": -110, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:11 1782101891721  09E7.0       track          -40    -100   0     {"pose": 4, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -100, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:12 1782101892000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 77, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 16, "track_confidence": 90, "vital_confidence": 0}
+22:18:12 1782101892718  09E7.0       track          -40    -140   0     {"pose": 4, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -140, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:13 1782101893717  09E7.0       track          -40    -140   0     {"pose": 4, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -140, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:14 1782101894000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 77, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 16, "track_confidence": 90, "vital_confidence": 0}
+22:18:14 1782101894722  09E7.0       track          -40    -100   0     {"pose": 4, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -100, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:15 1782101895726  09E7.0       track          -30    -110   59    {"pose": 4, "area_id": 2, "track_id": 0, "position_x": -30, "position_y": -110, "position_z": 59, "remaining_time": 0, "track_confidence": 80}
+22:18:16 1782101896000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 77, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 16, "track_confidence": 90, "vital_confidence": 0}
+22:18:16 1782101896676  09E7.0       track          -30    -120   58    {"pose": 4, "area_id": 2, "track_id": 0, "position_x": -30, "position_y": -120, "position_z": 58, "remaining_time": 0, "track_confidence": 80}
+22:18:17 1782101897682  09E7.0       track          -20    -50    48    {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -20, "position_y": -50, "position_z": 48, "remaining_time": 0, "track_confidence": 80}
+22:18:17 1782101897850  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101897850, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 2, "walk_duration": 23, "stand_duration": 32, "respiratory_rate": -1, "multi_person_duration": 0}
+22:18:17 1782101897850  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:18:17 1782101897885  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:18 1782101898000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 1, "turn_over": 0, "bed_status": 0, "heart_rate": 77, "init_status": 0, "pose_confidence": 90, "track_confidence": 90, "vital_confidence": 0}
+22:18:18 1782101898683  09E7.0       track          -40    -40    47    {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": -40, "position_z": 47, "remaining_time": 0, "track_confidence": 80}
+22:18:19 1782101899681  09E7.0       track          -40    0      0     {"pose": 1, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:20 1782101900000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 1, "bed_status": 0, "heart_rate": 77, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 16, "track_confidence": 90, "vital_confidence": 0}
+22:18:20 1782101900686  09E7.0       track          -40    0      0     {"pose": 4, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:21 1782101901682  09E7.0       track          -40    0      0     {"pose": 4, "area_id": 2, "track_id": 0, "position_x": -40, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:22 1782101902000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 77, "init_status": 0, "pose_confidence": 90, "respiratory_rate": 16, "track_confidence": 90, "vital_confidence": 0}
+22:18:22 1782101902685  09E7.0       track          -20    -20    34    {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -20, "position_y": -20, "position_z": 34, "remaining_time": 0, "track_confidence": 80}
+22:18:23 1782101903682  09E7.0       track          -30    -70    52    {"pose": 6, "area_id": 2, "track_id": 0, "position_x": -30, "position_y": -70, "position_z": 52, "remaining_time": 0, "track_confidence": 80}
+22:18:24 1782101904000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "heart_rate": 77, "init_status": 0, "pose_confidence": 90, "track_confidence": 90, "vital_confidence": 0}
+22:18:24 1782101904323  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:24 1782101904686  09E7.0       track          0      -60    52    {"pose": 6, "area_id": 2, "track_id": 0, "position_x": 0, "position_y": -60, "position_z": 52, "remaining_time": 0, "track_confidence": 80}
+22:18:25 1782101905687  09E7.0       track          0      -50    48    {"pose": 6, "area_id": 2, "track_id": 0, "position_x": 0, "position_y": -50, "position_z": 48, "remaining_time": 0, "track_confidence": 80}
+22:18:26 1782101906000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 1, "turn_over": 0, "bed_status": 0, "heart_rate": 77, "init_status": 0, "pose_confidence": 90, "track_confidence": 90, "vital_confidence": 0}
+22:18:26 1782101906685  09E7.0       track          10     -60    36    {"pose": 6, "area_id": 2, "track_id": 0, "position_x": 10, "position_y": -60, "position_z": 36, "remaining_time": 0, "track_confidence": 80}
+22:18:27 1782101907702  09E7.0       track          40     -70    20    {"pose": 4, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -70, "position_z": 20, "remaining_time": 0, "track_confidence": 80}
+22:18:28 1782101908000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 1, "turn_over": 0, "bed_status": 0, "init_status": 0, "pose_confidence": 90, "track_confidence": 90, "vital_confidence": 0}
+22:18:28 1782101908583  09E7.0       track          40     -40    12    {"pose": 4, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -40, "position_z": 12, "remaining_time": 0, "track_confidence": 80}
+22:18:29 1782101909591  09E7.0       track          40     -30    0     {"pose": 4, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:30 1782101910000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 1, "turn_over": 0, "bed_status": 0, "init_status": 0, "pose_confidence": 90, "track_confidence": 90, "vital_confidence": 0}
+22:18:30 1782101910597  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:31 1782101911000  0978.0       track          -      -      -     {"pose": 9, "track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "init_status": 0, "pose_confidence": 90, "track_confidence": 90, "vital_confidence": 0}
+22:18:31 1782101911610  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:32 1782101912000  0978.0       track          -      -      -     {"pose": 9, "track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 0, "init_status": 0, "pose_confidence": 90, "track_confidence": 90, "vital_confidence": 0}
+22:18:32 1782101912585  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:33 1782101913611  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:34 1782101914000  0978.0       track          -      -      -     {"track_id": 0, "body_move": 0, "turn_over": 0, "bed_status": 1, "init_status": 0, "pose_confidence": 90, "track_confidence": 90, "vital_confidence": 0}
+22:18:34 1782101914613  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:35 1782101915547  0978         LeftBed        -      -      -     {"bed_status": 1, "heart_rate": -1, "event_since": 1782101914000, "event_status": "instant", "respiratory_rate": -1}
+22:18:35 1782101915547  0978         sleep-stage    -      -      -     {"heart_rate": -1, "event_since": 1782101914000, "sleep_stage": 1, "event_status": "instant", "respiratory_rate": -1}
+22:18:35 1782101915562  0978         LeftBed        -      -      -     {"bed_status": 1, "heart_rate": -1, "event_since": 1782101914000, "event_status": "start", "respiratory_rate": -1}
+22:18:35 1782101915618  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:36 1782101916514  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:37 1782101917536  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:38 1782101918568  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:39 1782101919523  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:40 1782101920527  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:41 1782101921540  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:18:41 1782101921540  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101921540, "track_count": 1, "event_status": "instant", "lie_duration": 34, "walk_distance": 0, "walk_duration": 2, "stand_duration": 14, "respiratory_rate": -1, "multi_person_duration": 0}
+22:18:41 1782101921582  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:42 1782101922523  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:43 1782101923522  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:44 1782101924523  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:45 1782101925525  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:46 1782101926548  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:47 1782101927525  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:48 1782101928451  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:49 1782101929422  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:49 1782101929544  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:50 1782101930444  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:51 1782101931426  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:52 1782101932425  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:53 1782101933428  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:54 1782101934431  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:55 1782101935428  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:56 1782101936106  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:18:56 1782101936106  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101936106, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:18:56 1782101936306  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:56 1782101936430  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:57 1782101937448  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:58 1782101938429  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:18:59 1782101939343  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:00 1782101940330  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:01 1782101941331  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:02 1782101942330  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:03 1782101943340  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:04 1782101944338  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:05 1782101945286  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:06 1782101946283  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:07 1782101947288  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:08 1782101948288  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:09 1782101949288  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:10 1782101950287  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:11 1782101951291  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:12 1782101952293  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:13 1782101953294  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:14 1782101954299  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:15 1782101955295  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:16 1782101956295  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:17 1782101957184  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:18 1782101958189  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:19 1782101959188  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:20 1782101960188  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:21 1782101961256  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:21 1782101961357  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101961357, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:19:21 1782101961357  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:19:21 1782101961640  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:22 1782101962241  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:23 1782101963140  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:24 1782101964144  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:25 1782101965142  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:26 1782101966151  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:27 1782101967145  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:27 1782101967904  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:28 1782101968143  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:29 1782101969154  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:30 1782101970161  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:31 1782101971171  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:32 1782101972964  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:33 1782101973150  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:34 1782101974171  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:35 1782101975043  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:36 1782101976049  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:37 1782101977053  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:38 1782101978057  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:39 1782101979075  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:40 1782101980052  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:41 1782101981073  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101981073, "track_count": 1, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:19:41 1782101981073  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:19:41 1782101981113  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:42 1782101982059  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:43 1782101983077  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:44 1782101984107  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:45 1782101985072  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:45 1782101985974  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:47 1782101987036  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:47 1782101987962  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:48 1782101988972  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:49 1782101989963  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:50 1782101990963  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:51 1782101991966  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:52 1782101992963  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:53 1782101993029  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:53 1782101993965  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:54 1782101994965  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:55 1782101995978  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:56 1782101996969  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:57 1782101997862  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:58 1782101998863  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:59 1782101999587  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:19:59 1782101999587  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782101999587, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:19:59 1782101999736  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:19:59 1782101999864  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:00 1782102000861  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:01 1782102001870  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:02 1782102002865  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:03 1782102003865  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:04 1782102004880  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:05 1782102005865  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:06 1782102006871  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:07 1782102007870  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:08 1782102008799  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:09 1782102009777  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:10 1782102010774  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:11 1782102011776  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:12 1782102012777  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:13 1782102013786  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:14 1782102014785  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:15 1782102015777  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:16 1782102016794  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:17 1782102017782  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:18 1782102018789  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:19 1782102019784  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:20 1782102020675  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:21 1782102021681  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:22 1782102022688  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:23 1782102023680  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:24 1782102024685  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:24 1782102024792  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:20:24 1782102024792  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102024792, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:20:24 1782102024919  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:25 1782102025694  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:26 1782102026698  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:27 1782102027718  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:28 1782102028708  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:29 1782102029701  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:30 1782102030594  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:31 1782102031307  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:31 1782102031597  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:32 1782102032598  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:33 1782102033604  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:34 1782102034601  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:35 1782102035613  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:36 1782102036600  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:37 1782102037604  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:38 1782102038616  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:39 1782102039602  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:40 1782102040618  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:20:40 1782102040618  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102040618, "track_count": 1, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:20:40 1782102040657  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:41 1782102041506  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:42 1782102042511  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:43 1782102043518  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:44 1782102044515  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:45 1782102045510  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:46 1782102046513  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:47 1782102047518  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:48 1782102048524  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:49 1782102049532  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:50 1782102050521  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:51 1782102051516  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:52 1782102052522  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:53 1782102053420  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:54 1782102054421  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:55 1782102055416  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:56 1782102056411  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:56 1782102056585  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:57 1782102057378  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:58 1782102058384  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:20:59 1782102059415  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:00 1782102060383  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:01 1782102061383  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:02 1782102062398  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:03 1782102063076  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102063076, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:21:03 1782102063076  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:21:03 1782102063389  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:03 1782102063425  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:04 1782102064386  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:05 1782102065392  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:06 1782102066394  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:07 1782102067397  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:08 1782102068406  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:09 1782102069281  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:10 1782102070282  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:11 1782102071393  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:12 1782102072300  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:13 1782102073335  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:14 1782102074366  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:15 1782102075319  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:16 1782102076321  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:17 1782102077222  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:18 1782102078240  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:19 1782102079230  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:20 1782102080222  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:21 1782102081228  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:22 1782102082229  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:23 1782102083226  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:24 1782102084230  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:25 1782102085230  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:26 1782102086226  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:27 1782102087236  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:28 1782102088264  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:28 1782102088276  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102088276, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:21:28 1782102088276  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:21:28 1782102088511  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:29 1782102089132  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:30 1782102090127  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:31 1782102091130  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:32 1782102092132  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:33 1782102093158  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:34 1782102094134  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:34 1782102094795  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:35 1782102095138  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:36 1782102096134  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:37 1782102097151  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:38 1782102098146  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:39 1782102099139  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:40 1782102100034  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:41 1782102101046  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:21:41 1782102101046  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102101046, "track_count": 1, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:21:41 1782102101085  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:42 1782102102077  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:43 1782102103037  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:44 1782102104168  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:44 1782102104997  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:45 1782102105994  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:46 1782102106999  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:48 1782102108003  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:49 1782102109005  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:50 1782102110054  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:50 1782102110999  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:52 1782102112000  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:53 1782102113004  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:54 1782102114004  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:55 1782102115009  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:56 1782102116006  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:56 1782102116902  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:57 1782102117899  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:58 1782102118905  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:21:59 1782102119900  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:00 1782102120073  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:00 1782102120946  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:01 1782102121949  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:02 1782102122952  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:03 1782102123842  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:04 1782102124843  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:05 1782102125852  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:06 1782102126636  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:22:06 1782102126636  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102126636, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:22:06 1782102126857  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:07 1782102127022  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:07 1782102127854  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:08 1782102128862  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:09 1782102129875  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:10 1782102130862  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:11 1782102131865  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:12 1782102132852  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:13 1782102133865  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:14 1782102134855  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:15 1782102135750  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:16 1782102136781  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:17 1782102137771  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:18 1782102138770  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:19 1782102139767  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:20 1782102140768  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:21 1782102141769  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:22 1782102142771  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:23 1782102143774  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:24 1782102144772  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:25 1782102145674  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:26 1782102146674  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:27 1782102147679  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:28 1782102148684  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:29 1782102149678  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:30 1782102150692  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:31 1782102151676  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:31 1782102151771  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102151771, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:22:31 1782102151771  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:22:32 1782102152108  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:32 1782102152680  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:33 1782102153631  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:34 1782102154617  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:35 1782102155622  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:36 1782102156620  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:37 1782102157627  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:38 1782102158275  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:38 1782102158611  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:39 1782102159658  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:22:39 1782102159658  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102159658, "track_count": 1, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:22:39 1782102159723  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:40 1782102160615  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:41 1782102161624  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:42 1782102162626  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:43 1782102163615  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:44 1782102164615  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:45 1782102165520  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:46 1782102166515  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:47 1782102167514  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:48 1782102168515  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:49 1782102169484  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:50 1782102170476  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:51 1782102171481  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:52 1782102172478  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:53 1782102173483  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:54 1782102174499  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:55 1782102175493  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:56 1782102176487  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:57 1782102177484  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:58 1782102178490  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:22:59 1782102179490  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:00 1782102180492  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:01 1782102181377  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:02 1782102182380  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:03 1782102183400  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:03 1782102183513  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102183513, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:23:03 1782102183513  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:23:03 1782102183743  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:04 1782102184393  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:05 1782102185390  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:06 1782102186452  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:07 1782102187395  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:08 1782102188400  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:09 1782102189394  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:10 1782102190062  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102190062, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:23:10 1782102190062  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:23:10 1782102190195  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:10 1782102190408  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:11 1782102191400  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:12 1782102192296  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:13 1782102193305  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:14 1782102194295  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:15 1782102195299  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:16 1782102196295  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:17 1782102197309  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:18 1782102198325  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:19 1782102199389  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:20 1782102200310  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:21 1782102201305  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:22 1782102202312  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:23 1782102203302  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:24 1782102204198  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:25 1782102205261  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:26 1782102206208  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:27 1782102207210  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:28 1782102208218  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:29 1782102209206  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:30 1782102210199  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:31 1782102211207  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:32 1782102212212  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:33 1782102213203  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:34 1782102214211  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:35 1782102215216  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:35 1782102215305  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:36 1782102216109  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:37 1782102217130  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:38 1782102218101  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:39 1782102219191  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102219191, "track_count": 1, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:23:39 1782102219191  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:23:39 1782102219244  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:40 1782102220117  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:41 1782102221126  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:41 1782102221864  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:42 1782102222110  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:43 1782102223106  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:44 1782102224138  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:45 1782102225111  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:46 1782102226113  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:47 1782102227113  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:48 1782102228022  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:49 1782102229011  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:50 1782102230005  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:51 1782102231009  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:52 1782102232015  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:53 1782102233036  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:54 1782102234027  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:55 1782102235077  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:56 1782102236026  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:57 1782102237025  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:57 1782102237931  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:58 1782102238923  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:23:59 1782102239930  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:00 1782102240932  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:01 1782102241961  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:02 1782102242931  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:03 1782102243933  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:04 1782102244945  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:05 1782102245940  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:06 1782102246946  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:07 1782102247001  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102247001, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:24:07 1782102247001  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:24:07 1782102247333  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:07 1782102247935  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:08 1782102248940  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:09 1782102249829  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:10 1782102250837  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:11 1782102251832  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:12 1782102252829  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:13 1782102253542  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102253542, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:24:13 1782102253542  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:24:13 1782102253794  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:13 1782102253830  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:14 1782102254846  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:15 1782102255836  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:16 1782102256837  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:17 1782102257840  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:18 1782102258836  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:19 1782102259841  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:20 1782102260838  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:21 1782102261733  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:22 1782102262733  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:23 1782102263741  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:24 1782102264735  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:25 1782102265734  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:26 1782102266746  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:27 1782102267745  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:28 1782102268744  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:29 1782102269768  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:30 1782102270739  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:31 1782102271745  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:32 1782102272754  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:33 1782102273635  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:34 1782102274637  09E7.0       track          40     -30    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:35 1782102275643  09E7.0       track          30     -100   32    {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 30, "position_y": -100, "position_z": 32, "remaining_time": 0, "track_confidence": 80}
+22:24:36 1782102276644  09E7.0       track          30     -160   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 30, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:37 1782102277643  09E7.0       track          30     -160   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 30, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:38 1782102278656  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102278656, "track_count": 1, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:24:38 1782102278656  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:24:38 1782102278693  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:38 1782102278736  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:39 1782102279660  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:40 1782102280649  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:41 1782102281653  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:42 1782102282655  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:43 1782102283656  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:44 1782102284550  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:45 1782102285374  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:24:45 1782102285374  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102285374, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:24:45 1782102285459  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:45 1782102285554  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:46 1782102286549  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:47 1782102287554  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:48 1782102288552  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:49 1782102289564  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:50 1782102290554  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:51 1782102291553  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:52 1782102292554  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:53 1782102293561  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:54 1782102294561  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:55 1782102295564  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:56 1782102296459  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:57 1782102297468  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:58 1782102298475  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:24:59 1782102299463  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:00 1782102300465  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:01 1782102301465  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:02 1782102302470  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:03 1782102303481  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:04 1782102304475  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:05 1782102305480  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:06 1782102306473  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:07 1782102307362  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:08 1782102308369  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:09 1782102309366  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:10 1782102310365  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:10 1782102310582  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102310582, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:25:10 1782102310582  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:25:10 1782102310925  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:11 1782102311371  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:12 1782102312368  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:13 1782102313369  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:14 1782102314378  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:15 1782102315371  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:16 1782102316372  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:17 1782102317108  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:17 1782102317372  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:18 1782102318404  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:19 1782102319269  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:20 1782102320278  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:21 1782102321272  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:22 1782102322271  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:23 1782102323269  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:24 1782102324272  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:25 1782102325296  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:26 1782102326278  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:27 1782102327273  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:28 1782102328279  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:29 1782102329283  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:30 1782102330177  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:31 1782102331183  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:32 1782102332179  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:33 1782102333180  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:34 1782102334189  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:35 1782102335185  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:36 1782102336193  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:37 1782102337189  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:38 1782102338200  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102338200, "track_count": 1, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:25:38 1782102338200  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:25:38 1782102338264  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:39 1782102339187  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:40 1782102340191  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:41 1782102341190  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:42 1782102342086  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:42 1782102342221  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:43 1782102343086  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:44 1782102344084  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:45 1782102345109  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:46 1782102346124  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:47 1782102347117  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:48 1782102348098  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:48 1782102348779  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:25:48 1782102348779  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102348779, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:25:49 1782102349018  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:49 1782102349103  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:50 1782102350097  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:51 1782102351100  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:52 1782102352099  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:52 1782102352997  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:53 1782102353996  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:54 1782102354998  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:56 1782102356002  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:57 1782102357009  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:58 1782102358003  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:25:59 1782102359003  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:00 1782102360003  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:01 1782102361008  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:02 1782102362007  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:03 1782102363013  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:04 1782102364014  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:04 1782102364897  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:05 1782102365898  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:06 1782102366903  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:07 1782102367904  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:08 1782102368906  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:09 1782102369906  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:10 1782102370904  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:11 1782102371909  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:12 1782102372916  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:13 1782102373914  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:13 1782102373970  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102373970, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:26:13 1782102373970  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:26:14 1782102374207  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:14 1782102374909  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:15 1782102375913  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:16 1782102376802  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:17 1782102377813  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:18 1782102378806  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:19 1782102379805  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:20 1782102380581  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:20 1782102380816  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:21 1782102381813  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:22 1782102382808  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:23 1782102383810  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:24 1782102384812  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:25 1782102385812  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:26 1782102386812  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:27 1782102387813  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:28 1782102388710  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:29 1782102389711  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:30 1782102390729  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:31 1782102391716  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:32 1782102392746  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:33 1782102393722  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:34 1782102394723  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:35 1782102395735  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:36 1782102396733  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:37 1782102397745  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:26:37 1782102397745  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102397745, "track_count": 1, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:26:37 1782102397784  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:38 1782102398631  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:39 1782102399640  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:40 1782102400630  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:41 1782102401630  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:42 1782102402633  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:43 1782102403638  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:44 1782102404661  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:45 1782102405636  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:45 1782102405788  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:46 1782102406636  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:47 1782102407653  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:48 1782102408663  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:49 1782102409537  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:50 1782102410541  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:51 1782102411544  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:52 1782102412261  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102412261, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:26:52 1782102412261  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:26:52 1782102412543  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:52 1782102412636  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:53 1782102413544  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:54 1782102414551  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:55 1782102415544  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:56 1782102416574  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:57 1782102417559  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:58 1782102418550  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:26:59 1782102419548  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:00 1782102420555  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:01 1782102421448  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:02 1782102422446  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:03 1782102423444  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:04 1782102424463  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:05 1782102425419  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:06 1782102426412  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:07 1782102427415  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:08 1782102428414  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:09 1782102429426  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:10 1782102430419  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:11 1782102431417  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:12 1782102432422  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:13 1782102433428  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:14 1782102434420  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:15 1782102435426  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:16 1782102436425  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:17 1782102437327  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:17 1782102437461  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102437461, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:27:17 1782102437461  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:27:17 1782102437827  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:18 1782102438324  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:19 1782102439315  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:20 1782102440317  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:21 1782102441365  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:22 1782102442365  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:23 1782102443375  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:23 1782102443978  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:24 1782102444258  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:25 1782102445264  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:26 1782102446268  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:27 1782102447268  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:28 1782102448276  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:29 1782102449264  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:30 1782102450265  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:31 1782102451277  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:32 1782102452272  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:33 1782102453274  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:34 1782102454275  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:35 1782102455276  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:36 1782102456166  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:37 1782102457173  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:38 1782102458188  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102458188, "track_count": 1, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:27:38 1782102458188  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:27:38 1782102458236  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:39 1782102459169  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:40 1782102460178  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:41 1782102461171  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:42 1782102462170  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:43 1782102463174  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:44 1782102464176  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:45 1782102465172  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:46 1782102466173  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:47 1782102467178  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:48 1782102468068  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:49 1782102469078  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:49 1782102469263  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:50 1782102470078  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:51 1782102471087  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:52 1782102472071  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:53 1782102473084  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:54 1782102474077  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:55 1782102475078  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:55 1782102475753  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102475753, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:27:55 1782102475753  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:27:55 1782102475930  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:56 1782102476078  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:57 1782102477079  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:58 1782102478080  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:59 1782102479085  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:27:59 1782102479977  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:00 1782102480989  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:01 1782102481987  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:02 1782102482988  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:03 1782102483982  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:04 1782102484987  09E7.0       track          40     -150   0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:05 1782102485984  09E7.0       track          50     -50    0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 50, "position_y": -50, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:06 1782102486995  09E7.0       track          40     -80    23    {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -80, "position_z": 23, "remaining_time": 0, "track_confidence": 80}
+22:28:07 1782102487984  09E7.0       track          40     -50    30    {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": -50, "position_z": 30, "remaining_time": 0, "track_confidence": 80}
+22:28:08 1782102488986  09E7.0       track          30     -40    38    {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 30, "position_y": -40, "position_z": 38, "remaining_time": 0, "track_confidence": 80}
+22:28:09 1782102489995  09E7.0       track          50     0      49    {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 50, "position_y": 0, "position_z": 49, "remaining_time": 0, "track_confidence": 80}
+22:28:11 1782102491007  09E7.0       track          40     10     24    {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 40, "position_y": 10, "position_z": 24, "remaining_time": 0, "track_confidence": 80}
+22:28:11 1782102491881  09E7.0       track          30     10     26    {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 30, "position_y": 10, "position_z": 26, "remaining_time": 0, "track_confidence": 80}
+22:28:12 1782102492884  09E7.0       track          20     10     24    {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 20, "position_y": 10, "position_z": 24, "remaining_time": 0, "track_confidence": 80}
+22:28:13 1782102493884  09E7.0       track          20     10     0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 20, "position_y": 10, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:14 1782102494886  09E7.0       track          10     10     0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 10, "position_y": 10, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:15 1782102495881  09E7.0       track          10     10     0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 10, "position_y": 10, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:16 1782102496907  09E7.0       track          10     20     0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 10, "position_y": 20, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:17 1782102497887  09E7.0       track          10     20     0     {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 10, "position_y": 20, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:18 1782102498885  09E7.0       track          10     20     18    {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 10, "position_y": 20, "position_z": 18, "remaining_time": 0, "track_confidence": 80}
+22:28:19 1782102499891  09E7.0       track          10     20     23    {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 10, "position_y": 20, "position_z": 23, "remaining_time": 0, "track_confidence": 80}
+22:28:20 1782102500893  09E7.0       track          10     40     42    {"pose": 3, "area_id": 2, "track_id": 0, "position_x": 10, "position_y": 40, "position_z": 42, "remaining_time": 0, "track_confidence": 80}
+22:28:20 1782102500949  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102500949, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:28:20 1782102500949  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:28:21 1782102501105  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:21 1782102501894  09E7.0       track          10     50     91    {"pose": 4, "area_id": 2, "track_id": 0, "position_x": 10, "position_y": 50, "position_z": 91, "remaining_time": 0, "track_confidence": 80}
+22:28:22 1782102502894  09E7.0       track          -10    70     76    {"pose": 4, "event": 4, "area_id": 2, "track_id": 0, "position_x": -10, "position_y": 70, "position_z": 76, "remaining_time": 0, "track_confidence": 80}
+22:28:22 1782102502933  09E7         LeftBed        -      -      -     {"heart_rate": -1, "event_since": 1782102502933, "event_status": "start", "respiratory_rate": -1}
+22:28:23 1782102503801  09E7.0       track          -20    80     26    {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -20, "position_y": 80, "position_z": 26, "remaining_time": 0, "track_confidence": 80}
+22:28:24 1782102504797  09E7.0       track          -50    100    16    {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -50, "position_y": 100, "position_z": 16, "remaining_time": 0, "track_confidence": 80}
+22:28:25 1782102505797  09E7.0       track          -50    100    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -50, "position_y": 100, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:26 1782102506800  09E7.0       track          -60    100    0     {"pose": 3, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 100, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:27 1782102507477  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:27 1782102507873  09E7         Walking        -      -      -     {"pose": 1, "heart_rate": -1, "event_since": 1782102507873, "event_status": "start", "respiratory_rate": -1}
+22:28:27 1782102507930  09E7.0       track          -60    100    0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 100, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:28 1782102508844  09E7.0       track          -60    100    0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 100, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:29 1782102509826  09E7.0       track          -60    100    0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 100, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:30 1782102510825  09E7.0       track          -60    100    0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 100, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:31 1782102511718  09E7.0       track          -60    100    0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 100, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:32 1782102512738  09E7.0       track          -60    100    0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 100, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:33 1782102513723  09E7.0       track          -60    100    0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 100, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:34 1782102514727  09E7.0       track          -60    100    0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 100, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:35 1782102515726  09E7.0       track          -60    100    0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 100, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:36 1782102516735  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102516735, "track_count": 1, "event_status": "instant", "lie_duration": 8, "walk_distance": 0, "walk_duration": 0, "stand_duration": 5, "respiratory_rate": -1, "multi_person_duration": 0}
+22:28:36 1782102516735  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:28:36 1782102516797  09E7.0       track          -60    100    17    {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 100, "position_z": 17, "remaining_time": 0, "track_confidence": 80}
+22:28:37 1782102517724  09E7.0       track          -70    100    22    {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -70, "position_y": 100, "position_z": 22, "remaining_time": 0, "track_confidence": 80}
+22:28:38 1782102518733  09E7.0       track          -60    90     40    {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 90, "position_z": 40, "remaining_time": 0, "track_confidence": 80}
+22:28:38 1782102518924  09E7.0       track          -60    90     44    {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 90, "position_z": 44, "remaining_time": 0, "track_confidence": 80}
+22:28:39 1782102519162  09E7.0       track          -60    80     46    {"pose": 7, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 80, "position_z": 46, "remaining_time": 0, "track_confidence": 80}
+22:28:39 1782102519686  09E7         Initialization -      -      -     {"pose": 0, "heart_rate": -1, "event_since": 1782102519686, "event_status": "start", "respiratory_rate": -1}
+22:28:39 1782102519728  09E7.0       track          -60    70     73    {"pose": 3, "area_id": 255, "track_id": 0, "position_x": -60, "position_y": 70, "position_z": 73, "remaining_time": 0, "track_confidence": 80}
+22:28:40 1782102520680  09E7.0       track          -90    30     39    {"pose": 3, "area_id": 255, "track_id": 0, "position_x": -90, "position_y": 30, "position_z": 39, "remaining_time": 0, "track_confidence": 80}
+22:28:41 1782102521685  09E7.0       track          -100   20     33    {"pose": 3, "area_id": 255, "track_id": 0, "position_x": -100, "position_y": 20, "position_z": 33, "remaining_time": 0, "track_confidence": 80}
+22:28:42 1782102522683  09E7.0       track          -110   30     19    {"pose": 3, "area_id": 255, "track_id": 0, "position_x": -110, "position_y": 30, "position_z": 19, "remaining_time": 0, "track_confidence": 80}
+22:28:43 1782102523676  09E7.0       track          -110   30     0     {"pose": 3, "area_id": 255, "track_id": 0, "position_x": -110, "position_y": 30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:44 1782102524718  09E7         Walking        -      -      -     {"pose": 1, "heart_rate": -1, "event_since": 1782102524718, "event_status": "start", "respiratory_rate": -1}
+22:28:44 1782102524766  09E7.0       track          -120   30     0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -120, "position_y": 30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:45 1782102525701  09E7.0       track          -120   30     0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -120, "position_y": 30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:46 1782102526601  09E7.0       track          -120   30     0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -120, "position_y": 30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:47 1782102527606  09E7.0       track          -120   30     0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -120, "position_y": 30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:48 1782102528609  09E7.0       track          -120   30     0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -120, "position_y": 30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:49 1782102529610  09E7.0       track          -120   30     0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -120, "position_y": 30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:50 1782102530639  09E7.0       track          -120   30     0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -120, "position_y": 30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:51 1782102531605  09E7.0       track          -120   30     0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -120, "position_y": 30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:52 1782102532607  09E7.0       track          -120   30     0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -120, "position_y": 30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:52 1782102532746  D523.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:53 1782102533606  09E7.0       track          -120   30     0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -120, "position_y": 30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:54 1782102534613  09E7.0       track          -120   30     0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -120, "position_y": 30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:55 1782102535609  09E7.0       track          -120   30     0     {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -120, "position_y": 30, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:56 1782102536613  09E7.0       track          -120   30     19    {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -120, "position_y": 30, "position_z": 19, "remaining_time": 0, "track_confidence": 80}
+22:28:57 1782102537512  09E7.0       track          -110   20     34    {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -110, "position_y": 20, "position_z": 34, "remaining_time": 0, "track_confidence": 80}
+22:28:58 1782102538138  09E7.0       track          -100   30     47    {"pose": 2, "area_id": 255, "track_id": 0, "position_x": -100, "position_y": 30, "position_z": 47, "remaining_time": 0, "track_confidence": 80}
+22:28:58 1782102538333  09E7.0       track          -100   30     54    {"pose": 7, "area_id": 255, "track_id": 0, "position_x": -100, "position_y": 30, "position_z": 54, "remaining_time": 0, "track_confidence": 80}
+22:28:58 1782102538576  09E7         Initialization -      -      -     {"pose": 0, "heart_rate": -1, "event_since": 1782102538576, "event_status": "start", "respiratory_rate": -1}
+22:28:58 1782102538620  09E7.0       track          -90    30     64    {"pose": 3, "area_id": 255, "track_id": 0, "position_x": -90, "position_y": 30, "position_z": 64, "remaining_time": 0, "track_confidence": 80}
+22:28:59 1782102539271  D5F7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:28:59 1782102539271  D5F7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102539271, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:28:59 1782102539513  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:28:59 1782102539559  09E7.0       track          -80    60     70    {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -80, "position_y": 60, "position_z": 70, "remaining_time": 0, "track_confidence": 80}
+22:29:00 1782102540569  09E7.0       track          -40    70     58    {"pose": 1, "area_id": 255, "track_id": 0, "position_x": -40, "position_y": 70, "position_z": 58, "remaining_time": 0, "track_confidence": 80}
+22:29:01 1782102541573  09E7.0       track          10     60     57    {"pose": 1, "area_id": 255, "track_id": 0, "position_x": 10, "position_y": 60, "position_z": 57, "remaining_time": 0, "track_confidence": 80}
+22:29:01 1782102541629  D523.10      number_people  -      -      -     {"track_id": 10, "heart_rate": -1, "event_since": 1782102541629, "event_status": "start", "number_people": 1, "respiratory_rate": -1}
+22:29:01 1782102541674  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102541674, "track_count": 0, "event_status": "instant", "lie_duration": 0, "walk_distance": 0, "walk_duration": 0, "stand_duration": 0, "respiratory_rate": -1, "multi_person_duration": 0}
+22:29:01 1782102541674  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:29:01 1782102541676  D523.0       track          -80    330    79    {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -80, "position_y": 330, "position_z": 79, "remaining_time": 0, "track_confidence": 80}
+22:29:02 1782102542571  09E7.0       track          140    0      40    {"pose": 1, "area_id": 255, "track_id": 0, "position_x": 140, "position_y": 0, "position_z": 40, "remaining_time": 0, "track_confidence": 80}
+22:29:02 1782102542626  D523.0       track          -190   390    59    {"pose": 1, "area_id": 255, "track_id": 0, "position_x": -190, "position_y": 390, "position_z": 59, "remaining_time": 0, "track_confidence": 80}
+22:29:03 1782102543565  09E7.0       track          210    -90    34    {"pose": 1, "area_id": 255, "track_id": 0, "position_x": 210, "position_y": -90, "position_z": 34, "remaining_time": 0, "track_confidence": 80}
+22:29:03 1782102543626  D523.0       track          -260   470    80    {"pose": 1, "area_id": 255, "track_id": 0, "position_x": -260, "position_y": 470, "position_z": 80, "remaining_time": 0, "track_confidence": 80}
+22:29:04 1782102544455  09E7.0       track          260    -150   64    {"pose": 1, "area_id": 255, "track_id": 0, "position_x": 260, "position_y": -150, "position_z": 64, "remaining_time": 0, "track_confidence": 80}
+22:29:04 1782102544627  D523.0       track          -300   510    69    {"pose": 1, "area_id": 255, "track_id": 0, "position_x": -300, "position_y": 510, "position_z": 69, "remaining_time": 0, "track_confidence": 80}
+22:29:05 1782102545461  09E7.0       track          270    -160   0     {"pose": 1, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:05 1782102545626  D523.0       track          -340   520    0     {"pose": 1, "area_id": 255, "track_id": 0, "position_x": -340, "position_y": 520, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:06 1782102546454  09E7.0       track          260    -150   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 260, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:06 1782102546625  D523.0       track          -300   500    0     {"pose": 1, "area_id": 255, "track_id": 0, "position_x": -300, "position_y": 500, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:07 1782102547458  09E7.0       track          260    -150   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 260, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:07 1782102547628  D523.0       track          -300   510    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -300, "position_y": 510, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:08 1782102548460  09E7.0       track          270    -150   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:08 1782102548632  D523.0       track          -300   510    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -300, "position_y": 510, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:09 1782102549464  09E7.0       track          290    -150   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 290, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:09 1782102549632  D523.0       track          -310   490    75    {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -310, "position_y": 490, "position_z": 75, "remaining_time": 0, "track_confidence": 80}
+22:29:10 1782102550465  09E7.0       track          280    -150   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 280, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:10 1782102550631  D523.0       track          -310   490    77    {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -310, "position_y": 490, "position_z": 77, "remaining_time": 0, "track_confidence": 80}
+22:29:11 1782102551461  09E7.0       track          270    -150   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -150, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:11 1782102551532  D523.0       track          -290   490    104   {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 104, "remaining_time": 0, "track_confidence": 80}
+22:29:12 1782102552479  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:12 1782102552541  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:13 1782102553469  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:13 1782102553538  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:14 1782102554478  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:14 1782102554539  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:15 1782102555478  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:15 1782102555534  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:16 1782102556406  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:16 1782102556537  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:17 1782102557368  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:17 1782102557565  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:18 1782102558370  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:18 1782102558578  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:19 1782102559382  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:19 1782102559544  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:20 1782102560366  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:20 1782102560541  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:21 1782102561363  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:21 1782102561542  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:22 1782102562365  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:22 1782102562449  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:23 1782102563369  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:23 1782102563449  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:24 1782102564368  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:24 1782102564444  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:25 1782102565376  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:25 1782102565454  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:26 1782102566365  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:26 1782102566448  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:27 1782102567374  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:27 1782102567411  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:28 1782102568263  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:28 1782102568406  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:29 1782102569265  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:29 1782102569411  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:30 1782102570259  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:30 1782102570414  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:30 1782102570960  D5F7.88      track          0      0      0     {"track_id": 88, "position_x": 0, "position_y": 0, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:31 1782102571267  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:31 1782102571411  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:32 1782102572279  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:32 1782102572410  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:33 1782102573272  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:33 1782102573413  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:34 1782102574270  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:34 1782102574428  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:35 1782102575270  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:35 1782102575414  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:36 1782102576283  09E7.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102576283, "track_count": 1, "event_status": "instant", "lie_duration": 18, "walk_distance": 4, "walk_duration": 6, "stand_duration": 30, "respiratory_rate": -1, "multi_person_duration": 0}
+22:29:36 1782102576283  09E7.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:29:36 1782102576326  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:36 1782102576419  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:37 1782102577274  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:37 1782102577410  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:38 1782102578297  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:38 1782102578430  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:39 1782102579275  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:39 1782102579308  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:40 1782102580168  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:40 1782102580312  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:41 1782102581168  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:41 1782102581315  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:42 1782102582173  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:42 1782102582320  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:43 1782102583168  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:43 1782102583346  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:44 1782102584218  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:44 1782102584369  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:45 1782102585124  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:45 1782102585336  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:46 1782102586129  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:46 1782102586334  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:47 1782102587146  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:47 1782102587337  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:48 1782102588150  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:48 1782102588335  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:49 1782102589139  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:49 1782102589225  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:50 1782102590132  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:50 1782102590235  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:51 1782102591145  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:51 1782102591232  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:52 1782102592135  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:52 1782102592229  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:53 1782102593139  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:53 1782102593270  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:54 1782102594134  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:54 1782102594235  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:55 1782102595138  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:55 1782102595241  D523.0       track          -290   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -290, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:56 1782102596152  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:56 1782102596246  D523.0       track          -320   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -320, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:57 1782102597031  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:57 1782102597237  D523.0       track          -320   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -320, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:58 1782102598034  09E7.0       track          270    -160   0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": 270, "position_y": -160, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+22:29:58 1782102598253  D523.11      heart          -      -      -     {"track_id": 11, "track_confidence": 80}
+22:29:58 1782102598253  D523.9       activity       -      -      -     {"track_id": 9, "heart_rate": -1, "event_since": 1782102598253, "track_count": 1, "event_status": "instant", "lie_duration": 0, "walk_distance": 5, "walk_duration": 5, "stand_duration": 51, "respiratory_rate": -1, "multi_person_duration": 0}
+22:29:58 1782102598296  D523.0       track          -320   490    0     {"pose": 4, "area_id": 255, "track_id": 0, "position_x": -320, "position_y": 490, "position_z": 0, "remaining_time": 0, "track_confidence": 80}
+```

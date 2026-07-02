@@ -28,6 +28,9 @@ const (
 	NumAreaTypes   = observation.NumAreaTypes
 )
 
+// AreaTypeFrom 区域语义唯一入口：layout typeValue / 固件 area_type → 受校验 AreaType（越界→AreaUnknown）。
+var AreaTypeFrom = observation.AreaTypeFrom
+
 // Source 类型信息来源
 type Source uint8
 

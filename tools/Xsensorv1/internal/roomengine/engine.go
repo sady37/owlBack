@@ -24,6 +24,14 @@ import (
 // ========================================================================
 
 // RoomConfig 房间配置（全 int 化 + 对齐 radarutils 类型）
+// AreaZone 一个区域对象的空间语义（空间轴单源）：Rect + AreaType + Conf，engine 统一 SetPrior 刷 cell。
+// AreaType 跟对象走（= layout typeValue），不按 ObjectType 分桶（rules.md #S2 正交）。
+type AreaZone struct {
+	Rect     radarutils.Rect
+	AreaType AreaType
+	Conf     int
+}
+
 type RoomConfig struct {
 	RoomID   string
 	RoomName string // rooms.room_name；保留兼容；sensor_v2 决定 16 后只用 RoomType 做分支判定，不再用 RoomName 字符串匹配
@@ -36,25 +44,20 @@ type RoomConfig struct {
 	// Wall 围出的房间多边形（闭合），用于 StampRoomPolygon
 	WallPolygon []radarutils.Point
 
-	// 人工标注的矩形先验
-	Enters []radarutils.Rect // AreaEnter
-	Beds   []radarutils.Rect // 床几何（Bed/MonitorBed/LongSofa 都进来供 covers/MM）；cell 区域走 BedAreaTypes
-	// BedAreaTypes 与 Beds 一一对应：Bed→AreaBed(2,豁免)/MonitorBed→AreaMonitorBed(5,豁免)/LongSofa→AreaLying(8,90min)。
-	BedAreaTypes []AreaType
-	// InterfereAreaTypes 与 Interferes 一一对应：Mirror/Metal/GlassTV→AreaReflector(3,豁免)/Curtain/Plant/Fan/WheelChair→AreaInterfer(6,floor 豁免)。
-	InterfereAreaTypes []AreaType
+	// 空间轴单源（rules.md #S2）：每个区域对象一条 (Rect+AreaType+Conf)，engine 统一 SetPrior 刷 cell。
+	AreaZones []AreaZone
+
+	// 物理轴几何：有 AreaType 之外的物理行为（门口/covers+床闸/tm），故单独留几何；刷 cell 走 AreaZones。
+	Enters       []radarutils.Rect // 门口：StampEnters / door-pin
+	Beds         []radarutils.Rect // 床几何：covers/MM
+	BedAreaTypes []AreaType        // 与 Beds 1:1，仅供 countRealBeds 床闸
+	Chairs       []radarutils.Rect // tm.SetChairs
+	Interferes   []radarutils.Rect // tm.SetInterferes / mirror_detect
 
 	// BedAreaIDs 床区 area_id 集合（areaType∈{2床,5监护床}），来源=固件活体 declare_area
 	// （bootstrap 走 wisefido-data HTTP 覆盖，治 canvas 下发区域 vs 固件几何漂移）。
 	// radar track 帧的 area_id 命中此集合 → 在床（TrackManager.fwIsBed membership）→ N=1 驱动 SBed boost。
 	BedAreaIDs []int
-	Toilets    []radarutils.Rect // AreaSit
-	Showers    []radarutils.Rect // AreaActive
-	Chairs     []radarutils.Rect // AreaSit（粗标沙发/椅子，Conf=80）
-	Furnitures []radarutils.Rect // 家具/桌子→AreaDeny；BlindArea(盲区)→AreaActive(12min)。区分走 FurnitureAreaTypes
-	// FurnitureAreaTypes 与 Furnitures 一一对应：Furniture/Table/Other→AreaDeny / BlindArea→AreaActive(12min,默认桶,非deny)。
-	FurnitureAreaTypes []AreaType
-	Interferes         []radarutils.Rect // 镜子/金属/玻璃→AreaReflector；帘/扇/植物/吊灯→AreaInterfer。区分走 InterfereAreaTypes
 
 	// 物体顶部高度（cm，地面为 0），与上面同名切片一一对应（Heights[i] ↔ Beds[i]）。
 	// 来源：layout JSON 里每个对象的 height 字段，由前端 Toolbar 录入；
@@ -64,10 +67,7 @@ type RoomConfig struct {
 	//   - 床/桌面高度参与 Z 轴范围判定 → fall 检测加先验
 	EnterHeights     []int
 	BedHeights       []int
-	ToiletHeights    []int
-	ShowerHeights    []int
 	ChairHeights     []int
-	FurnitureHeights []int
 	InterfereHeights []int
 
 	// sensor_v2 决定 15: EnterTargets 与 Enters 同长度平行 slice。
@@ -885,30 +885,9 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	// 4. Stamp Enters → 记 Enters 列表 + 覆写矩形内 InRoom=true（门洞可穿）
 	grid.StampEnters(cfg.Enters, cfg.EnterTargets)
 
-	// 5. SetPrior 人标矩形（AreaType + Confidence + Source）
-	for _, r := range cfg.Enters {
-		grid.SetPrior(r, AreaEnter, 99, SourceHuman)
-	}
-	for i, r := range cfg.Beds {
-		// BedAreaTypes 与 Beds 1:1（parser/merge 同步 append，规则#1.4 trust caller）：Bed/MonitorBed/LongSofa → bed/monitorbed/lying
-		grid.SetPrior(r, cfg.BedAreaTypes[i], 99, SourceHuman)
-	}
-	for _, r := range cfg.Toilets {
-		grid.SetPrior(r, AreaSit, 99, SourceHuman) // 马桶=坐区
-	}
-	for _, r := range cfg.Showers {
-		grid.SetPrior(r, AreaActive, 99, SourceHuman) // 淋浴=站立活动区
-	}
-	for _, r := range cfg.Chairs {
-		grid.SetPrior(r, AreaSit, chairPriorConf, SourceHuman) // 粗标
-	}
-	for i, r := range cfg.Furnitures {
-		// FurnitureAreaTypes 与 Furnitures 1:1（parser 同步 append）：家具→AreaDeny(12min) / BlindArea→AreaActive(12min,快速兜底盲区真摔)
-		grid.SetPrior(r, cfg.FurnitureAreaTypes[i], 99, SourceHuman)
-	}
-	for i, r := range cfg.Interferes {
-		// InterfereAreaTypes 与 Interferes 1:1（规则#1.4）：Mirror/Metal→reflector(豁免)/Curtain/Plant/Fan→interfer(豁免)
-		grid.SetPrior(r, cfg.InterfereAreaTypes[i], 99, SourceHuman)
+	// 5. 空间轴刷 cell：AreaZones 每条 (Rect, AreaType, Conf) 统一 SetPrior（rules.md #S2，AreaType 跟对象走）。
+	for _, z := range cfg.AreaZones {
+		grid.SetPrior(z.Rect, z.AreaType, z.Conf, SourceHuman)
 	}
 
 	e.grids[cfg.RoomID] = grid
@@ -986,9 +965,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 		zap.Int("grid_h", cfg.RoomH),
 		zap.Int("enters", len(cfg.Enters)),
 		zap.Int("beds", len(cfg.Beds)),
-		zap.Int("toilets", len(cfg.Toilets)),
-		zap.Int("showers", len(cfg.Showers)),
-		zap.Int("furnitures", len(cfg.Furnitures)),
+		zap.Int("area_zones", len(cfg.AreaZones)),
 		zap.Int("cells", grid.Width*grid.Height),
 		zap.String("layout_hash", hash[:12]),
 	)

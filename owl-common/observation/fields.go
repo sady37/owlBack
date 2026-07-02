@@ -309,6 +309,16 @@ func (t AreaType) Name() string {
 	return areaNames[t]
 }
 
+// AreaTypeFrom 从 layout typeValue / 固件 area_type / JSON 数字返回受校验的 AreaType。
+// 越界（含负数、≥NumAreaTypes，如非区域对象 typeValue=-1）一律回 AreaUnknown——
+// 外部输入唯一入口，杜绝裸 AreaType(v) 越界。区域语义只认此 int，不走 typeName 字符串。
+func AreaTypeFrom(v int) AreaType {
+	if v < 0 || v >= int(NumAreaTypes) {
+		return AreaUnknown
+	}
+	return AreaType(v)
+}
+
 // Event 进出事件字段值（type=1 track 字节 14），与协议 3.5 一致
 const (
 	EventInRoom       = 1

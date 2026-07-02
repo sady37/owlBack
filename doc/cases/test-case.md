@@ -21,7 +21,8 @@ replay集
 # * case-b197-0626-15371540  livingRoom   镜面/反射 ghost 签名(一条假轨长期挂在固定小区,跟真人并存）
 # * casse-B197-0627-09280932  livingRoom  openArea  lost  有一边是开放空间
 # * casse-B197-0627-15311535  livingRoom  openArea  lost  有一边是开放空间
-#* case-b197-0630-08020806   livingRoom  openArea  lost  有一边是开放空间
+# * case-b197-0630-08020806   livingRoom  openArea  ghost 独立生，独立灭
+
 
 
 # * case-1797-0627-13261328  mom bathroom ,  stillbox 整体30秒走了500， 要视为stillbox break
@@ -34,6 +35,12 @@ replay集
 
 
 # * case-0777-0624-12001201  sandiego  learning area,  重复sitonground fire
+
+
+# * case-ffdb-0701-12531255  走到墙边，split
+
+
+
 
 
 # * case-d5f7-0617-23252357 replay
