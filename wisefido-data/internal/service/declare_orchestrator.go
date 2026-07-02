@@ -121,24 +121,25 @@ func declareKeepPriority(fwType int) int {
 	}
 }
 
-// firmwarePolicy 按 typeName 决定下发码与是否下发（§2.1 权威）。
-// isMonitorBed=Bed∩Radar 派生。Chair(Sit)/BlindArea/Wall 不下发；其余按表。
+// firmwarePolicy 按 AreaType 决定下发码与是否下发（§2.1 权威）。
+// isMonitorBed=Bed∩Radar 仍判定；但固件 declare_area 不接受 MonitorBed(5)（收到会 ACK 却内部按 2 存），
+// 故监护床与普通床下发码同为 2，监护床仅引擎语义、不下发 5。
 func firmwarePolicy(at observation.AreaType, isMonitorBed bool) (code int, send bool) {
 	switch at {
 	case observation.AreaBed:
 		if isMonitorBed {
-			return 5, true
+			return 2, true
 		}
 		return 2, true
 	case observation.AreaMonitorBed:
-		return 5, true
+		return 2, true
 	case observation.AreaEnter:
 		return 4, true
 	case observation.AreaReflector, observation.AreaInterfer: // 镜/金属/帘/轮椅 → masking(3)
 		return 3, true
-	case observation.AreaLying, observation.AreaDeny: // 沙发躺/家具 → custom(1)
+	case observation.AreaLying, observation.AreaDeny, observation.AreaSit, observation.AreaActive: // 沙发躺/家具/坐区(椅)/盲区遮挡 → custom(1)
 		return 1, true
-	default: // AreaSit(Chair)/AreaActive(BlindArea)/AreaUnknown(Wall/未识别) 不下发
+	default: // AreaUnknown：Wall(typeValue -1 归零)与未分类脏对象 —— 唯一非下发类
 		return 0, false
 	}
 }
