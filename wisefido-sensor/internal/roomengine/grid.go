@@ -146,8 +146,8 @@ func (g *RoomGrid) StampEnters(rects []radarutils.Rect, enterTargets []string) {
 	}
 }
 
-// areaPriority 区域重叠覆盖优先级（高→低）：豁免类(Reflector/Interfer) > Bed > Lying > Sit > Deny > Active > Enter > Unknown。
-// 多个人标 rect 压同一 cell 时取优先级高者：masking/无真人区(reflector/interfer)压过床/躺/坐，避免反射杂波被当真人/床。
+// areaPriority 区域重叠危险等级（高→低）：豁免类(Reflector/Interfer) > Bed > Lying > Sit > Deny > Active > Enter > Unknown。
+// masking/无真人区(reflector/interfer)压过床/躺/坐，避免反射杂波被当真人/床。多对象叠一 cell 时的主排序键。
 func areaPriority(t AreaType) int {
 	switch t {
 	case AreaReflector, AreaInterfer:
@@ -169,8 +169,32 @@ func areaPriority(t AreaType) int {
 	}
 }
 
-// SetPrior 对 rect 内所有 cell 刷 (AreaType, conf, src)。重叠 priority gate：
-// 已有 SourceHuman 且优先级更高时不降级（豁免>Bed>lying>...）；非 Human(learned/unknown)直接被人标盖。
+// sourceRank 来源可信分层：Human == Feedback（人确认层，最高）> Learned > Geometry > Unset。
+// Source 数值不单调(Feedback=4/Learned=2/Human=1)，必须显式映射；勿用裸值比较。
+func sourceRank(s Source) int {
+	switch s {
+	case SourceHuman, SourceFeedback:
+		return 3
+	case SourceLearned:
+		return 2
+	case SourceGeometry:
+		return 1
+	default: // SourceUnset
+		return 0
+	}
+}
+
+// beliefOutranks 重叠 cell 取胜者判据：来源为主键（Human==Feedback 人确认层最高，压过 learned；无人确认才落到 learned），
+// 同来源层内再按危险等级(areaPriority)。严格大于才覆盖 → 与写入顺序无关，同等则保留既有（幂等）。
+func beliefOutranks(candT AreaType, candSrc Source, curT AreaType, curSrc Source) bool {
+	if cs, ps := sourceRank(candSrc), sourceRank(curSrc); cs != ps {
+		return cs > ps
+	}
+	return areaPriority(candT) > areaPriority(curT)
+}
+
+// SetPrior 对 rect 内所有 cell 刷 (AreaType, conf, src)。重叠合并：按 beliefOutranks（来源为主 Human==Feedback 人确认层、
+// 同来源层内按危险等级）取胜者，严格胜出才覆盖 → 多对象叠一 cell 的解析与写入顺序无关。
 func (g *RoomGrid) SetPrior(rect radarutils.Rect, t AreaType, conf int, src Source) {
 	rect = rect.Norm()
 	c1, r1 := g.ToIndex(rect.X1, rect.Y1)
@@ -186,8 +210,8 @@ func (g *RoomGrid) SetPrior(rect radarutils.Rect, t AreaType, conf int, src Sour
 			c := &g.Cells[row*g.Width+col]
 			for bi := 0; bi < 3; bi++ {
 				cur := c.Belief[bi]
-				if cur.Source == SourceHuman && areaPriority(t) < areaPriority(cur.Type) {
-					continue // 已有更高优先级人标，不降级
+				if !beliefOutranks(t, src, cur.Type, cur.Source) {
+					continue // 既有危险等级更高 / 同级来源更可信，不覆盖
 				}
 				c.Belief[bi].Type = t
 				c.Belief[bi].Confidence = conf

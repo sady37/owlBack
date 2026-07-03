@@ -173,8 +173,55 @@ func (g *RoomGrid) VetoRect(rect radarutils.Rect, sticky bool) (cleared, blocked
 	return cleared, blocked
 }
 
-// SetPrior 对 rect 内所有 cell 的三组 Belief 统一刷 (AreaType, conf, src)
-// 用于 Layout 人标 Bed/Toilet/Enter 等的初始先验注入。
+// areaPriority 区域重叠危险等级（高→低）：豁免类(Reflector/Interfer) > Bed > Lying > Sit > Deny > Active > Enter > Unknown。
+// masking/无真人区(reflector/interfer)压过床/躺/坐，避免反射杂波被当真人/床。多对象叠一 cell 时的主排序键。
+func areaPriority(t AreaType) int {
+	switch t {
+	case AreaReflector, AreaInterfer:
+		return 7
+	case AreaBed, AreaMonitorBed:
+		return 6
+	case AreaLying:
+		return 5
+	case AreaSit:
+		return 4
+	case AreaDeny:
+		return 3
+	case AreaActive:
+		return 2
+	case AreaEnter:
+		return 1
+	default: // AreaUnknown
+		return 0
+	}
+}
+
+// sourceRank 来源可信分层：Human == Feedback（人确认层，最高）> Learned > Geometry > Unset。
+// Source 数值不单调(Feedback=4/Learned=2/Human=1)，必须显式映射；勿用裸值比较。
+func sourceRank(s Source) int {
+	switch s {
+	case SourceHuman, SourceFeedback:
+		return 3
+	case SourceLearned:
+		return 2
+	case SourceGeometry:
+		return 1
+	default: // SourceUnset
+		return 0
+	}
+}
+
+// beliefOutranks 重叠 cell 取胜者判据：来源为主键（Human==Feedback 人确认层最高，压过 learned；无人确认才落到 learned），
+// 同来源层内再按危险等级(areaPriority)。严格大于才覆盖 → 与写入顺序无关，同等则保留既有（幂等）。
+func beliefOutranks(candT AreaType, candSrc Source, curT AreaType, curSrc Source) bool {
+	if cs, ps := sourceRank(candSrc), sourceRank(curSrc); cs != ps {
+		return cs > ps
+	}
+	return areaPriority(candT) > areaPriority(curT)
+}
+
+// SetPrior 对 rect 内所有 cell 刷 (AreaType, conf, src)。重叠合并：按 beliefOutranks（来源为主 Human==Feedback 人确认层、
+// 同来源层内按危险等级）取胜者，严格胜出才覆盖 → 多对象叠一 cell 的解析与写入顺序无关。
 func (g *RoomGrid) SetPrior(rect radarutils.Rect, t AreaType, conf int, src Source) {
 	rect = rect.Norm()
 	c1, r1 := g.ToIndex(rect.X1, rect.Y1)
@@ -189,11 +236,15 @@ func (g *RoomGrid) SetPrior(rect radarutils.Rect, t AreaType, conf int, src Sour
 			}
 			c := &g.Cells[row*g.Width+col]
 			for bi := 0; bi < 3; bi++ {
+				cur := c.Belief[bi]
+				if !beliefOutranks(t, src, cur.Type, cur.Source) {
+					continue // 既有危险等级更高 / 同级来源更可信，不覆盖
+				}
 				c.Belief[bi].Type = t
 				c.Belief[bi].Confidence = conf
 				c.Belief[bi].Source = src
 			}
-			c.AreaType = t // mirror
+			c.AreaType = c.Belief[0].Type // mirror
 		}
 	}
 }
