@@ -314,7 +314,7 @@ func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 				}
 			}
 		}
-		hitPin(tm.chairs, AreaSit)
+		hitPin(tm.chairRects(), AreaSit)
 		if tm.grid != nil {
 			hitPin(tm.grid.Enters, AreaEnter)
 		}

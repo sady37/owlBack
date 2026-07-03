@@ -18,7 +18,8 @@ import (
 )
 
 // snapshotSchemaVersionMax 当前可读的最高 schema（与 wisefido-sensor 正本 SnapshotSchemaVersion 对齐）。
-const snapshotSchemaVersionMax = 11
+// v15：chair 久坐学习态迁出 grid snapshot → chair_dwell_state（本表 dmu/dsg/dn/dms/dmsm 已删）。
+const snapshotSchemaVersionMax = 15
 
 // CellSnapshot 单 cell 可持久化字段（紧凑 JSON，short keys）。与正本一致。
 type CellSnapshot struct {
@@ -51,11 +52,7 @@ type Counters struct {
 	RZC int       `json:"rzc,omitempty"`
 	RFC int       `json:"rfc,omitempty"`
 	SS  float64   `json:"ss,omitempty"`  // SitScore log-odds
-	DMu  float64 `json:"dmu,omitempty"` // 缓存窗口 μ 秒 — chair anchor 久坐窗（dwin 原始桶 replay 不需,忽略）
-	DSig float64 `json:"dsg,omitempty"` // 缓存窗口 σ 秒
-	DN   int     `json:"dn,omitempty"`  // 缓存窗口样本数
-	DMS  float64 `json:"dms,omitempty"` // DwellMaxSit 秒 — false_alarm 反馈棘轮（只读 hydrate）
-	DMSM int64   `json:"dmsm,omitempty"` // DwellMaxSitMs as-of 时刻（只读 hydrate）
+	// chair 久坐学习态（dmu/dsg/dn/dms/dmsm）已迁出 grid snapshot → chair_dwell_state（object_id 锚定），此处不再读。
 	ADS int64     `json:"ads,omitempty"`
 	ET  string    `json:"et,omitempty"`
 	IEN int       `json:"ien,omitempty"`
@@ -141,11 +138,6 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 			c.RestZoneConfirmed = cs.C.RZC
 			c.RealFallCount = cs.C.RFC
 			c.SitScore = cs.C.SS
-			c.DwellMu = cs.C.DMu
-			c.DwellSig = cs.C.DSig
-			c.DwellN = cs.C.DN
-			c.DwellMaxSit = cs.C.DMS
-			c.DwellMaxSitMs = cs.C.DMSM
 			c.AutoDenyQualifiedSinceMs = cs.C.ADS
 			c.EnterTarget = cs.C.ET
 			c.InsideEnterEvidenceN = cs.C.IEN
@@ -195,4 +187,71 @@ func (e *Engine) HydrateRoomFromDB(ctx context.Context, db *sql.DB, table, roomI
 		return
 	}
 	e.logger.Info("xsensor hydrate ok", zap.String("room_id", roomID), zap.Int("cells", len(snap.Cells)))
+}
+
+// ChairDwellRead per-chair 久坐学习态只读行（hydrate 用；N 由 dwin Σ bucket.n 派生）。
+type ChairDwellRead struct {
+	ObjectID string
+	Mu, Sig  float64
+	N        int
+	MaxSit   float64
+	MaxSitMs int64
+}
+
+// HydrateChairDwellFromDB 只读灌入一房各 chair 的久坐学习态到 tm.chairDwell（RegisterRoom + SetChairs 之后调）。
+// object_id 锚定跨 layout 编辑存活（替掉旧的从 grid-snapshot Counters 读 dwell 路径）。失败/无记录 = 冷启，不致命。
+func (e *Engine) HydrateChairDwellFromDB(ctx context.Context, db *sql.DB, table, roomID string) {
+	if db == nil {
+		return
+	}
+	if table == "" {
+		table = "chair_dwell_state"
+	}
+	e.mu.Lock()
+	tm := e.rooms[roomID]
+	e.mu.Unlock()
+	if tm == nil {
+		return
+	}
+	q := fmt.Sprintf(`SELECT object_id, dmu, dsg, dwin, dms, dmsm FROM %s WHERE spatial_prefix = $1::INET`, table)
+	rows, err := db.QueryContext(ctx, q, roomID)
+	if err != nil {
+		e.logger.Warn("xsensor chair dwell hydrate: load failed", zap.String("room_id", roomID), zap.Error(err))
+		return
+	}
+	defer rows.Close()
+	var out []ChairDwellRead
+	for rows.Next() {
+		var r ChairDwellRead
+		var win []byte
+		if err := rows.Scan(&r.ObjectID, &r.Mu, &r.Sig, &win, &r.MaxSit, &r.MaxSitMs); err != nil {
+			e.logger.Warn("xsensor chair dwell hydrate: scan failed", zap.String("room_id", roomID), zap.Error(err))
+			return
+		}
+		r.N = dwellSampleN(win) // N 由 dwin 派生（无独立列，避免 drift）
+		out = append(out, r)
+	}
+	if len(out) == 0 {
+		return
+	}
+	tm.HydrateChairDwell(out)
+	e.logger.Info("xsensor chair dwell hydrated", zap.String("room_id", roomID), zap.Int("chairs", len(out)))
+}
+
+// dwellSampleN 从 dwin jsonb 派生窗口样本数 N = Σ bucket.n。解析失败/空 → 0（冷启门控回退 90min）。
+func dwellSampleN(dwin []byte) int {
+	if len(dwin) == 0 {
+		return 0
+	}
+	var buckets []struct {
+		N int `json:"n"`
+	}
+	if err := json.Unmarshal(dwin, &buckets); err != nil {
+		return 0
+	}
+	n := 0
+	for _, b := range buckets {
+		n += b.N
+	}
+	return n
 }

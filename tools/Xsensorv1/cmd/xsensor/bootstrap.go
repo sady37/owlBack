@@ -316,9 +316,12 @@ func registerAllRooms(ctx context.Context, eng *roomengine.Engine, db *sql.DB,
 		}
 
 		eng.RegisterRoom(cfg)
-		// replay 只读灌入 28 快照（生产学到的 cell areaType + dwell 分布 + SitScore）；不学不存。
-		// 失败/无记录 = 冷启（pin-only + chair 90min 冷启），不致命。
+		// replay 只读灌入 28 快照（生产学到的 cell areaType + SitScore）；不学不存。
+		// 失败/无记录 = 冷启（pin-only），不致命。
 		eng.HydrateRoomFromDB(ctx, db, "", roomID)
+		// per-chair 久坐学习态从 sibling 表 chair_dwell_state 灌回（object_id 锚定，替掉旧的从 grid-snapshot Counters 读 dwell）。
+		// 失败/无记录 = chair 冷启 90min，不致命。
+		eng.HydrateChairDwellFromDB(ctx, db, "", roomID)
 		eng.SetRoomTenant(roomID, tenantID)
 		// 进 DBN 判据 = 有任一信号源(雷达 layout OR sleepad)。bed_state 不依赖 layout：
 		//   sleepad-only 房(GuestRoom 等)无雷达几何但有 B 轴，照样进 DBN(radarLess)。

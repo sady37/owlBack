@@ -38,16 +38,12 @@ import (
 // v8 (2026-05-19): L1 mirror pair 自学习 — Cell 加 MirrorBounceCount + LastMirrorMs
 // v9 (2026-06-04): sticky 否决 — Cell 加 LearnBlocked（verified 真摔人勾"永不在此自动学抑制"，跨重启保留）
 // v11 (2026-06-27): Counters 加 SS（SitScore log-odds）。
-// v12 (2026-06-27): Chair 久坐学习由 EMA(DM/DSQ/DN) 改 per-chair 14 日滚动窗——Counters 删 DM/DSQ,
-//                   加 DWin（anchor 14 日桶：n/sum/sumSq+5min直方图）+ DMu/DSig/DN（缓存 μ/σ/样本数，floor 热路径读）。
-//                   floor 连续 tFloor=clamp(μ+1.5σ,[12,90]) 只对 chair anchor 算,需跨重启保留;否则重启塌回 active(12min)。
-//                   非破坏:旧 v11 快照无 DWin → 冷启回退 90min,14 天内边学边收敛(FN-safe)。
-// v13 (2026-06-30): chair floor 改 tFloor=clamp(max(μ+1.5σ+10min,maxSit),≤90min)——Counters 加 DMS（DwellMaxSit:
-//                   false_alarm+"Sit on Chair" 反馈棘轮,人工确认安全久坐下限,跨重启保留;否则重启丢棘轮→长坐人群复发误报)。
-//                   非破坏:旧快照无 DMS → maxSit=0,只走 μ+1.5σ+10min 自然收敛。
-// v14 (2026-06-30): maxSit 棘轮加 14 天半衰期慢衰减(对齐久坐学习窗;治"只升不降→FN 永久退化")——Counters 加 DMSM（DwellMaxSitMs:
-//                   当前 maxSit 值的 as-of 时刻,跨重启保衰减基准)。非破坏:旧 v13 快照无 DMSM → 从加载时刻起算。
-const SnapshotSchemaVersion = 14 // v10: AreaType 重编号(deny/reflector/monitorbed/interfer/lying，删 shower/toilet)，旧快照 area 值失效须冷启
+// v12–v14 (2026-06-27~30): chair 久坐学习态曾挂 Counters（DWin/DMu/DSig/DN/DMS/DMSM：14 日窗 + 缓存 μ/σ/N +
+//                   maxSit 棘轮及其衰减基准）。**v15 已全部删除**——这些字段不再在 Counters 里，勿在此结构找。
+// v15 (2026-07-02): chair 久坐学习态迁出 grid snapshot → chair_dwell_state（object_id 锚定，跨 layout 编辑存活）。
+//                   根因:grid 按 cell index 存,layout 编辑重建 grid → 尺寸不匹配冷启清零。Counters 删上述六字段;
+//                   非破坏:旧 v14 快照多带的 dwin/dm* JSON 字段被忽略,其余 counter 照读。
+const SnapshotSchemaVersion = 15 // v10: AreaType 重编号(deny/reflector/monitorbed/interfer/lying，删 shower/toilet)，旧快照 area 值失效须冷启
 
 // CellSnapshot 单 cell 的可持久化字段（紧凑 JSON，short keys 节省空间）
 type CellSnapshot struct {
@@ -80,12 +76,7 @@ type Counters struct {
 	RZC int       `json:"rzc,omitempty"` // RestZoneConfirmed (schema_v ≥ 5)
 	RFC int       `json:"rfc,omitempty"` // RealFallCount (schema_v ≥ 5)
 	SS  float64   `json:"ss,omitempty"`  // SitScore log-odds (schema_v ≥ 11) — Belief→AreaSit 学习层
-	DWin []DwellBucket `json:"dwin,omitempty"` // Chair anchor 14 日久坐窗 (schema_v ≥ 12)
-	DMu  float64       `json:"dmu,omitempty"`  // 缓存窗口 μ 秒 (schema_v ≥ 12) — floor 热路径读
-	DSig float64       `json:"dsg,omitempty"`  // 缓存窗口 σ 秒 (schema_v ≥ 12)
-	DN   int           `json:"dn,omitempty"`   // 缓存窗口样本数 (schema_v ≥ 12)
-	DMS  float64       `json:"dms,omitempty"`  // DwellMaxSit 秒 (schema_v ≥ 13) — false_alarm 反馈棘轮
-	DMSM int64         `json:"dmsm,omitempty"` // DwellMaxSitMs as-of 时刻 (schema_v ≥ 14) — 衰减基准
+	// v15: chair 久坐学习态（dwin/dmu/dsg/dn/dms/dmsm）迁出 grid snapshot → chair_dwell_state（object_id 锚定）。
 	ADS int64     `json:"ads,omitempty"` // AutoDenyQualifiedSinceMs (schema_v ≥ 6)
 
 	// sensor_v2 v7 (决定 15+20):
@@ -193,12 +184,6 @@ func buildCounters(c *Cell) *Counters {
 		RZC: c.RestZoneConfirmed,
 		RFC: c.RealFallCount,
 		SS:  c.SitScore,
-		DWin: c.DwellWindow,
-		DMu:  c.DwellMu,
-		DSig: c.DwellSig,
-		DN:   c.DwellN,
-		DMS:  c.DwellMaxSit,
-		DMSM: c.DwellMaxSitMs,
 		ADS: c.AutoDenyQualifiedSinceMs,
 		ET:  c.EnterTarget,
 		IEN: c.InsideEnterEvidenceN,
@@ -213,8 +198,7 @@ func buildCounters(c *Cell) *Counters {
 		ct.SIB == 0 && ct.SLB == 0 && ct.DE == 0 && ct.FX == 0 && ct.FY == 0 && ct.DW == 0 &&
 		ct.FA == 0 && ct.TS == 0 && ct.BSR == 0 && ct.ADS == 0 &&
 		ct.ET == "" && ct.IEN == 0 && !ct.IEL &&
-		ct.MBC == 0 && ct.LMM == 0 && !ct.LB && ct.SS == 0 &&
-		len(ct.DWin) == 0 && ct.DMu == 0 && ct.DSig == 0 && ct.DN == 0 {
+		ct.MBC == 0 && ct.LMM == 0 && !ct.LB && ct.SS == 0 {
 		return nil
 	}
 	return &ct
@@ -293,12 +277,6 @@ func DecodeSnapshot(snap GridSnapshot, g *RoomGrid) error {
 			c.RestZoneConfirmed = cs.C.RZC
 			c.RealFallCount = cs.C.RFC
 			c.SitScore = cs.C.SS
-			c.DwellWindow = cs.C.DWin
-			c.DwellMu = cs.C.DMu
-			c.DwellSig = cs.C.DSig
-			c.DwellN = cs.C.DN
-			c.DwellMaxSit = cs.C.DMS
-			c.DwellMaxSitMs = cs.C.DMSM
 			c.AutoDenyQualifiedSinceMs = cs.C.ADS
 			c.EnterTarget = cs.C.ET
 			c.InsideEnterEvidenceN = cs.C.IEN

@@ -296,6 +296,55 @@ func (e *Engine) hydrateRoom(roomID string, grid *RoomGrid, expectedHash string)
 	)
 }
 
+// hydrateChairDwell 从 chair_dwell_state 灌回一房各 chair 的久坐学习态（RegisterRoom 在 SetChairs 之后调）。
+// object_id 锚定跨 layout 编辑存活；位移打折在 tm.hydrateChairDwell 内做。失败/无记录 = 冷启（不致命）。
+func (e *Engine) hydrateChairDwell(roomID string, tm *TrackManager) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rows, err := e.chairDwellPersister.LoadRoom(ctx, roomID)
+	if err != nil {
+		e.logger.Warn("chair dwell load failed", zap.String("room_id", roomID), zap.Error(err))
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	tm.hydrateChairDwell(rows, time.Now().UnixMilli())
+	e.logger.Info("chair dwell hydrated", zap.String("room_id", roomID), zap.Int("chairs", len(rows)))
+}
+
+// saveAllChairDwell 把各房 per-chair 久坐学习态 upsert 进 chair_dwell_state（snapshotLoop 每 5min 调）。
+func (e *Engine) saveAllChairDwell(ctx context.Context) {
+	if e.chairDwellPersister == nil {
+		return
+	}
+	e.mu.RLock()
+	type roomTM struct {
+		id string
+		tm *TrackManager
+	}
+	tms := make([]roomTM, 0, len(e.rooms))
+	for id, tm := range e.rooms {
+		tms = append(tms, roomTM{id: id, tm: tm})
+	}
+	e.mu.RUnlock()
+
+	saved, failed := 0, 0
+	for _, r := range tms {
+		rows := r.tm.SnapshotChairDwell()
+		if len(rows) == 0 {
+			continue
+		}
+		if err := e.chairDwellPersister.SaveRoom(ctx, r.id, rows); err != nil {
+			e.logger.Warn("chair dwell save failed", zap.String("room_id", r.id), zap.Error(err))
+			failed++
+			continue
+		}
+		saved++
+	}
+	e.logger.Debug("chair dwell batch done", zap.Int("saved", saved), zap.Int("failed", failed))
+}
+
 func (e *Engine) decayLoop(ctx context.Context) {
 	ticker := time.NewTicker(e.decayInterval)
 	defer ticker.Stop()
@@ -392,6 +441,7 @@ func (e *Engine) snapshotLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			e.saveAllRooms(ctx)
+			e.saveAllChairDwell(ctx)
 		}
 	}
 }

@@ -52,6 +52,7 @@ type RoomConfig struct {
 	Beds         []radarutils.Rect // 床几何：covers/MM
 	BedAreaTypes []AreaType        // 与 Beds 1:1，仅供 countRealBeds 床闸
 	Chairs       []radarutils.Rect // tm.SetChairs
+	ChairIDs     []string          // 与 Chairs 1:1：canvas 对象 id（per-chair 久坐学习态锚定 key，跨 layout 编辑存活）
 	Interferes   []radarutils.Rect // tm.SetInterferes / mirror_detect
 
 	// BedAreaIDs 床区 area_id 集合（areaType∈{2床,5监护床}），来源=固件活体 declare_area
@@ -916,7 +917,7 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetRoomName(cfg.RoomName)
 	tm.SetRoomType(cfg.RoomType)
 	tm.SetInterferes(cfg.Interferes)
-	tm.SetChairs(cfg.Chairs)           // floor 连续 tFloor 的 chair 区 gate（电子云几何）
+	tm.SetChairs(cfg.Chairs, cfg.ChairIDs) // floor 连续 tFloor 的 chair 区 gate（电子云几何）+ object_id 锚定久坐学习态
 	tm.SetRadarMount(cfg.Radar)        // L1 mirror pair 检测用 radar 中心做 ghost tiebreaker
 	tm.SetWallPolygon(cfg.WallPolygon) // 静止反射体检测判"近墙"
 	tm.SetUIDHexResolver(e.DeviceUIDHex)

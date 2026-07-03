@@ -231,12 +231,8 @@ type Cell struct {
 	// ≥ sitPromoteTau 升 AreaSit(SourceLearned)；HL DecayParams.SitScoreSec(默认 4d,config 可调) 指数衰减（隔离 episode 自然褪）。
 	SitScore float64
 
-	// ---- Chair 区久坐缓存（per-chair anchor，hydrate 自 28；Xsensorv1 replay 只读不学/不重算，floor tFloor=clamp(max(1.5μ+10min,maxSit),≤90min) 单源）----
-	DwellMu     float64 // 缓存：窗口 μ（秒，AV）；0=冷启
-	DwellSig    float64 // 缓存：窗口 σ（秒）
-	DwellN      int     // 缓存：窗口样本数（冷启门控）
-	DwellMaxSit   float64 // false_alarm 反馈棘轮（秒，hydrate 自 28，只读；衰减在 sensor 侧已落值）
-	DwellMaxSitMs int64   // 棘轮值 as-of 时刻（hydrate 自 28；Xsensorv1 不重算不衰减，仅保字段 1:1）
+	// Chair 区久坐学习态不再挂 cell——迁到 per-object ChairDwell（chair_dwell.go，keyed by canvas object_id，
+	// 只读 hydrate 自 sibling 表 chair_dwell_state；旧 cell-index 挂法 layout 编辑重建 grid 冷启清零）。
 
 	// ---- 信念（3 组并行参数，独立演化）----
 	Belief [3]BeliefState
@@ -784,9 +780,6 @@ func (c *Cell) updateRisk(g int) {
 	}
 	c.Belief[g].RiskScore = r
 }
-
-// DwellColdMinN dwell 分布冷启门控：样本 < 此值 → floor 回退 90min（与 wisefido-sensor 正本一致）。
-const DwellColdMinN = 3
 
 // ========================================================================
 // Helper 函数

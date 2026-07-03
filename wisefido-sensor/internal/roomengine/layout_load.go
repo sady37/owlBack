@@ -105,6 +105,7 @@ func BuildRoomConfigFromCanvases(roomID string, canvases []DeviceCanvas, logger 
 		merged.BedAreaTypes = append(merged.BedAreaTypes, cfg.BedAreaTypes...)
 		merged.Chairs = append(merged.Chairs, cfg.Chairs...)
 		merged.ChairHeights = append(merged.ChairHeights, cfg.ChairHeights...)
+		merged.ChairIDs = append(merged.ChairIDs, cfg.ChairIDs...)
 		merged.Interferes = append(merged.Interferes, cfg.Interferes...)
 		merged.InterfereHeights = append(merged.InterfereHeights, cfg.InterfereHeights...)
 		merged.Sleepads = append(merged.Sleepads, cfg.Sleepads...)

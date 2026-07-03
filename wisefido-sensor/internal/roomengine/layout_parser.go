@@ -110,6 +110,7 @@ func ParseLayoutConfig(roomID string, layoutJSON []byte) (RoomConfig, error) {
 		case "chair":
 			cfg.Chairs = append(cfg.Chairs, *rect)
 			cfg.ChairHeights = append(cfg.ChairHeights, objHeight)
+			cfg.ChairIDs = append(cfg.ChairIDs, hdr.ID)
 		case "interfere", "metalcan", "mirror", "wheelchair", "curtain":
 			cfg.Interferes = append(cfg.Interferes, *rect)
 			cfg.InterfereHeights = append(cfg.InterfereHeights, objHeight)

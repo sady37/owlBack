@@ -56,6 +56,7 @@ type RoomConfig struct {
 	Beds         []radarutils.Rect // 床几何：covers/MM
 	BedAreaTypes []AreaType        // 与 Beds 1:1，仅供 countRealBeds 床闸（AreaBed/AreaMonitorBed 计数）
 	Chairs       []radarutils.Rect // tm.SetChairs
+	ChairIDs     []string          // 与 Chairs 1:1：canvas 对象 id（per-chair 久坐学习态锚定 key，跨 layout 编辑存活）
 	Interferes   []radarutils.Rect // tm.SetInterferes / mirror_detect
 
 	// BedAreaIDs 床区 area_id 集合（areaType∈{2床,5监护床}），来源=固件活体 declare_area
@@ -225,6 +226,7 @@ type Engine struct {
 	snapshotInterval    time.Duration
 	persister           Persister
 	historyPersister    HistoryPersister
+	chairDwellPersister ChairDwellPersister
 	dailySnapshotHour   int
 	dailySnapshotMinute int
 	historyRetainDays   int
@@ -255,6 +257,7 @@ type RuntimeConfig struct {
 	SnapshotInterval    time.Duration // 0 = 关闭持久化定时器
 	Persister           Persister     // nil = 不持久化
 	HistoryPersister    HistoryPersister
+	ChairDwellPersister ChairDwellPersister // nil = 不持久化 per-chair 久坐学习态
 	DailySnapshotHour   int
 	DailySnapshotMinute int
 	HistoryRetainDays   int
@@ -363,6 +366,7 @@ func (e *Engine) Configure(cfg RuntimeConfig) {
 	}
 	e.persister = cfg.Persister
 	e.historyPersister = cfg.HistoryPersister
+	e.chairDwellPersister = cfg.ChairDwellPersister
 	if cfg.DailySnapshotHour != 0 || cfg.DailySnapshotMinute != 0 {
 		e.dailySnapshotHour = cfg.DailySnapshotHour
 		e.dailySnapshotMinute = cfg.DailySnapshotMinute
@@ -1031,7 +1035,12 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	tm.SetLogger(e.logger)
 	tm.SetRoomName(cfg.RoomName)
 	tm.SetRoomType(cfg.RoomType)
-	tm.SetChairs(cfg.Chairs)
+	tm.SetChairs(cfg.Chairs, cfg.ChairIDs)
+	// per-chair 久坐学习态从 sibling 表灌回（object_id 锚定，跨 layout 编辑存活；grid snapshot 已不带 dwell）。
+	// 放 SetChairs 之后：hydrate 需当前 object 中心做位移打折基准。
+	if e.chairDwellPersister != nil {
+		e.hydrateChairDwell(cfg.RoomID, tm)
+	}
 	tm.SetInterferes(cfg.Interferes)
 	tm.SetRadarMount(cfg.Radar)        // L1 mirror pair 检测用 radar 中心做 ghost tiebreaker
 	tm.SetMountResolver(e.MountForDevice) // floor fall 发布腿 canvas→raw 逆算（per-device）

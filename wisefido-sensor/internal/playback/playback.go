@@ -229,7 +229,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			ingestLogger, _ = zap.NewDevelopment()
 		}
 		if succ, total, err := IngestHistoricalFeedback(ctx, opts.DB, opts.DeviceUID,
-			opts.Start, opts.End, grid, cfg.Radar, cfg.Chairs, learnParams.SitSpreadCm, ingestLogger); err != nil {
+			opts.Start, opts.End, grid, cfg.Radar, ingestLogger); err != nil {
 			if ingestLogger != nil {
 				ingestLogger.Warn("ingest historical feedback", zap.Error(err))
 			}

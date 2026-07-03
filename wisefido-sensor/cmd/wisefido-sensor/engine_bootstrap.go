@@ -169,6 +169,8 @@ func buildRuntimeConfig(cfg *config.Config, db *sql.DB) roomengine.RuntimeConfig
 		rc.Persister = roomengine.NewPostgresPersister(db, r.Persist.Table)
 		// History persister：复用同 DB；写到 37_*.sql 历史表（每天 11:50 归档，保留 365 天）
 		rc.HistoryPersister = roomengine.NewPostgresHistoryPersister(db, "")
+		// per-chair 久坐学习态：object_id 锚定的 sibling 表（chair_dwell_state），跨 layout 编辑存活
+		rc.ChairDwellPersister = roomengine.NewPostgresChairDwellPersister(db, "")
 	}
 
 	return rc

@@ -113,7 +113,11 @@ type TrackManager struct {
 	sitPromoteTau float64 // SitScore 升格阈 τ（默认 6.0）
 	sitSpreadCm   int     // episode 加分邻域半径 cm（默认 30）
 
-	chairs []radarutils.Rect // layout chair pin rect（含 feedback）；floor 连续 tFloor 的 chair 区 gate（电子云几何）
+	chairs []ChairRect // layout chair pin rect（含 feedback）+ object_id；floor 连续 tFloor 的 chair 区 gate（电子云几何）
+
+	// chairDwell：per-chair 久坐学习态**只读**镜像，keyed by object_id（hydrate 自 chair_dwell_state）。
+	// box-start 读缓存 μ/σ/N/maxSit 喂 floor 连续 tFloor；Xsensorv1 不学不写不重算。
+	chairDwell map[string]*ChairDwell
 
 	lastRadarInBedMs   int64 // radar 离散 InBed **事件** ts（状态翻转权威；非每帧几何）
 	lastRadarLeftBedMs int64 // 审查㊾:radar LeftBed ts(any-source-OR bed 占用 veto)
@@ -252,6 +256,7 @@ func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackMana
 		grid:                    grid,
 		bedAreaIDs:              bedAreaIDs,
 		tracks:                  make(map[trackKey]*TrackState),
+		chairDwell:              make(map[string]*ChairDwell),
 		outputs:                 make(map[trackKey]*TrackOutput),
 		devRoom:                 make(map[string]*devRoomState),
 		lastRealTrackByDevice:   make(map[string]int64),
@@ -742,10 +747,18 @@ func (tm *TrackManager) SetSitLearnParams(tau float64, spreadCm int) {
 	tm.mu.Unlock()
 }
 
-// SetChairs 注入 layout chair pin rect（含 feedback）。floor 连续 tFloor 的 chair 区 gate。
-func (tm *TrackManager) SetChairs(rects []radarutils.Rect) {
+// SetChairs 注入 layout chair pin rect（含 feedback）+ 各自 object_id（与 rects 1:1）。floor 连续 tFloor 的 chair 区 gate。
+func (tm *TrackManager) SetChairs(rects []radarutils.Rect, ids []string) {
 	tm.mu.Lock()
-	tm.chairs = rects
+	cr := make([]ChairRect, len(rects))
+	for i, r := range rects {
+		id := ""
+		if i < len(ids) {
+			id = ids[i]
+		}
+		cr[i] = ChairRect{Rect: r, ObjectID: id}
+	}
+	tm.chairs = cr
 	tm.mu.Unlock()
 }
 
@@ -755,8 +768,8 @@ func (tm *TrackManager) SetChairs(rects []radarutils.Rect) {
 func (tm *TrackManager) chairPinFieldW(x, y int) float64 {
 	halo := tm.sitSpreadCm
 	best := 0.0
-	for _, r := range tm.chairs {
-		d := r.DistTo(x, y)
+	for _, cr := range tm.chairs {
+		d := cr.Rect.DistTo(x, y)
 		if d == 0 {
 			return 1.0
 		}
@@ -769,28 +782,33 @@ func (tm *TrackManager) chairPinFieldW(x, y int) float64 {
 	return best
 }
 
-// chairAnchorCell 解析 (x,y) 命中的 chair → 其 rect 中心格作 per-chair 久坐窗 anchor（读 hydrate 来的缓存 μ/σ）。
-// 命中判据同 chairPinFieldW；取 field 最大的椅子。无命中/越界 → nil。调用方持锁。
-func (tm *TrackManager) chairAnchorCell(x, y int) *Cell {
-	halo := tm.sitSpreadCm
-	bestW := 0.0
-	var bestRect radarutils.Rect
-	for _, r := range tm.chairs {
-		w := 0.0
-		if d := r.DistTo(x, y); d == 0 {
-			w = 1.0
-		} else if halo > 0 && d < halo {
-			w = 1.0 - float64(d)/float64(halo)
-		}
-		if w > bestW {
-			bestW, bestRect = w, r
+// chairObjectAt 解析 (x,y) 命中的 chair → 其 canvas object_id（per-chair 久坐学习态 key）。
+// 命中判据同 chairPinFieldW；取 field 最大的椅子。无命中 → ("", false)。调用方持锁。
+func (tm *TrackManager) chairObjectAt(x, y int) (string, bool) {
+	return ChairObjectAt(tm.chairs, tm.sitSpreadCm, x, y)
+}
+
+// HydrateChairDwell 只读灌入 per-chair 久坐学习态（object_id → 缓存 μ/σ/N/maxSit）。只灌当前 layout 仍存在的 object。
+// 由 engine.HydrateChairDwellFromDB 在 SetChairs 之后调；Xsensorv1 不学不写不重算不衰减。
+//
+// MaxSit 裸拷不 decay 到 now（正本 hydrate 走 RecomputeDwell 会 decayMaxSit）：故意，非疏漏。replay 的"now"
+// 是回放窗口时刻（过去），非 wall-clock；持久值已由正本在上次 save 时衰减到那一刻，按 MaxSitMs(wall-clock ms)
+// 再衰减到过去的窗口时刻是负向、语义未定义（decayMaxSit 遇 now<MaxSitMs 只 no-op）。裸读持久值 = 忠实输入。
+func (tm *TrackManager) HydrateChairDwell(rows []ChairDwellRead) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	have := make(map[string]bool, len(tm.chairs))
+	for _, cr := range tm.chairs {
+		if cr.ObjectID != "" {
+			have[cr.ObjectID] = true
 		}
 	}
-	if bestW <= 0 {
-		return nil
+	for _, r := range rows {
+		if !have[r.ObjectID] {
+			continue // object 已从 layout 删除 → 不灌
+		}
+		tm.chairDwell[r.ObjectID] = &ChairDwell{Mu: r.Mu, Sig: r.Sig, N: r.N, MaxSit: r.MaxSit, MaxSitMs: r.MaxSitMs}
 	}
-	ctr := bestRect.Center()
-	return tm.grid.CellAt(ctr.X, ctr.Y)
 }
 
 // SetMoveSpeedCms 注入"在动"速度阈值。<=0 保留默认。
@@ -973,6 +991,7 @@ type TrackStatusBase struct {
 	RawH, RawV, RawZ    int     // firmware raw 雷达本地坐标 — alarm publish 用，对外契约不变
 	Pose                int
 	StillBoxSec         int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动）→ FloorGuard 纯计时器（直立折扣已移 emission）
+	FrameMoveCm         int // 帧间绝对位移 cm(History 末两帧)；史料不足=sentinel 999 → emission 躺姿二义按 dD/40 分 SBed/SFallen
 	CellAreaType        AreaType
 	// chair 区久坐兜底（实时读 px,py 的 cell）→ floor 连续 tFloor 单源（仅 chair 区）
 	InChair             bool
@@ -1074,6 +1093,12 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
 		}
+		// 帧间绝对位移（emission 躺姿二义按 dD/40 分配 SBed/SFallen）：静止人帧间≈0 → 偏 SBed；翻身/起身跳大 → 偏 SFallen。
+		//   与 still-box 同源用 History 末两帧（raw 观测点，静止时 byte 恒定 → d=0）。史料不足=999（新生/在动，不偏 SBed）。
+		base.FrameMoveCm = 999
+		if n := len(ts.History); n >= 2 {
+			base.FrameMoveCm = distInt(ts.History[n-1].X, ts.History[n-1].Y, ts.History[n-2].X, ts.History[n-2].Y)
+		}
 		// 瞬移嫌疑待删窗 / immature-coast 反射伪迹 / interfer 出生孤迹 / split 赖锚点 ghost：从 floor/blind-faller still-box 累积排除（不得误火）。
 		if ts.SuspectInterferenceSinceMs > 0 || ts.FloorArtifactSinceMs > 0 || ts.InterferBornSinceMs > 0 || ts.SplitGhostSinceMs > 0 {
 			base.StillBoxSec = 0
@@ -1087,11 +1112,13 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			// 在 chair 区且样本够 → 喂 floor 连续阈；冷启(N<min)留 ChairMu=0 → floor 回退 90min（maxSit 棘轮无样本门控,有就读）。
 			if tm.chairPinFieldW(px, py) > 0 {
 				base.InChair = true
-				if ac := tm.chairAnchorCell(px, py); ac != nil {
-					base.ChairMaxSit = ac.DwellMaxSit
-					if ac.DwellN >= DwellColdMinN {
-						base.ChairMu = ac.DwellMu
-						base.ChairSigma = ac.DwellSig
+				if id, ok := tm.chairObjectAt(px, py); ok {
+					if cd := tm.chairDwell[id]; cd != nil {
+						base.ChairMaxSit = cd.MaxSit
+						if cd.N >= DwellColdMinN {
+							base.ChairMu = cd.Mu
+							base.ChairSigma = cd.Sig
+						}
 					}
 				}
 			}

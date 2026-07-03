@@ -166,8 +166,14 @@ type TrackManager struct {
 	// lost-fall 等待时长：room_type==Bathroom 即整房按 bathroom 长档（不依赖是否画了 Toilet/Shower 子区）。
 	roomType int
 
-	// chairs：layout 解析出的 AreaSit rect（含 feedback pin 钉的 Chair）；fire evidence 反查命中的 pin 矩形。
-	chairs []radarutils.Rect
+	// chairs：layout 解析出的 AreaSit rect（含 feedback pin 钉的 Chair）+ 各自 canvas object_id；
+	// fire evidence 反查命中的 pin 矩形 + per-chair 久坐学习态锚定 key。
+	chairs []ChairRect
+
+	// chairDwell：per-chair 久坐学习态，keyed by object_id（跨 layout 编辑存活，落 sibling 表 chair_dwell_state）。
+	// sensor 单向写（emitSitEpisode 采样 / RatchetChairMaxSitAt 反馈棘轮 / RecomputeChairDwell hourly 重算）；
+	// box-start 读缓存 μ/σ/N/maxSit 喂 floor 连续 tFloor。
+	chairDwell map[string]*ChairDwell
 
 	// PR-Bootstrap: v1 stayAlarmEnabled 字段已删除（loadStayAlarmEnablement DB 路径同时删除）。
 	// PR-10 BathroomStillFall 用 room.kind=="bathroom" 分支替代"运维显式启用 Stay alarm"语义。
@@ -266,6 +272,7 @@ func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackMana
 		grid:                    grid,
 		bedAreaIDs:              bedAreaIDs,
 		tracks:                  make(map[trackKey]*TrackState),
+		chairDwell:              make(map[string]*ChairDwell),
 		outputs:                 make(map[trackKey]*TrackOutput),
 		confEmitMs:              make(map[trackKey]int64),
 		devRoom:                 make(map[string]*devRoomState),
@@ -372,12 +379,21 @@ func (tm *TrackManager) SetRoomType(t int) {
 	tm.roomType = t
 }
 
-// SetChairs 注入 layout AreaSit rect（含 feedback pin），fire evidence 反查命中 pin 矩形用。
-// 由 engine.RegisterRoom 调用。
-func (tm *TrackManager) SetChairs(rects []radarutils.Rect) {
+// SetChairs 注入 layout AreaSit rect（含 feedback pin）+ 各自 canvas object_id（与 rects 1:1）。
+// fire evidence 反查命中 pin 矩形 + per-chair 久坐学习态锚定用。由 engine.RegisterRoom 调用。
+// 学习态不在此处 hydrate（engine.RegisterRoom 随后单独调 hydrateChairDwell 从 sibling 表灌 + 位移打折）。
+func (tm *TrackManager) SetChairs(rects []radarutils.Rect, ids []string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	tm.chairs = rects
+	cr := make([]ChairRect, len(rects))
+	for i, r := range rects {
+		id := ""
+		if i < len(ids) {
+			id = ids[i]
+		}
+		cr[i] = ChairRect{Rect: r, ObjectID: id}
+	}
+	tm.chairs = cr
 }
 
 // chairPinFieldW chair pin 的几何"电子云"坐场 ∈[0,1]：矩形内 1.0；矩形外按到边距离在 halo(sitSpreadCm)
@@ -386,8 +402,8 @@ func (tm *TrackManager) SetChairs(rects []radarutils.Rect) {
 func (tm *TrackManager) chairPinFieldW(x, y int) float64 {
 	halo := tm.sitSpreadCm
 	best := 0.0
-	for _, r := range tm.chairs {
-		d := r.DistTo(x, y)
+	for _, cr := range tm.chairs {
+		d := cr.Rect.DistTo(x, y)
 		if d == 0 {
 			return 1.0
 		}
@@ -400,68 +416,153 @@ func (tm *TrackManager) chairPinFieldW(x, y int) float64 {
 	return best
 }
 
-// chairAnchorCell 解析 (x,y) 命中的 chair → 其 rect 中心格作 per-chair 久坐窗的 anchor（一椅一窗，不碎）。调用方持锁。
-func (tm *TrackManager) chairAnchorCell(x, y int) *Cell {
-	return ChairAnchorCell(tm.grid, tm.chairs, tm.sitSpreadCm, x, y)
+// chairObjectAt 解析 (x,y) 命中的 chair → 其 canvas object_id（per-chair 久坐学习态的 key，一椅一态）。调用方持锁。
+func (tm *TrackManager) chairObjectAt(x, y int) (string, bool) {
+	return ChairObjectAt(tm.chairs, tm.sitSpreadCm, x, y)
 }
 
-// ChairAnchorCell 单源 anchor 解析（tm 热路径 + 离线 feedback ingest 共用，免 drift）：
-// 命中判据同 chairPinFieldW（field>0，halo=sitSpreadCm 电子云）；取 field 最大的那把椅子的 rect 中心格。
-// 无命中 / grid 缺失 / 越界 → nil。
-func ChairAnchorCell(grid *RoomGrid, chairs []radarutils.Rect, sitSpreadCm, x, y int) *Cell {
-	if grid == nil {
-		return nil
-	}
+// ChairObjectAt 单源命中解析（tm 热路径共用，免 drift）：命中判据同 chairPinFieldW（field>0，halo=sitSpreadCm
+// 电子云）；取 field 最大的那把椅子的 object_id。无命中 → ("", false)。
+func ChairObjectAt(chairs []ChairRect, sitSpreadCm, x, y int) (string, bool) {
 	halo := sitSpreadCm
 	bestW := 0.0
-	var bestRect radarutils.Rect
-	for _, r := range chairs {
+	bestID := ""
+	for _, cr := range chairs {
 		w := 0.0
-		if d := r.DistTo(x, y); d == 0 {
+		if d := cr.Rect.DistTo(x, y); d == 0 {
 			w = 1.0
 		} else if halo > 0 && d < halo {
 			w = 1.0 - float64(d)/float64(halo)
 		}
 		if w > bestW {
-			bestW, bestRect = w, r
+			bestW, bestID = w, cr.ObjectID
 		}
 	}
 	if bestW <= 0 {
-		return nil
+		return "", false
 	}
-	ctr := bestRect.Center()
-	return grid.CellAt(ctr.X, ctr.Y)
+	return bestID, true
 }
 
-// RatchetChairMaxSitAt false_alarm+"Sit on Chair" 反馈 live 落地：解析 (x,y canvas) 命中的 chair anchor 格，
-// 棘轮抬 maxSit（实际久坐 sitDurSec + margin，带衰减）。data handle 后经 HTTP 调；落 live grid，下次 5min 快照持久化。
+// chairDwellFor 取/建某 object 的久坐学习态（调用方持锁）。新建时 CX/CY 置为该椅当前中心（位移打折基准）。
+func (tm *TrackManager) chairDwellFor(objectID string) *ChairDwell {
+	cd := tm.chairDwell[objectID]
+	if cd == nil {
+		cd = &ChairDwell{}
+		for _, cr := range tm.chairs {
+			if cr.ObjectID == objectID {
+				ctr := cr.Rect.Center()
+				cd.CX, cd.CY = ctr.X, ctr.Y
+				break
+			}
+		}
+		tm.chairDwell[objectID] = cd
+	}
+	return cd
+}
+
+// RatchetChairMaxSitAt false_alarm+"Sit on Chair" 反馈 live 落地：解析 (x,y canvas) 命中的 chair object，
+// 棘轮抬其 maxSit（实际久坐 sitDurSec + margin，带衰减）。data handle 后经 HTTP 调；落 chairDwell，下次 5min 快照持久化。
 // 无命中 chair → false（点不在任何椅 pin 内）。
 func (tm *TrackManager) RatchetChairMaxSitAt(x, y int, sitDurSec float64, nowMs int64) bool {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	ac := tm.chairAnchorCell(x, y)
-	if ac == nil {
+	id, ok := tm.chairObjectAt(x, y)
+	if !ok {
 		return false
 	}
-	ac.RatchetChairMaxSit(sitDurSec, nowMs)
+	tm.chairDwellFor(id).RatchetChairMaxSit(sitDurSec, nowMs)
 	return true
 }
 
-// RecomputeChairDwell 慢周期(hourly)：对每把椅子的 anchor 格重算久坐窗(丢>14天槽+聚合μ/σ)。engine 定时调。
+// RecomputeChairDwell 慢周期(hourly)：对每把在学椅子的久坐态重算(衰减 maxSit + 丢>14天槽 + 聚合μ/σ)。engine 定时调。
 func (tm *TrackManager) RecomputeChairDwell(nowMs int64) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	if tm.grid == nil {
-		return
+	for _, cd := range tm.chairDwell {
+		cd.RecomputeDwell(nowMs)
 	}
-	seen := make(map[*Cell]bool, len(tm.chairs))
-	for _, r := range tm.chairs {
-		ctr := r.Center()
-		if ac := tm.grid.CellAt(ctr.X, ctr.Y); ac != nil && !seen[ac] {
-			seen[ac] = true
-			ac.RecomputeDwell(nowMs)
+}
+
+// chairRects 返回当前 chair 矩形快照（fire evidence pin 反查用；不含 object_id）。调用方持锁（status snapshot 路径内）。
+func (tm *TrackManager) chairRects() []radarutils.Rect {
+	out := make([]radarutils.Rect, len(tm.chairs))
+	for i, cr := range tm.chairs {
+		out[i] = cr.Rect
+	}
+	return out
+}
+
+// SnapshotChairDwell 导出 per-chair 久坐学习态给 persister upsert（engine snapshotLoop 调）。仅导出有 object_id 的。
+func (tm *TrackManager) SnapshotChairDwell() []ChairDwellRow {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if len(tm.chairDwell) == 0 {
+		return nil
+	}
+	rows := make([]ChairDwellRow, 0, len(tm.chairDwell))
+	for id, cd := range tm.chairDwell {
+		if id == "" {
+			continue // 无 object_id 的椅子不落库（无稳定 key）
+		}
+		rows = append(rows, ChairDwellRow{
+			ObjectID: id,
+			Mu:       cd.Mu,
+			Sig:      cd.Sig,
+			Window:   cd.Window,
+			MaxSit:   cd.MaxSit,
+			MaxSitMs: cd.MaxSitMs,
+			CX:       cd.CX,
+			CY:       cd.CY,
+		})
+	}
+	return rows
+}
+
+// hydrateChairDwell 从 sibling 表灌入 per-chair 久坐学习态（engine.RegisterRoom 在 SetChairs 之后调）。
+// 位移打折：某 object 的新中心 vs 存的 CX/CY dist≥200cm → 一次性 dms×0.5 + dwin 各槽减半（换椅/挪位降置信）。
+// 只灌当前 layout 仍存在的 object（rows 里 object 已不在 chairs → 丢弃，冷启重学）。灌完刷缓存 μ/σ/N。
+func (tm *TrackManager) hydrateChairDwell(rows []ChairDwellRow, nowMs int64) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	centers := make(map[string]radarutils.Point, len(tm.chairs))
+	for _, cr := range tm.chairs {
+		if cr.ObjectID != "" {
+			centers[cr.ObjectID] = cr.Rect.Center()
 		}
 	}
+	for _, row := range rows {
+		ctr, ok := centers[row.ObjectID]
+		if !ok {
+			continue // object 已从 layout 删除 → 不灌
+		}
+		cd := &ChairDwell{
+			Window:   row.Window,
+			Mu:       row.Mu,
+			Sig:      row.Sig,
+			MaxSit:   row.MaxSit,
+			MaxSitMs: row.MaxSitMs,
+			CX:       row.CX,
+			CY:       row.CY,
+		}
+		if dist := euclid(ctr.X, ctr.Y, row.CX, row.CY); dist >= chairDisplacementCm {
+			cd.applyDisplacementDiscount()
+			tm.logger.Info("chair_dwell_displaced",
+				zap.String("object_id", row.ObjectID), zap.Int("dist_cm", dist),
+				zap.Int("old_cx", row.CX), zap.Int("old_cy", row.CY),
+				zap.Int("new_cx", ctr.X), zap.Int("new_cy", ctr.Y))
+		}
+		cd.CX, cd.CY = ctr.X, ctr.Y // 存回新中心（打折基准前进）
+		cd.RecomputeDwell(nowMs)     // 丢过期槽 + 刷缓存 μ/σ/N（+ maxSit 衰减到现在）
+		tm.chairDwell[row.ObjectID] = cd
+	}
+}
+
+// euclid 欧氏距离（cm）——chair 位移打折判据："中心移动 ≥200cm" 的直觉是直线距离，
+// 对角挪动也应触发（150,150=212cm 真位移，L∞ 会漏）。
+func euclid(ax, ay, bx, by int) int {
+	dx, dy := float64(ax-bx), float64(ay-by)
+	return int(math.Hypot(dx, dy))
 }
 
 // SetInterferes 注入本房间镜面/反射区矩形（cfg.Interferes）。
@@ -1001,6 +1102,7 @@ type TrackStatusBase struct {
 	RawH, RawV, RawZ    int // firmware raw 雷达本地坐标 — alarm publish 用，对外契约不变
 	Pose                int
 	StillBoxSec         int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动）→ FloorGuard 纯计时器（直立折扣已移 emission）
+	FrameMoveCm         int // 帧间绝对位移 cm(History 末两帧)；史料不足=sentinel 999 → emission 躺姿二义按 dD/40 分 SBed/SFallen
 	CellAreaType        AreaType
 	// chair 区久坐兜底（box 起点锁定）→ floor 连续 tFloor 单源（仅 chair 区）
 	InChair             bool
@@ -1100,6 +1202,12 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		// StillBoxSec=raw box run 秒（30s 滚动 50×50 抗抖动）→ FloorGuard 纯计时器。直立折扣已移 emission（压 SFallen）。
 		if ts.StillBoxRunStart > 0 && nowMs > ts.StillBoxRunStart {
 			base.StillBoxSec = int((nowMs - ts.StillBoxRunStart) / 1000)
+		}
+		// 帧间绝对位移（emission 躺姿二义按 dD/40 分 SBed/SFallen）：静止人帧间≈0 → 偏 SBed；翻身/起身跳大 → 偏 SFallen。
+		//   与 still-box 同源用 History 末两帧（raw 观测点，静止时 byte 恒定 → d=0）。史料不足=999（新生/在动，不偏 SBed）。
+		base.FrameMoveCm = 999
+		if n := len(ts.History); n >= 2 {
+			base.FrameMoveCm = distInt(ts.History[n-1].X, ts.History[n-1].Y, ts.History[n-2].X, ts.History[n-2].Y)
 		}
 		// 瞬移待删窗 / immature-coast 反射伪迹 / interfer 出生孤迹 / split 赖锚点 ghost → 零 StillBoxSec，排出 FloorGuard 累积（不删轨，floor-neutral）。
 		if ts.SuspectInterferenceSinceMs > 0 || ts.FloorArtifactSinceMs > 0 || ts.InterferBornSinceMs > 0 || ts.SplitGhostSinceMs > 0 {
@@ -2026,10 +2134,10 @@ func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
 	fwMaxMin := float64(ts.sitFwMaxMs) / 60000.0
 	deltaL := sitEpisodeLLR(dwellMin, ts.sitZBest, fwMaxMin)
 	x, y := ts.StillBoxStartX, ts.StillBoxStartY
-	// Chair 区久坐窗（B，per-chair）：把这条 >5min walk-away 久坐时长喂进该椅 anchor 格的 14 日滚动窗，
-	// hourly 重算 μ/σ 供 floor 连续 tFloor=clamp(μ+1.5σ,[12,90]) 单源读。人标=feedback pin 同等(都在 cfg.Chairs)。
-	if ac := tm.chairAnchorCell(x, y); ac != nil {
-		ac.AppendDwell(float64(durMs)/1000.0, nowMs)
+	// Chair 区久坐窗（B，per-chair）：把这条 >5min walk-away 久坐时长喂进该椅 object 的 14 日滚动窗，
+	// hourly 重算 μ/σ 供 floor 连续 tFloor 单源读。人标=feedback pin 同等(都在 cfg.Chairs)。keyed by object_id 跨 layout 编辑存活。
+	if id, ok := tm.chairObjectAt(x, y); ok {
+		tm.chairDwellFor(id).AppendDwell(float64(durMs)/1000.0, nowMs)
 	}
 	scoreCap := tm.sitPromoteTau * sitScoreCapRatio
 	// 加到锚 cell + ±sitSpreadCm 邻域，按切比雪夫距离分层衰减（tier 按半径比例缩放，30 时=±10→1.0/±20→0.5/±30→0.3）：
@@ -2234,19 +2342,21 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			// box 开始那刻用 raw 起点(History[0] canvas)读一次 cell area 锁定，久静期 floor/emission 单源读，
 			// 躲开逐帧 Kalman/raw 微动跨格(sit 区边缘被偏读成 active 致误报)。box-break 清回 AreaUnknown。
 			ts.StillBoxCellArea = AreaUnknown
-			// chair 区久坐兜底锁定（电子云 gate=pin 几何，免疫 Belief 翻转）：读该椅 anchor 格缓存 μ + maxSit 棘轮；
-			// 冷启(窗样本<min)锁 ChairMu=0 → floor 回退 90min（maxSit 棘轮无样本门控，有就读）。box-break 清。
+			// chair 区久坐兜底锁定（电子云 gate=pin 几何，免疫 Belief 翻转）：读该椅 object 缓存 μ + maxSit 棘轮；
+			// 冷启(无记录/窗样本<min)锁 ChairMu=0 → floor 回退 90min（maxSit 棘轮无样本门控，有就读）。box-break 清。
 			ts.StillBoxInChair = tm.chairPinFieldW(ts.StillBoxStartX, ts.StillBoxStartY) > 0
 			ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit = 0, 0, 0
 			if c := tm.grid.CellAt(ts.StillBoxStartX, ts.StillBoxStartY); c != nil {
 				ts.StillBoxCellArea = c.Belief[0].Type
 			}
 			if ts.StillBoxInChair {
-				if ac := tm.chairAnchorCell(ts.StillBoxStartX, ts.StillBoxStartY); ac != nil {
-					ts.StillBoxChairMaxSit = ac.DwellMaxSit
-					if ac.DwellN >= DwellColdMinN {
-						ts.StillBoxChairMu = ac.DwellMu
-						ts.StillBoxChairSigma = ac.DwellSig
+				if id, ok := tm.chairObjectAt(ts.StillBoxStartX, ts.StillBoxStartY); ok {
+					if cd := tm.chairDwell[id]; cd != nil {
+						ts.StillBoxChairMaxSit = cd.MaxSit
+						if cd.N >= DwellColdMinN {
+							ts.StillBoxChairMu = cd.Mu
+							ts.StillBoxChairSigma = cd.Sig
+						}
 					}
 				}
 			}
