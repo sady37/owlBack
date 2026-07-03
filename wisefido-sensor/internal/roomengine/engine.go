@@ -541,31 +541,8 @@ func (e *Engine) ApplyToCell(roomID string, x, y int, nowMs int64, fn func(*Cell
 	return true
 }
 
-// chairPriorConf = layout Chair（含 feedback 钉的 Sit 区）SetPrior 成 AreaSit 的初始置信度。
+// chairPriorConf = layout Chair（含 feedback 钉的 Sit 区）的 AreaZone.Conf 初始置信度。
 const chairPriorConf = 80
-
-// StampPriorRect 即时把 rect 内 cell 刷成 (areaType, conf, SourceHuman)，镜像 RegisterRoom 的 SetPrior。
-// feedback 钉永久区只直写 layout，要等 daily reload(22:00)/重启才落 grid；本方法桥接该窗口，立即生效。
-func (e *Engine) StampPriorRect(roomID string, rect radarutils.Rect, areaType AreaType, conf int) bool {
-	e.mu.RLock()
-	g := e.grids[roomID]
-	e.mu.RUnlock()
-	if g == nil {
-		return false
-	}
-	g.SetPrior(rect, areaType, conf, SourceHuman)
-	return true
-}
-
-// StampPriorRectByDevice 解析 device→room 后即时刷 rect。data 在 layout 写入（pin / FE resize save）
-// 后调本被动腿刷完整 rect，桥接 daily reload/重启窗口。grid 缺失静默 false（防单 room 卡死全局）。
-func (e *Engine) StampPriorRectByDevice(deviceAddr string, rect radarutils.Rect, areaType AreaType, conf int) bool {
-	roomID := e.RoomForDevice(deviceAddr)
-	if roomID == "" {
-		return false
-	}
-	return e.StampPriorRect(roomID, rect, areaType, conf)
-}
 
 // CellAreaAt 只读：取 canvas 点 (x,y) 当前 cell 的 AreaType + 置信（诊断端点 GET /roomengine/cell/at）。
 // conf 区分人标(80/99)/学习(低)；point 出 grid 或 device 未路由 → ok=false。
@@ -586,23 +563,6 @@ func (e *Engine) CellAreaAt(deviceAddr string, x, y int) (area int, name string,
 	}
 	c := g.Cells[row*g.Width+col]
 	return int(c.AreaType), c.AreaType.Name(), c.Belief[0].Confidence, true
-}
-
-// ClearPriorRectByDevice 解析 device→room 后强清 rect 回 Unknown。data 删 Feedback pin 对象时调，
-// 配合随后的 stampCanvasCells 重刷剩余 layout（叠加区盖回，未覆盖区留 Unknown）。grid 缺失静默 false。
-func (e *Engine) ClearPriorRectByDevice(deviceAddr string, rect radarutils.Rect) bool {
-	roomID := e.RoomForDevice(deviceAddr)
-	if roomID == "" {
-		return false
-	}
-	e.mu.RLock()
-	g := e.grids[roomID]
-	e.mu.RUnlock()
-	if g == nil {
-		return false
-	}
-	g.ClearPriorRect(rect)
-	return true
 }
 
 // VetoRect 按 rect（fire 点 40×40 足迹）对每个 cell 清非 Human 抑制/deny（→AreaUnknown）；sticky 时
@@ -997,10 +957,9 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	// 4. Stamp Enters → 记 Enters 列表 + 覆写矩形内 InRoom=true（门洞可穿）
 	grid.StampEnters(cfg.Enters, cfg.EnterTargets)
 
-	// 5. 空间轴刷 cell：AreaZones 每条 (Rect, AreaType, Conf) 统一 SetPrior（rules.md #S2，AreaType 跟对象走）。
-	for _, z := range cfg.AreaZones {
-		grid.SetPrior(z.Rect, z.AreaType, z.Conf, SourceHuman)
-	}
+	// 5. 空间轴单源：声明区留在 grid.AreaZones（DB canvas 记录副本），QueryAreaType 直接查。
+	//    不再烙进 belief——人标与 learned 分两源，UpdateBelief 侵蚀碰不到声明区。
+	grid.AreaZones = cfg.AreaZones
 
 	// 6. 暖启：从 28 snapshot 灌回机器学到的 cell area（learned sit/interfer/active → 喂 floor 阈，避免
 	//    每次重启冷启 unknown→12min 误报）。放在 SetPrior 之后：DecodeSnapshot 跳过 SourceHuman，

@@ -332,38 +332,13 @@ func (c *Cell) IsEntry() bool {
 	return c.Belief[0].Type == AreaEnter
 }
 
-// IsRestZone 是否为「可长时间停留」的休息区。
-//
-// 语义（用户 2026-04-29 对齐；区域重编号后同步 isSuppressiveArea）：
-//   - Bed / MonitorBed / Sit / Lying：人可长时间坐/躺（含监护床、沙发坐与沙发躺）；still/silent-fall 都应排除
-//   - 浴室区不靠 cell 类型排除（马桶=Sit、淋浴=Active），久留异常由 floor 的房级 bathroom 20min 阈兜
-func (c *Cell) IsRestZone() bool {
-	t := c.Belief[0].Type
-	return t == AreaBed || t == AreaMonitorBed || t == AreaSit || t == AreaLying
-}
-
-// IsLikelyRestZone 比 IsRestZone 更宽松——除已升格的休息区外，
-// cell 累计有 ≥ 3s 的 Sit/Lie 观测也算可疑休息区（家具未标 + 学习未到阈值的过渡情况）。
-// 用于 silent fall 判断：拒报"曾经有人坐过/躺过"位置的静止丢失（防误报）。
-//
-// 30 = 3 秒 × 10 定点；远低于 SitActiveX10=150 (15s) 的升格门槛，
-// 但已是足够强的"这里有人停留过"证据。
-func (c *Cell) IsLikelyRestZone() bool {
-	if c.IsRestZone() {
-		return true
-	}
-	return c.ActiveType[ActiveIdxSit] >= 30 || c.ActiveType[ActiveIdxLie] >= 30
-}
-
-// still-fall-area 分类阈（cell-learning 用）：按 cell areaType 分的"久静多久算 fall-relevant"。
-// **这不是 fall 决策阈**——DBN silent-fall 阈权威 = belief/floor.go（契约 6A 其十五）。本组只供
-// cell-learning 判"哪些区不学 AreaSit（bathroom 房名/deny）"(track_manager stillFallTimeoutSec) +
-// LongStill grid 标记(EffectiveStillTimeoutSec)。
+// still-fall-area 分类阈：按 effective 区型（QueryAreaType）分的"久静多久算 fall-relevant"。
+// **这不是 fall 决策阈**——DBN silent-fall 阈权威 = belief/floor.go（契约 6A 其十五）。
+// 供 LongStill grid 标记(EffectiveStillTimeoutSec)。
 const (
-	stillAreaBathroomSec   = 15 * 60 // bathroom 房名兜底（cell 未学到时；floor 另有房级 20min override）
-	stillAreaDenySec       = 5 * 60  // AreaDeny
-	stillAreaDefaultSec    = 8 * 60  // 其它（Enter/Active/Unknown）
-	stillAreaNonRiskFactor = 1.2     // 非风险时段放宽因子
+	stillAreaDenySec       = 5 * 60 // AreaDeny/AreaInterfer/AreaReflector
+	stillAreaDefaultSec    = 8 * 60 // 其它（Enter/Active/Unknown）
+	stillAreaNonRiskFactor = 1.2    // 非风险时段放宽因子
 )
 
 // cell history 自适应容忍：反复假报/长静自然离开 → 放宽 EffectiveStillTimeoutSec，上限 MaxTolerance。
@@ -373,10 +348,10 @@ const (
 	cellMaxToleranceFactor      = 2.0
 )
 
-// StillTimeoutSec 静止超时阈值（秒；0 = 不限）。默认读 Belief[0]。risk-time=基线（严格）；
-// non-risk-time=基线 × stillAreaNonRiskFactor（宽松）。时段见 math_util.go::IsNightTime。
-func (c *Cell) StillTimeoutSec(isRiskTime bool) int {
-	base := c.stillTimeoutBase()
+// StillTimeoutSec 静止超时阈值（秒；0 = 不限）。区型 at 由调用方 QueryAreaType 给（effective，object 优先）。
+// risk-time=基线（严格）；non-risk-time=基线 × stillAreaNonRiskFactor（宽松）。时段见 math_util.go::IsNightTime。
+func (c *Cell) StillTimeoutSec(at AreaType, isRiskTime bool) int {
+	base := stillTimeoutBase(at)
 	if base == 0 {
 		return 0
 	}
@@ -386,10 +361,10 @@ func (c *Cell) StillTimeoutSec(isRiskTime bool) int {
 	return base
 }
 
-// stillTimeoutBase risk-time 基线值（严格档）。
-// 床/沙发：不限（休息合理）；马桶/淋浴：15min；Deny/反射/干扰: 5min；其它：8min。
-func (c *Cell) stillTimeoutBase() int {
-	switch c.Belief[0].Type {
+// stillTimeoutBase risk-time 基线值（严格档），纯按区型 at。
+// 床/沙发：不限（休息合理）；Deny/Interfer/Reflector: 5min；其它：8min。
+func stillTimeoutBase(at AreaType) int {
+	switch at {
 	case AreaBed, AreaMonitorBed, AreaSit, AreaLying:
 		return 0
 	case AreaDeny, AreaInterfer, AreaReflector:
@@ -400,15 +375,13 @@ func (c *Cell) stillTimeoutBase() int {
 
 // EffectiveStillTimeoutSec 综合 cell history 的最终静止超时阈值（秒）。
 //
-// = StillTimeoutSec(isRiskTime) × toleranceFactor()
+// = StillTimeoutSec(at, isRiskTime) × toleranceFactor()
 //
-// toleranceFactor 由该 cell 累计的 FakeAlarmCount + ToleratedStillCount 决定：
-//   - 全新装机（无历史）→ factor = 1.0（基线，最严）
-//   - 反复假报后 → 自动放宽，最多至 MaxToleranceFactor（默认 2.0）
-//
-// 设计目的：让系统自动消化「这个雷达在这个位置就是会假报」的客观存在，不靠人工调阈值。
-func (c *Cell) EffectiveStillTimeoutSec(isRiskTime bool) int {
-	base := c.StillTimeoutSec(isRiskTime)
+// 区型 at 走 QueryAreaType（effective）；toleranceFactor 由本 cell 累计的 FakeAlarmCount + ToleratedStillCount
+// 决定（真·cell 历史态，留在 Cell）：无历史→1.0（最严）；反复假报→自动放宽至 MaxToleranceFactor（默认 2.0）。
+// 设计目的：自动消化「这个雷达在这个位置就是会假报」的客观存在，不靠人工调阈值。
+func (c *Cell) EffectiveStillTimeoutSec(at AreaType, isRiskTime bool) int {
+	base := c.StillTimeoutSec(at, isRiskTime)
 	if base == 0 {
 		return 0
 	}
@@ -497,10 +470,6 @@ func (c *Cell) MarkRestZoneByFeedback(target AreaType) bool {
 	if (cur == AreaBed || cur == AreaMonitorBed) && target == AreaSit {
 		return false
 	}
-	// FE 画的（SourceHuman）神圣，feedback 不覆盖
-	if c.Belief[0].Source == SourceHuman {
-		return false
-	}
 	// 幂等：已是 SourceFeedback + 同 target
 	if cur == target && c.Belief[0].Source == SourceFeedback {
 		return false
@@ -515,7 +484,7 @@ func (c *Cell) MarkRestZoneByFeedback(target AreaType) bool {
 // FE 画的（SourceHuman）不擦——由调用方 IncrRealFallCount 记录，反复真摔触发人工复审（[[feedback_lying_learning_and_layout_authority]] §3.1）。
 func (c *Cell) ClearNonHumanLearnedZone() bool {
 	b := c.Belief[0]
-	if b.Source == SourceHuman || b.Source == SourceUnset {
+	if b.Source == SourceUnset {
 		return false
 	}
 	switch b.Type {

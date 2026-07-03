@@ -104,18 +104,16 @@ func startVetoHTTPServer(ctx context.Context, addr string, engine *roomengine.En
 		}
 		var req cellStampRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceAddr == "" {
-			http.Error(w, "bad request (need device_addr + rect)", http.StatusBadRequest)
+			http.Error(w, "bad request (need device_addr)", http.StatusBadRequest)
 			return
 		}
-		rect := radarutils.Rect{X1: req.X1, Y1: req.Y1, X2: req.X2, Y2: req.Y2}
-		ok := engine.StampPriorRectByDevice(req.DeviceAddr, rect, roomengine.AreaType(req.AreaType), req.Conf)
+		// layout 已写库；声明区不再烙 belief，直接重建该房 grid，QueryAreaType 即见新 AreaZones。
+		ok := engine.ReloadRoomByDevice(r.Context(), req.DeviceAddr)
 		if !ok {
 			http.Error(w, "device not routed / room grid not built", http.StatusNotFound)
 			return
 		}
-		logger.Info("cell_stamp_applied",
-			zap.String("device_addr", req.DeviceAddr), zap.Int("area_type", req.AreaType),
-			zap.Int("x1", req.X1), zap.Int("y1", req.Y1), zap.Int("x2", req.X2), zap.Int("y2", req.Y2))
+		logger.Info("cell_stamp_reload", zap.String("device_addr", req.DeviceAddr))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]bool{"stamped": true})
@@ -127,20 +125,18 @@ func startVetoHTTPServer(ctx context.Context, addr string, engine *roomengine.En
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		var req cellStampRequest // 复用 rect 字段（area_type/conf 忽略）
+		var req cellStampRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceAddr == "" {
-			http.Error(w, "bad request (need device_addr + rect)", http.StatusBadRequest)
+			http.Error(w, "bad request (need device_addr)", http.StatusBadRequest)
 			return
 		}
-		rect := radarutils.Rect{X1: req.X1, Y1: req.Y1, X2: req.X2, Y2: req.Y2}
-		ok := engine.ClearPriorRectByDevice(req.DeviceAddr, rect)
+		// 删对象后 layout 已写库；重建该房 grid，剩余声明区经 AreaZones 自然生效。
+		ok := engine.ReloadRoomByDevice(r.Context(), req.DeviceAddr)
 		if !ok {
 			http.Error(w, "device not routed / room grid not built", http.StatusNotFound)
 			return
 		}
-		logger.Info("cell_clear_applied",
-			zap.String("device_addr", req.DeviceAddr),
-			zap.Int("x1", req.X1), zap.Int("y1", req.Y1), zap.Int("x2", req.X2), zap.Int("y2", req.Y2))
+		logger.Info("cell_clear_reload", zap.String("device_addr", req.DeviceAddr))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]bool{"cleared": true})

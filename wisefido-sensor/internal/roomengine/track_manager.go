@@ -1239,9 +1239,10 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			base.ChairSigma = 0
 			base.ChairMaxSit = 0
 		}
-		// LastCellArea = 当前落格真实区型（与决策锁定解耦，供上报/evidence/veto）。-1 = 越界/无格。
+		// LastCellArea = 当前落格 effective 区型（QueryAreaType：声明区优先 else learned；供上报/evidence/veto，
+		// 如 dbn_mode2 LastCellArea==AreaLying veto 需看声明的躺区）。-1 = 越界/无格。
 		if cell != nil {
-			ts.LastCellArea = int(cell.AreaType)
+			ts.LastCellArea = int(tm.grid.QueryAreaType(rawCx, rawCy))
 		} else {
 			ts.LastCellArea = -1
 		}
@@ -1957,7 +1958,8 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 	if cell != nil && ts.StillBoxRunStart > 0 {
 		// box 静止超时 → LongStill（位置用当前 x,y，与静止 track 位置一致）
 		isRiskTime := IsNightTime(nowMs, tm.timezone)
-		if timeout := cell.EffectiveStillTimeoutSec(isRiskTime); timeout > 0 {
+		at := tm.grid.QueryAreaType(x, y)
+		if timeout := cell.EffectiveStillTimeoutSec(at, isRiskTime); timeout > 0 {
 			if stillSec := int((nowMs - ts.StillBoxRunStart) / 1000); stillSec > timeout {
 				if !ts.LongStillReported {
 					tm.grid.MarkLongStill(x, y, nowMs)
@@ -2018,34 +2020,6 @@ func (tm *TrackManager) updateLieStateMachine(ts *TrackState, pose, x, y int, no
 	}
 
 	ts.PrevCore = curCore
-}
-
-// stillFallTimeoutSec "bathroom-like 位置过滤器"。**不是 fall 决策阈**（DBN silent-fall 阈权威=
-// belief/floor.go，契约其十五）；仅作 cell-learning AreaSit 自学习 gate：bathroom 内长时间 stand
-// 不应被误学为坐位。
-//
-//	cell.AreaSit/AreaActive → cell.EffectiveStillTimeoutSec
-//	cell 未学到但 room.name 是 bathroom → cell.go::stillAreaBathroomSec × stillAreaNonRiskFactor
-//	都不匹配 → 0
-//
-// PR-Bootstrap：删除 stayAlarmEnabled 分支（loadStayAlarmEnablement 已删，stayAlarmEnabled 永 false）。
-// 调用方持锁。
-func (tm *TrackManager) stillFallTimeoutSec(cell *Cell, isRiskTime bool) int {
-	if cell == nil {
-		return 0
-	}
-	cellType := cell.Belief[0].Type
-	if cellType == AreaSit || cellType == AreaActive {
-		return cell.EffectiveStillTimeoutSec(isRiskTime)
-	}
-	if roomutil.IsBathroom(tm.roomName) {
-		base := stillAreaBathroomSec
-		if !isRiskTime {
-			base = int(float64(base) * stillAreaNonRiskFactor)
-		}
-		return base
-	}
-	return 0
 }
 
 // otherDeviceRealTTLMs 同房另一雷达"近期见过真 track"的有效窗（>radar 1Hz + 抖动）。
@@ -2169,7 +2143,7 @@ func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
 				continue
 			}
 			c := tm.grid.CellAt(x+dx, y+dy)
-			if c == nil || c.Belief[0].Source == SourceHuman { // 人工画的已知区不污染
+			if c == nil {
 				continue
 			}
 			c.SitScore += deltaL * w
@@ -2368,16 +2342,14 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			ts.StillBoxStartX = ts.History[0].X
 			ts.StillBoxStartY = ts.History[0].Y
 			ts.StillBoxStartZ = ts.History[0].Z // canvas Z（=raw Z 透传）→ floor fall PositionZ
-			// box 开始那刻用 raw 起点(History[0] canvas)读一次 cell area 锁定，久静期 floor/emission 单源读，
-			// 躲开逐帧 Kalman/raw 微动跨格(sit 区边缘被偏读成 active 致误报)。box-break 清回 AreaUnknown。
-			ts.StillBoxCellArea = AreaUnknown
+			// box 开始那刻用 raw 起点(History[0] canvas)读一次 effective 区型锁定（QueryAreaType：声明区优先
+			// else learned），久静期 floor/emission 单源读，躲开逐帧 Kalman/raw 微动跨格 + 声明的床/椅/躺区拿到
+			// 正确 floor 豁免（治 learned 未含人标致误报）。box-break 清回 AreaUnknown。
+			ts.StillBoxCellArea = tm.grid.QueryAreaType(ts.StillBoxStartX, ts.StillBoxStartY)
 			// chair 区久坐兜底锁定（电子云 gate=pin 几何，免疫 Belief 翻转）：读该椅 object 缓存 μ + maxSit 棘轮；
 			// 冷启(无记录/窗样本<min)锁 ChairMu=0 → floor 回退 90min（maxSit 棘轮无样本门控，有就读）。box-break 清。
 			ts.StillBoxInChair = tm.chairPinFieldW(ts.StillBoxStartX, ts.StillBoxStartY) > 0
 			ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit = 0, 0, 0
-			if c := tm.grid.CellAt(ts.StillBoxStartX, ts.StillBoxStartY); c != nil {
-				ts.StillBoxCellArea = c.Belief[0].Type
-			}
 			if ts.StillBoxInChair {
 				if id, ok := tm.chairObjectAt(ts.StillBoxStartX, ts.StillBoxStartY); ok {
 					if cd := tm.chairDwell[id]; cd != nil {

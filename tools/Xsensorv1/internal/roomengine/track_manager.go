@@ -1106,7 +1106,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			base.StillBoxSec = 0
 		}
 		if c := tm.grid.CellAt(px, py); c != nil {
-			base.CellAreaType = c.Belief[0].Type // cell 仍喂 tFloor 阈 + sit/lying/active redirect（含 sofa 的 lying 区，故不换 baseline）
+			base.CellAreaType = tm.grid.QueryAreaType(px, py) // effective 区型（声明区优先 else learned）喂 tFloor 阈 + sit/lying/active redirect；声明的床/椅/躺区拿到正确 floor 豁免
 			if c.Belief[0].Type == AreaEnter {
 				base.EnterTarget = c.EnterTarget
 			}
@@ -1817,7 +1817,8 @@ func (tm *TrackManager) scoreMovement(ts *TrackState, x, y int, nowMs int64, pos
 	if cell != nil && ts.StillBoxRunStart > 0 {
 		// box 静止超时 → LongStill（位置用当前 x,y，与静止 track 位置一致）
 		isRiskTime := IsNightTime(nowMs, tm.timezone)
-		if timeout := cell.EffectiveStillTimeoutSec(isRiskTime); timeout > 0 {
+		at := tm.grid.QueryAreaType(x, y)
+		if timeout := cell.EffectiveStillTimeoutSec(at, isRiskTime); timeout > 0 {
 			if stillSec := int((nowMs - ts.StillBoxRunStart) / 1000); stillSec > timeout {
 				if !ts.LongStillReported {
 					tm.grid.MarkLongStill(x, y, nowMs)
@@ -1878,34 +1879,6 @@ func (tm *TrackManager) updateLieStateMachine(ts *TrackState, pose, x, y int, no
 	}
 
 	ts.PrevCore = curCore
-}
-
-// stillFallTimeoutSec "bathroom-like 位置过滤器"。**不是 fall 决策阈**（DBN silent-fall 阈权威=
-// belief/floor.go，契约其十五）；仅作 cell-learning AreaSit 自学习 gate：bathroom 内长时间 stand
-// 不应被误学为坐位。
-//
-//	cell.AreaSit/AreaActive → cell.EffectiveStillTimeoutSec
-//	cell 未学到但 room.name 是 bathroom → cell.go::stillAreaBathroomSec × stillAreaNonRiskFactor
-//	都不匹配 → 0
-//
-// PR-Bootstrap：删除 stayAlarmEnabled 分支（loadStayAlarmEnablement 已删，stayAlarmEnabled 永 false）。
-// 调用方持锁。
-func (tm *TrackManager) stillFallTimeoutSec(cell *Cell, isRiskTime bool) int {
-	if cell == nil {
-		return 0
-	}
-	cellType := cell.Belief[0].Type
-	if cellType == AreaSit || cellType == AreaActive {
-		return cell.EffectiveStillTimeoutSec(isRiskTime)
-	}
-	if roomutil.IsBathroom(tm.roomName) {
-		base := stillAreaBathroomSec
-		if !isRiskTime {
-			base = int(float64(base) * stillAreaNonRiskFactor)
-		}
-		return base
-	}
-	return 0
 }
 
 // otherDeviceRealTTLMs 同房另一雷达"近期见过真 track"的有效窗（>radar 1Hz + 抖动）。
@@ -2027,7 +2000,7 @@ func (tm *TrackManager) emitSitEpisode(ts *TrackState, durMs, nowMs int64) {
 				continue
 			}
 			c := tm.grid.CellAt(x+dx, y+dy)
-			if c == nil || c.Belief[0].Source == SourceHuman { // 人工画的已知区不污染
+			if c == nil {
 				continue
 			}
 			c.SitScore += deltaL * w

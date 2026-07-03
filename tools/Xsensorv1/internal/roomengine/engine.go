@@ -886,10 +886,9 @@ func (e *Engine) RegisterRoom(cfg RoomConfig) {
 	// 4. Stamp Enters → 记 Enters 列表 + 覆写矩形内 InRoom=true（门洞可穿）
 	grid.StampEnters(cfg.Enters, cfg.EnterTargets)
 
-	// 5. 空间轴刷 cell：AreaZones 每条 (Rect, AreaType, Conf) 统一 SetPrior（rules.md #S2，AreaType 跟对象走）。
-	for _, z := range cfg.AreaZones {
-		grid.SetPrior(z.Rect, z.AreaType, z.Conf, SourceHuman)
-	}
+	// 5. 空间轴单源：声明区留在 grid.AreaZones（DB canvas 记录副本），QueryAreaType 直接查。
+	//    不再烙进 belief——人标与 learned 分两源，UpdateBelief 侵蚀碰不到声明区。
+	grid.AreaZones = cfg.AreaZones
 
 	e.grids[cfg.RoomID] = grid
 	// MM covers 几何：per-device 保留各台**自己 canvas** 的 bed 矩形（RadarBedReachCount 只数本台 layout

@@ -153,16 +153,10 @@ func (g *RoomGrid) LearnCellAreas(p LearnParams, nowMs int64) {
 		if !c.InRoom || !c.InFOV {
 			continue
 		}
-		// 人标 cell 不动
-		if c.Belief[0].Source == SourceHuman {
-			continue
-		}
-
 		// sensor_v2 决定 20: inside_enter 自学习升格路径
 		// MarkInsideEnterCandidate 累计 ≥ InsideEnterLearnThreshold → InsideEnterLearned=true
-		// 此处消费 flag 升格 cell.AreaType = AreaEnter (Source=SourceLearned)
-		// 注：仅对 inside_enter 自学习路径解锁 AreaEnter 升格；outside / bathroom 仍由 layout 锁定（决定 15/20）
-		// promoteCell 自己不会越过 SourceHuman（layout 人标的 outside/bathroom 入口安全）
+		// 此处消费 flag 升格 cell.AreaType = AreaEnter (Source=SourceLearned)。声明区（含 layout enter/床/椅）
+		// 只活在 AreaZones、由 QueryAreaType 覆盖，故 learning 无需在此避让人标——写 belief 不影响决策。
 		if c.InsideEnterLearned && c.Belief[0].Type != AreaEnter {
 			promoteCell(c, AreaEnter, p.ConfFloor)
 			// 注：cell.EnterTarget 保留 ""（inside_enter 默认）；不写 outside / bathroom

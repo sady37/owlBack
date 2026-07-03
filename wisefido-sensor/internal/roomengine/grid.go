@@ -33,6 +33,11 @@ type RoomGrid struct {
 
 	Cells  []Cell
 	Enters []radarutils.Rect
+
+	// AreaZones layout 声明区（源自 DB canvas 的解析缓存）。RegisterRoom 时随 grid 一次性建、发布后只读；
+	// layout 变更走 reload 重建整根 grid（与 Cells/Enters 同生命周期），故无需锁。人标区型只活在此、
+	// 不烙 belief、不进 28 snapshot，QueryAreaType 用时查——UpdateBelief 侵蚀碰不到它。
+	AreaZones []AreaZone
 }
 
 // NewRoomGrid 创建空网格。默认画布坐标系（顶部中心原点）。
@@ -68,6 +73,30 @@ func (g *RoomGrid) CellAt(x, y int) *Cell {
 		return nil
 	}
 	return &g.Cells[row*g.Width+col]
+}
+
+// QueryAreaType 坐标此刻的有效区型（B 组决策唯一读点）：优先 layout 声明区（AreaZones，覆盖点内
+// 按 areaPriority 取最高，等价旧 SetPrior 重叠合并），无声明区落 learned Belief[0]。
+// 人标只在 AreaZones、learned 只在 Belief——两源分离，learn 侵蚀不影响声明区。
+func (g *RoomGrid) QueryAreaType(x, y int) AreaType {
+	best := AreaUnknown
+	found := false
+	for _, z := range g.AreaZones {
+		if !z.Rect.Contains(x, y) {
+			continue
+		}
+		if !found || areaPriority(z.AreaType) > areaPriority(best) {
+			best = z.AreaType
+			found = true
+		}
+	}
+	if found {
+		return best
+	}
+	if c := g.CellAt(x, y); c != nil {
+		return c.Belief[0].Type
+	}
+	return AreaUnknown
 }
 
 // ToCanvas 格子索引 → 格子中心画布坐标
@@ -166,83 +195,6 @@ func areaPriority(t AreaType) int {
 		return 1
 	default: // AreaUnknown
 		return 0
-	}
-}
-
-// sourceRank 来源可信分层：Human == Feedback（人确认层，最高）> Learned > Geometry > Unset。
-// Source 数值不单调(Feedback=4/Learned=2/Human=1)，必须显式映射；勿用裸值比较。
-func sourceRank(s Source) int {
-	switch s {
-	case SourceHuman, SourceFeedback:
-		return 3
-	case SourceLearned:
-		return 2
-	case SourceGeometry:
-		return 1
-	default: // SourceUnset
-		return 0
-	}
-}
-
-// beliefOutranks 重叠 cell 取胜者判据：来源为主键（Human==Feedback 人确认层最高，压过 learned；无人确认才落到 learned），
-// 同来源层内再按危险等级(areaPriority)。严格大于才覆盖 → 与写入顺序无关，同等则保留既有（幂等）。
-func beliefOutranks(candT AreaType, candSrc Source, curT AreaType, curSrc Source) bool {
-	if cs, ps := sourceRank(candSrc), sourceRank(curSrc); cs != ps {
-		return cs > ps
-	}
-	return areaPriority(candT) > areaPriority(curT)
-}
-
-// SetPrior 对 rect 内所有 cell 刷 (AreaType, conf, src)。重叠合并：按 beliefOutranks（来源为主 Human==Feedback 人确认层、
-// 同来源层内按危险等级）取胜者，严格胜出才覆盖 → 多对象叠一 cell 的解析与写入顺序无关。
-func (g *RoomGrid) SetPrior(rect radarutils.Rect, t AreaType, conf int, src Source) {
-	rect = rect.Norm()
-	c1, r1 := g.ToIndex(rect.X1, rect.Y1)
-	c2, r2 := g.ToIndex(rect.X2, rect.Y2)
-	for row := r1; row <= r2; row++ {
-		if row < 0 || row >= g.Height {
-			continue
-		}
-		for col := c1; col <= c2; col++ {
-			if col < 0 || col >= g.Width {
-				continue
-			}
-			c := &g.Cells[row*g.Width+col]
-			for bi := 0; bi < 3; bi++ {
-				cur := c.Belief[bi]
-				if !beliefOutranks(t, src, cur.Type, cur.Source) {
-					continue // 既有危险等级更高 / 同级来源更可信，不覆盖
-				}
-				c.Belief[bi].Type = t
-				c.Belief[bi].Confidence = conf
-				c.Belief[bi].Source = src
-			}
-			c.AreaType = c.Belief[0].Type // mirror
-		}
-	}
-}
-
-// ClearPriorRect 强清 rect 内所有 cell 回 Unknown/Unset（不分 source、不过优先级 gate）。
-// 用于 data 删 Feedback pin 对象时擦掉该区先验；调用方随后按剩余 layout 重刷（stampCanvasCells），
-// 叠加区自动盖回其它对象（如 reflector 删后露出底下的 chair Sit），未覆盖区才留 Unknown。
-func (g *RoomGrid) ClearPriorRect(rect radarutils.Rect) {
-	rect = rect.Norm()
-	c1, r1 := g.ToIndex(rect.X1, rect.Y1)
-	c2, r2 := g.ToIndex(rect.X2, rect.Y2)
-	for row := r1; row <= r2; row++ {
-		if row < 0 || row >= g.Height {
-			continue
-		}
-		for col := c1; col <= c2; col++ {
-			if col < 0 || col >= g.Width {
-				continue
-			}
-			c := &g.Cells[row*g.Width+col]
-			for bi := 0; bi < 3; bi++ {
-				c.Belief[bi] = BeliefState{Type: AreaUnknown, Confidence: 0, Source: SourceUnset}
-			}
-			c.AreaType = AreaUnknown
-		}
 	}
 }
 
@@ -397,29 +349,13 @@ func (g *RoomGrid) MarkTraverse(x, y int, nowMs int64) {
 	}
 }
 
-// IsNearPriorType 检查 (x,y) 是否在某个 AreaType 人标 Belief 矩形的容差范围内（曼哈顿距离）。
-// 用于 cell_learning：判断"床外 Lie"时给 Bed prior ±30cm 容差，避免 layout 位置误差误报。
-// 实现：扫指定半径 marginCm 内的所有 cell，发现任一 Belief[0].Type==t 且 Source==SourceHuman 即返回 true。
+// IsNearPriorType 检查 (x,y) 是否在某条 AreaType==t 的声明区（AreaZone）容差 marginCm 内。
+// 用于 cell_learning：判断"床外 Lie"时给 Bed 声明区 ±30cm 容差，避免 layout 位置误差误报。
+// 直接查声明区（人标唯一源），不再读 belief——人标不烙 belief。
 func (g *RoomGrid) IsNearPriorType(x, y int, t AreaType, marginCm int) bool {
-	col, row := g.ToIndex(x, y)
-	rad := marginCm / g.CellSize
-	if rad < 1 {
-		rad = 1
-	}
-	for dr := -rad; dr <= rad; dr++ {
-		rr := row + dr
-		if rr < 0 || rr >= g.Height {
-			continue
-		}
-		for dc := -rad; dc <= rad; dc++ {
-			cc := col + dc
-			if cc < 0 || cc >= g.Width {
-				continue
-			}
-			c := &g.Cells[rr*g.Width+cc]
-			if c.Belief[0].Type == t && c.Belief[0].Source == SourceHuman {
-				return true
-			}
+	for _, z := range g.AreaZones {
+		if z.AreaType == t && z.Rect.DistTo(x, y) <= marginCm {
+			return true
 		}
 	}
 	return false
@@ -515,7 +451,7 @@ func (g *RoomGrid) MarkMirrorBounce(x, y int, nowMs int64) {
 	c.LastMirrorMs = nowMs
 	c.LastUpdateMs = nowMs
 	if c.MirrorBounceCount >= MirrorPromoteThreshold && !c.LearnBlocked &&
-		c.Belief[0].Source != SourceHuman && c.Belief[0].Source != SourceFeedback {
+		c.Belief[0].Source != SourceFeedback {
 		c.Belief[0] = BeliefState{Type: AreaDeny, Confidence: 70, Source: SourceLearned}
 		c.AreaType = AreaDeny
 	}
@@ -538,7 +474,7 @@ func (g *RoomGrid) MarkStaticReflector(x, y int, nowMs int64) {
 	c.StaticReflectorCount++
 	c.LastStaticReflectorMs = nowMs
 	if c.StaticReflectorCount >= StaticReflectorPromoteThreshold && !c.LearnBlocked &&
-		c.Belief[0].Source != SourceHuman && c.Belief[0].Source != SourceFeedback {
+		c.Belief[0].Source != SourceFeedback {
 		c.Belief[0] = BeliefState{Type: AreaReflector, Confidence: 70, Source: SourceLearned}
 		c.AreaType = AreaReflector
 	}

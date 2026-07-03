@@ -150,9 +150,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 	grid.StampRadar(cfg.Radar)
 	grid.StampEnters(cfg.Enters, cfg.EnterTargets)
-	for _, z := range cfg.AreaZones {
-		grid.SetPrior(z.Rect, z.AreaType, z.Conf, roomengine.SourceHuman)
-	}
+	grid.AreaZones = cfg.AreaZones
 
 	tm := roomengine.NewTrackManager(opts.RoomID, grid, nil)
 	decayParams := roomengine.DefaultDecayParams()

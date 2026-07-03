@@ -648,3 +648,49 @@ func (e *Engine) runDailyLayoutReload(ctx context.Context) {
 		e.saveAllRooms(ctx)
 	}
 }
+
+// reloadRoomFromDB 单房从 DB 重建 grid（layout/pin 存库后即时生效）。走 RegisterRoom 整体换指针，
+// 与 daily reload 同一条安全路径：新 grid 的 AreaZones 即刻反映新声明区，QueryAreaType 用时查即见。
+// 声明区不再烙 belief，故重建无需保留旧人标——learned 由 hydrateRoom 从 28 灌回。
+func (e *Engine) reloadRoomFromDB(ctx context.Context, roomID string) bool {
+	if e.dailyReloadDB == nil {
+		return false
+	}
+	canvasesByRoom, err := LoadRoomCanvases(ctx, e.dailyReloadDB, e.logger)
+	if err != nil {
+		e.logger.Warn("reload_room load canvases failed", zap.String("room_id", roomID), zap.Error(err))
+		return false
+	}
+	cfg, hasLayout := BuildRoomConfigFromCanvases(roomID, canvasesByRoom[roomID], e.logger)
+	if !hasLayout {
+		return false
+	}
+	var roomName, timezone, tenantID string
+	err = e.dailyReloadDB.QueryRowContext(ctx, `
+		SELECT r.room_name,
+		       COALESCE(u.timezone, ''),
+		       host(set_masklen(r.room_id, 48))::text || '/48'
+		FROM rooms r
+		LEFT JOIN units u ON u.unit_id >>= r.room_id
+		WHERE r.room_id::text = $1`, roomID).Scan(&roomName, &timezone, &tenantID)
+	if err != nil {
+		e.logger.Warn("reload_room meta query failed", zap.String("room_id", roomID), zap.Error(err))
+		return false
+	}
+	cfg.RoomName = roomName
+	cfg.Timezone = timezone
+	ApplyOptimizedExtent(&cfg)
+	e.RegisterRoom(cfg)
+	e.SetRoomTenant(cfg.RoomID, tenantID)
+	return true
+}
+
+// ReloadRoomByDevice 解析 device→room 后重建该房 grid。data 在 layout 写库（pin / resize / 删对象）
+// 后调，桥接到 daily reload 之前即时生效。grid 缺失/未路由静默 false。
+func (e *Engine) ReloadRoomByDevice(ctx context.Context, deviceAddr string) bool {
+	roomID := e.RoomForDevice(deviceAddr)
+	if roomID == "" {
+		return false
+	}
+	return e.reloadRoomFromDB(ctx, roomID)
+}
