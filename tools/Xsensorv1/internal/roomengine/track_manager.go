@@ -609,6 +609,8 @@ const (
 	exitCoupledLostMs = int64(30_000)
 	// exitLostMaxDz：耦合驱逐的末2tick垂直位移上限（≤此 = 无倒地式下坠，FN-safe）。
 	exitLostMaxDz = 40
+	// splitResidualEmptyGraceMs：prong3 房空后给真人重获的宽限（<此不 purge split 残迹，防 np 抖动误删）。
+	splitResidualEmptyGraceMs = int64(15_000)
 	// mirrorResidualConfineWindowMs / Cm：confirmedMirrorResidual 的 R≤120 近期静止窗（§10.3-b 条件3）。
 	//   用近期 box range 非 birth→now——镜像 ghost 随真人走动位移大、settle 后近期赖着不动才是残迹。
 	mirrorResidualConfineWindowMs = int64(30_000)
@@ -1619,6 +1621,14 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			delete(tm.tracks, id)
 			continue
 		}
+		// prong3：房空(np→0)后仍 coast 的 split-group 残迹 → purge（治 knife-edge 未 convict 的 split floor-FP）。
+		if nowMs-ts.LastObservedMs >= presenceCoastMs && tm.splitResidualRoomEmpty(ts, nowMs) {
+			tm.logger.Info("split_residual_room_empty_purge",
+				zap.String("device_uid", ts.DeviceAddr), zap.Int("track_id", ts.TrackID),
+				zap.String("logic_id", ts.LogicID), zap.Int("last_pose", ts.LastPose))
+			delete(tm.tracks, id)
+			continue
+		}
 		dt := float64(nowMs-ts.LastUpdateMs) / 1000.0
 		if dt <= 0 {
 			dt = 1
@@ -2078,6 +2088,25 @@ func (tm *TrackManager) exitCoupledLostResidual(ts *TrackState, nowMs int64) boo
 		}
 	}
 	return false
+}
+
+// splitResidualRoomEmpty prong3：split-group 成员在房空(np→0 硬确认)后仍 coast → purge。
+// 治 knife-edge 未 convict 的 split 残迹（line1213 兜不到）+ split 前久驻/离场与失锁解耦（exitCoupledLostResidual
+// 的 |exit−lost|≤30s 耦合漏掉的 7min-gap 残迹）。不看 GLUED（残迹赖锚点 51~54cm=HOLD 也要收）。
+// FN 安全：SplitEverWalkedOut(≥200 走开真人)绝不删；np→0 硬确认(房真空才动,防"2 真人 1 出门 1 摔")；
+// pose/dz 硬闸(露倒地相/下坠绝不删)；grace 宽限给真人重获。
+func (tm *TrackManager) splitResidualRoomEmpty(ts *TrackState, nowMs int64) bool {
+	if ts.SplitObservingSinceMs == 0 || ts.SplitEverWalkedOut {
+		return false
+	}
+	d := tm.devRoom[ts.DeviceAddr]
+	if d == nil || d.npTs == 0 || d.np != 0 {
+		return false // np→0 硬确认：房真空才动
+	}
+	if nowMs-d.npTs < splitResidualEmptyGraceMs {
+		return false // 太早：给真人重获机会
+	}
+	return poseEvictable(ts.LastPose) && last2Dz(ts) <= exitLostMaxDz
 }
 
 // confirmedMirrorResidual lost_fall delete §10.3-b 条件2④ 路径：确诊持续镜像 + 曾有共存源 + 近期静止残迹 → 删。
