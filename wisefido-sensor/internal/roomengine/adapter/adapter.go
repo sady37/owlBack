@@ -31,6 +31,7 @@ type RadarTrack struct {
 	X, Y, Z  int     // canvas cm
 	HR, RR   int     // 0=无信号
 	StillSec float64 // 连续静止秒（still-box 总时长）
+	FrameMoveCm float64 // 帧间绝对位移 cm（在动/史料不足=999）→ emission 躺姿二义 SBed/SFallen 分配（仅 AreaBed 内）
 	AreaType int     // track 当前 cell.Belief[0].Type（CellAreaType 透传）→ emission 正向压制 + floor per-area 阈
 	// Chair 区久坐兜底（box 起点锁定）→ floor 连续 tFloor 单源（仅 chair 区）
 	InChair     bool
@@ -227,6 +228,7 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, bedAre
 		PoseSuspectFall: t.Online && t.Pose == observation.PoseSuspectedFall,
 		Z:               t.Z,
 		StillSec:        t.StillSec,
+		FrameMoveCm:     t.FrameMoveCm,
 		NearBed:         nb,
 		NearBedMask:     nearBedMask(t, beds, p),
 		// HRRRObserved 仅当雷达**真返** HR/RR（铁律 [[radar_hr_rr_bed_enter_gated]]：radar enter-gate，

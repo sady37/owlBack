@@ -29,8 +29,12 @@ type Observation struct {
 	PoseFallen      bool    // pose=5 确认跌倒（固件最高置信跌倒证据）→ 强抬 SFallen，不抬 SBed
 	PoseSuspectFall bool    // pose=2 疑似跌倒（弱）→ 弱抬 SFallen，证据不足靠累积/floor 兜底
 	Z               int     // 雷达本帧高度(canvas cm)：z≥80=站立身高，与"躺地"互斥 → 压 SFallen + 抬 SOpenFloor
-	StillSec        float64 // still-box raw 总时长（连续静止秒）：喂 FloorGuard 纯计时器（不再含直立折扣）。emission 不消费
-	NearBed         bool    // HR/RR 空间邻域门控（§5 用 nearBed 非 enterBed，门控 Online）
+	StillSec        float64 // still-box raw 总时长（连续静止秒）：喂 FloorGuard 纯计时器 + emission 躺姿防守时间封顶（StillSec/ddDefenseCapSec 渐放 SFall）
+	// FrameMoveCm 帧间绝对位移 cm（史料不足/在动=sentinel 999）。仅在 AreaBed 几何内消费：躺姿二义按 dD 把似然
+	//   从 SFallen 分给 SBed（dD=0 全 SBed / dD≥40 全 SFallen），防 sleepad 把久静恒定值误判 LeftBed 后把"床上没动
+	//   的躺人"塌成 Fallen。床外不消费 → 地板倒地静止(dD 小)绝不偏 SBed（FN 命门）。
+	FrameMoveCm     float64
+	NearBed         bool // HR/RR 空间邻域门控（§5 用 nearBed 非 enterBed，门控 Online）
 	// NearBedMask 逐床几何邻近（XY 在该床 NearBedMargin 内）。不门控 Online——present 用当前 XY，
 	// lost 用冻结坐标。FloorGuard 用它把"接触 InBed 豁免"收窄到**本 track 所在床**，避免同房他人
 	// 在床误豁免地板上的摔者。长 numBeds，与 Sleepad 同索引。

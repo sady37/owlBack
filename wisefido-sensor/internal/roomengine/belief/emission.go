@@ -44,6 +44,22 @@ type emissionParams struct {
 // zStandCm 站立身高阈：z≥此 → 与"躺地"互斥（摔倒质心 z 必低）。高 bar，单帧噪声 z<80 不误压真摔。
 const zStandCm = 80
 
+// zFlatCm 平躺高度阈：z<此 → 平躺（非床上坐起/起身）。躺床防守(按 dD 分配 SBed)只在平躺时开——z 抬起=起身，不偏 SBed。
+const zFlatCm = 40
+
+// ddFullFallCm 帧间位移满标：dD≥此 → 床区躺姿二义全归 SFallen（帧间跳大=翻身/起身/在动，更像非静卧）；dD=0 全 SBed，
+//   中间 dD/ddFullFallCm 线性。静止人帧间≈0 → 偏 SBed，防 sleepad 假 LeftBed 把"床上没动的躺人"塌成 Fallen。
+const ddFullFallCm = 40.0
+
+// ddDefenseCapSec 时间轴斜率分母：合成 35min 静躺反解——belief 正反馈，SFall 一旦分到 sfallFrac≈0.47 即 runaway 冲过阈，
+//   故越阈时刻由斜率(分母)定，非终点上限。取 3850 使 timeTerm 在 StillSec≈2100s(35min) 才≈0.47 → 兜底 fire 落在 ~35min。
+//   老人正常翻身几十分钟内必 reset still-box 到不了此时长；只有"radar 久躺床格+sleepad 说离床"矛盾态持续 ~35min 才 fire
+//   （失能/医疗事件安全网，非正常睡眠——sleepad InBed 经 B 轴续撑 SBed，不 fire）。fire 触发 ResetStillBox 归零重爬。
+const ddDefenseCapSec = 3850.0
+
+// maxTimeSfallFrac 时间轴分配上限(保底 1/7 SBed 不饿死)：runaway 在 0.47 早已 fire、到不了此点，此上限只作 SBed 安全地板。
+const maxTimeSfallFrac = 6.0 / 7.0
+
 // roomengine.AreaType 枚举值（belief 不 import roomengine，本地常量对齐，值见 cell.go）。
 const (
 	areaDeny       = 1
@@ -173,9 +189,32 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 	}
 	w := e.geom0Covers() // w_pose=w_δ=covers(r,·)
 
-	// pose lying（二义）：boost AtBed 与 F（不分）。
+	// pose lying（二义）：boost AtBed 与 F。默认等分（床外 lying：SBed=SFallen，交 still-box/floor 裁 → 地板真摔保留）。
 	if o.PoseLying {
-		addLogLk(&logS, Vector{SBed: e.p.lPose, SFallen: e.p.lPose}, w, SBed, SFallen)
+		sbedW, sfallW := e.p.lPose, e.p.lPose
+		// 床区几何内 + 平躺(z<zFlatCm)：sleepad 可能把久静恒定值当基准误报 LeftBed → 一释放床占用就把"床上没动的
+		//   躺人"塌成 Fallen。sfallFrac = max(帧间位移 dD/ddFullFallCm, 连续静止时间项)：把躺姿二义从 SFallen 分给 SBed
+		//   （frac=0 全 SBed / frac=1 全 SFallen）。两轴取大——① 帧间跳大(翻身/起身)立刻放 SFall；② 连续静止时间项线性
+		//   斜坡(封顶 maxTimeSfallFrac)使矛盾态久静 ~35min 也放 SFall 升过阈兜底(失能/医疗；正常睡眠 sleepad InBed 经 B 轴
+		//   续撑 SBed 不 fire)。闸 areaBed 是 FN 命门：床外倒地静止绝不偏 SBed，否则漏地板真摔。
+		if o.AreaType == areaBed && o.Z < zFlatCm {
+			sfallFrac := o.FrameMoveCm / ddFullFallCm // dD 轴：翻身/起身可达 1.0（全 SFall）
+			if tSec := o.StillSec; tSec > 0 {          // 时间轴：线性斜坡到 maxTimeSfallFrac（保底 1/7 SBed）
+				tFrac := maxTimeSfallFrac * tSec / ddDefenseCapSec
+				if tFrac > maxTimeSfallFrac {
+					tFrac = maxTimeSfallFrac
+				}
+				if tFrac > sfallFrac {
+					sfallFrac = tFrac
+				}
+			}
+			if sfallFrac > 1 {
+				sfallFrac = 1
+			}
+			sbedW = e.p.lPose * (1 - sfallFrac)
+			sfallW = e.p.lPose * sfallFrac
+		}
+		addLogLk(&logS, Vector{SBed: sbedW, SFallen: sfallW}, w, SBed, SFallen)
 	}
 
 	// pose 确认/疑似跌倒（固件已分类，per-frame）：抬 SFallen（不抬 SBed，非二义）。confirmed 决定性
