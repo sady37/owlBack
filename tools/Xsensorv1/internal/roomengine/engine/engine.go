@@ -449,7 +449,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 		repeatR := 0.0
 		selfRecovered := false
 		if ts.Present {
-			early, recovered := esc.Step(fi.NowMs, ts.Obs.RadarTrack.Pose, ts.PReal >= 0.5)
+			early, recovered := esc.Step(fi.NowMs, ts.Obs.RadarTrack.Pose, ts.PReal >= 0.5, ts.Obs.RadarTrack.AreaType)
 			repeatR = esc.Residual()
 			selfRecovered = recovered
 			if early {

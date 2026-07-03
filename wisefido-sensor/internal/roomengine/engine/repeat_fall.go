@@ -30,6 +30,8 @@ const (
 	poseSuspectSit  = 7 // SuspectedSittingOnGround
 	poseSitOnGround = 8 // SittingOnGround（firmware confirmed）
 
+	areaLying = 8 // observation.AreaLying（沙发/躺椅）：躺区 fall-family pose = 正常斜躺，不计 repeat-fall
+
 	throuFallSec   = 60.0  // pose 2/5 族单次 confirm 秒（=firmware 保守端，用户 2026-06-18 拍）
 	throuSitSec    = 90.0  // pose 7/8 族
 	repeatFallTauS = 866.0 // 残余漏衰减时间常数 τ 秒（半衰期 ~10min = 急性聚集窗）
@@ -61,10 +63,12 @@ func NewRepeatFallEscalator() *RepeatFallEscalator { return &RepeatFallEscalator
 // Residual 当前累积残余（forensic 暴露，xray 看"前科"强度）。
 func (e *RepeatFallEscalator) Residual() float64 { return e.r }
 
-// Step 一帧推进。pose=firmware 原始姿态，real=本 track PReal≥0.5。
+// Step 一帧推进。pose=firmware 原始姿态，real=本 track PReal≥0.5，areaType=当前 cell 区域。
+// AreaLying（沙发/躺椅）里 fall-family pose 是正常斜躺不算摔 → 不起 episode（既不攒 R 也不提前 fire，
+// 且不让躺区攒的前科泄漏到邻 Sit 区误火）；publish 腿 lying veto 只拦当场发布，堵不住此泄漏。
 // 返回 (提前 fire, 本帧 episode 刚结束=记录线 self_recovered)。
-func (e *RepeatFallEscalator) Step(nowMs int64, pose int, real bool) (earlyFire, recovered bool) {
-	if real && isFallPose(pose) {
+func (e *RepeatFallEscalator) Step(nowMs int64, pose int, real bool, areaType int) (earlyFire, recovered bool) {
+	if real && isFallPose(pose) && areaType != areaLying {
 		if e.episodeStart == 0 { // episode 起：把残余衰减到现在、记前科
 			if e.lastEndMs > 0 && nowMs > e.lastEndMs {
 				e.r *= math.Exp(-float64(nowMs-e.lastEndMs) / 1000.0 / repeatFallTauS)
