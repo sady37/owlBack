@@ -1921,41 +1921,6 @@ func (tm *TrackManager) ResetStillBox(logicID string) {
 	// 已被 lost-reap 驱逐 → firmware 再发即 NewTrackState，本就从 0
 }
 
-// DiagFireSameLid（临时诊断，待删）：fire 时 dump 同 lid 有几条 track 对象及各自 still-box 起点。
-func (tm *TrackManager) DiagFireSameLid(lid string, nowMs int64) {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	var objs []string
-	for _, ts := range tm.tracks {
-		if ts.LogicID == lid {
-			objs = append(objs, fmt.Sprintf("tid=%d start=%d present=%v pose=%d z=%d", ts.TrackID, ts.StillBoxRunStart, nowMs-ts.LastObservedMs < presenceCoastMs, ts.LastPose, ts.LastZ))
-		}
-	}
-	tm.logger.Info("diag_fire_samelid", zap.String("lid", lid), zap.Int("count", len(objs)), zap.Strings("objs", objs), zap.Int64("now_ms", nowMs))
-}
-
-// DiagDupLids（临时诊断，待删）：扫 tm.tracks 里任意共用 lid 的多对象（throttle ~10s）。
-func (tm *TrackManager) DiagDupLids(nowMs int64) {
-	if (nowMs/1000)%10 != 0 {
-		return
-	}
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	byLid := map[string][]*TrackState{}
-	for _, ts := range tm.tracks {
-		byLid[ts.LogicID] = append(byLid[ts.LogicID], ts)
-	}
-	for lid, list := range byLid {
-		if len(list) > 1 {
-			var objs []string
-			for _, ts := range list {
-				objs = append(objs, fmt.Sprintf("tid=%d start=%d present=%v", ts.TrackID, ts.StillBoxRunStart, nowMs-ts.LastObservedMs < presenceCoastMs))
-			}
-			tm.logger.Info("diag_dup_lid", zap.String("lid", lid), zap.Int("count", len(list)), zap.Strings("objs", objs), zap.Int64("now_ms", nowMs))
-		}
-	}
-}
-
 // EvictTrack 立即删除一条 track（belief 状态驱动 drop 回传：确认离场/空）。停止 12s coast 期对已离场 track 的
 // re-feed——否则 belief 已 drop 其 logicID 但 SnapshotTrackStatuses 仍每帧把它当 base 发出 → census 无对应
 // logicID → 每帧重发新号 = churn。只删 tracks/outputs；lostExitInfo/recentRadarEvents 保留按 age 自然淘汰

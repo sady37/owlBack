@@ -801,10 +801,8 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 		}
 		fired, dropped := e.OnRoomFrame(roomID, bases, bed, nowMs, exitLogOdds, ghostLeftLogOdds, hardExited)
 		if tm != nil {
-			tm.DiagDupLids(nowMs) // 临时诊断，待删
 			for _, lid := range fired {
-				tm.DiagFireSameLid(lid, nowMs) // 临时诊断，待删
-				tm.ResetStillBox(lid)          // fall fire → still-box 从 0 热机（belief 已在 DBN 侧就地复位）
+				tm.ResetStillBox(lid) // fall fire → still-box 从 0 热机（belief 已在 DBN 侧就地复位）
 			}
 			for _, lid := range dropped {
 				tm.EvictTrack(lid) // 确认离场/空 → 立即删 track，停 12s coast 期 re-feed（防 census churn）
