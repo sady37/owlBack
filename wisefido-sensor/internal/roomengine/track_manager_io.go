@@ -239,10 +239,17 @@ func lastCellAreaName(a int) string {
 	return AreaType(a).Name()
 }
 
-// isLyingZoneVetoPose 落 AreaLying 区应否决转发的固件报警姿态：疑似/确认跌倒 (2,5)、疑似/确认坐地 (7,8)。
+// isLyingZoneVetoPose 落躺卧面应否决转发的固件报警姿态：疑似/确认跌倒 (2,5)、疑似/确认坐地 (7,8)。
 func isLyingZoneVetoPose(pose int) bool {
 	return pose == observation.PoseSuspectedFall || pose == observation.PoseFallen ||
 		pose == observation.PoseSuspectedSitGround || pose == observation.PoseSitGround
+}
+
+// isLyingVetoZone pose 型误报应按区否决的躺卧面：非床躺区(沙发)+ 真床(接触床/监护床)。
+// 人躺床/沙发被固件误报 fall/坐地，report/repeat 腿在此拦下；floor 久躺兜底(band="floor")不在列，真摔久躺安全网保留。
+// 床边(邻 floor cell)不落这些区，不受影响。
+func isLyingVetoZone(area int) bool {
+	return area == int(AreaLying) || area == int(AreaBed) || area == int(AreaMonitorBed)
 }
 
 // PublishDBNFall DBN fire 发布腿（S0.c-4，A·R12.3）：fired logicID → 构 payload → emitAIAlarm(alarm.Fall)。
@@ -337,13 +344,14 @@ func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 			zap.Int("x", cx), zap.Int("y", cy), zap.Int("z", ts.LastZ), zap.Int("pose", ts.LastPose),
 			zap.Int("room_np", tm.roomNpLocked()), zap.String("pin", pinName),
 			zap.Float64("exit_logodds", exitLO))
-		// B 方案扩展（dbn_mode≥2）：pose 驱动的固件 fall/坐地 fire 落人标 AreaLying 区（沙发/躺椅）→ 否决转发。
-		//   躺椅上小动作被固件误报 fall/坐地（band=repeat/report）在此拦下；floor 90min 久躺兜底（band="floor"）
-		//   不在列 → 真摔久躺安全网保留。lying 是 layout 确定事实，直接 gate 全局 dbnMode，不挂冷启 cap。
-		if dbnMode == 2 && band != "floor" && isLyingZoneVetoPose(ts.LastPose) && ts.LastCellArea == int(AreaLying) {
+		// B 方案扩展（dbn_mode≥2）：pose 驱动的固件 fall/坐地 fire 落躺卧面（沙发/躺椅/真床）→ 否决转发。
+		//   躺床/躺椅上小动作被固件误报 fall/坐地（band=repeat/report）在此拦下；floor 90min 久躺兜底（band="floor"）
+		//   不在列 → 真摔久躺安全网保留。躺卧面是 layout 确定事实，直接 gate 全局 dbnMode，不挂冷启 cap。
+		if dbnMode == 2 && band != "floor" && isLyingZoneVetoPose(ts.LastPose) && isLyingVetoZone(ts.LastCellArea) {
 			vetoLying = true
 			tm.logger.Info("dbn_fall_vetoed_lying_zone",
 				zap.String("logic_id", lid), zap.String("band", band), zap.Int("pose", ts.LastPose),
+				zap.String("cell_area", lastCellAreaName(ts.LastCellArea)),
 				zap.Int("x", cx), zap.Int("y", cy), zap.Int64("ts_ms", nowMs))
 		}
 	}

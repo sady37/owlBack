@@ -939,10 +939,10 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 	tm.forwardFirmwareFall(a) // S0.c 焊回：固件 Fall 即时转 iot:alarm:stream（ground floor，DBN observation 之外）
 }
 
-// vetoFirmwareFallLying B 方案「否决固件」轴（dbn_mode=2）：固件即时 fall/坐地的 track 落 AreaLying 区 →
-// 否决转发（沙发即时摔不报）。floor 90min 自发腿走 PublishDBNFall（Band="floor"），不经此腿、不受影响 →
-// 久躺兜底仍在。lying 是 layout 确定事实（非 DBN 学习判定）→ 直接 gate 全局 dbnMode，不挂冷启 cap。
-// 判据与 DBN 自发腿（PublishDBNFall）统一：dbnMode==2 + isLyingZoneVetoPose + ts.LastCellArea==AreaLying
+// vetoFirmwareFallLying B 方案「否决固件」轴（dbn_mode=2）：固件即时 fall/坐地的 track 落躺卧面 →
+// 否决转发（沙发/躺床即时摔不报）。floor 90min 自发腿走 PublishDBNFall（Band="floor"），不经此腿、不受影响 →
+// 久躺兜底仍在。躺卧面是 layout 确定事实（非 DBN 学习判定）→ 直接 gate 全局 dbnMode，不挂冷启 cap。
+// 判据与 DBN 自发腿（PublishDBNFall）统一：dbnMode==2 + isLyingZoneVetoPose + isLyingVetoZone(ts.LastCellArea)
 //（读解耦后的落格真值，非 Kalman 重查/Belief[0]）。track 不在管 → 不否决（照转发，FN-safe）。调用方不持 tm.mu。
 func (tm *TrackManager) vetoFirmwareFallLying(a RadarFallAlarm) bool {
 	if dbnMode != 2 || !isLyingZoneVetoPose(a.Pose) {
@@ -950,12 +950,13 @@ func (tm *TrackManager) vetoFirmwareFallLying(a RadarFallAlarm) bool {
 	}
 	tm.mu.Lock()
 	ts, ok := tm.tracks[trackKey{a.DeviceUID, a.TrackID}]
-	inLying := ok && ts.LastCellArea == int(AreaLying)
+	inLying := ok && isLyingVetoZone(ts.LastCellArea)
 	tm.mu.Unlock()
 	if inLying && tm.logger != nil {
 		tm.logger.Info("firmware_fall_vetoed_lying_zone",
 			zap.String("device_uid", a.DeviceUID), zap.Int("track_id", a.TrackID),
-			zap.Int("pose", a.Pose), zap.Int64("ts_ms", a.TMs))
+			zap.Int("pose", a.Pose), zap.String("cell_area", lastCellAreaName(ts.LastCellArea)),
+			zap.Int64("ts_ms", a.TMs))
 	}
 	return inLying
 }
@@ -2363,7 +2364,7 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			}
 			if tm.logger != nil {
 				tfloor := belief.TFloorFor(int(ts.StillBoxCellArea), tm.roomType, IsNightTime(nowMs, tm.timezone), ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit)
-				tm.logger.Debug("still_box_start",
+				tm.logger.Info("still_box_start",
 					zap.Int("track_id", f.TrackID), zap.String("logic_id", ts.LogicID),
 					zap.Int64("start_ms", ts.StillBoxRunStart),
 					zap.Int("canvas_x", ts.StillBoxStartX), zap.Int("canvas_y", ts.StillBoxStartY), zap.Int("canvas_z", ts.StillBoxStartZ),
