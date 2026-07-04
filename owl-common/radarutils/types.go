@@ -63,15 +63,16 @@ type Boundary struct {
 // 单源镜像 FE types.ts BOUNDARY_TRUNCATION_MARGIN；改一处必改另一处。
 const BoundaryTruncationMargin = 50
 
-// ModeBaseBoundary 各安装模式最大探测边界（cm），镜像 FE RADAR_DEFAULT_CONFIG[mode].boundary
-// （**不是** RADAR_BOUNDARY_LIMITS_BY_MODE：corn=500 非 550/600）。作下发截断框 base：
-// base+BoundaryTruncationMargin → 截断框，对象与之相交即下发（跨界顶点 clamp 进框），完全在框外才丢。
+// ModeBaseBoundary 各安装模式最大探测边界（cm）= 镜像 FE RADAR_BOUNDARY_LIMITS_BY_MODE[mode]（各模式上限，
+// maxLeft/maxRight/maxFront/maxRear）。作下发截断框 base：base+BoundaryTruncationMargin → 截断框，对象与之相交即下发
+// （跨界顶点 clamp 进框），完全在框外才丢。取上限而非默认：box 恒 ≥ 任何合法配置（corn 550+50=600 覆盖 config 600）。
+// 🔴 FE↔BE 单源：RADAR_BOUNDARY_LIMITS_BY_MODE 可调，改 FE 上限必同步改此处。
 func ModeBaseBoundary(m InstallModel) Boundary {
 	switch m {
 	case InstallWall:
 		return Boundary{LeftH: 300, RightH: 300, FrontV: 400, RearV: 0}
 	case InstallCorn:
-		return Boundary{LeftH: 500, RightH: 500, FrontV: 0, RearV: 0}
+		return Boundary{LeftH: 550, RightH: 550, FrontV: 0, RearV: 0}
 	default: // ceiling
 		return Boundary{LeftH: 300, RightH: 300, FrontV: 200, RearV: 200}
 	}
