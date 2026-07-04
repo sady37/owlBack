@@ -230,51 +230,6 @@ func objectVertices(o cvObject) []cvPoint {
 	}
 }
 
-// radarBoundaryVertices 雷达边界在画布系的顶点（已含旋转）。移植 radarUtils.ts:134。
-func radarBoundaryVertices(r radarFrame) []cvPoint {
-	b := r.boundary
-	switch r.installModel {
-	case "corn":
-		L := b.LeftH
-		R := b.RightH
-		a := r.angle * math.Pi / 180
-		cosA, sinA := math.Cos(a), math.Sin(a)
-		s := math.Sqrt2
-		diamond := [][2]float64{
-			{R / s, R / s},
-			{0, 0},
-			{(R - L) / s, (R + L) / s},
-			{-L / s, L / s},
-		}
-		out := make([]cvPoint, 4)
-		for i, d := range diamond {
-			dx, dy := d[0], d[1]
-			out[i] = cvPoint{X: r.center.X + dx*cosA + dy*sinA, Y: r.center.Y - dx*sinA + dy*cosA}
-		}
-		return out
-	case "wall":
-		rv := []radarPt{
-			{H: -b.RightH, V: 0}, {H: b.LeftH, V: 0},
-			{H: -b.RightH, V: b.FrontV}, {H: b.LeftH, V: b.FrontV},
-		}
-		return mapToCanvas(rv, r)
-	default: // ceiling
-		rv := []radarPt{
-			{H: -b.RightH, V: -b.RearV}, {H: b.LeftH, V: -b.RearV},
-			{H: -b.RightH, V: b.FrontV}, {H: b.LeftH, V: b.FrontV},
-		}
-		return mapToCanvas(rv, r)
-	}
-}
-
-func mapToCanvas(rv []radarPt, r radarFrame) []cvPoint {
-	out := make([]cvPoint, len(rv))
-	for i, p := range rv {
-		out[i] = toCanvasCoordinate(p, r)
-	}
-	return out
-}
-
 // isPointInPolygon 射线法。移植 radarUtils.ts:302。
 func isPointInPolygon(p cvPoint, verts []cvPoint) bool {
 	if len(verts) < 3 {
@@ -293,38 +248,58 @@ func isPointInPolygon(p cvPoint, verts []cvPoint) bool {
 	return inside
 }
 
-// objectInBoundaryWithTolerance 家具全顶点落在雷达边界 AABB±tol 内。移植 radarUtils.ts:547（tol=30）。
-func objectInBoundaryWithTolerance(o cvObject, r radarFrame, tol float64) bool {
+// clampBox 下发截断框（雷达系 h/v 范围，cm）。裁剪沿雷达自身轴 → 雷达旋转精确。
+type clampBox struct{ hMin, hMax, vMin, vMax float64 }
+
+// downlinkClampBox 下发截断框（雷达系轴对齐矩形）= 安装模式最大边界 base(radarutils.ModeBaseBoundary) 四边各 + BoundaryTruncationMargin。
+// base 与雷达配置边界无关（硬件最大探测域）。三模式在雷达系均为纯数值框（含 corn：菱形经 toRadarCoordinate(-45) 还原为
+// h∈[-R,0]、v∈[0,L] 矩形，雷达在角 h=0，R=rightH 宽沿 -h、L=leftH 深沿 +v）。单源镜像 FE getDownlinkClampBox。
+func downlinkClampBox(r radarFrame) clampBox {
+	base := radarutils.ModeBaseBoundary(r.radarMount().InstallModel)
+	rightH, leftH, frontV, rearV := float64(base.RightH), float64(base.LeftH), float64(base.FrontV), float64(base.RearV)
+	m := float64(radarutils.BoundaryTruncationMargin)
+	switch r.installModel {
+	case "corn":
+		return clampBox{hMin: -(rightH + m), hMax: m, vMin: -m, vMax: leftH + m}
+	case "wall": // rearV=0（贴墙）
+		return clampBox{hMin: -(rightH + m), hMax: leftH + m, vMin: -m, vMax: frontV + m}
+	default: // ceiling
+		return clampBox{hMin: -(rightH + m), hMax: leftH + m, vMin: -(rearV + m), vMax: frontV + m}
+	}
+}
+
+// objectIntersectsBox 对象（转雷达系后 AABB）与截断框相交 → 下发（跨界顶点 clamp 进框）；完全在框外 → 可见丢弃（不静默）。
+// 判定在雷达系（对象自转 + 雷达旋转已由 toRadarCoordinate 净入）。取代旧"全顶点落配置边界±30 内才发"（B267 门口 Enter 误丢）。单源镜像 FE objectIntersectsDownlinkBox。
+func objectIntersectsBox(o cvObject, r radarFrame, box clampBox) bool {
 	ov := objectVertices(o)
 	if len(ov) == 0 {
 		return false
 	}
-	bv := radarBoundaryVertices(r)
-	minX, maxX := bv[0].X, bv[0].X
-	minY, maxY := bv[0].Y, bv[0].Y
-	for _, v := range bv {
-		minX = math.Min(minX, v.X)
-		maxX = math.Max(maxX, v.X)
-		minY = math.Min(minY, v.Y)
-		maxY = math.Max(maxY, v.Y)
-	}
-	minX, maxX, minY, maxY = minX-tol, maxX+tol, minY-tol, maxY+tol
+	hMin, hMax := math.Inf(1), math.Inf(-1)
+	vMin, vMax := math.Inf(1), math.Inf(-1)
 	for _, v := range ov {
-		if v.X < minX || v.X > maxX || v.Y < minY || v.Y > maxY {
-			return false
-		}
+		p := toRadarCoordinate(v.X, v.Y, r)
+		hMin = math.Min(hMin, p.H)
+		hMax = math.Max(hMax, p.H)
+		vMin = math.Min(vMin, p.V)
+		vMax = math.Max(vMax, p.V)
 	}
-	return true
+	return hMin <= box.hMax && hMax >= box.hMin && vMin <= box.vMax && vMax >= box.vMin
 }
 
 func roundToTen(n float64) float64 { return math.Round(n/10) * 10 }
 
 // objectVerticesInRadar 家具顶点→雷达系→整十→按 v 升序(同 v 按 h 升序)。移植 radarUtils.ts:591。
-func objectVerticesInRadar(o cvObject, r radarFrame) []radarPt {
+// box 非空时先转雷达系、再按 h/v 轴 clamp 进截断框（沿雷达真实边界裁，三模式精确；与 FE 展示一致）。
+func objectVerticesInRadar(o cvObject, r radarFrame, box *clampBox) []radarPt {
 	cv := objectVertices(o)
 	out := make([]radarPt, len(cv))
 	for i, v := range cv {
 		p := toRadarCoordinate(v.X, v.Y, r)
+		if box != nil {
+			p.H = math.Min(box.hMax, math.Max(box.hMin, p.H))
+			p.V = math.Min(box.vMax, math.Max(box.vMin, p.V))
+		}
 		out[i] = radarPt{H: roundToTen(p.H), V: roundToTen(p.V), Z: roundToTen(v.Z)}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -391,6 +366,7 @@ func computeDeclareSet(canvas []byte) (map[string][]declareArea, map[string]stri
 	var drops []declareDrop
 	for _, r := range radars {
 		uidAddr[r.deviceUID] = r.deviceAddr
+		box := downlinkClampBox(r)
 		type candidate struct {
 			o     cvObject
 			code  int
@@ -405,10 +381,20 @@ func computeDeclareSet(canvas []byte) (map[string][]declareArea, map[string]stri
 			if o.Source == "Learned" {
 				continue
 			}
-			if !objectInBoundaryWithTolerance(o, r, 30) {
+			if !objectIntersectsBox(o, r, box) {
+				// 有区域几何但完全在截断框外 → 可见丢弃（进 skip/verify，不静默）；无顶点几何(墙线/点/measure)本就不下发，静默跳过。
+				if len(objectVertices(o)) == 0 {
+					continue
+				}
+				rvRaw := objectVerticesInRadar(o, r, nil) // 记未截断真实位置，供 verify 显示
+				var vr [4]radarPt
+				for k := 0; k < 4 && k < len(rvRaw); k++ {
+					vr[k] = rvRaw[k]
+				}
+				skips = append(skips, declareSkip{ObjectID: o.ID, ObjectName: o.Name, AreaType: observation.AreaTypeFrom(o.AreaType), Reason: "out-of-boundary", DeviceUID: r.deviceUID, Vertices: vr})
 				continue
 			}
-			rv := objectVerticesInRadar(o, r)
+			rv := objectVerticesInRadar(o, r, &box)
 			var verts [4]radarPt
 			for k := 0; k < 4 && k < len(rv); k++ {
 				verts[k] = rv[k]

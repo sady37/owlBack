@@ -59,6 +59,24 @@ type Boundary struct {
 	RearV  int // 雷达后方探测距离（-V 方向）；Wall 模式恒为 0
 }
 
+// BoundaryTruncationMargin 下发截断框冗余量（cm）：以 ModeBaseBoundary 为 base，四边各外扩此值 → 下发截断框。
+// 单源镜像 FE types.ts BOUNDARY_TRUNCATION_MARGIN；改一处必改另一处。
+const BoundaryTruncationMargin = 50
+
+// ModeBaseBoundary 各安装模式最大探测边界（cm），镜像 FE RADAR_DEFAULT_CONFIG[mode].boundary
+// （**不是** RADAR_BOUNDARY_LIMITS_BY_MODE：corn=500 非 550/600）。作下发截断框 base：
+// base+BoundaryTruncationMargin → 截断框，对象与之相交即下发（跨界顶点 clamp 进框），完全在框外才丢。
+func ModeBaseBoundary(m InstallModel) Boundary {
+	switch m {
+	case InstallWall:
+		return Boundary{LeftH: 300, RightH: 300, FrontV: 400, RearV: 0}
+	case InstallCorn:
+		return Boundary{LeftH: 500, RightH: 500, FrontV: 0, RearV: 0}
+	default: // ceiling
+		return Boundary{LeftH: 300, RightH: 300, FrontV: 200, RearV: 200}
+	}
+}
+
 // RadarMount 雷达安装配置：位置 + 旋转 + 安装方式 + 物理/安装 FOV + 用户边界。
 // 足以把雷达本地坐标转换到画布（房间）坐标，并计算信号可达域、盲区、Z 上下限。
 //
