@@ -2059,9 +2059,9 @@ func (tm *TrackManager) ResetStillBox(logicID string) {
 		ts.History = ts.History[:0]
 		// lost = fall 域，不 emit Sit episode；只清姿态累加器（与 box break 区别开）。
 		ts.sitFwMaxMs, ts.sitFwContigStartMs, ts.sitZBest = 0, 0, 0
-		return
+		// 不 return：同 lid 可能挂多条轨（census 最小距离碰撞，phantom 与真人共号）→ 全清。
+		// 否则 map 随机序命中错对象，开火轨 still-box 未清 → 同 incident 重复 fire。
 	}
-	// 已被 lost-reap 驱逐 → firmware 再发即 NewTrackState，本就从 0
 }
 
 // EvictTrack 立即删除一条 track（belief 状态驱动 drop 回传：确认离场/空）。停止 12s coast 期对已离场 track 的
