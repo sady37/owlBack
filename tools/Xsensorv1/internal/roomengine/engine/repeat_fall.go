@@ -37,6 +37,15 @@ const (
 	throuFallSec   = 60.0  // pose 2/5 族单次 confirm 秒（=firmware 保守端，用户 2026-06-18 拍）
 	throuSitSec    = 90.0  // pose 7/8 族
 	repeatFallTauS = 866.0 // 残余漏衰减时间常数 τ 秒（半衰期 ~10min = 急性聚集窗）
+
+	// minEpisodeCredit 成熟度闸：本次 episode 自身须攒到的最小 credit，才允许提前 fire。
+	// 治「太容易 fire」根因——priorR 被日常坐姿(pose 7)污染爬高后，当前这次摔只需极小 credit 甚至 0 就过阈。
+	//   ① churn 重生轨继承 escalator 的 priorR，出生首帧 credit=0 秒发（还塌 (0,0) 坐标）→ 挡；
+	//   ② pose 抖动/躺卧面进出的短 episode（credit≈0.01）骑前科秒发 → 挡；
+	//   ③ priorR 再高，当前这次摔也须实打实持续 minEpisodeCredit×throu 秒（fall 15s / sit 22s）。
+	// priorR≤(1-此值) 时 `priorR+credit≥1` 本就逼 credit≥此值 → 仅在 priorR 高的污染危险区 binding。
+	// FN 安全：真摔「又摔」必久躺（文献 ≫2min ≫ throu），远超此门；日常坐姿抖动够不着。
+	minEpisodeCredit = 0.25
 )
 
 func isFallPose(pose int) bool {
@@ -89,8 +98,9 @@ func (e *RepeatFallEscalator) Step(nowMs int64, pose int, real bool, areaType in
 		if credit > 1 {
 			credit = 1
 		}
-		// 第一次（priorR=0）永不触发（交 firmware）；有前科且累计过阈 → 提前 fire。
-		return e.priorR > 0 && e.priorR+credit >= 1, false
+		// 第一次（priorR=0）永不触发（交 firmware）；有前科 + 本次 episode 够成熟(credit≥minEpisodeCredit)
+		// + 累计过阈 → 提前 fire。成熟度闸挡 churn 出生首帧/pose 抖动骑前科秒发（见 minEpisodeCredit）。
+		return e.priorR > 0 && credit >= minEpisodeCredit && e.priorR+credit >= 1, false
 	}
 	if e.episodeStart != 0 { // episode 结束：烘 credit 进 R 攒给下次 + 记录线
 		credit := float64(e.episodeLast-e.episodeStart) / 1000.0 / e.throu
