@@ -47,7 +47,7 @@ var handoffLConst = math.Log(0.9 / 0.1)
 
 // SiblingHandoff 一个兄弟房的出现信号（track 守恒：丢的 track 在此重现，有向）。
 type SiblingHandoff struct {
-	ArrivalDeltaMs int64 // Δ = t_recapture(兄弟房 +1 track) − t_lost(本房 last-observed)；>0 = 先走后到（有向）
+	ArrivalDeltaMs int64 // Δ = t_recapture(兄弟房 +1 track) − t_lost(本房 loss 锚:冻结→LostFirst still-box 起点 / 未冻结→last-observed)；>0 = 先走后到（有向）
 	Slow           bool  // 慢窗：兄弟房现身=sleepad InBed（走+躺）→ 用 W_sleepad；false=radar 穿堂用 W_radar
 }
 

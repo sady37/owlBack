@@ -33,7 +33,7 @@ type Unit struct {
 	np            belief.NeighborParams
 	residentCount int                // 多住户 hard-gate（==1 才注入 hand-off；承重，§7.7 v2）
 	gains         []gainEvent        // 近期跨房新现真人（窗内 pruned）
-	lostAt        map[string]int64   // 每房最近丢真人的 **last-observed 时戳**（非 coast LostReal 帧；centering）
+	lostAt        map[string]int64   // 每房最近丢真人的 loss 锚（冻结→LostFirst still-box 起点，未冻结→last-observed；非 coast LostReal 帧；centering）
 	lastHandoffL  map[string]float64 // 末次喂各房的 hand-off 注入对数似然（forensic / 测试可观测）
 	roomPresent   map[string]bool    // roomID → 末 tick 是否在场（PresentCount>0；UnitState forensic）
 	roomTickMs    map[string]int64   // roomID → 末 tick 时戳（新鲜度）
@@ -76,7 +76,7 @@ func (u *Unit) Tick(roomID string, fi adapter.FrameInput) Frame {
 		delete(u.lostAt, roomID) // 本房又现真人 = 丢的人回来了/新人到 → 清本房待解析
 	}
 	if fr.LostReal {
-		u.lostAt[roomID] = fr.LostAtMs // **last-observed 时戳**（非 coast LostReal 帧）：Δ centering，gain−lostAt 回正区间
+		u.lostAt[roomID] = fr.LostAtMs // loss 锚(冻结→LostFirst / 未冻结→last-observed)：Δ centering，gain−lostAt 回正区间
 	}
 
 	// floor（stillbox 计时器，engine.go per-track，StillSec≥tFloor→保底发 SFallen）= 唯一时长兜底。
@@ -118,7 +118,7 @@ func (u *Unit) UnitState(nowMs int64) (unitHasTrack, hasNeighbor bool) {
 
 // handoffLFor 房 roomID 的 hand-off SLeft 注入对数似然：若它有待解析丢失，找**兄弟房**窗内新现真人 → 矩形核。
 //
-//	同房新现不算 hand-off（人没穿房）；Δ=gain−last_observed（centering，先离后现）；窗外/多住户由 HandoffLogOdds 归零。
+//	同房新现不算 hand-off（人没穿房）；Δ=gain−loss 锚(冻结→LostFirst / 未冻结→last-observed，centering，先离后现)；窗外/多住户由 HandoffLogOdds 归零。
 func (u *Unit) handoffLFor(roomID string, nowMs int64) float64 {
 	lostMs, ok := u.lostAt[roomID]
 	if !ok {
@@ -130,7 +130,7 @@ func (u *Unit) handoffLFor(roomID string, nowMs int64) float64 {
 			continue // 兄弟房才算（守恒=丢的人去了别的房）
 		}
 		sibs = append(sibs, belief.SiblingHandoff{
-			ArrivalDeltaMs: g.tMs - lostMs, // >0 = 先离后现（lostMs=last-observed centering）
+			ArrivalDeltaMs: g.tMs - lostMs, // >0 = 先离后现（lostMs=loss 锚:冻结→LostFirst / 未冻结→last-observed）
 			Slow:           g.slow,         // sleepad InBed 现身 → 慢窗（走+躺，用 W_sleepad）
 		})
 	}

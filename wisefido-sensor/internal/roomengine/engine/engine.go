@@ -42,7 +42,7 @@ type Frame struct {
 	Decision belief.Decision
 	// 步4 跨设备 hand-off 信号（Unit 编排器消费，§A 守恒+时间窗）：
 	LostReal          bool    // 本帧一条真人 track 消失（上帧在场真人、本帧不在）= hand-off 源候选
-	LostAtMs          int64   // 消失轨的 **last-observed 时戳**（非本帧 coast 判定时刻）→ Unit Δ centering（gain−LostAtMs）
+	LostAtMs          int64   // 消失轨的 loss 锚：已冻结→LostFirst(still-box 起点)，未冻结→last-observed（非本帧 coast 判定时刻）→ Unit Δ centering（gain−LostAtMs）
 	LostExited        bool    // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）= Unit D/UD timer cancel（人走了无人会摔）
 	GainedReal        float64 // 本帧新现真人 track 的去 ghost 后验（0=无）= hand-off 宿候选（守恒重现）
 	GainedFromSleepad bool    // 该 gain 来自 sleepad-only 房合成 track（走+躺慢接力）→ rho 用 sleepad 慢核
@@ -109,6 +109,7 @@ type Room struct {
 	realStreak    map[string]int   // 每 logicID 连续在场真人帧数（步4 hand-off：confirmed=streak≥K，抗噪声 churn）
 	prevConfirmed map[string]bool  // 上 tick 已确认真人(streak≥K)的 logicID 集（算 lost）
 	lastSeenMs    map[string]int64 // 每 logicID 末次 fresh-present 时戳（census Present=本 tick 匹配）→ lost 的 last-observed centering
+	lostAnchorMs  map[string]int64 // 每 logicID 末次快照的 StillBoxRunStart（>0=已冻结的 LostFirst 冻结首帧）→ lost 锚前提到此，避免冻结 coast 把 last-observed 拖后致 hand-off Δ 误判反向
 	fallLatched   map[string]bool  // 每 logicID 已证摔 latch（SFallen 到过 0.85 或见 pose=fall）→ hand-off 注入永免疫（§7.7 v2 ③）
 	// F1 独居连续计时（跨 tick，与 realStreak 同层）：真人占用==1 连续起点 ms（0=当前非独居）。
 	//   占用判据 = PReal≥0.5 ∧ S∉{Empty,Left}（含 blind 续存的 faller，filter 后的 MarginalS），
@@ -138,6 +139,7 @@ func NewRoom(geom []belief.BedGeom, nb int) *Room {
 		realStreak:    map[string]int{},
 		prevConfirmed: map[string]bool{},
 		lastSeenMs:    map[string]int64{},
+		lostAnchorMs:  map[string]int64{},
 		fallLatched:   map[string]bool{},
 	}
 }
@@ -340,7 +342,8 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 			curReal[ts.LogicID] = ts.PReal
 		}
 		if ts.Present {
-			r.lastSeenMs[ts.LogicID] = fi.NowMs // fresh-present（census 本 tick 匹配）→ lost 的 last-observed centering 参考
+			r.lastSeenMs[ts.LogicID] = fi.NowMs                                                 // fresh-present（census 本 tick 匹配）→ lost 的 last-observed centering 参考
+			r.lostAnchorMs[ts.LogicID] = stillOnsetMs(fi.NowMs, ts.Obs.RadarTrack.StillSec) // 冻结轨=LostFirst 冻结首帧(still-box 起点)；未冻结=0 → lost 回退 last-observed
 			if ts.Obs.RadarTrack.Pose == poseFall {
 				r.fallLatched[ts.LogicID] = true // 见 pose=fall → 永久免疫 hand-off 注入（§7.7 v2 ③ latch-first）
 			}
@@ -538,8 +541,12 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 	for id := range r.prevConfirmed {
 		if _, ok := curReal[id]; !ok {
 			lost = true
-			if r.lastSeenMs[id] > lostAtMs {
-				lostAtMs = r.lastSeenMs[id] // 取最近离开者 last-observed（先离后现的 loss 参考，Δ centering）
+			anchor := r.lastSeenMs[id]
+			if lf := r.lostAnchorMs[id]; lf > 0 && lf < anchor {
+				anchor = lf // 冻结轨：锚 LostFirst(still-box 起点)而非被冻结 coast 拖后的 last-observed → hand-off Δ 回正区间(先离后现)
+			}
+			if anchor > lostAtMs {
+				lostAtMs = anchor // 取最近离开者锚（先离后现的 loss 参考，Δ centering）
 			}
 		}
 	}
@@ -643,6 +650,14 @@ func (r *Room) aloneMinAsOf(nowMs int64) float64 {
 	return float64(nowMs-r.aloneStreakStartMs) / 60000.0
 }
 
+// stillOnsetMs 冻结首帧(LostFirst)时戳 = still-box run 起点 = now − 连续静止时长。ss≤0（未冻结）→ 0（lost 锚回退 last-observed）。
+func stillOnsetMs(nowMs int64, stillSec float64) int64 {
+	if stillSec <= 0 {
+		return 0
+	}
+	return nowMs - int64(stillSec*1000)
+}
+
 // dropTrack 移除一条 track 的全部 per-logicID 状态（filter/decider/floor + census）。状态驱动，非 TTL。
 func (r *Room) dropTrack(id string) {
 	delete(r.filters, id)
@@ -650,6 +665,7 @@ func (r *Room) dropTrack(id string) {
 	delete(r.floorGuards, id)
 	delete(r.escalators, id)
 	delete(r.lastSeenMs, id)
+	delete(r.lostAnchorMs, id)
 	delete(r.fallLatched, id)
 	r.census.Drop(id)
 }
