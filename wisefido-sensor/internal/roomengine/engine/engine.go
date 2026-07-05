@@ -61,6 +61,24 @@ type Frame struct {
 	//   新 logicID = churn）。与 FiredLogicIDs 互斥（fire⇒SFallen 高⇒不进 drop）。闪失重捕的 coast 不受影响
 	//   （无离场证据 belief 不 drop）。身份用 LogicID（多雷达同房 firmware track_id 撞号已根治）。
 	DroppedLogicIDs []string
+	// ExitFirsts 本帧发 ExitRoom(HardExited)的离开候选：ExitFirstMs=通往该次 ExitRoom 的连续 Enter 区驻留起点
+	//   （Unit 守恒配对用，优先认领 neighbor arrival，consume 后 lost 才吃剩下的）。
+	ExitFirsts []ExitDeparture
+	// LostDepartures 本帧确认真人消失的离开候选(LostFirst 锚 + logicID)：Unit 守恒配对宿主，matched → purge。
+	LostDepartures []LostDeparture
+}
+
+// ExitDeparture 一条门口离开候选（ExitRoom 结账）。
+type ExitDeparture struct {
+	LogicID     string
+	ExitFirstMs int64 // 连续 Enter 区驻留首帧（0=退时不在 Enter 区，回退 ExitRoomMs）
+	ExitRoomMs  int64 // ExitRoom(HardExited)确认时刻
+}
+
+// LostDeparture 一条冻结/丢轨离开候选（本帧确认真人消失）。
+type LostDeparture struct {
+	LogicID     string
+	LostFirstMs int64 // 冻结首帧(still-box 起点)否则 last-observed
 }
 
 // TrackForensic 单 track 的 DBN 内部量（forensic 暴露，X 光全切片用，不参与裁决）。
@@ -110,6 +128,7 @@ type Room struct {
 	prevConfirmed map[string]bool  // 上 tick 已确认真人(streak≥K)的 logicID 集（算 lost）
 	lastSeenMs    map[string]int64 // 每 logicID 末次 fresh-present 时戳（census Present=本 tick 匹配）→ lost 的 last-observed centering
 	lostAnchorMs  map[string]int64 // 每 logicID 末次快照的 StillBoxRunStart（>0=已冻结的 LostFirst 冻结首帧）→ lost 锚前提到此，避免冻结 coast 把 last-observed 拖后致 hand-off Δ 误判反向
+	enterSinceMs  map[string]int64 // 每 logicID 当前连续处于 Enter 区(fi.Entrances 点测)的首帧 ms（离开 Enter 区清 0）→ ExitRoom 结账时=ExitFirst 锚
 	fallLatched   map[string]bool  // 每 logicID 已证摔 latch（SFallen 到过 0.85 或见 pose=fall）→ hand-off 注入永免疫（§7.7 v2 ③）
 	// F1 独居连续计时（跨 tick，与 realStreak 同层）：真人占用==1 连续起点 ms（0=当前非独居）。
 	//   占用判据 = PReal≥0.5 ∧ S∉{Empty,Left}（含 blind 续存的 faller，filter 后的 MarginalS），
@@ -140,6 +159,7 @@ func NewRoom(geom []belief.BedGeom, nb int) *Room {
 		prevConfirmed: map[string]bool{},
 		lastSeenMs:    map[string]int64{},
 		lostAnchorMs:  map[string]int64{},
+		enterSinceMs:  map[string]int64{},
 		fallLatched:   map[string]bool{},
 	}
 }
@@ -331,19 +351,27 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 		}
 	}
 
-	curReal := map[string]float64{} // 本 tick 在场真人(PReal≥0.5) logicID→PReal（算 lost/gained）
-	var dropIDs []string            // 本帧状态驱动 drop 的 LogicID（dropTrack + 回传 tm evict，停 re-feed churn）
-	var firedLogicIDs []string      // 本帧 fall fire 的 LogicID（就地复位 belief + 回传 tm 复位 still-box）
+	curReal := map[string]float64{}   // 本 tick 在场真人(PReal≥0.5) logicID→PReal（算 lost/gained）
+	var dropIDs []string              // 本帧状态驱动 drop 的 LogicID（dropTrack + 回传 tm evict，停 re-feed churn）
+	var exitFirsts []ExitDeparture    // 本帧发 ExitRoom 的门口离开候选（ExitFirst 结账 → Unit 守恒配对）
+	var firedLogicIDs []string        // 本帧 fall fire 的 LogicID（就地复位 belief + 回传 tm 复位 still-box）
 	firedBands := map[string]string{} // LogicID→band（floor/report/...）：回传 PublishDBNFall 选坐标
-	realOccupancy := 0              // F1 本 tick 真人占用数（PReal≥0.5 ∧ S∉{E,L}）→ 末更 alone-streak
-	lostExited := false             // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）→ Unit timer cancel
+	realOccupancy := 0                // F1 本 tick 真人占用数（PReal≥0.5 ∧ S∉{E,L}）→ 末更 alone-streak
+	lostExited := false               // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）→ Unit timer cancel
 	for _, ts := range tracks {
 		if ts.Present && ts.PReal >= 0.5 {
 			curReal[ts.LogicID] = ts.PReal
 		}
 		if ts.Present {
-			r.lastSeenMs[ts.LogicID] = fi.NowMs                                                 // fresh-present（census 本 tick 匹配）→ lost 的 last-observed centering 参考
+			r.lastSeenMs[ts.LogicID] = fi.NowMs                                             // fresh-present（census 本 tick 匹配）→ lost 的 last-observed centering 参考
 			r.lostAnchorMs[ts.LogicID] = stillOnsetMs(fi.NowMs, ts.Obs.RadarTrack.StillSec) // 冻结轨=LostFirst 冻结首帧(still-box 起点)；未冻结=0 → lost 回退 last-observed
+			if inAnyRect(ts.Obs.X, ts.Obs.Y, fi.Entrances) {
+				if r.enterSinceMs[ts.LogicID] == 0 {
+					r.enterSinceMs[ts.LogicID] = fi.NowMs // 进 Enter 区首帧 → 连续驻留起点(ExitRoom 结账=ExitFirst)
+				}
+			} else {
+				r.enterSinceMs[ts.LogicID] = 0 // 离开 Enter 区 → 断连续
+			}
 			if ts.Obs.RadarTrack.Pose == poseFall {
 				r.fallLatched[ts.LogicID] = true // 见 pose=fall → 永久免疫 hand-off 注入（§7.7 v2 ③ latch-first）
 			}
@@ -499,6 +527,11 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 			// 逐帧离房事件(byte-14 event==2)硬 drop：门事件权威，绕过 SLeft 累积（治 ExitRoom 8.0 不灌进 SLeft
 			//   的 pre-existing 慢 drop）。真摔固件自己 fire fall，故不读姿态/present。
 			dropIDs = append(dropIDs, ts.LogicID)
+			ef := r.enterSinceMs[ts.LogicID] // ExitFirst=连续 Enter 区驻留起点；退时不在 Enter 区(0)→回退 ExitRoom 时刻
+			if ef == 0 {
+				ef = fi.NowMs
+			}
+			exitFirsts = append(exitFirsts, ExitDeparture{LogicID: ts.LogicID, ExitFirstMs: ef, ExitRoomMs: fi.NowMs})
 		}
 	}
 	for _, id := range dropIDs {
@@ -538,6 +571,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 	}
 	lost := false // 上 tick 已确认真人、本 tick 不在场真人 = 确认离场（hand-off 源）
 	var lostAtMs int64
+	var lostDeps []LostDeparture
 	for id := range r.prevConfirmed {
 		if _, ok := curReal[id]; !ok {
 			lost = true
@@ -545,6 +579,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 			if lf := r.lostAnchorMs[id]; lf > 0 && lf < anchor {
 				anchor = lf // 冻结轨：锚 LostFirst(still-box 起点)而非被冻结 coast 拖后的 last-observed → hand-off Δ 回正区间(先离后现)
 			}
+			lostDeps = append(lostDeps, LostDeparture{LogicID: id, LostFirstMs: anchor})
 			if anchor > lostAtMs {
 				lostAtMs = anchor // 取最近离开者锚（先离后现的 loss 参考，Δ centering）
 			}
@@ -566,6 +601,8 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 	fr.LostAtMs = lostAtMs
 	fr.LostExited = lostExited
 	fr.PresentCount, fr.Tracks = presentCount, forensic
+	fr.ExitFirsts = exitFirsts
+	fr.LostDepartures = lostDeps
 	fr.FuseSync = r.census.FuseForensic() // forensic：双雷达运动同步对状态
 	// 可救援数（forensic，不门控 fire）：每 track 的 S 峰值是否 SBed（共用 belief.ArgmaxIsBed），
 	//   躺床者不计 → census 折叠（A 范围 RescuableCount，同人对两端都不在床才减）。doc/cfn-rescuable-design.md。
@@ -666,6 +703,17 @@ func (r *Room) dropTrack(id string) {
 	delete(r.escalators, id)
 	delete(r.lastSeenMs, id)
 	delete(r.lostAnchorMs, id)
+	delete(r.enterSinceMs, id)
 	delete(r.fallLatched, id)
 	r.census.Drop(id)
+}
+
+// inAnyRect 点 (x,y) 是否落在任一矩形内（Enter 区点测；rect 顶点无序，取 min/max）。
+func inAnyRect(x, y int, rects []adapter.Rect) bool {
+	for _, r := range rects {
+		if x >= min(r.X1, r.X2) && x <= max(r.X1, r.X2) && y >= min(r.Y1, r.Y2) && y <= max(r.Y1, r.Y2) {
+			return true
+		}
+	}
+	return false
 }

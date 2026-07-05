@@ -337,6 +337,8 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		zap.Int("sibling_gains", u.SiblingGainCount()),        // unit 内当前窗口跨房 gain 数（0=无人在别房现身）
 		zap.Bool("unit_has_track", unitHasTrack), zap.Bool("has_neighbor", hasNeighbor),
 		zap.Bool("lost_exited", fr.LostExited),
+		zap.Any("exit_firsts", fr.ExitFirsts), // 本帧 ExitRoom 结账的门口离开候选(ExitFirstMs=连续 Enter 驻留起点)→ 守恒配对
+		zap.String("match_dbg", u.MatchDbg(roomID)), // 末次空房守恒配对摘要(quota/deps/purged)
 		zap.String("bed_reading", bedReadingName(reading)), zap.Bool("bed_present", g.sleepadPresent),
 		zap.Bool("vital_present", vitalPresent), // 房级 sleepad 接触 vital(HR/RR fresh)→ covers=1 设备抬 SBed
 		zap.Bool("risktime", isRiskTime),        // 夜间风险时段(缩短 floor tFloor;不进 C_FN)
