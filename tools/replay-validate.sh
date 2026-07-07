@@ -56,4 +56,7 @@ if room:
             print(f"    ts {d['ts']} | pres {d['present_cnt']} raw {d['raw_tracks']} | pF {round(d['p_fallen'],3)} top_s {d['top_s']} band {d['band']!r} fire {d['fire']} | ud {d.get('ud_active')} rem_min {round(d.get('ud_remain_ms',0)/60000,1)} nbr {d.get('has_neighbor')} unit_trk {d.get('unit_has_track')} | dbn {dbn}")
             prev = key
 PY
+# 标准交付物：Xsensor.log 归位到 case 目录（规则 #5，与 track_event_timeline.md 并列，可回溯排查）。
+cp "$LOG" "$FIXTURE/xsensor.log"
+echo "  ✓ log 备份 → $FIXTURE/xsensor.log ($(wc -c < "$FIXTURE/xsensor.log") bytes)"
 echo "▶ 完成"

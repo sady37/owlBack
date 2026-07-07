@@ -1105,8 +1105,16 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		if ts.SuspectInterferenceSinceMs > 0 || ts.FloorArtifactSinceMs > 0 || ts.InterferBornSinceMs > 0 || ts.SplitGhostSinceMs > 0 {
 			base.StillBoxSec = 0
 		}
-		if c := tm.grid.CellAt(px, py); c != nil {
-			base.CellAreaType = tm.grid.QueryAreaType(px, py) // effective 区型（声明区优先 else learned）喂 tFloor 阈 + sit/lying/active redirect；声明的床/椅/躺区拿到正确 floor 豁免
+		// area 读取坐标：present=当前 Kalman 位；lost=History 末点 raw。
+		//   lost 用末点：末点冻结逐帧同值（等价只算一次）；Kalman 冻结位可能偏离末真观测点 → floor 误判区型/漏床豁免。
+		ax, ay := px, py
+		if !base.Present {
+			if n := len(ts.History); n > 0 {
+				ax, ay = ts.History[n-1].X, ts.History[n-1].Y
+			}
+		}
+		if c := tm.grid.CellAt(ax, ay); c != nil {
+			base.CellAreaType = tm.grid.QueryAreaType(ax, ay) // effective 区型（声明区优先 else learned）喂 tFloor 阈 + sit/lying/active redirect；声明的床/椅/躺区拿到正确 floor 豁免
 			if c.Belief[0].Type == AreaEnter {
 				base.EnterTarget = c.EnterTarget
 			}
