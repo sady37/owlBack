@@ -42,8 +42,7 @@ type censusTrack struct {
 	rt             *belief.RealnessTrack
 	birthX, birthY int
 	birthMs        int64    // 出生时戳（§9.1 LaterBorn：成对取后到者破同步对称）
-	doorD          float64  // §9.3① 出生地→最近门距离 cm（出生时算一次；<0=无 enter 区）
-	rMax           float64  // 离 born 最远净距 cm（sticky max，纯显示分档：ghostDisplayPReal→PReal）
+	doorD          float64  // §9.3① 出生地→最近门距离 cm（出生时算一次；<0=无 enter 区）；未证轨显示分档源
 	isRefl         bool     // 桶二：本 track 末帧反射几何判定（forensic 观测）
 	fSep           float64  // forensic：末帧 reflectSep（墙外反射裕度 cm，0=墙内/非反射）
 	fWallMargin    float64  // forensic：末帧 WallMargin（sep/WallScale，喂 mEv 墙外项）
@@ -142,18 +141,15 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, entrances []Rect) {
 	}
 	// 反证法（ghost_disproof_birth_certificate_spec）：realness 塌成 latch 驱动。判决 ⊥ 显示：
 	//   判决轴 = o.ForceReal（roomengine RealProven，裸 latch）→ ForceReal / 无证 → ForceGhost，**gate fire/N_r**。
-	//   显示轴 = 无证轨按离 born 最远净距 R 分档喂 SetDisplay（纯 FE confidence，gate 任何决策皆无）。
+	//   显示轴 = 证真轨 80% / 未证轨按出生门第 door_d 分档 10~50（纯 FE confidence，gate 任何决策皆无）。
 	// 删旧 mirror 几何轴（reflectSep/WallMargin/sync/rcRealBase/rcWAuto）+ §G六 独处 force-real（那让空房 phantom 误火）。
 	for i, o := range obs {
 		t := c.tracks[ids[i]]
-		if r := math.Hypot(float64(o.X-t.birthX), float64(o.Y-t.birthY)); r > t.rMax {
-			t.rMax = r // 离 born 最远净距（sticky，仅供显示分档）
-		}
 		if o.ForceReal {
-			t.rt.ForceReal() // 有出生证 → real（判决 latch + 显示满格）
+			t.rt.ForceReal() // 有出生证 → real（判决 latch + 显示 80%）
 		} else {
 			t.rt.ForceGhost()                          // 无证 → ghost 判决（压过漂移 + 独处 force-real）
-			t.rt.SetDisplay(ghostDisplayPReal(t.rMax)) // 显示按 R 分档（gate 无）
+			t.rt.SetDisplay(ghostDisplayPReal(t.doorD)) // 显示按门第 door_d 分档（gate 无）
 		}
 		t.isRefl, t.fSep, t.fWallMargin, t.fRho, t.fLater = false, 0, 0, 0, false // 几何轴退役，forensic 恒零
 		if !t.birthLogged {
@@ -399,17 +395,19 @@ func birthDoorDist(x, y int, entrances []Rect) float64 {
 	return best
 }
 
-// ghostDisplayPReal 无证轨显示 confidence（spec 判决 ⊥ 显示：纯 FE ×100，gate 任何决策皆无）。
-// 按离 born 最远净距 R 分档：≤50 GLUED=0 / 50-100 ramp 线性→0.5 / 100-200 HOLD=0.5 / ≥200 WALKOUT=1（同刻 RealProven→true）。
-func ghostDisplayPReal(R float64) float64 {
-	switch {
-	case R <= 50:
-		return 0
-	case R < 100:
-		return (R - 50) / 50 * 0.5
-	case R < 200:
-		return 0.5
-	default:
-		return 1
+// doorDisplayScaleCm 未证轨门第显示分档尺度 cm：door_d 从 0 到此线性把显示 confidence 从 0.50 压到 0.10。
+const doorDisplayScaleCm = 120.0
+
+// ghostDisplayPReal 未证轨显示 confidence（spec 判决 ⊥ 显示：纯 FE ×100，gate 任何决策皆无）。
+// 按出生门第 door_d 分档：近门(door_d→0)=0.50 / 远门(door_d≥scale)=0.10 / 无门(door_d<0 sentinel)=0.10（测不到门第=不显示）。
+// 证真轨走 ForceReal=0.80（FE 显示阈之上）；远门 phantom door_d 大自然沉到 0.10 隐藏，门口新轨可见等它挣证。
+func ghostDisplayPReal(doorD float64) float64 {
+	if doorD < 0 {
+		return 0.10 // 无 enter 区 → 测不到门第 → 不显示
 	}
+	near := (doorDisplayScaleCm - doorD) / doorDisplayScaleCm
+	if near < 0 {
+		near = 0 // 远门（door_d≥scale）
+	}
+	return 0.10 + 0.40*near // door_d=0→0.50, door_d≥scale→0.10
 }
