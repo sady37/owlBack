@@ -678,6 +678,27 @@ func (e *Engine) OnDeviceUnfit(deviceAddr string) {
 	)
 }
 
+// OnDeviceOffline 实现 DeviceFitnessTracker OfflineCallback —— device offline 时清该 radar 下所有
+// in-memory track（掐断 coast，见 TrackManager.PurgeDeviceTracks）。只在 Offline reason 触发；
+// SignalPoor/AngleException 等不清轨。deviceRoom 反查同 OnDeviceUnfit。
+func (e *Engine) OnDeviceOffline(deviceAddr string) {
+	if e == nil || deviceAddr == "" {
+		return
+	}
+	e.mu.RLock()
+	roomID := e.deviceRoom[deviceAddr]
+	tm := e.rooms[roomID]
+	e.mu.RUnlock()
+	if tm == nil {
+		return
+	}
+	tm.PurgeDeviceTracks(deviceAddr)
+	e.logger.Info("engine purged device tracks on offline",
+		zap.String("device_addr", deviceAddr),
+		zap.String("room_id", roomID),
+	)
+}
+
 func (e *Engine) SetSuiteCensus(m *SuiteCensusManager) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

@@ -182,6 +182,7 @@ func main() {
 	fitnessTracker.RegisterUnfitCallback(engine.OnDeviceUnfit) // roomengine: clear bedSessions/sleepadStates
 	fitnessTracker.RegisterUnfitCallback(zone.TargetAggregator.ForgetDevice)
 	fitnessTracker.RegisterUnfitCallback(sleepStageConsumer.OnDeviceUnfit)
+	fitnessTracker.RegisterOfflineCallback(engine.OnDeviceOffline) // roomengine: 仅 device-offline 清该 radar 所有 track（掐 coast floor-FP）
 	logger.Info("v2 fall detection wired — all 3 layers armed",
 		zap.String("warning_floor", "zonealarm.Supervisor Stay rule (alone-anchored: day 45min / night 30min)"),
 		zap.String("critical_bathroom", "BathroomFallRules §6.A 4 rules"),

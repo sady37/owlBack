@@ -50,10 +50,11 @@ type UnfitCallback func(deviceAddr string)
 //
 // state map: deviceAddr (canonical IPv6 string) → fitnessFlags。0 = fit；非 0 = 至少 1 类 unfit。
 type DeviceFitnessTracker struct {
-	mu        sync.RWMutex
-	flags     map[string]uint8
-	callbacks []UnfitCallback
-	logger    *zap.Logger
+	mu               sync.RWMutex
+	flags            map[string]uint8
+	callbacks        []UnfitCallback
+	offlineCallbacks []UnfitCallback
+	logger           *zap.Logger
 }
 
 func NewDeviceFitnessTracker(logger *zap.Logger) *DeviceFitnessTracker {
@@ -77,6 +78,18 @@ func (t *DeviceFitnessTracker) RegisterUnfitCallback(fn UnfitCallback) {
 	t.mu.Unlock()
 }
 
+// RegisterOfflineCallback 注册 device-offline 专用回调：仅 Offline reason 新置位时触发（顺序无关，
+// 即便设备先因 SignalPoor 已 unfit、后转 Offline 也照触发）。与 fit→unfit 首边沿的 UnfitCallback 分离，
+// 因清 radar track 只该在整机离线时做，不该被 SignalPoor/AngleException 等抖动触发。callback 须 idempotent。
+func (t *DeviceFitnessTracker) RegisterOfflineCallback(fn UnfitCallback) {
+	if t == nil || fn == nil {
+		return
+	}
+	t.mu.Lock()
+	t.offlineCallbacks = append(t.offlineCallbacks, fn)
+	t.mu.Unlock()
+}
+
 // MarkUnfit 标 device 为 unfit（OR 入 reason flag）+ 在 fit→unfit 边沿广播 clear callback。
 //
 // 边沿检测：prev==0 → non-zero 时为首次 unfit，broadcast 给所有 callbacks 清 device-related
@@ -91,12 +104,21 @@ func (t *DeviceFitnessTracker) MarkUnfit(deviceAddr string, reason uint8) {
 	t.mu.Lock()
 	prev := t.flags[deviceAddr]
 	t.flags[deviceAddr] = prev | reason
-	var firstEdge []UnfitCallback
+	newlySet := reason &^ prev
+	var firstEdge, offlineEdge []UnfitCallback
 	if prev == 0 {
 		firstEdge = make([]UnfitCallback, len(t.callbacks))
 		copy(firstEdge, t.callbacks)
 	}
+	if newlySet&FitnessReasonOffline != 0 {
+		offlineEdge = make([]UnfitCallback, len(t.offlineCallbacks))
+		copy(offlineEdge, t.offlineCallbacks)
+	}
 	t.mu.Unlock()
+
+	for _, fn := range offlineEdge {
+		fn(deviceAddr)
+	}
 
 	if prev == 0 {
 		t.logger.Info("device fitness: marked unfit (first edge → broadcast clear)",

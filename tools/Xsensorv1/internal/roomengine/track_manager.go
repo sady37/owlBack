@@ -304,20 +304,10 @@ func (tm *TrackManager) SetRadarMount(m radarutils.RadarMount) {
 	tm.radarMount = m
 }
 
-// ClearDevice 清空 device 在本 tm 内的所有 in-memory state（"device offline = 内存重启"原则）。
-//
-// 清：
-//   - bedSessions[deviceAddr] — sleepad InBed/LeftBed session（G2 误抑制根因：offline 后
-//     stale BedSession 永久挡 BedroomLostFall；清掉后 fall-through 让 lost-fall 正常评估）
-//   - sleepadStates[deviceAddr] — sleepad 最新观测（fall verifier sleepadInBed() 读它，
-//     stale 让 fall 评分错偏）
-//
-// 不清：
-//   - tracks[trackID] — 按 trackID 索引非 deviceAddr，且 firmware 复用 trackID 常见，
-//     自然 evict 走 MaxMissCount timeout 更安全；offline 后 radar 不再喂新帧，stale tracks
-//     最多 coast 后自动 evict
-//
-// 已 fire 入 DB 的 alarm 不丢（DB 单写者）；只清没 fire 的 pending / cache。
+// ClearDevice 清 device 的 sleepad session in-memory state（fit→unfit 首边沿，任一 reason）。
+//   - bedSessions[deviceAddr]：offline 后 stale BedSession 永久挡 BedroomLostFall
+//   - sleepadStates[deviceAddr]：stale 让 fall verifier sleepadInBed() 评分错偏
+// radar track 的清走 PurgeDeviceTracks（仅 device-offline，见其注释）。已 fire 入 DB 的 alarm 不丢。
 func (tm *TrackManager) ClearDevice(deviceAddr string) {
 	if tm == nil || deviceAddr == "" {
 		return
@@ -326,6 +316,38 @@ func (tm *TrackManager) ClearDevice(deviceAddr string) {
 	defer tm.mu.Unlock()
 	delete(tm.bedSessions, deviceAddr)
 	delete(tm.sleepadStates, deviceAddr)
+}
+
+// PurgeDeviceTracks 删除该 radar device 下所有 in-memory track 及其附属状态（仅 device-offline 触发）。
+//
+// device-offline = 引擎彻底失去观测：残留 track 只会被 coast 冻结续算，StillBoxRunStart 经 History[0]
+// 回锚到出生帧、StillBoxSec 无界增长 → floor 计时器断线后补出假静止误报（本类 floor-FP 根因）。清轨
+// 从源头掐断 coast。单轨 lost（device 仍 fit）不经此路 → 推断类 lost-fall 兜底不受影响；SignalPoor/
+// AngleException 等非 offline（信号短暂 gate、可恢复）也不清。
+//
+// 清：tracks/outputs（按 deviceAddr 匹配）+ 离场证据(lostExitInfo/recentRadarEvents) + per-device
+// latch(lastRealTrackByDevice/devRoom)。不清 chairDwell 等已学习数据（跨 offline 保留）。
+func (tm *TrackManager) PurgeDeviceTracks(deviceAddr string) {
+	if tm == nil || deviceAddr == "" {
+		return
+	}
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	for k, ts := range tm.tracks {
+		if ts.DeviceAddr != deviceAddr {
+			continue
+		}
+		delete(tm.tracks, k)
+		delete(tm.outputs, k)
+		delete(tm.lostExitInfo, ts.LogicID)
+	}
+	for k, e := range tm.recentRadarEvents {
+		if e.DeviceUID == deviceAddr {
+			delete(tm.recentRadarEvents, k)
+		}
+	}
+	delete(tm.lastRealTrackByDevice, deviceAddr)
+	delete(tm.devRoom, deviceAddr)
 }
 
 // SetLogger 注入 zap logger（engine.Run 启动时调用）。
