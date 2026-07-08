@@ -1737,6 +1737,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 					// tid 交换=同一逻辑身份延续 → ghost 历史 + real-provenance latch 跟随 lid（churn 延续，
 					// 否则每次重生清零 → cd2b 睡者被全判 ghost / MaxGhostSustained 让 ghost 逃判据）。
 					ts.RealProven = parent.RealProven // 继承 provenance latch（Option B：解闩靠 confine 非 churn）
+					ts.EmitConf = parent.EmitConf     // 继承单向显示值（Q_B：churn 非 split，显示不回落到 ghost）
 					ts.MaxGhost = parent.MaxGhost
 					ts.MaxGhostSustained = parent.MaxGhostSustained
 					ts.ghostSustainRun = parent.ghostSustainRun

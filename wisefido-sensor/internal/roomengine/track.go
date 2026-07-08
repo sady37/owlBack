@@ -115,7 +115,14 @@ type TrackState struct {
 
 	// DBNConfidence：DBN per-track 置信度（realness PReal 0-100，S0.c-4 第三腿 A·R13/R15.3-2，
 	// 经 SetTrackConfidence 每帧写回）。<0 = DBN 未设 → payloadFromTrack TrackConfidence 取 0。
+	// 仍是门控/occupancy/forensic(MaxGhost) 的每帧真值，可随几何升降。
 	DBNConfidence int
+	// EmitConf：发到 FE 的显示置信度（单向 max-hold）。反证法下 realness 判决单向（RealProven 只增），
+	// 显示亦应单向：一旦 proven 就棘轮不回落（除非 split=新身份，自然随新 LogicID 重置）。churn 继承 parent。
+	// 与 DBNConfidence 解耦——后者供门控随区漂移升降，本值只管"是否真"的稳定显示。<0=未设→取 0。
+	EmitConf int
+	// lastEmitReal：上次发布时 EmitConf 是否在 real 档(≥80)。用于 real↔ghost 跃迁时绕过 20s 节流即发。
+	lastEmitReal bool
 
 	// ---- real-by-provenance latch（Phase 1.5，doc/area_selfcheck_and_ghost_raw_spec.md）----
 	// RealProven：出生/present 帧任一时刻 provenance 满足（门第=EnterRoom 或 AreaEff==AreaEnter；
@@ -180,6 +187,7 @@ func NewTrackState(trackID int, deviceAddr, roomID string, x, y, z int, tMs int6
 		History:        []TimedPoint{birth},
 		FrameCount:     1,
 		DBNConfidence:  -1, // <0 = DBN 未设，payloadFromTrack TrackConfidence 取 0
+		EmitConf:       -1, // <0 = 未设 → payloadFromTrack 取 0；proven 后棘轮 max-hold
 		LastZ:          z,
 		LastUpdateMs:   tMs,
 		LastObservedMs: tMs,

@@ -504,20 +504,25 @@ func (tm *TrackManager) SetTrackPReal(logicID string, pReal, pMirror float64, ro
 			}
 			ts.PReal = pReal
 			// lost_fall delete 判据信号（§10.3-b，先埋）：
+			// MaxRoomNp（共存源证据）无条件记——proven 轨也要，否则错转正的镜像被 §10.3-b 漏抓。
 			if roomNp > ts.MaxRoomNp { // ① born→now 房 np 峰值（≥2=曾有共存伙伴）
 				ts.MaxRoomNp = roomNp
 			}
-			g := pMirror // ② 生涯 ghost 峰值（forensic）
-			if g > ts.MaxGhost {
-				ts.MaxGhost = g
-			}
-			if g >= 0.8 { // sustained ≥3 tick（真镜像帧帧成立；巧合并排走撑不住）
-				ts.ghostSustainRun++
-				if ts.ghostSustainRun >= 3 {
-					ts.MaxGhostSustained = true
+			// 反证法：ghost forensic 只对未证轨累积（挣到出生证=真人，停止反证）。proven 轨 pMirror=0.2
+			// 本就不触 sustained，此处显式跳过=去惰性重算；§10.3-b 依赖的 MaxGhostSustained latch 在未证阶段已攒下、保留。
+			if !ts.RealProven {
+				g := pMirror // ② 生涯 ghost 峰值（forensic）
+				if g > ts.MaxGhost {
+					ts.MaxGhost = g
 				}
-			} else {
-				ts.ghostSustainRun = 0
+				if g >= 0.8 { // sustained ≥3 tick（真镜像帧帧成立；巧合并排走撑不住）
+					ts.ghostSustainRun++
+					if ts.ghostSustainRun >= 3 {
+						ts.MaxGhostSustained = true
+					}
+				} else {
+					ts.ghostSustainRun = 0
+				}
 			}
 			return true
 		}

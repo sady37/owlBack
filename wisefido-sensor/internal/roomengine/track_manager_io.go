@@ -124,8 +124,27 @@ func (tm *TrackManager) RoomLedgerEmpty() bool {
 	return tm.roomLedgerEmpty()
 }
 
+// realDisplayFloor：proven 轨发到 FE 的最低显示 conf（=FE CONFIDENCE_HIGH_MIN，≥此=全显）。
+const realDisplayFloor = 80
+
+// applyEmitConf 由 DBNConfidence 派生单向显示值 EmitConf（Q_B：PReal 单向除 split）：
+// proven 轨棘轮 max-hold 且不低于 real 档 floor（区漂移 100↔80 不回落、churn 已继承 parent.EmitConf）；
+// 未证 ghost 轨如实反映当前（可淡出/掉档）。仅影响 FE 透明度，不碰门控/occupancy/forensic 的 DBNConfidence。
+func (ts *TrackState) applyEmitConf() {
+	if ts.RealProven {
+		if ts.DBNConfidence > ts.EmitConf {
+			ts.EmitConf = ts.DBNConfidence
+		}
+		if ts.EmitConf < realDisplayFloor {
+			ts.EmitConf = realDisplayFloor
+		}
+		return
+	}
+	ts.EmitConf = ts.DBNConfidence
+}
+
 func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
-	conf := ts.DBNConfidence // S0.c-4 第三腿：DBN realness 后验（0-100）；<0=DBN 未设 → 0
+	conf := ts.EmitConf // 单向显示值（Q_B）；<0=未设 → 0。门控/occupancy 仍用 DBNConfidence
 	if conf < 0 {
 		conf = 0
 	}
@@ -392,24 +411,31 @@ func (tm *TrackManager) SetTrackConfidence(lid string, conf, roomNp int) {
 		if roomNp > ts.MaxRoomNp {
 			ts.MaxRoomNp = roomNp
 		}
+		ts.applyEmitConf()
 		return
 	}
 	ts.DBNConfidence = conf
+	ts.applyEmitConf()
 	// lost_fall delete 判据信号（§10.3-b）：p_mirror=1-PReal（realness 2 态互补，conf=PReal*100）。
+	// MaxRoomNp（共存源证据）无条件记——proven 轨也要，否则错转正的镜像被 §10.3-b 漏抓。
 	if roomNp > ts.MaxRoomNp { // ① born→now 房 np 峰值（≥2=曾有共存伙伴）
 		ts.MaxRoomNp = roomNp
 	}
-	g := 1.0 - float64(conf)/100.0 // ② 生涯 ghost 峰值（forensic）
-	if g > ts.MaxGhost {
-		ts.MaxGhost = g
-	}
-	if g >= 0.8 { // sustained ≥3 tick（真镜像帧帧成立；巧合并排走撑不住）
-		ts.ghostSustainRun++
-		if ts.ghostSustainRun >= 3 {
-			ts.MaxGhostSustained = true
+	// 反证法：ghost forensic 只对未证轨累积（挣到出生证=真人，停止反证）。proven 轨 conf=80→g=0.2
+	// 本就不触 sustained，此处显式跳过=去惰性重算；§10.3-b 依赖的 MaxGhostSustained latch 在未证阶段已攒下、保留。
+	if !ts.RealProven {
+		g := 1.0 - float64(conf)/100.0 // ② 生涯 ghost 峰值（forensic）
+		if g > ts.MaxGhost {
+			ts.MaxGhost = g
 		}
-	} else {
-		ts.ghostSustainRun = 0
+		if g >= 0.8 { // sustained ≥3 tick（真镜像帧帧成立；巧合并排走撑不住）
+			ts.ghostSustainRun++
+			if ts.ghostSustainRun >= 3 {
+				ts.MaxGhostSustained = true
+			}
+		} else {
+			ts.ghostSustainRun = 0
+		}
 	}
 }
 
@@ -431,11 +457,15 @@ func (tm *TrackManager) EmitTrackConfidence(lid string, nowMs int64) {
 		return
 	}
 	key := trackKey{ts.DeviceAddr, ts.TrackID}
-	if nowMs-tm.confEmitMs[key] < confEmitThrottleMs {
+	// real↔ghost 档跃迁（EmitConf 跨 realDisplayFloor）立即发，绕 20s 节流：治 walkout/证真后
+	// 要等一个节流周期 FE 才转全显的滞后；同档内仍节流不 flood。
+	realBand := ts.EmitConf >= realDisplayFloor
+	if realBand == ts.lastEmitReal && nowMs-tm.confEmitMs[key] < confEmitThrottleMs {
 		tm.mu.Unlock()
 		return
 	}
 	tm.confEmitMs[key] = nowMs
+	ts.lastEmitReal = realBand
 	p := tm.payloadFromTrack(ts)
 	tm.mu.Unlock()
 	p.Reason = "dbn_confidence"
