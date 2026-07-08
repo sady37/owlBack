@@ -223,8 +223,6 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		Beds:        g.beds,
 		BedAreaIDs:  g.bedAreaIDs,
 		RadarLess:   g.radarLess,
-		Walls:       g.walls,
-		RadarPos:    g.radarPos,
 		Entrances:   g.entrances,
 		ExitLogOdds:      exitLogOdds,
 		GhostLeftLogOdds: ghostLeftLogOdds,
@@ -256,7 +254,12 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			}
 		}
 		for _, t := range fr.Tracks {
-			d.eng.SetTrackPReal(roomID, t.LogicID, t.PReal, t.PMirror, roomNp) // ghost 单源回灌 + lost_fall delete 信号
+			// 判决 ⊥ 显示：tm 决策门读二值判决（RealProven→1/0），不喂连续显示 PReal（否则 HOLD ghost 0.5 会漏进 ≥0.5 门）。
+			realF, mirrorF := 0.0, 1.0
+			if t.RealProven {
+				realF, mirrorF = 1.0, 0.0
+			}
+			d.eng.SetTrackPReal(roomID, t.LogicID, realF, mirrorF, roomNp) // ghost 单源回灌 + lost_fall delete 信号
 		}
 		realPeople = d.eng.RealPeopleInRoom(roomID)
 		// de-absorption no-silent-caps（§9.4）：主 radar 离床+垫仍 InBed 时 LOG，标明 V5/V6 stale/fresh 仲裁

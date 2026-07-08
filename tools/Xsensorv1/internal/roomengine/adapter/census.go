@@ -12,8 +12,8 @@ import (
 //   身份 = 最小作功距离 logicID（§G六）：新 track 发新号 / 平时跟随 / 相遇按最近距离保号。
 //   realness = belief.RealnessTrack 2 态前向滤波(Real/Mirror，转移矩阵+软发射，device-room-zone.md §9)；
 //     本层只译软证据喂之：出生地距门 D(§9.3①)、自主位移、co-existence ρ(速度同步度)、墙外反射裕度(桶二几何)、配对存在。
-//   ghost 仅 track==2 由 Coexist 耦合涌现(孤轨 Coexist=0 → mirror 发射中性 → 永 Real)，非本层硬判。
-//   reflectSep(桶二 §69)：radar→ghost 连线穿 wall 取距 ghost 最近交点；≥ReflSepCm 才算反射(确定性几何阈)。
+//   反证法(ghost_disproof_birth_certificate_spec)：realness 塌成 latch，判决 ⊥ 显示——
+//     判决轴 RealProven(bool，出生证 latch，N_r/floor 门读)；显示轴 PReal(连续，按离 born 净距 R 分档，纯 FE)。
 
 // TrackCensusParams 形态参数（form-anchor，标定留 oracle [[fall_data_is_artificial_test]]）。
 type TrackCensusParams struct {
@@ -43,6 +43,7 @@ type censusTrack struct {
 	birthX, birthY int
 	birthMs        int64    // 出生时戳（§9.1 LaterBorn：成对取后到者破同步对称）
 	doorD          float64  // §9.3① 出生地→最近门距离 cm（出生时算一次；<0=无 enter 区）
+	rMax           float64  // 离 born 最远净距 cm（sticky max，纯显示分档：ghostDisplayPReal→PReal）
 	isRefl         bool     // 桶二：本 track 末帧反射几何判定（forensic 观测）
 	fSep           float64  // forensic：末帧 reflectSep（墙外反射裕度 cm，0=墙内/非反射）
 	fWallMargin    float64  // forensic：末帧 WallMargin（sep/WallScale，喂 mEv 墙外项）
@@ -120,7 +121,7 @@ func DevKey(logicID string) string {
 
 // Update 一帧推进：① 最小作功距离关联 raw→logicID；② 同设备 2 track 算 co-existence ρ；
 // ③ 各 track 译软证据喂 RealnessTrack 前向滤波（§9）。速度按 cm/s（位移/dt，帧间隔非恒 1s）。
-func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, entrances []Rect) {
+func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, entrances []Rect) {
 	c.tick++
 	// 身份直接引用 tm 出生 LogicID（§G六 关联在 tm nearestAliveTrack 已做,census 不重造）；
 	//   首次见的 LogicID 初始化 censusTrack（出生窗 realness 锚:doorD/birthXY/birthMs）。
@@ -129,7 +130,7 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 		ids[i] = o.LogicID
 		if _, ok := c.tracks[ids[i]]; !ok {
 			dd := birthDoorDist(o.X, o.Y, entrances)
-			c.tracks[ids[i]] = &censusTrack{rt: belief.NewRealnessTrack(dd), birthX: o.X, birthY: o.Y, birthMs: nowMs, doorD: dd, x: o.X, y: o.Y, lastMs: nowMs}
+			c.tracks[ids[i]] = &censusTrack{rt: belief.NewRealnessTrack(), birthX: o.X, birthY: o.Y, birthMs: nowMs, doorD: dd, x: o.X, y: o.Y, lastMs: nowMs}
 		}
 	}
 
@@ -139,15 +140,20 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 		t := c.tracks[ids[i]]
 		disp[i] = math.Hypot(float64(o.X-t.x), float64(o.Y-t.y))
 	}
-	// 反证法（ghost_disproof_birth_certificate_spec）：realness 塌成 latch 驱动。唯一真化通道 = 出生证 latch
-	// （o.ForceReal = roomengine RealProven，裸 latch 不 confine）。有证 → ForceReal / 无证 → ForceGhost。
+	// 反证法（ghost_disproof_birth_certificate_spec）：realness 塌成 latch 驱动。判决 ⊥ 显示：
+	//   判决轴 = o.ForceReal（roomengine RealProven，裸 latch）→ ForceReal / 无证 → ForceGhost，**gate fire/N_r**。
+	//   显示轴 = 无证轨按离 born 最远净距 R 分档喂 SetDisplay（纯 FE confidence，gate 任何决策皆无）。
 	// 删旧 mirror 几何轴（reflectSep/WallMargin/sync/rcRealBase/rcWAuto）+ §G六 独处 force-real（那让空房 phantom 误火）。
 	for i, o := range obs {
 		t := c.tracks[ids[i]]
+		if r := math.Hypot(float64(o.X-t.birthX), float64(o.Y-t.birthY)); r > t.rMax {
+			t.rMax = r // 离 born 最远净距（sticky，仅供显示分档）
+		}
 		if o.ForceReal {
-			t.rt.ForceReal() // 有出生证 → real
+			t.rt.ForceReal() // 有出生证 → real（判决 latch + 显示满格）
 		} else {
-			t.rt.ForceGhost() // 无证 → ghost（压过漂移 + 独处 force-real）
+			t.rt.ForceGhost()                          // 无证 → ghost 判决（压过漂移 + 独处 force-real）
+			t.rt.SetDisplay(ghostDisplayPReal(t.rMax)) // 显示按 R 分档（gate 无）
 		}
 		t.isRefl, t.fSep, t.fWallMargin, t.fRho, t.fLater = false, 0, 0, 0, false // 几何轴退役，forensic 恒零
 		if !t.birthLogged {
@@ -183,7 +189,7 @@ func (c *TrackCensus) noteMultiPerson() {
 	dev := map[string]int{}
 	multi := false
 	for id, t := range c.tracks {
-		if t.lastTick == c.tick && t.lastObs.Online && t.rt.PReal() >= 0.5 {
+		if t.lastTick == c.tick && t.lastObs.Online && t.rt.RealProven() {
 			dev[DevKey(id)]++
 			if dev[DevKey(id)] >= 2 {
 				multi = true
@@ -229,7 +235,7 @@ func (c *TrackCensus) FuseForensic() []FuseStatus {
 func (c *TrackCensus) fuseCandidate() (a, b string, ok bool) {
 	var ids []string
 	for id, t := range c.tracks {
-		if t.lastTick == c.tick && t.lastObs.Online && t.rt.PReal() >= 0.5 {
+		if t.lastTick == c.tick && t.lastObs.Online && t.rt.RealProven() {
 			ids = append(ids, id)
 			if len(ids) > 2 {
 				return "", "", false // >2 真人 → 确有多人，退出
@@ -289,7 +295,7 @@ func (c *TrackCensus) Nr() int {
 	// lastObs.Online=false = 续算/lost track（① 时长外推，非真实观测）→ 不计人数（stillbox 续算与人数解耦）
 	present := make(map[string]struct{}, len(c.tracks))
 	for id, t := range c.tracks {
-		if t.lastTick == c.tick && t.lastObs.Online && t.rt.PReal() >= 0.5 {
+		if t.lastTick == c.tick && t.lastObs.Online && t.rt.RealProven() {
 			present[id] = struct{}{}
 		}
 	}
@@ -323,7 +329,7 @@ func (c *TrackCensus) Nr() int {
 func (c *TrackCensus) RescuableCount(inBed map[string]bool) int {
 	present := make(map[string]struct{}, len(c.tracks))
 	for id, t := range c.tracks {
-		if t.lastTick == c.tick && t.lastObs.Online && t.rt.PReal() >= 0.5 && !inBed[id] {
+		if t.lastTick == c.tick && t.lastObs.Online && t.rt.RealProven() && !inBed[id] {
 			present[id] = struct{}{}
 		}
 	}
@@ -350,7 +356,8 @@ func (c *TrackCensus) RescuableCount(inBed map[string]bool) int {
 type TrackState struct {
 	LogicID      string   // tm 出生唯一身份（与 tm.TrackState.LogicID 同一标识）
 	Obs          TrackObs // 在场=本帧 / 消失=末帧（喂 per-track 滤波发射；消失态走 blind 续存仅 Predict）
-	PReal        float64  // 真人后验（ghost→低）；engine OR 聚合只算 PReal≥0.5 的真人 track
+	RealProven   bool     // 判决轴：出生证 latch（engine floor/N_r 占用门读它，替代旧 PReal≥0.5）
+	PReal        float64  // 显示轴：连续 confidence（纯 FE ×100；gate 任何决策皆无——判决读 RealProven）
 	Present      bool     // 本 tick 匹配到 raw（false=消失，engine 据此走 blind 续存 Predict-only）
 	PMirror      float64  // 镜像后验（有真人源的 ghost）；forensic 观测
 	IsReflection bool     // 桶二镜面几何判定（radar→ghost 连线穿墙取最近交点≥阈）；forensic 观测
@@ -366,7 +373,7 @@ type TrackState struct {
 func (c *TrackCensus) Tracks() []TrackState {
 	out := make([]TrackState, 0, len(c.tracks))
 	for id, t := range c.tracks {
-		out = append(out, TrackState{LogicID: id, Obs: t.lastObs, PReal: t.rt.PReal(), Present: t.lastTick == c.tick && t.lastObs.Online, PMirror: t.rt.PMirror(), IsReflection: t.isRefl,
+		out = append(out, TrackState{LogicID: id, Obs: t.lastObs, RealProven: t.rt.RealProven(), PReal: t.rt.PReal(), Present: t.lastTick == c.tick && t.lastObs.Online, PMirror: t.rt.PMirror(), IsReflection: t.isRefl,
 			Sep: t.fSep, WallMargin: t.fWallMargin, Rho: t.fRho, LaterBorn: t.fLater, DoorD: t.doorD})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LogicID < out[j].LogicID })
@@ -392,89 +399,17 @@ func birthDoorDist(x, y int, entrances []Rect) float64 {
 	return best
 }
 
-// speedSync 两 track 速度同步度 ∈[0,1]：同时同速运动 → 1（镜像与源同步）；速度差大或都不动 → 0。
-func speedSync(a, b float64) float64 {
-	m := math.Max(a, b)
-	if m == 0 {
-		return 0 // 都不动：无共动证据（静止绝不判 mirror）
-	}
-	return 1 - math.Abs(a-b)/m
-}
-
-const radarSelfCrossCm = 10 // 交点距 radar <此 = radar 踩墙的自穿(t≈0)，丢弃（真反射体不会贴 radar 这么近）
-
-// reflectSep 桶二镜像几何（§69 五步）→ 反射裕度 cm（0=非反射，喂 WallMargin 软发射）：
-//	① ghost 在房间 bbox 内 → 0（真人在房内天然非反射）；
-//	② radar→ghost 连线与各 wall 边求距 ghost 最近的交点 = mirror 点，排除 radar 自身处交点；
-//	③ 连线不穿任何墙 → 0；④ mirror 点→ghost <sepCm → 0，FN-safe 偏 0。无墙 → 恒 0（§69 柱E）。
-//
-// ① 用边线并集 bbox 判房内、非逐墙 insideRect：walls 是 wallsFromPolygon 产的零厚度边线 rect，房内点
-//   判不进任何单条边线 → insideRect 恒 false 护栏失效，房内真人误判反射。② radar 常装在墙边线上，
-//   连线起点(t≈0)假性穿墙取全长当裕度——非真反射，按距 radar 阈丢弃。
-func reflectSep(gx, gy int, radar Point, walls []Rect, sepCm int) float64 {
-	if len(walls) == 0 {
+// ghostDisplayPReal 无证轨显示 confidence（spec 判决 ⊥ 显示：纯 FE ×100，gate 任何决策皆无）。
+// 按离 born 最远净距 R 分档：≤50 GLUED=0 / 50-100 ramp 线性→0.5 / 100-200 HOLD=0.5 / ≥200 WALKOUT=1（同刻 RealProven→true）。
+func ghostDisplayPReal(R float64) float64 {
+	switch {
+	case R <= 50:
 		return 0
+	case R < 100:
+		return (R - 50) / 50 * 0.5
+	case R < 200:
+		return 0.5
+	default:
+		return 1
 	}
-	minX, maxX := walls[0].X1, walls[0].X1
-	minY, maxY := walls[0].Y1, walls[0].Y1
-	for _, w := range walls {
-		minX, maxX = min(minX, w.X1, w.X2), max(maxX, w.X1, w.X2)
-		minY, maxY = min(minY, w.Y1, w.Y2), max(maxY, w.Y1, w.Y2)
-	}
-	if gx >= minX && gx <= maxX && gy >= minY && gy <= maxY {
-		return 0 // ① ghost 在房间 bbox 内 → 非反射
-	}
-	gxf, gyf := float64(gx), float64(gy)
-	rxf, ryf := float64(radar.X), float64(radar.Y)
-	best, found := math.MaxFloat64, false
-	for _, w := range walls {
-		for _, p := range segRectIntersections(rxf, ryf, gxf, gyf, w) {
-			if math.Hypot(p.x-rxf, p.y-ryf) < radarSelfCrossCm {
-				continue // 排除 radar 踩墙的自穿交点（t≈0）
-			}
-			if d := math.Hypot(p.x-gxf, p.y-gyf); d < best { // ② 距 ghost 最近交点（含多墙全局最近）
-				best, found = d, true
-			}
-		}
-	}
-	if !found || best < float64(sepCm) {
-		return 0 // ③ 不穿墙 / ④ 交点→ghost <阈 → 非反射
-	}
-	return best // 反射裕度（mirror 点→ghost 距，cm）
-}
-
-type ptf struct{ x, y float64 }
-
-// segRectIntersections 线段 AB 与矩形 4 条边的全部交点（穿墙可得 2 点：进/出边）。
-func segRectIntersections(ax, ay, bx, by float64, r Rect) []ptf {
-	x1, y1, x2, y2 := float64(r.X1), float64(r.Y1), float64(r.X2), float64(r.Y2)
-	edges := [4][4]float64{
-		{x1, y1, x2, y1}, // top
-		{x1, y2, x2, y2}, // bottom
-		{x1, y1, x1, y2}, // left
-		{x2, y1, x2, y2}, // right
-	}
-	var out []ptf
-	for _, e := range edges {
-		if p, ok := segSeg(ax, ay, bx, by, e[0], e[1], e[2], e[3]); ok {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// segSeg 线段 AB 与线段 CD 的交点（平行/不相交 → ok=false）。
-func segSeg(ax, ay, bx, by, cx, cy, dx, dy float64) (ptf, bool) {
-	r1x, r1y := bx-ax, by-ay
-	r2x, r2y := dx-cx, dy-cy
-	denom := r1x*r2y - r1y*r2x
-	if denom == 0 {
-		return ptf{}, false // 平行/共线
-	}
-	t := ((cx-ax)*r2y - (cy-ay)*r2x) / denom
-	u := ((cx-ax)*r1y - (cy-ay)*r1x) / denom
-	if t < 0 || t > 1 || u < 0 || u > 1 {
-		return ptf{}, false
-	}
-	return ptf{ax + t*r1x, ay + t*r1y}, true
 }
