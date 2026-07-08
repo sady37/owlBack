@@ -923,13 +923,15 @@ func (tm *TrackManager) sleepadOccupied() bool {
 
 // evalProvenance real-by-provenance latch 置位（Phase 1.5，单调）。已置真直接返回（不复位；解闩只在 split 重分配）。
 // 通道：①门第-EnterRoom（**仅出生**：bornNow 时该 tid 与近窗 EnterRoom 同生=进门者本人；present 帧不看，否则
-// 会把"别人"的 EnterRoom 误安到已存在的 ghost 轨上）②门第-自查落 AreaEnter ③床 AreaEff∈{Bed,MonBed}∧sleepad 占用。
-// 调用方持锁；须在 selfCheckArea 之后（依赖 ts.AreaEff）。
+// 会把"别人"的 EnterRoom 误安到已存在的 ghost 轨上）②门第-自查落 AreaEnter 或出生点距门 ≤e1DoorBornCm
+// （生在门附近=radar 已跟到进门者本人，补 AreaEnter cell vs entrances 矩形的对齐缝；阈须 <ffdb phantom door_d=65 防误火复活）
+// ③床 AreaEff∈{Bed,MonBed}∧sleepad 占用。调用方持锁；须在 selfCheckArea 之后（依赖 ts.AreaEff）。
 func (tm *TrackManager) evalProvenance(ts *TrackState, nowMs int64, bornNow bool) {
 	if ts.RealProven {
 		return
 	}
-	if ts.AreaEff == AreaEnter || (bornNow && tm.hasRecentEnterRoom(nowMs)) {
+	if ts.AreaEff == AreaEnter || (bornNow && tm.hasRecentEnterRoom(nowMs)) ||
+		(tm.grid != nil && tm.grid.NearestEntryDist(ts.BirthPos.X, ts.BirthPos.Y) <= e1DoorBornCm) {
 		ts.RealProven = true
 		return
 	}
@@ -949,6 +951,10 @@ func (tm *TrackManager) evalProvenance(ts *TrackState, nowMs int64, bornNow bool
 
 // walkoutCm R walkout 阈：离 born 净距 ≥此 = 自主位移（phantom 冻着触不到）→ 补出生证。
 const walkoutCm = 200
+
+// e1DoorBornCm E1 近门出生证阈：出生点距最近门 ≤此 cm = radar 已跟到进门者本人 → 发证。
+// 硬上限 <ffdb phantom door_d=65（否则冻结 phantom 被误发证 → floor 误火复活）；取 30 留安全余量。
+const e1DoorBornCm = 30
 
 // RecordRadarEvent 落账 radar 来源的事件（EnterRoom/ExitRoom/InBed/LeftBed）。
 // 仅落账。PR-14: radar InBed 触发两个副作用：

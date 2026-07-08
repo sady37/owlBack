@@ -395,12 +395,13 @@ func birthDoorDist(x, y int, entrances []Rect) float64 {
 	return best
 }
 
-// doorDisplayScaleCm 未证轨门第显示分档尺度 cm：door_d 从 0 到此线性把显示 confidence 从 0.50 压到 0.10。
-const doorDisplayScaleCm = 120.0
+// doorDisplayScaleCm 未证轨门第显示分档尺度 cm：door_d 从 0 到此线性把显示 confidence 从 0.80 压到 0.10。
+const doorDisplayScaleCm = 150.0
 
 // ghostDisplayPReal 未证轨显示 confidence（spec 判决 ⊥ 显示：纯 FE ×100，gate 任何决策皆无）。
-// 按出生门第 door_d 分档：近门(door_d→0)=0.50 / 远门(door_d≥scale)=0.10 / 无门(door_d<0 sentinel)=0.10（测不到门第=不显示）。
-// 证真轨走 ForceReal=0.80（FE 显示阈之上）；远门 phantom door_d 大自然沉到 0.10 隐藏，门口新轨可见等它挣证。
+// 按出生门第 door_d 平滑：近门(door_d→0)=0.80 / 远门(door_d≥scale)=0.10 / 无门(door_d<0 sentinel)=0.10（测不到门第=不显示）。
+// 与证真轨 ForceReal=0.80 连续（近门出生 door_d≤30 已走 E1→RealProven=0.80，此处只覆未证的更远段）；
+// 远门 phantom door_d 大自然沉到 0.10 隐藏，门口新轨可见等它挣证。
 func ghostDisplayPReal(doorD float64) float64 {
 	if doorD < 0 {
 		return 0.10 // 无 enter 区 → 测不到门第 → 不显示
@@ -409,5 +410,5 @@ func ghostDisplayPReal(doorD float64) float64 {
 	if near < 0 {
 		near = 0 // 远门（door_d≥scale）
 	}
-	return 0.10 + 0.40*near // door_d=0→0.50, door_d≥scale→0.10
+	return 0.10 + 0.70*near // door_d=0→0.80, door_d≥scale→0.10
 }

@@ -45,22 +45,22 @@
 
 - 判决 = 硬 latch：无证 = ghost，`PReal` 显示多高都不进 fire → **D1 彻底死**（连续值再飘也飘不进决策）。
 - 显示 = 连续梯度：随便喂 FE，因为没人拿它当门（判决门一律读 `RealProven`）。
-- **`PReal` 分档（显示，gates 无，可调 UX；2026-07-08 定为门第 `door_d` 分档，非 walkout R）**：证真轨恒 0.80（FE 显示阈之上）；未证轨按出生门第插值，远门 phantom 自然沉到 0.10 隐藏，门口新轨可见等它挣证。
+- **`PReal` 分档（显示，gates 无，可调 UX；2026-07-08 定为门第 `door_d` 线性，非 walkout R）**：证真轨恒 0.80（FE 显示阈之上）；未证轨按出生门第 `door_d` 线性 0.80→0.10，远门 phantom 自然沉到 0.10 隐藏，门口新轨可见等它挣证。与 real 锚 0.80 连续。
 
 | 轨态 | `door_d`（未证，出生地→最近门 cm） | `PReal` 显示 |
 |---|---|---|
 | `RealProven`=true | — | **0.80（80%，显示）** |
-| 未证 | = 0（生在门框内） | 0.50 |
-| 未证 | 0 – 120 | 0.50 → 0.10 线性 |
-| 未证 | ≥ 120（远门） | 0.10 |
+| 未证 | 0（生在门框内；注：door_d≤30 已走 E1→real=0.80） | 0.80 |
+| 未证 | 0 – 150 | 0.80 → 0.10 线性 |
+| 未证 | ≥ 150（远门） | 0.10 |
 | 未证 | < 0（房无 enter 区，测不到门第） | **0.10（10%，FE 阈下不显示）** |
 
-> `RealProven` 由 walkout `R≥200`（及 E1–E5）翻 true，翻 true 即显示跳 0.80——walkout 不再单独占显示档，只经判决轴生效。
+> `RealProven` 由 walkout `R≥200`、E1 近门（door_d≤30）及 E2–E5 翻 true，翻 true 即显示跳 0.80——walkout/近门不再单独占显示档，只经判决轴生效。
 
 ## 判据 —— 出生证白名单（命中任一 → `RealProven`=true，sticky）
 
 ```
-RealProven ⟸ E1 门口出生：出生同刻有 EnterRoom 且 raw 自查落 AreaEnter（严 door_d≈0）
+RealProven ⟸ E1 门口出生：raw 落 AreaEnter cell / 出生同刻近窗 EnterRoom / 出生点距门 pin 矩形 ≤30cm（任一）
            E2 双源床出生：raw 自查落 AreaBed/MonBed 且 sleepad InBed
            E3 handoff 继承：新铸 logicID 从「proven-real ∧ 离场/lost」源轨继承证
            E4 relost 重抓：房级 np 0→1 且 stillbox 在跑 且 stillbox 起点→now 无 Enter/Exit
@@ -70,7 +70,9 @@ ghost ⟸ 以上全无（房中央凭空生、冻着不走、非续轨、无体�
 ```
 
 ### E1 门口出生
-出生瞬时（born hook）raw 末点落 AreaEnter，且近窗有 EnterRoom（[[real_by_provenance_latch_optionb_area_drift]] 门第通道）。**严 E1**：要求 door_d≈0，不要"只要有 EnterRoom"（phantom 出生也常伴 np++/事件，松了放 phantom）。
+命中任一 → RealProven：① raw 末点落声明 `AreaEnter` cell（[[real_by_provenance_latch_optionb_area_drift]] 门第通道）；② 出生同刻近窗有 EnterRoom（bornNow）；③ **出生点距最近门 pin 矩形 ≤30cm**（`grid.NearestEntryDist(BirthPos)`，2026-07-08 加）。
+
+③ 补 ①的洞：门 pin 矩形（`cfg.Enters`）与声明 `AreaEnter` cell（`AreaZones`）是两套——`StampEnters` 只给门矩形内 cell 盖 `InRoom`，不保证 cell 区型=AreaEnter，故"生在门 pin 矩形里但 cell 未声明 AreaEnter"的真人被 ①漏（如 ffdb `FFDB13444886` door_d=0 旧判 ghost）。③按门矩形距离接住=radar 已跟到进门者本人。**阈 30cm 硬上限 <65**（ffdb 冻结 phantom `FFDB02150835` door_d=65；实测误火 cluster door_d 55–75，全 >30 保持 ghost 不误火复活）。不放松"只要有 EnterRoom"（phantom 出生也常伴 np++/事件）。
 
 ### E2 双源床出生
 raw 末点落声明床区（AreaBed=2 / MonBed=5）**且** sleepad InBed（接触占用）。**双源缺一不可**——光落床格几何不够（phantom 也能生在床格），须 sleepad 坐实真人躺着。复用 [[bed_fusion_authority_model]] / [[mn_bed_firmware_areaid_exec_order]]。
