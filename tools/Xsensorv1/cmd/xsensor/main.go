@@ -174,7 +174,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 
 	tracks := make([]adapter.TrackObs, 0, len(bases)+1)
 	for _, b := range bases {
-		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, SplitConvicted: b.SplitConvicted, RadarTrack: adapter.RadarTrack{
+		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, SplitConvicted: b.SplitConvicted, ForceReal: b.RealLatchActive, RadarTrack: adapter.RadarTrack{
 			TrackID: b.TrackID, // logicID↔track_id 反查源（ExitRoom 按号反查丢轨人）
 			Online:  b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
 			StillSec: float64(b.StillBoxSec), // still-box raw 时长 → FloorGuard 纯计时器（直立折扣已移 emission 压 SFallen）
@@ -291,7 +291,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	}
 	dbn := make([]map[string]interface{}, 0, len(fr.Tracks))
 	for _, t := range fr.Tracks {
-		enterBorn, ghostSust, maxGhost, maxNp, _ := d.eng.GhostSignals(roomID, t.LogicID) // lost_fall delete 信号(§10.3-b)
+		realProven, ghostSust, maxGhost, maxNp, _ := d.eng.GhostSignals(roomID, t.LogicID) // lost_fall delete 信号(§10.3-b)
 		dbn = append(dbn, map[string]interface{}{
 			"lid": t.LogicID, "present": t.Present, "p_real": t.PReal, "p_mirror": t.PMirror,
 			"is_refl": t.IsReflection, "p_fallen": t.PFallen,
@@ -300,7 +300,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			"door_d": t.DoorD, "track_confidence": int(t.PReal*100 + 0.5),
 			"repeat_r": t.RepeatR, "self_recovered": t.SelfRecovered, "still_sec": t.StillSec,
 			"s_marg": t.SMarg, "covers": t.Covers, // per-track S 边缘 + per-device covers(MM)：看 D523 自身 SBed + covers=0
-			"enter_born": enterBorn, "max_ghost": maxGhost, "ghost_sust": ghostSust, "max_np": maxNp,
+			"real_proven": realProven, "max_ghost": maxGhost, "ghost_sust": ghostSust, "max_np": maxNp,
 		})
 	}
 	pad := make([]map[string]interface{}, 0, len(padAbs))

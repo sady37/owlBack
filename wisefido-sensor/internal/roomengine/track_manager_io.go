@@ -384,15 +384,22 @@ func (tm *TrackManager) SetTrackConfidence(lid string, conf, roomNp int) {
 	if ts == nil {
 		return
 	}
+	// Phase 1.5：latch 生效（provenance 证真 ∧ 仍在 rest 区）→ 强制 real 且不累积 ghost（census 侧已 ForceReal
+	// 保 nr≥1，此处同步 DBNConfidence 并停 MaxGhost/sustained 累积，防 lost_fall delete 误定性）。
+	if ts.realLatchActive() {
+		ts.DBNConfidence = 100
+		ts.ghostSustainRun = 0
+		if roomNp > ts.MaxRoomNp {
+			ts.MaxRoomNp = roomNp
+		}
+		return
+	}
 	ts.DBNConfidence = conf
 	// lost_fall delete 判据信号（§10.3-b）：p_mirror=1-PReal（realness 2 态互补，conf=PReal*100）。
 	if roomNp > ts.MaxRoomNp { // ① born→now 房 np 峰值（≥2=曾有共存伙伴）
 		ts.MaxRoomNp = roomNp
 	}
-	g := 1.0 - float64(conf)/100.0 // ② 生涯 ghost：EnterBorn 未重绑 → 禁 ghost>50
-	if ts.EnterBorn && !ts.LidRebound && g > 0.5 {
-		g = 0.5
-	}
+	g := 1.0 - float64(conf)/100.0 // ② 生涯 ghost 峰值（forensic）
 	if g > ts.MaxGhost {
 		ts.MaxGhost = g
 	}

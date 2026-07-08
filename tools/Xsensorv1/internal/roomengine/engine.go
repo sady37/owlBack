@@ -413,7 +413,7 @@ func (e *Engine) SetTrackPReal(roomID, logicID string, pReal, pMirror float64, r
 }
 
 // GhostSignals lost_fall delete 判据信号读出（§10.3-b；forensic/xray），按 roomID+logicID。
-func (e *Engine) GhostSignals(roomID, logicID string) (enterBorn, sustained bool, maxGhost float64, maxNp int, found bool) {
+func (e *Engine) GhostSignals(roomID, logicID string) (realProven, sustained bool, maxGhost float64, maxNp int, found bool) {
 	want, err := netip.ParsePrefix(roomID)
 	if err != nil {
 		return false, false, 0, 0, false

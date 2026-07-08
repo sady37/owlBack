@@ -85,11 +85,9 @@ func defaultEmissionParams() emissionParams {
 // roomBathroom = card.RoomTypeBathroom（belief 不 import card，本地常量对齐）。
 const roomBathroom = 1
 
-// stillMuSigma 正常停留 (μ,σ) 秒 = cell area 与 room **保守合并**（取 μ 更大 = 更晚报 = 低 FP，§H）。
+// stillMuSigma 正常停留 (μ,σ) 秒：浴室房一律 20min 房级 override，否则按 cell area（cellMuSigma）。
 //
-//	解决「bathroom 房未画 toilet → cell 落 unknown → 用激进 default 过早误报」：bathroom 房至少按 bathsec 兜。
-//	bed 区分两支：真床(AreaType bed/monitorbed)在 floor.Step 按 AreaType 无条件豁免、到不了这里；
-//	LongSofa(无 sleepad 可长躺)与 Sit 同走 90min 长阈。床边跌倒仍靠接触轴(sleepad InBed 压/LeftBed 放行)细分。
+//	bed/monitorbed/reflector/interfer 已在 floor.Step 豁免、到不了这里；仅 sit/lying→90min；其余(含 deny)→12min。
 func stillMuSigma(areaType, roomType int) (mu, sigma float64) {
 	if roomType == roomBathroom {
 		// 浴室一律 ~20min（占用区）：压过 cell 姿态阈——马桶/淋浴久留医学上 ~20min 即异常，
@@ -195,14 +193,13 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 	if o.PoseLying {
 		sbedW, sfallW := e.p.lPose, e.p.lPose
 		// 床区几何内 + 平躺(z<zFlatCm)：sleepad 可能把久静恒定值当基准误报 LeftBed → 一释放床占用就把"床上没动的
-		//   躺人"塌成 Fallen。sfallFrac = max(帧间位移 dD/ddFullFallCm, 连续静止 StillSec/ddDefenseCapSec)：
-		//   把躺姿二义从 SFallen 分给 SBed（frac=0 全 SBed / frac=1 全 SFallen）。两轴取大——
-		//   ① 帧间跳大(翻身/起身)立刻放 SFall；② 连续静止满 ddDefenseCapSec(30min) 也线性放满 → SFall 30min 内升过阈
-		//   兜底(radar 久躺床格 + sleepad 说离床的矛盾态=失能/医疗事件；正常睡眠 sleepad InBed 经 B 轴续撑 SBed 不 fire)。
-		//   闸 areaBed 是 FN 命门：床外倒地静止绝不偏 SBed，否则漏地板真摔。
+		//   躺人"塌成 Fallen。sfallFrac = max(帧间位移 dD/ddFullFallCm, 连续静止时间项)：把躺姿二义从 SFallen 分给 SBed
+		//   （frac=0 全 SBed / frac=1 全 SFallen）。两轴取大——① 帧间跳大(翻身/起身)立刻放 SFall；② 连续静止时间项线性
+		//   斜坡(封顶 maxTimeSfallFrac)使矛盾态久静 ~35min 也放 SFall 升过阈兜底(失能/医疗；正常睡眠 sleepad InBed 经 B 轴
+		//   续撑 SBed 不 fire)。闸 areaBed 是 FN 命门：床外倒地静止绝不偏 SBed，否则漏地板真摔。
 		if o.AreaType == areaBed && o.Z < zFlatCm {
 			sfallFrac := o.FrameMoveCm / ddFullFallCm // dD 轴：翻身/起身可达 1.0（全 SFall）
-			if tSec := o.StillSec; tSec > 0 {          // 时间轴：线性斜坡到 maxTimeSfallFrac（35min 封顶，保底 1/7 SBed）
+			if tSec := o.StillSec; tSec > 0 {          // 时间轴：线性斜坡到 maxTimeSfallFrac（保底 1/7 SBed）
 				tFrac := maxTimeSfallFrac * tSec / ddDefenseCapSec
 				if tFrac > maxTimeSfallFrac {
 					tFrac = maxTimeSfallFrac

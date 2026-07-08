@@ -66,6 +66,10 @@ type TrackState struct {
 	// LastFwAreaID firmware 直发的 area_id（present 帧更新；miss tick 不更新 = 冻结末值）。
 	// 床判定 N：命中某床 areaId → 该床占用。255=声明区外/0=无区。
 	LastFwAreaID int
+	// AreaEff/AreaEffTs：raw 末点自查按 ts newer-covers 的有效区型（Phase 1 latch 私有旁路，非 floor 主路）。
+	// 出生即置，仅供 evalProvenance（provenance 判定）+ realLatchActive（confine）读；不替 CellAreaType（Option A）。
+	AreaEff   AreaType
+	AreaEffTs int64
 	// LastCellArea 最近一次 SnapshotTrackStatuses 在画布坐标查到的 cell 真实区域类型（几何事实，单源）。
 	// -1 = 无效（越界 / 无格）。与决策锁定值 base.CellAreaType 解耦：本字段永远是当前落格真值，
 	// 不随 still-box 锁定/移动期抹成 Unknown（Unknown(0) 是有效区型不是缺省哨兵）。
@@ -113,12 +117,13 @@ type TrackState struct {
 	// 经 SetTrackConfidence 每帧写回）。<0 = DBN 未设 → payloadFromTrack TrackConfidence 取 0。
 	DBNConfidence int
 
-	// ---- lost_fall delete 判据信号（doc/ghost-reflection-detection.md §10.3-b）----
-	// EnterBorn：出生有 EnterRoom 配对 = 合法进门真人 → 禁 ghost>50（除非 lid 重绑定，见 LidRebound）。
-	EnterBorn bool
-	// LidRebound：LogicID 出生后被换绑到新 tid（身份重绑）→ 解禁 EnterBorn 的 ghost 上限。
-	LidRebound bool
-	// MaxGhost：生涯峰值 census p_mirror（EnterBorn 未重绑时钳在 ≤0.5）。p_mirror=1-PReal（realness 2 态互补）。
+	// ---- real-by-provenance latch（Phase 1.5，doc/area_selfcheck_and_ghost_raw_spec.md）----
+	// RealProven：出生/present 帧任一时刻 provenance 满足（门第=EnterRoom 或 AreaEff==AreaEnter；
+	//   床=AreaEff∈{Bed,MonBed} ∧ sleepad 占用）→ 单调置真。挂 lid：出生 nearestAliveTrack 继承
+	//   parent.RealProven，带得过 churn（治 cd2b 重生睡者被全判 ghost）。消费端一律读 realLatchActive()
+	//   （= RealProven ∧ AreaEff∈rest 区，Option B confine），非裸读本字段。split 重分配硬清。
+	RealProven bool
+	// MaxGhost：生涯峰值 census p_mirror（forensic/lost_fall delete §10.3-b）。p_mirror=1-PReal（realness 2 态互补）。
 	MaxGhost float64
 	// ghostSustainRun：当前连续 p_mirror≥0.8 的 tick 数（断则清零）。
 	ghostSustainRun int
@@ -205,6 +210,32 @@ func (ts *TrackState) PushPoint(x, y, z int, tMs int64) {
 	ts.FrameCount++
 	ts.LastUpdateMs = tMs
 	ts.LastObservedMs = tMs
+}
+
+// coverArea newer-covers：仅被 ts 不早于当前 AreaEffTs 的自查/事件值覆盖（单调取最新）。
+// 语义：自查早于事件→后到事件覆盖；自查晚于事件→前事件是瞬态，用当前自查。
+func (ts *TrackState) coverArea(area AreaType, tsMs int64) {
+	if tsMs >= ts.AreaEffTs {
+		ts.AreaEff = area
+		ts.AreaEffTs = tsMs
+	}
+}
+
+// isRestArea rest-provenance 区：静止真人合法待着的区（床/坐/躺/门）。开阔活动区/deny/reflector/interfer
+// 非 rest → 静止可疑，latch 不豁免 ghost 判定（Option B confine）。
+func isRestArea(a AreaType) bool {
+	switch a {
+	case AreaBed, AreaMonitorBed, AreaSit, AreaLying, AreaEnter:
+		return true
+	}
+	return false
+}
+
+// realLatchActive real-by-provenance latch 当前是否生效（Option B）：已 provenance 证真 ∧ 当前 raw 自查区
+// 仍在 rest 区。true → 消费端强制 real / 豁免 ghost。飘出 rest 区（真摔在开阔地板 / 冒名 phantom 走开）→
+// false → ghost 检测器与 floor 照常，绝不压真摔。
+func (ts *TrackState) realLatchActive() bool {
+	return ts.RealProven && isRestArea(ts.AreaEff)
 }
 
 // HasHistory 是否有足够帧数做 Kalman

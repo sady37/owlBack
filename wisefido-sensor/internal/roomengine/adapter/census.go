@@ -35,6 +35,7 @@ type TrackObs struct {
 	RadarTrack             // Online/Pose/X,Y,Z/HR,RR/StillSec（X,Y 经嵌入提升供 census 速度/realness 几何）
 	LogicID        string  // tm 出生锚定的唯一逻辑身份（nearestAliveTrack 最小作功距离继承+EnterRoom 门）；census 不再按位置重造 int logicID，直接引用此
 	SplitConvicted bool    // roomengine split 运动学坐实(SplitGhostSinceMs>0)→ 喂 realness mEv 降 PReal（孤迹 latch 也开）
+	ForceReal      bool    // Phase 1.5：roomengine real-by-provenance latch 生效（provenance 证真 ∧ 仍在 rest 区）→ census 强制 real 保 nr≥1，跳几何/sync 判定
 }
 
 type censusTrack struct {
@@ -172,6 +173,14 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 
 	for i, o := range obs {
 		t := c.tracks[ids[i]]
+		// Phase 1.5：roomengine real-by-provenance latch 生效 → 强制 real（保 nr≥1），跳过几何/sync 判定 +
+		// 出生窗定性。confine（是否仍在 rest 区）已在 roomengine 侧判完，此处只消费结果。
+		if o.ForceReal {
+			t.rt.ForceReal()
+			t.isRefl, t.fSep, t.fWallMargin, t.fRho, t.fLater = false, 0, 0, 0, false
+			c.updateTrackTail(t, o, nowMs, disp[i])
+			continue
+		}
 		// split 坐实(运动学 3-tick 赖锚点)是持续判决 → 即便出生窗后也须续喂 realness 排干 bR（否则冻结在窗末 PReal=1，
 		// nr 顶 2）；其率不依赖几何/Coexist(见 belief.Update)，故跳过 reflectSep。窗内轨照旧走几何+sync 判定。
 		inWindow := nowMs-t.birthMs <= c.p.MirrorWindowMs
@@ -226,16 +235,21 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 			}
 			t.isRefl, t.fSep, t.fWallMargin, t.fRho = false, 0, 0, 0 // forensic 标冻结（不再喂几何）
 		}
-		if t.pathMs > 0 {
-			t.pathAccum *= math.Exp(-float64(nowMs-t.pathMs) / fusePathTauMs)
-		}
-		t.pathAccum += disp[i]
-		t.pathMs = nowMs
-		t.x, t.y, t.lastTick, t.lastMs, t.lastObs = o.X, o.Y, c.tick, nowMs, o
+		c.updateTrackTail(t, o, nowMs, disp[i])
 	}
 
 	c.updateFuse(nowMs)
 	c.noteMultiPerson()
+}
+
+// updateTrackTail 每 track 收尾：窗口路程 EMA 累计（fuse 同步证据）+ 位置/tick/末观测快照（下 tick 位移基线）。
+func (c *TrackCensus) updateTrackTail(t *censusTrack, o TrackObs, nowMs int64, dispI float64) {
+	if t.pathMs > 0 {
+		t.pathAccum *= math.Exp(-float64(nowMs-t.pathMs) / fusePathTauMs)
+	}
+	t.pathAccum += dispI
+	t.pathMs = nowMs
+	t.x, t.y, t.lastTick, t.lastMs, t.lastObs = o.X, o.Y, c.tick, nowMs, o
 }
 
 // noteMultiPerson 维护"多人证据"连续 tick 数（解合并 hysteresis）+ no-silent-caps LOG。

@@ -1017,6 +1017,62 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	if e.EventName == alarm.ExitRoom && e.TMs > d.exitMs {
 		d.exitMs = e.TMs
 	}
+	// Phase 1 触发点②③：enter2out / np>0 → 本设备各 tid raw 自查刷新 AreaEff（newer-covers）。
+	switch e.EventName {
+	case alarm.EnterRoom, alarm.ExitRoom, EventNameNumberPeople:
+		tm.selfCheckDeviceAreas(e.DeviceUID, e.TMs)
+	}
+}
+
+// selfCheckArea 用 raw 末点自查区型 → newer-covers 更新 ts.AreaEff（Phase 1；tsMs=触发时刻）。
+// raw 末点 = 末次真观测点：丢轨期冻结逐帧同值（等价只算一次），正是 ghost/floor 要的"最后真位"。
+func (tm *TrackManager) selfCheckArea(ts *TrackState, tsMs int64) {
+	if tm.grid == nil {
+		return
+	}
+	n := len(ts.History)
+	if n == 0 {
+		return
+	}
+	p := ts.History[n-1]
+	ts.coverArea(tm.grid.QueryAreaType(p.X, p.Y), tsMs)
+}
+
+// selfCheckDeviceAreas 对某设备下所有 tid 各自 raw 末点自查（Phase 1 触发点 enter2out / np>0；np 无坐标 → 遍历）。
+func (tm *TrackManager) selfCheckDeviceAreas(deviceAddr string, tsMs int64) {
+	for _, ts := range tm.tracks {
+		if ts.DeviceAddr == deviceAddr {
+			tm.selfCheckArea(ts, tsMs)
+		}
+	}
+}
+
+// sleepadOccupied 任一 sleepad 报接触占用（InBed）→ true（bed provenance 用）。不苛求 vital：cd2b 根因 #5 =
+// coast 期 vital_confidence 掉，vital 会 NoReport，但接触占用 InBed 更鲁棒。
+func (tm *TrackManager) sleepadOccupied() bool {
+	for _, obs := range tm.sleepadStates {
+		if obs != nil && obs.InBed {
+			return true
+		}
+	}
+	return false
+}
+
+// evalProvenance real-by-provenance latch 置位（Phase 1.5，单调）。已置真直接返回（不复位；解闩只在 split 重分配）。
+// 通道：①门第-EnterRoom（**仅出生**：bornNow 时该 tid 与近窗 EnterRoom 同生=进门者本人；present 帧不看，否则
+// 会把"别人"的 EnterRoom 误安到已存在的 ghost 轨上）②门第-自查落 AreaEnter ③床 AreaEff∈{Bed,MonBed}∧sleepad 占用。
+// 调用方持锁；须在 selfCheckArea 之后（依赖 ts.AreaEff）。
+func (tm *TrackManager) evalProvenance(ts *TrackState, nowMs int64, bornNow bool) {
+	if ts.RealProven {
+		return
+	}
+	if ts.AreaEff == AreaEnter || (bornNow && tm.hasRecentEnterRoom(nowMs)) {
+		ts.RealProven = true
+		return
+	}
+	if (ts.AreaEff == AreaBed || ts.AreaEff == AreaMonitorBed) && tm.sleepadOccupied() {
+		ts.RealProven = true
+	}
 }
 
 // LastNumberPeopleZeroMs 固件最近一次 number_people=0 的 ts（0 = 从未上报/最近 count≠0）。
@@ -1139,6 +1195,7 @@ type TrackStatusBase struct {
 	MoveActive          bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
 	Present             bool   // 本帧是否被真实观测（LastObservedMs == nowMs）；false=漏帧/丢轨 → DBN 走 blind 续存
 	SplitConvicted      bool   // split 运动学坐实(SplitGhostSinceMs>0)→ 喂 census realness 降 PReal → nr 排此 ghost（Stage1.5）
+	RealLatchActive     bool   // Phase 1.5：real-by-provenance latch 当前生效（provenance 证真 ∧ 仍在 rest 区）→ census ForceReal 保 nr≥1
 	TraverseDelta       int    // 自上次 SnapshotTrackStatuses 累计的 traverse cells（用于 SuiteCensus 升格判定）
 	SleepadInBed        bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
 	SleepadVitalPresent bool   // 任一 sleepad 在床 + HR/RR fresh(TTL 内)→ 活体在垫,喂 belief 抬 SBed
@@ -1217,6 +1274,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			RawV:                ts.LastRawV,
 			RawZ:                ts.LastRawZ,
 			Pose:                ts.LastPose,
+			RealLatchActive:     ts.realLatchActive(),
 			MoveActive:          ts.StillBoxRunStart == 0 || ts.LastObservedMs == nowMs,
 			Present:             nowMs-ts.LastObservedMs < presenceCoastMs,
 			SplitConvicted:      ts.SplitGhostSinceMs > 0,
@@ -1641,15 +1699,14 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			// 重用/跳变/分裂 → 继承最近存活 track 的 logic_id（跨 track_id 数据关联，
 			// 让"漂走/重编"的同一逻辑目标保持身份连续，供 ghost/lost-fall 按 logic_id 聚合）。
 			enteredRecently := tm.hasRecentEnterRoom(f.TMs)
-			ts.EnterBorn = enteredRecently // 合法进门真人 → 禁 ghost>50（除非 lid 重绑定，见下）
 			inherited := false
 			if !enteredRecently {
 				if parent := tm.nearestAliveTrack(f.X, f.Y, f.DeviceAddr, f.TMs, frameKeys); parent != nil {
 					ts.LogicID = parent.LogicID
 					inherited = true
-					// tid 交换=同一逻辑身份延续 → ghost 历史跟随 lid（否则 churn 清零 MaxGhostSustained 让 ghost 逃判据）。
-					ts.EnterBorn = parent.EnterBorn // 继承进门血缘（lid 亲和在新 tid 出生时比效）
-					ts.LidRebound = true            // lid 重绑到新 tid → 解禁 EnterBorn 的 ghost 上限
+					// tid 交换=同一逻辑身份延续 → ghost 历史 + real-provenance latch 跟随 lid（churn 延续，
+					// 否则每次重生清零 → cd2b 睡者被全判 ghost / MaxGhostSustained 让 ghost 逃判据）。
+					ts.RealProven = parent.RealProven // 继承 provenance latch（Option B：解闩靠 confine 非 churn）
 					ts.MaxGhost = parent.MaxGhost
 					ts.MaxGhostSustained = parent.MaxGhostSustained
 					ts.ghostSustainRun = parent.ghostSustainRun
@@ -1665,9 +1722,11 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			if ts.LogicID == "" {
 				ts.LogicID = makeLogicID(tm.devUIDHex(f.DeviceAddr), f.TrackID, f.TMs)
 			}
-			// 孤儿 fresh 出生（无进门事件 + 无近邻继承）= 独立伪迹签名 → 若落 interfer cell 且出生时孤立则软压。
+			tm.selfCheckArea(ts, f.TMs)        // Phase 1 触发①：出生点 raw 自查 → AreaEff（供出生窗内 provenance 读）
+			tm.evalProvenance(ts, f.TMs, true) // Phase 1.5：门第/床+sleepad → RealProven（bornNow=进门者本人；stamp 前置证真则不软压）
+			// 孤儿 fresh 出生（无进门 + 无近邻继承 + 未 provenance 证真）= 独立伪迹签名 → 落 interfer cell 且孤立则软压。
 			// 与 split-ghost 几何互斥：interfer-born 要孤立（≥120cm），split 要贴 present 邻轨（≤80cm）。
-			if !enteredRecently && !inherited {
+			if !enteredRecently && !inherited && !ts.RealProven {
 				tm.stampInterferBornIfIsolated(ts, f, nowMs)
 				tm.stampSplitGroupOnBirth(ts, f, nowMs)
 			}
@@ -1706,6 +1765,8 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			ts.Kalman.Predict(dt)
 			ts.Kalman.Update(float64(f.X), float64(f.Y))
 			ts.PushPoint(f.X, f.Y, f.Z, f.TMs)
+			tm.selfCheckArea(ts, f.TMs)         // Phase 1：present 帧 raw 末点自查（人移动→AreaEff 跟到当前区，newer-covers）
+			tm.evalProvenance(ts, f.TMs, false) // Phase 1.5：迟到 provenance（走到床/落 Enter 区后才满足）单调置 RealProven
 
 			// 连续指标（StillBox 静止），在 Kalman update 之后维护
 			tm.updateContinuousIndicators(ts, f, nowMs)
@@ -2212,6 +2273,9 @@ const witnessRadiusCm = 200
 //
 // FN 闸：无耦合 ExitRoom 不动；倒地前兆/lying/sit/walking 不在白名单（真摔者、真坐者留）；dz>40 留（下坠保护）。调用方持锁。
 func (tm *TrackManager) exitCoupledLostResidual(ts *TrackState, nowMs int64) bool {
+	if ts.realLatchActive() {
+		return false // Phase 1.5：provenance 证真且失锁在 rest 区（睡者churn丢轨）绝不当残迹删
+	}
 	d := tm.devRoom[ts.DeviceAddr]
 	if d == nil || d.exitMs == 0 || absI64(d.exitMs-ts.LastObservedMs) > exitCoupledLostMs {
 		return false
@@ -2264,7 +2328,7 @@ func (tm *TrackManager) confirmedMirrorResidual(ts *TrackState, nowMs int64) boo
 	if d == nil || d.exitMs == 0 || absI64(d.exitMs-ts.LastObservedMs) > exitCoupledLostMs {
 		return false
 	}
-	if ts.EnterBorn && !ts.LidRebound { // 进门真人受保护（除非 lid 重绑）
+	if ts.realLatchActive() { // Phase 1.5：provenance 证真且失锁在 rest 区 → 受保护，不当镜像残迹删
 		return false
 	}
 	if !ts.MaxGhostSustained || ts.MaxRoomNp < 2 { // 条件2④ sustained mirror + 条件1 曾有共存源(是某真人反射)

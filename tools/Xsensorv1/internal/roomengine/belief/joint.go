@@ -1,7 +1,6 @@
 package belief
 
 import (
-	"fmt"
 	"math"
 )
 
@@ -9,22 +8,27 @@ import (
 // S 轴（9 态全空间，state.go）× B 轴（每床 vac/occ，bed_axis.go）的笛卡尔积。
 // 基数 = numStates · 2^numBeds。索引：idx = s·(2^numBeds) + bmask，bmask 第 j 位 = B^j。
 //
-// P-5（状态爆炸硬 bound）：养老院房 ≤3–4 床（含 LongSofa 折进 Beds 轴），maxBeds=4 → 9·16=144 态，全表轻量。
+// P-5（状态爆炸硬 bound）：养老院房 ≤4 床 + 折进 Beds 轴的 LongSofa，MaxBeds=6 → 9·64=576 态，仍轻量。
 // §7 数值方案：全程 log 域 + log-sum-exp 归一化（ε_art 极小 / L_in 大倍数 → 线性域不安全）。
 
-const maxBeds = 4 // P-5 硬上界。|B|>maxBeds → panic。
+// MaxBeds P-5 硬上界。超界不再 panic：NewJointSpace clamp 到本值（房降级跑，绝不拖垮全进程）；
+// 上游 bootstrap 另发 warn 日志带 roomID。提高本值是指数代价（态数 = 9·2^MaxBeds），勿轻易上调。
+const MaxBeds = 6
 
 // JointSpace 联合状态空间元信息。numBeds 进字段（B1 闭合：床数显式持有，不靠隐式推断）。
 type JointSpace struct {
-	numBeds int // 本房床数 ∈ [0, maxBeds]
+	numBeds int // 本房床数 ∈ [0, MaxBeds]
 	bmaskN  int // 2^numBeds，B 轴配置数
 	size    int // numStates · bmaskN，联合空间基数
 }
 
-// NewJointSpace 建联合空间。numBeds 超界（<0 或 >maxBeds）→ panic（P-5：拒绝超界，不静默）。
+// NewJointSpace 建联合空间。numBeds 超界自动 clamp 到 [0, MaxBeds]（P-5：降级不 panic，单点安全网）。
 func NewJointSpace(numBeds int) *JointSpace {
-	if numBeds < 0 || numBeds > maxBeds {
-		panic(fmt.Sprintf("belief: numBeds=%d 超界 [0,%d]（P-5 状态爆炸硬 bound）", numBeds, maxBeds))
+	if numBeds < 0 {
+		numBeds = 0
+	}
+	if numBeds > MaxBeds {
+		numBeds = MaxBeds
 	}
 	bmaskN := 1 << numBeds
 	return &JointSpace{

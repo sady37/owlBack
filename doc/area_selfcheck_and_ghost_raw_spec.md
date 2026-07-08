@@ -15,8 +15,10 @@
 
 ## 锁定的决策
 
-1. **area 自查用 raw 坐标**（非 Kalman），在 **new-tid / enter2out / np>0** 触发点算，**newer-covers-老值**（按 ts 单调取最新）。area 自查是**双用途**：floor 豁免 + 喂 ghost 判定（新轨落声明床 + sleepad 占用 → 大概率真睡者，不该判 phantom）。
+1. **area 自查用 raw 坐标**（非 Kalman），在 **new-tid / enter2out / np>0** 触发点算，**newer-covers-老值**（按 ts 单调取最新）。**Option A（2026-07-07 定）**：`AreaEff` 是 **latch 私有旁路**——只喂 Phase 1.5 的 provenance/confine 判定，**不替 floor 主路的 `CellAreaType`**。
+   - **floor 主路 CellAreaType drift 已收敛（7-7）**：曾 Xsensorv1=每帧 QueryAreaType / sensor=StillBoxCellArea 锁定。已把 **Xsensorv1 收敛到 sensor**：box 起点锁定 `StillBoxCellArea`（+chair 锁）、still→锁定值 / move→AreaUnknown（躲逐帧跨格抖动误报）/ lost coast→raw 末点重算；三分支两引擎逐字一致，cd2b replay fire=0 无回退。`AreaEff`（latch）与 CellAreaType（floor）正交——latch 只压 ghost 分类不压 floor。
 2. **Kalman 保留、继续每 tick 跑**（velocity 硬依赖它，且仅几百 flop）。但**位置消费者除速度相关外一律改读 raw**；**4 个 ghost 检测器优先**。
+3. **real-by-provenance latch（挂 lid、单调、永久 real）**：出生判定有 2 个评估时刻（出生瞬时门距 + census 5s 窗），**任一时刻**满足 provenance → born ghost score 归 0、**以后一律不再做 ghost 判断**；唯一解闩 = swap / split-group 重分配。provenance = 门第（EnterRoom 或 raw 自查落 AreaEnter）**或** 床（raw 自查落声明床 ∧ sleepad 占用）。详见 Phase 1.5。
 
 ## Kalman 必须集（唯一硬依赖 = 速度）
 
@@ -42,7 +44,7 @@
 - 固件事件的 area（enter2out / InBed 的 area_id）带事件 ts；自查带 now。
 - 谁 ts 新用谁。语义：自查早于事件 → 后到的事件覆盖；自查晚于事件 → 前事件是瞬态，用当前自查。
 
-**wiring**：`base.CellAreaType = ts.AreaEff`（替 [track_manager.go:1108] 现在的每帧 QueryAreaType(Kalman位)）。下游 floor 豁免 / emission / ghost 都吃这个单源。
+**wiring（Option A）**：`AreaEff` **不进** floor 主路（`CellAreaType` 保持各引擎原样）；仅 `evalProvenance`（provenance 判定）与 `realLatchActive`（confine）读它。下游 floor/emission 的 area 源不变。
 
 **开放点**（实现时定）：
 - 触发点是否补 **InBed 事件** 和 **stillbox-start**？（floor 关键是 coast 起点 area；但在床者几乎总以 new-tid 重生，new-tid 可能已覆盖——先不加，replay 看够不够。）
@@ -50,9 +52,74 @@
 
 ---
 
+## Phase 1.5 — real-by-provenance latch（治"重生睡者被全判 ghost"根因）
+
+**目标**：一条轨一旦有 provenance 证据（进门 / 落声明床占用），**永久判 real、彻底退出 ghost 判定**，且这份记忆**跨 new-tid churn 持续**——这是 cd2b 根因（真睡者反复丢-重抓、每条重生轨被判 ghost → nr=0）的正解。
+
+### 现状（本节是升级，不是新建）
+
+已有 `EnterBorn`（[track.go:30]）：出生有 EnterRoom 配对 → `MaxGhost` 钳 ≤0.5，`LidRebound`(=swap) 解禁；`confirmedMirrorResidual`([track_manager.go:2125]) 已用它护进门真人。本节把它**广义化 + 硬化**，按规则 1.3 单源——**复用/改造 `EnterBorn`，禁止新开并行 latch 字段**。
+
+### 2 个 born-ghost 评估时刻（"任一命中即 latch"）
+
+| # | 位置 | 现在算什么 |
+|---|---|---|
+| ① 出生瞬时 | [track_manager.go:2086] `③ born-ghost 门距` | `85*d/150 > 65` ⟺ 出生 >~115cm 离门 |
+| ② 出生 5s 窗 | [census.go:214] `birth_verdict` | 窗末冻结 `p_real<0.5 → ghost` |
+
+**OR 语义**：①②**任一时刻**满足下面 provenance → 立即 latch，另一时刻不必再看。
+
+### provenance 入口（两条通道，OR）
+
+1. **门第**：`EnterRoom` 事件 **或** raw 自查 `AreaEff==AreaEnter`。
+   - `AreaEff` 来自 Phase 1（这也是 Phase 1.5 硬依赖 Phase 1 先落地的原因；Phase 1 之前只有固件 EnterRoom 事件，拿不到"落 Enter 区"）。
+2. **床**：raw 自查 `AreaEff∈{AreaBed, AreaMonitorBed}`（有 sleepad 的真床，非沙发 AreaLying）**∧** 同房 sleepad 占用 present。
+   - **缺 2 则 cd2b 不治**：重生睡者无 EnterRoom、不在 Enter 区（area_id=255，落床），门第通道对他永不触发。床通道是他唯一的 provenance。
+   - **sleepad flaky 张力（replay 必查）**：cd2b 根因 #5 = coast 期 `vital_confidence=0 → bed_reading=NoReport`，sleepad 占用会掉。latch 是 lid 单调，只需在**任一**重生时刻（~6 次）逮到一次"落床 ∧ sleepad 占用"即永久置位。replay 要确认这 6 次里**至少一次** sleepad 仍报占用；若全 NoReport，则 sleepad AND-gate 太严，需退到"近期占用窗"或另议（不在本次改，先由 replay 证伪）。
+
+### latch 语义（挂 lid、单调、硬化）
+
+- **载体 = `LogicID`（lid），不是 tid**。tid 每次重抓换新，挂 tid = 每次 new-tid 清零 = 等于无 latch。census 已按透传 lid 做键（[[logicid_unified_census_refs_tm]]），latch 随 lid 走才带得过 churn（出生继承 `parent.RealProven`）。
+- **`RealProven` 置位 = 单调**：出生/present 帧任一时刻 provenance 满足即置真，一旦置真只有 split 重分配能清（见解闩）。
+- **force-real 生效 = 条件（confine）**：消费端一律读 `realLatchActive() = RealProven ∧ AreaEff∈rest 区`（Option B）。active 时 → census `t.rt.ForceReal()`（保 nr≥1）+ SetTrackPReal 强制 PReal=1 且不累积 MaxGhost + 出生软压 stamp 跳过 + residual 驱逐豁免。不 active（飘出 rest 区）→ ghost 检测器照常跑。
+- **`EnterBorn`/`LidRebound` 退役**：`EnterBorn` 广义化并改名 `RealProven`；`LidRebound`（每次 churn 置位的软钳解禁）删除，其职责由 confine 取代。
+
+### 解闩策略 = Option B「继承保留 + 空间 confine」（架构师 2026-07-07 定；唯一 FP 安全阀 —— 命门）
+
+**方向辨明**：ghost 判定压的是 FP。把一条轨 latch 成永久 real = 它永不被 ghost 压 → floor/fall 一定放行。
+
+- latch 真人 → 治 FN（睡者不再被全判 ghost）。✅
+- ghost **冒用了 real lid** → 带 real-latch 永不被压 → **floor FP 直接放行**。🔴
+
+**发现的冲突（原"swap 解闩"行不通）**：现有 `LidRebound` 在**每次无门第 `nearestAliveTrack` 继承**就置位（[track_manager.go:1514]），而 cd2b 真睡者重抓走的正是这条路径 → 若 `LidRebound` 当解闩，latch 每次 churn 被清 → cd2b 不治。根子=`LidRebound` 把"延续churn(同一真人)"与"真冒用"混成一个信号。
+
+**Option B 定稿**：
+1. **latch 挂 lid、跨 churn 继承**（出生 `nearestAliveTrack` 继承 `parent.RealProven`，如现 EnterBorn 继承）。**删 `LidRebound`**——不再靠它解闩。
+2. **confine 应用（读时判，非清 latch）**：latch 的 force-real 只在**当前 `AreaEff ∈ rest 区**时生效。`realLatchActive() = RealProven ∧ AreaEff∈{AreaBed,AreaMonitorBed,AreaSit,AreaLying,AreaEnter}`。
+   - 真睡者赖床上 → AreaEff=Bed → latch active → 永不判 ghost + 床 floor 豁免 → **cd2b 治**。
+   - 冒名 phantom 飘到开阔区 → AreaEff=Active/Deny → latch **不** active → ghost 检测器照常跑 → **FP 口堵**。
+   - 真人真摔在开阔地板 → AreaEff=Active → latch 不 active → floor 照常 fire（**要的**，latch 只压 ghost 分类不压真摔）。
+3. **硬清 latch**：split-group 重分配（组内 lid 重新分派成员）时 `RealProven=false`。
+
+**关键辨析**：latch 的作用是**反 ghost 分类**（保 nr≥1、不被当 phantom purge），**不是压 floor**。压 cd2b 睡者 floor 的是**床区 floor 豁免**（Phase 1 把 AreaEff 定成 Bed）。两者正交、协同治 cd2b。
+
+### 验证判据（规则 #3，看机制非 fire）
+
+cd2b-0707 replay 后：重生睡者的 lid 是否在①或②命中床 provenance 而 latch → 后续重生轨 census **不再判 ghost**（`nr≥1`）；swap/split 发生时 latch 是否正确清除（不留冒用口子）。
+
+### ✅ 2026-07-07 replay 实证（Xsensorv1，case-cd2b-0707-02280243 @8x）
+
+- **睡者 `CD2B02800853`**：02:29:59 经**床通道**（AreaEff∈{Bed,MonBed} ∧ sleepad InBed）latch，`p_real` 1.00 贯穿；census `ForceReal` 粘住 → 全程 real，非 ghost。→ 治根因 #2（原 census 判 ghost/nr=0）。
+- **床通道命中 = AreaEff=Bed**：反证 Phase 1 自查把重生轨落到了声明床（治根因 #4，floor 拿床豁免）。
+- **sleepad flaky 张力已解**：`bed_reading=InBed` 全程（02:30~02:43）held，即便 `vital` 02:36 掉 False；`sleepadOccupied()` 取 `InBed` 非 vital → 02:42:40 fresh 重生 `CD2B04240772` **立即再 latch**（rp_true=80/80）。→ 治根因 #5，且确认"用 InBed 不用 vital"是对的。
+- **confine/FP**：全房全轨 `fire=0`（原生产 02:42:04 floor 误火消除）；两雷达兄弟 333b 无误火。
+- 注：`real_proven`（xray，来自 GhostSignals=tm 侧裸 RealProven）在 tm 轨 coast 驱逐后读 false 属正常（GhostSignals found=false），census 侧 `p_real` 仍 1.00 粘住，占用不丢。
+
+---
+
 ## Phase 2 — ghost 检测器 Kalman→raw（治 nr=0 正面战场）
 
-逐个把 `ts.Kalman.Position()` 换成 `ts.History[len-1]`（raw 末点）：
+逐个把 `ts.Kalman.Position()` 换成 `ts.History[len-1]`（raw 末点）。**前置**：已 latch(Phase 1.5) 的 lid 在入口 short-circuit，下列检测器对它一律跳过。
 
 | 文件:行 | 检测器 | 换 raw 的收益 | 风险/注意 |
 |---|---|---|---|
@@ -74,9 +141,10 @@
 ## 执行顺序建议
 
 1. **Phase 2 先做**（teleport + static_reflector 风险最低，直接见 nr 变化）→ replay 看 nr 是否回正。
-2. **Phase 1**（area 自查）→ replay 看 bed 豁免 / floor。
-3. Phase 3 清理。
-4. 每步 `go vet && go build`；Xsensor 验证过再镜像 wisefido-sensor。
+2. **Phase 1**（area 自查）→ replay 看 bed 豁免 / floor。**Phase 1.5 硬依赖 Phase 1**（要 `AreaEff`），必须排在 Phase 1 之后。
+3. **Phase 1.5**（real-by-provenance latch）→ replay 看重生睡者是否 latch、census 是否不再判 ghost、swap/split 解闩是否干净。
+4. Phase 3 清理。
+5. 每步 `go vet && go build`；Xsensor 验证过再镜像 wisefido-sensor。
 
 ## 相关 memory
 
