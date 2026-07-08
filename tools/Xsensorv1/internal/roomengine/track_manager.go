@@ -457,8 +457,8 @@ func (tm *TrackManager) nearestAliveTrack(x, y int, deviceAddr string, nowMs int
 		if frameKeys[trackKey{ts.DeviceAddr, ts.TrackID}] || nowMs-ts.LastObservedMs < presenceCoastMs {
 			continue // 并发上报（本帧/一个雷达周期内仍在报）= 并存目标，非 renumber，不继承
 		}
-		px, py := ts.Kalman.Position()
-		if d := distInt(x, y, int(math.Round(px)), int(math.Round(py))); d < bestD {
+		px, py := ts.rawLastPos() // Phase 3：关联用 raw 末点（丢轨期冻结不漂）→ 重抓认回 parent 继承 RealProven
+		if d := distInt(x, y, px, py); d < bestD {
 			bestD = d
 			best = ts
 		}
@@ -877,6 +877,16 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 	tm.mu.Unlock()
 }
 
+// rawLastPos 位置消费单源（area_selfcheck_and_ghost_raw_spec Phase 3）：raw History 末点（丢轨期冻结不漂，
+// 正是 ghost/关联/反射要的"最后真位"）；无观测时回退 Kalman.Position()。**速度仍 Kalman.Velocity()**。
+func (ts *TrackState) rawLastPos() (int, int) {
+	if n := len(ts.History); n > 0 {
+		return ts.History[n-1].X, ts.History[n-1].Y
+	}
+	px, py := ts.Kalman.Position()
+	return int(math.Round(px)), int(math.Round(py))
+}
+
 // selfCheckArea 用 raw 末点自查区型 → newer-covers 更新 ts.AreaEff（Phase 1；tsMs=触发时刻）。
 // raw 末点 = 末次真观测点：丢轨期冻结逐帧同值（等价只算一次），正是 ghost/floor 要的"最后真位"。
 func (tm *TrackManager) selfCheckArea(ts *TrackState, tsMs int64) {
@@ -925,8 +935,20 @@ func (tm *TrackManager) evalProvenance(ts *TrackState, nowMs int64, bornNow bool
 	}
 	if (ts.AreaEff == AreaBed || ts.AreaEff == AreaMonitorBed) && tm.sleepadOccupied() {
 		ts.RealProven = true
+		return
+	}
+	// R walkout（ghost_disproof_birth_certificate_spec）：离 born 最远净距 ≥walkoutCm = 自主位移=活体 → 补证。
+	// 纯距离（非速度）；teleport 帧（≥200cm/s）已由 teleport 轴先 purge，喂不到 History → 不污染 R。
+	if n := len(ts.History); n > 0 {
+		p := ts.History[n-1]
+		if distInt(p.X, p.Y, ts.BirthPos.X, ts.BirthPos.Y) >= walkoutCm {
+			ts.RealProven = true
+		}
 	}
 }
+
+// walkoutCm R walkout 阈：离 born 净距 ≥此 = 自主位移（phantom 冻着触不到）→ 补出生证。
+const walkoutCm = 200
 
 // RecordRadarEvent 落账 radar 来源的事件（EnterRoom/ExitRoom/InBed/LeftBed）。
 // 仅落账。PR-14: radar InBed 触发两个副作用：
@@ -1091,6 +1113,9 @@ type TrackStatusBase struct {
 	Present             bool   // 本帧是否被真实观测（LastObservedMs == nowMs）；false=漏帧/丢轨 → DBN 走 blind 续存
 	SplitConvicted      bool   // split 运动学坐实(SplitGhostSinceMs>0)→ 喂 census realness 降 PReal → nr 排此 ghost（Stage1.5）
 	RealLatchActive     bool   // Phase 1.5：real-by-provenance latch 当前生效（provenance 证真 ∧ 仍在 rest 区）→ census ForceReal 保 nr≥1
+	RealProven          bool   // 反证法：出生证 latch（裸，不 confine）→ census 唯一真化通道；false=无证=ghost（ghost_disproof_birth_certificate_spec）
+	AreaEffDbg          AreaType // forensic：Phase 1 position 自查有效区型（E2 读它，非 CellAreaType）
+	RawSelfX, RawSelfY  int      // forensic：selfCheckArea 实际查的 raw History 末点（对照 Kalman 显示位 X/Y）
 	TraverseDelta       int    // 自上次 SnapshotTrackStatuses 累计的 traverse cells（用于 SuiteCensus 升格判定）
 	SleepadInBed        bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
 	SleepadVitalPresent bool   // 任一 sleepad 在床 + HR/RR fresh(TTL 内)→ 活体在垫,喂 belief 抬 SBed
@@ -1153,9 +1178,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 
 	out := make([]TrackStatusBase, 0, len(tm.tracks))
 	for _, ts := range tm.tracks {
-		pxF, pyF := ts.Kalman.Position()
-		px := int(math.Round(pxF))
-		py := int(math.Round(pyF))
+		rawSelfX, rawSelfY := ts.rawLastPos() // Phase 3：快照位置用 raw 末点，非 Kalman.Position()
 
 		base := TrackStatusBase{
 			TrackID:             ts.TrackID,
@@ -1163,14 +1186,19 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			DeviceAddr:          ts.DeviceAddr,
 			RoomID:              ts.RoomID,
 			PReal:               ts.PReal,
-			X:                   px,
-			Y:                   py,
+			RawSelfX:            rawSelfX,
+			RawSelfY:            rawSelfY,
+			// Phase 3（area_selfcheck_and_ghost_raw_spec）：位置消费者用 raw 末点，非 Kalman.Position()；VX/VY 仍 Kalman。
+			X:                   rawSelfX,
+			Y:                   rawSelfY,
 			Z:                   ts.LastZ,
 			RawH:                ts.LastRawH,
 			RawV:                ts.LastRawV,
 			RawZ:                ts.LastRawZ,
 			Pose:                ts.LastPose,
 			RealLatchActive:     ts.realLatchActive(),
+			RealProven:          ts.RealProven,
+			AreaEffDbg:          ts.AreaEff,
 			MoveActive:          ts.StillBoxRunStart == 0 || ts.LastObservedMs == nowMs,
 			Present:             nowMs-ts.LastObservedMs < presenceCoastMs,
 			SplitConvicted:      ts.SplitGhostSinceMs > 0,
@@ -1196,10 +1224,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		// redirect 单源,躲开逐帧 Kalman/raw 微动跨格(sit 区边缘被偏读成 active 致误报)。移动期不读(floor 不计时/emission 靠 pose)。
 		// EnterTarget(门方向,lost-fall 用)仍按当前 raw 位置实时取。（Option A 收敛到 sensor StillBoxCellArea 设计；
 		// AreaEff(Phase 1)是 latch 私有旁路喂 evalProvenance/confine，与本主路无关。）
-		rawCx, rawCy := px, py
-		if n := len(ts.History); n > 0 {
-			rawCx, rawCy = ts.History[n-1].X, ts.History[n-1].Y
-		}
+		rawCx, rawCy := ts.rawLastPos()
 		cell := tm.grid.CellAt(rawCx, rawCy)
 		if cell != nil && cell.Belief[0].Type == AreaEnter {
 			base.EnterTarget = cell.EnterTarget
@@ -1800,10 +1825,8 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 
 	// ========== 段 6: 构建输出 ==========
 	for _, ts := range tm.tracks {
-		pxF, pyF := ts.Kalman.Position()
+		px, py := ts.rawLastPos() // Phase 3：位置 raw 末点；VX/VY 仍 Kalman
 		vxF, vyF := ts.Kalman.Velocity()
-		px := int(math.Round(pxF))
-		py := int(math.Round(pyF))
 		vx := int(math.Round(vxF))
 		vy := int(math.Round(vyF))
 
@@ -2243,8 +2266,7 @@ func absI64(v int64) int64 {
 //	① 非自己 ② Present（本帧真观测，非 coast 幽灵）③ 真在移动（box/path 破 still 阈，排静止同人影子/另一躺者）
 //	④ 非在床（firmware 床区）⑤ 非 ghost（PReal≥0.5）且非干扰/瞬移/出生伪迹。
 func (tm *TrackManager) witnessNearby(ts *TrackState, nowMs int64, radiusCm int) bool {
-	sxF, syF := ts.Kalman.Position()
-	sx, sy := int(math.Round(sxF)), int(math.Round(syF))
+	sx, sy := ts.rawLastPos() // Phase 3：位置 raw 末点
 	for _, o := range tm.tracks {
 		if o.LogicID == ts.LogicID { // ①
 			continue
@@ -2264,8 +2286,8 @@ func (tm *TrackManager) witnessNearby(ts *TrackState, nowMs int64, radiusCm int)
 		if o.BoxRangeWithinMs(30_000, nowMs) <= stillBoxCm && o.PathLengthWithinMs(30_000, nowMs) <= stillPathCm { // ③ 静止(含 churn 影子/躺者)非目击者
 			continue
 		}
-		oxF, oyF := o.Kalman.Position()
-		if distInt(sx, sy, int(math.Round(oxF)), int(math.Round(oyF))) <= radiusCm {
+		ox, oy := o.rawLastPos() // Phase 3：位置 raw 末点
+		if distInt(sx, sy, ox, oy) <= radiusCm {
 			return true
 		}
 	}

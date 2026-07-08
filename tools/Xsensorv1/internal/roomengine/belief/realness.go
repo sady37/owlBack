@@ -104,3 +104,7 @@ func (r *RealnessTrack) PMirror() float64 { return r.bM }
 //	出生窗后判定冻结(省算力)，但此 override 实时常开——配对源离开、track 变孤轨时立即纠回 Real，
 //	防冻结成 Mirror 的轨变孤轨后 N_r 算成 0(有真人却数 0 人)。
 func (r *RealnessTrack) ForceReal() { r.bR, r.bM = 1, 0 }
+
+// ForceGhost 反证法：无出生证 → 硬判 ghost（PReal=0），压过几何/独处 force-real（ghost_disproof_birth_certificate_spec）。
+// 唯一真化通道 = RealProven latch（经 obs.ForceReal 走 ForceReal 分支）；到不了那分支 = 无证 = ghost。
+func (r *RealnessTrack) ForceGhost() { r.bR, r.bM = 0, 1 }

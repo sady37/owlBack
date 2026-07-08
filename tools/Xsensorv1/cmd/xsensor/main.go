@@ -174,7 +174,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 
 	tracks := make([]adapter.TrackObs, 0, len(bases)+1)
 	for _, b := range bases {
-		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, SplitConvicted: b.SplitConvicted, ForceReal: b.RealLatchActive, RadarTrack: adapter.RadarTrack{
+		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, SplitConvicted: b.SplitConvicted, ForceReal: b.RealProven, RadarTrack: adapter.RadarTrack{
 			TrackID: b.TrackID, // logicID↔track_id 反查源（ExitRoom 按号反查丢轨人）
 			Online:  b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
 			StillSec: float64(b.StillBoxSec), // still-box raw 时长 → FloorGuard 纯计时器（直立折扣已移 emission 压 SFallen）
@@ -282,9 +282,9 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	raw := make([]map[string]interface{}, 0, len(bases))
 	for _, b := range bases {
 		raw = append(raw, map[string]interface{}{
-			"tid": b.TrackID, "present": b.Present, "pose": b.Pose,
+			"tid": b.TrackID, "lid": b.LogicID, "present": b.Present, "pose": b.Pose,
 			"x": b.X, "y": b.Y, "z": b.Z, "stillbox": b.StillBoxSec, "dd": b.FrameMoveCm,
-			"area": int(b.CellAreaType), "bf_preal": b.PReal,
+			"area": int(b.CellAreaType), "area_eff": int(b.AreaEffDbg), "raw_self_x": b.RawSelfX, "raw_self_y": b.RawSelfY, "real_proven": b.RealProven, "bf_preal": b.PReal,
 			"fw_area": b.FwAreaID, "fw_bed": fwBed(b.FwAreaID, g.bedAreaIDs), // 固件 area_id + 是否命中床区(N,抬 SBed 那条腿)
 			"vital": b.SleepadVitalPresent, // 该轨 sleepad 接触 vital(InBed+HR/RR fresh)→ couplesAnyBed 时抬 SBed
 		})

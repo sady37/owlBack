@@ -133,107 +133,31 @@ func (c *TrackCensus) Update(nowMs int64, obs []TrackObs, radar Point, walls, en
 		}
 	}
 
-	// 帧间速度（cm/s）→ co-existence ρ。出生/同帧（dt≤0）= 无速度基准 → 0。
 	// disp = 单帧位移幅值（cm），喂跨设备同人融合（frame-invariant）。
-	speeds := make([]float64, len(obs))
 	disp := make([]float64, len(obs))
 	for i, o := range obs {
 		t := c.tracks[ids[i]]
 		disp[i] = math.Hypot(float64(o.X-t.x), float64(o.Y-t.y))
-		if dt := float64(nowMs-t.lastMs) / 1000.0; dt > 0 {
-			speeds[i] = disp[i] / dt
-		}
 	}
-	// mirror co-existence 仅在【同一设备】恰好 2 track 之间（§G六 + 多雷达订正）：反射 ghost 是单台雷达
-	// FOV 内多径，**跨雷达两条 track 是对同一人的冗余探测，绝不互为镜像**（09e7 case：09E7 摔轨被 D523
-	// 当镜像源压成 ghost）。按 devKey(uid_last4) 分组，仅 size==2 的设备组算 ρ/coexist/laterBorn；
-	// 1=永发 / 3+=不处理 → coexist 0。
-	coexistOf := make([]float64, len(obs))
-	rhoOf := make([]float64, len(obs))
-	laterOf := make([]bool, len(obs))
-	byDev := map[string][]int{}
-	for i := range ids {
-		byDev[DevKey(ids[i])] = append(byDev[DevKey(ids[i])], i)
-	}
-	for _, grp := range byDev {
-		if len(grp) != 2 {
-			continue
-		}
-		p, q := grp[0], grp[1]
-		rho := speedSync(speeds[p], speeds[q])
-		coexistOf[p], coexistOf[q] = 1, 1
-		rhoOf[p], rhoOf[q] = rho, rho
-		a, b := c.tracks[ids[p]], c.tracks[ids[q]] // §9.1 后到者破同步对称（同时生→无后到→都不归同步）
-		if a.birthMs > b.birthMs {
-			laterOf[p] = true
-		} else if b.birthMs > a.birthMs {
-			laterOf[q] = true
-		}
-	}
-
+	// 反证法（ghost_disproof_birth_certificate_spec）：realness 塌成 latch 驱动。唯一真化通道 = 出生证 latch
+	// （o.ForceReal = roomengine RealProven，裸 latch 不 confine）。有证 → ForceReal / 无证 → ForceGhost。
+	// 删旧 mirror 几何轴（reflectSep/WallMargin/sync/rcRealBase/rcWAuto）+ §G六 独处 force-real（那让空房 phantom 误火）。
 	for i, o := range obs {
 		t := c.tracks[ids[i]]
-		// Phase 1.5：roomengine real-by-provenance latch 生效 → 强制 real（保 nr≥1），跳过几何/sync 判定 +
-		// 出生窗定性。confine（是否仍在 rest 区）已在 roomengine 侧判完，此处只消费结果。
 		if o.ForceReal {
-			t.rt.ForceReal()
-			t.isRefl, t.fSep, t.fWallMargin, t.fRho, t.fLater = false, 0, 0, 0, false
-			c.updateTrackTail(t, o, nowMs, disp[i])
-			continue
-		}
-		// split 坐实(运动学 3-tick 赖锚点)是持续判决 → 即便出生窗后也须续喂 realness 排干 bR（否则冻结在窗末 PReal=1，
-		// nr 顶 2）；其率不依赖几何/Coexist(见 belief.Update)，故跳过 reflectSep。窗内轨照旧走几何+sync 判定。
-		inWindow := nowMs-t.birthMs <= c.p.MirrorWindowMs
-		if inWindow || o.SplitConvicted {
-			// reflectSep（最贵的穿墙求交）仅出生窗内 coexist>0=track==2 才算（成本：ghost 仅 track==2；
-			// 孤轨 mEv=Coexist×(…)=0,跳过结果中性）；窗后的 split-convicted 靠 rcWSplit 率，不需几何。
-			sep := 0.0
-			wallMargin := 0.0
-			if inWindow && coexistOf[i] > 0 {
-				sep = reflectSep(o.X, o.Y, radar, walls, c.p.ReflSepCm) // 桶二：墙外反射裕度 cm（0=墙内/非反射）
-				if sep > 0 {
-					if wallMargin = sep / float64(c.p.WallScaleCm); wallMargin > 1 {
-						wallMargin = 1
-					}
-				}
-			}
-			t.isRefl = sep > 0
-			later := laterOf[i]
-			t.rt.Update(belief.RealnessObs{
-				Displaced:      math.Hypot(float64(o.X-t.birthX), float64(o.Y-t.birthY)) > float64(c.p.MoveCm),
-				CoexistRho:     rhoOf[i],
-				LaterBorn:      later,
-				WallMargin:     wallMargin,
-				Coexist:        coexistOf[i],
-				SplitConvicted: o.SplitConvicted,
-				DtMs:           nowMs - t.lastMs,
-			})
-			t.fSep, t.fWallMargin, t.fRho, t.fLater = sep, wallMargin, rhoOf[i], later // forensic
+			t.rt.ForceReal() // 有出生证 → real
 		} else {
-			// 窗后：判定冻结，**不算 reflectSep**（省算力，最贵的穿墙求交）。仅守孤轨永 Real override：
-			//   配对源离开 → Coexist==0 → 立即纠回 Real，防冻结成 Mirror 的轨变孤轨后 N_r 算 0。
-			if !t.birthLogged {
-				// 出生窗冻结那帧固化一次判定（ForceReal/reset 之前 = 5s 窗累积的几何+sync 裁决）。
-				t.birthLogged = true
-				pr := t.rt.PReal()
-				verdict := "real"
-				if pr < 0.5 {
-					verdict = "ghost"
-				}
-				zap.L().Info("birth_verdict",
-					zap.String("logic_id", ids[i]),
-					zap.String("verdict", verdict),
-					zap.Float64("p_real", pr), zap.Float64("p_mirror", t.rt.PMirror()),
-					zap.Bool("is_refl", t.isRefl), zap.Float64("sep", t.fSep),
-					zap.Float64("wall_margin", t.fWallMargin), zap.Float64("rho", t.fRho),
-					zap.Bool("later_born", t.fLater),
-					zap.Int("birth_x", t.birthX), zap.Int("birth_y", t.birthY),
-					zap.Float64("door_d", t.doorD))
+			t.rt.ForceGhost() // 无证 → ghost（压过漂移 + 独处 force-real）
+		}
+		t.isRefl, t.fSep, t.fWallMargin, t.fRho, t.fLater = false, 0, 0, 0, false // 几何轴退役，forensic 恒零
+		if !t.birthLogged {
+			t.birthLogged = true
+			verdict := "ghost"
+			if o.ForceReal {
+				verdict = "real"
 			}
-			if coexistOf[i] == 0 {
-				t.rt.ForceReal()
-			}
-			t.isRefl, t.fSep, t.fWallMargin, t.fRho = false, 0, 0, 0 // forensic 标冻结（不再喂几何）
+			zap.L().Info("birth_verdict", zap.String("logic_id", ids[i]), zap.String("verdict", verdict),
+				zap.Int("birth_x", t.birthX), zap.Int("birth_y", t.birthY), zap.Float64("door_d", t.doorD))
 		}
 		c.updateTrackTail(t, o, nowMs, disp[i])
 	}
