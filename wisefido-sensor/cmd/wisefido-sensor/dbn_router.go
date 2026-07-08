@@ -91,7 +91,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 
 	tracks := make([]adapter.TrackObs, 0, len(bases)+1)
 	for _, b := range bases {
-		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, SplitConvicted: b.SplitConvicted, ForceReal: b.RealLatchActive, RadarTrack: adapter.RadarTrack{
+		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, SplitConvicted: b.SplitConvicted, ForceReal: b.RealProven, RadarTrack: adapter.RadarTrack{
 			TrackID: b.TrackID,
 			Online:  b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
 			StillSec: float64(b.StillBoxSec),
@@ -133,8 +133,6 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		Beds:        g.beds,
 		BedAreaIDs:  g.bedAreaIDs,
 		RadarLess:   g.radarLess,
-		Walls:       g.walls,
-		RadarPos:    g.radarPos,
 		Entrances:   g.entrances,
 		ExitLogOdds:      exitLogOdds,
 		GhostLeftLogOdds: ghostLeftLogOdds,

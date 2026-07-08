@@ -1076,14 +1076,31 @@ func (tm *TrackManager) evalProvenance(ts *TrackState, nowMs int64, bornNow bool
 	if ts.RealProven {
 		return
 	}
-	if ts.AreaEff == AreaEnter || (bornNow && tm.hasRecentEnterRoom(nowMs)) {
+	if ts.AreaEff == AreaEnter || (bornNow && tm.hasRecentEnterRoom(nowMs)) ||
+		(tm.grid != nil && tm.grid.NearestEntryDist(ts.BirthPos.X, ts.BirthPos.Y) <= e1DoorBornCm) {
 		ts.RealProven = true
 		return
 	}
 	if (ts.AreaEff == AreaBed || ts.AreaEff == AreaMonitorBed) && tm.sleepadOccupied() {
 		ts.RealProven = true
+		return
+	}
+	// R walkout（ghost_disproof_birth_certificate_spec）：离 born 最远净距 ≥walkoutCm = 自主位移=活体 → 补证。
+	// 纯距离（非速度）；teleport 帧（≥200cm/s）已由 teleport 轴先 purge，喂不到 History → 不污染 R。
+	if n := len(ts.History); n > 0 {
+		p := ts.History[n-1]
+		if distInt(p.X, p.Y, ts.BirthPos.X, ts.BirthPos.Y) >= walkoutCm {
+			ts.RealProven = true
+		}
 	}
 }
+
+// walkoutCm R walkout 阈：离 born 净距 ≥此 = 自主位移（phantom 冻着触不到）→ 补出生证。
+const walkoutCm = 200
+
+// e1DoorBornCm E1 近门出生证阈：出生点距最近门 ≤此 cm = radar 已跟到进门者本人 → 发证。
+// 硬上限 <ffdb phantom door_d=65（否则冻结 phantom 被误发证 → floor 误火复活）；取 30 留安全余量。
+const e1DoorBornCm = 30
 
 // LastNumberPeopleZeroMs 固件最近一次 number_people=0 的 ts（0 = 从未上报/最近 count≠0）。
 // 审查51 #1.3:派生视图(非独立 latch)——仅当单 latch 最近 count==0 才返回其 ts。
@@ -1205,7 +1222,8 @@ type TrackStatusBase struct {
 	MoveActive          bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
 	Present             bool   // 本帧是否被真实观测（LastObservedMs == nowMs）；false=漏帧/丢轨 → DBN 走 blind 续存
 	SplitConvicted      bool   // split 运动学坐实(SplitGhostSinceMs>0)→ 喂 census realness 降 PReal → nr 排此 ghost（Stage1.5）
-	RealLatchActive     bool   // Phase 1.5：real-by-provenance latch 当前生效（provenance 证真 ∧ 仍在 rest 区）→ census ForceReal 保 nr≥1
+	RealLatchActive     bool   // Phase 1.5：real-by-provenance latch 当前生效（provenance 证真 ∧ 仍在 rest 区）；仅 eviction guard 用
+	RealProven          bool   // 反证法：出生证 latch（裸，不 confine）→ census 唯一真化通道；false=无证=ghost（ghost_disproof_birth_certificate_spec）
 	TraverseDelta       int    // 自上次 SnapshotTrackStatuses 累计的 traverse cells（用于 SuiteCensus 升格判定）
 	SleepadInBed        bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
 	SleepadVitalPresent bool   // 任一 sleepad 在床 + HR/RR fresh(TTL 内)→ 活体在垫,喂 belief 抬 SBed
@@ -1286,6 +1304,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			RawZ:                ts.LastRawZ,
 			Pose:                ts.LastPose,
 			RealLatchActive:     ts.realLatchActive(),
+			RealProven:          ts.RealProven,
 			MoveActive:          ts.StillBoxRunStart == 0 || ts.LastObservedMs == nowMs,
 			Present:             nowMs-ts.LastObservedMs < presenceCoastMs,
 			SplitConvicted:      ts.SplitGhostSinceMs > 0,

@@ -85,8 +85,9 @@ type LostDeparture struct {
 type TrackForensic struct {
 	LogicID       string
 	Present       bool
-	PReal         float64   // 真人后验（realness 轴；ghost→低）
-	PMirror       float64   // 镜像后验
+	RealProven    bool      // 判决轴：出生证 latch（SetTrackPReal 二值回灌 tm 决策门读它，替代旧 PReal≥0.5）
+	PReal         float64   // 显示轴：连续 confidence（纯 FE ×100；gate 任何决策皆无）
+	PMirror       float64   // 镜像后验（forensic/FE）
 	IsReflection  bool      // 桶二镜面几何判定
 	PFallen       float64   // per-track P^F
 	Fire          bool      // per-track 裁决（持续≥T_hold）
@@ -333,7 +334,7 @@ type trackResult struct {
 
 // Tick 一帧推进。rhoXroom（neighbor，单房=0）。每条 track 各跑一份滤波，房间 OR 聚合真人 fall。
 func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
-	r.census.Update(fi.NowMs, fi.Tracks, fi.RadarPos, fi.Walls, fi.Entrances)
+	r.census.Update(fi.NowMs, fi.Tracks, fi.Entrances)
 	r.updateKappa(fi) // ① κ 两腿 per-device（维持 per-frame 弱 γ + 强化 15s 窗 强 γ，同向共跳）
 	online := adapter.Online(fi)
 	nr := r.census.Nr()
@@ -359,7 +360,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 	realOccupancy := 0                // F1 本 tick 真人占用数（PReal≥0.5 ∧ S∉{E,L}）→ 末更 alone-streak
 	lostExited := false               // 消失 track 里有人本人 ExitRoom 过门（按 track_id 反查）→ Unit timer cancel
 	for _, ts := range tracks {
-		if ts.Present && ts.PReal >= 0.5 {
+		if ts.Present && ts.RealProven {
 			curReal[ts.LogicID] = ts.PReal
 		}
 		if ts.Present {
@@ -441,9 +442,9 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 		f.Step(fi.NowMs, online, logPsi, logPhi)
 
 		mS := f.Space().MarginalS(f.Alpha())
-		// F1 真人占用：PReal≥0.5（排 ghost）∧ S∉{Empty,Left}（含 blind 续存的 faller，未 absorbed 离场）。
+		// F1 真人占用：RealProven（判决轴，排 ghost）∧ S∉{Empty,Left}（含 blind 续存的 faller，未 absorbed 离场）。
 		//   摔进 blind 时 S=Fallen∉{E,L} → 仍计占用 → 独居计时不被摔倒清零（present-only 的 Nr() 会误清）。
-		if ts.PReal >= 0.5 && mS[belief.SEmpty]+mS[belief.SLeft] < absorbedThresh {
+		if ts.RealProven && mS[belief.SEmpty]+mS[belief.SLeft] < absorbedThresh {
 			realOccupancy++
 		}
 
@@ -484,7 +485,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 		repeatR := 0.0
 		selfRecovered := false
 		if ts.Present {
-			early, recovered := esc.Step(fi.NowMs, ts.Obs.RadarTrack.Pose, ts.PReal >= 0.5, ts.Obs.RadarTrack.AreaType)
+			early, recovered := esc.Step(fi.NowMs, ts.Obs.RadarTrack.Pose, ts.RealProven, ts.Obs.RadarTrack.AreaType)
 			repeatR = esc.Residual()
 			selfRecovered = recovered
 			if early {
@@ -513,7 +514,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 		for i := range devGeom {
 			covers[i] = devGeom[i].Covers
 		}
-		forensic = append(forensic, TrackForensic{LogicID: ts.LogicID, Present: ts.Present, PReal: ts.PReal,
+		forensic = append(forensic, TrackForensic{LogicID: ts.LogicID, Present: ts.Present, RealProven: ts.RealProven, PReal: ts.PReal,
 			PMirror: ts.PMirror, IsReflection: ts.IsReflection, PFallen: pF, Fire: d.Fire, Band: d.Band,
 			X: ts.Obs.X, Y: ts.Obs.Y, Sep: ts.Sep, WallMargin: ts.WallMargin, Rho: ts.Rho, LaterBorn: ts.LaterBorn,
 			DoorD: ts.DoorD, RepeatR: repeatR, SelfRecovered: selfRecovered, StillSec: ts.Obs.RadarTrack.StillSec,
