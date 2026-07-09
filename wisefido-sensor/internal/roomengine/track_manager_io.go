@@ -300,6 +300,7 @@ func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 			cx, cy = ts.History[n-1].X, ts.History[n-1].Y
 		}
 		exitLO, exitHasEvent, exitTrend := tm.exitLogOddsLocked(lid, nowMs)
+		bathMu, bathSig, bathMaxSit := tm.bathDwellArgs()
 		fireEv := map[string]interface{}{
 			"band":              band,
 			"cell_area":         ts.LastCellArea,
@@ -308,7 +309,10 @@ func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 			"chair_mu":          ts.StillBoxChairMu,
 			"chair_sigma":       ts.StillBoxChairSigma,
 			"chair_maxsit":      ts.StillBoxChairMaxSit,
-			"tfloor_sec":        belief.TFloorFor(ts.LastCellArea, tm.roomType, IsNightTime(nowMs, tm.timezone), ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit),
+			"bath_mu":           bathMu,
+			"bath_sigma":        bathSig,
+			"bath_maxsit":       bathMaxSit,
+			"tfloor_sec":        belief.TFloorFor(ts.LastCellArea, tm.roomType, IsNightTime(nowMs, tm.timezone), ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit, bathMu, bathSig, bathMaxSit),
 			"stillbox_start_ms": ts.StillBoxRunStart,
 			"x":                 cx,
 			"y":                 cy,

@@ -14,8 +14,12 @@ type ChairRect struct {
 	ObjectID string
 }
 
-// DwellColdMinN dwell 分布冷启门控：样本 < 此值 → floor 回退 90min（与 wisefido-sensor 正本一致）。
+// DwellColdMinN dwell 分布冷启门控：样本 < 此值 → floor 回退默认阈（chair 90min / bathroom 20min，与正本一致）。
 const DwellColdMinN = 3
+
+// bathDwellObjectID per-room 浴室停留学习态在 chair_dwell_state 表里的哨兵 object_id（浴室无 pin，一房一个）。
+// hydrate 侧按此哨兵拣出灌 tm.bathDwell（与 wisefido-sensor 正本 1:1）。
+const bathDwellObjectID = "__bathroom__"
 
 // ChairDwell per-chair 久坐学习态只读镜像（hydrate 自 chair_dwell_state；Xsensorv1 不含 Window/不学）。
 type ChairDwell struct {

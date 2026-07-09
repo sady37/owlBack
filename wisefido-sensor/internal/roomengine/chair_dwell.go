@@ -21,8 +21,12 @@ type ChairRect struct {
 	ObjectID string
 }
 
-// DwellColdMinN 久坐窗冷启门控：窗口样本 < 此值 → floor 回退 90min（声明椅学够前不误报）。
+// DwellColdMinN 久坐窗冷启门控：窗口样本 < 此值 → floor 回退默认阈（chair 90min / bathroom 20min，学够前不误报）。
 const DwellColdMinN = 3
+
+// bathDwellObjectID per-room 浴室停留学习态在 chair_dwell_state 表里的哨兵 object_id（浴室无 canvas pin，
+// 一房一个）。复用 chair 同表同 persister，读侧按此哨兵单独拣出灌 tm.bathDwell（不进 chair centers 匹配）。
+const bathDwellObjectID = "__bathroom__"
 
 const (
 	dwellWindowDays      = 14  // 久坐窗滚动天数

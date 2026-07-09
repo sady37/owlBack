@@ -53,6 +53,12 @@ type Observation struct {
 	ChairSigma  float64 // 本椅 14 日久坐标准差（秒）
 	ChairMaxSit float64 // 本椅 false_alarm 反馈棘轮（秒）：人工确认安全的久坐时长下限，单调只增
 
+	// Bathroom 房停留学习（per-room，无 pin）：floor 浴室分支 tFloor=clamp(max(20min, BathMu+1.5·BathSigma, BathMaxSit),≤45min)。
+	// 冷启(BathMu≤0)=20min 保底。仅 RoomType==Bathroom 有意义。
+	BathMu     float64 // 本浴室 14 日停留均值（秒，洗澡/如厕整段）；0=冷启(样本不足)
+	BathSigma  float64 // 本浴室 14 日停留标准差（秒）
+	BathMaxSit float64 // 本浴室 false_alarm 反馈棘轮（秒）：人工确认安全的停留时长下限，单调只增
+
 	// RadarBedHitMask 逐床 N：firmware area_id 命中该床声明的 areaId（= 雷达判"人在该床上"）。长 numBeds。
 	// 替代旧 cell-area 床判定：cell 几何随 canvas drift 误判，firmware area_id 是雷达地面真值。
 	// emission 床 boost = lArea × 该床 covers(M) × N（命中才抬 SBed）。离线 = 全 false。

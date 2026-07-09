@@ -40,7 +40,8 @@ const (
 	// 各区正常停留 (μ, σ) 秒——emission 高斯 CDF 与 floor 异常阈(tFloorFor=μ+1.5σ, room×cell 保守)共用单源(§H/§I)
 	MuDefaultSec, SigmaDefaultSec = 480, 160   // 8min, 2.67min → 异常 12min
 	MuSitSec, SigmaSitSec         = 3600, 1200 // 60min, 20min → 异常 90min
-	MuBathSec, SigmaBathSec       = 800, 267   // 浴室一律 → 异常 20min（占用区，马桶/淋浴久留紧阈）
+	MuBathSec, SigmaBathSec       = 800, 267   // 浴室保底 → 异常 20min（冷启/学习不足；占用区紧阈）
+	BathCapSec                    = 2700       // 浴室学习硬顶 45min：真摔倒地兜底最多等此，守 FN 红线（比 chair 90min 紧，浴室高危）
 )
 
 // FloorGuard 单 logicID 兜底守门（§I stillbox 计时器；异常阈 tFloorFor=μ+1.5σ room×cell 保守，无跨帧状态）。
@@ -73,14 +74,15 @@ func (g *FloorGuard) Step(obs Observation) bool {
 	case contactInBed:
 		return false // 真在床
 	}
-	return obs.StillSec >= tFloorFor(obs.AreaType, obs.RoomType, obs.IsRiskTime, obs.InChair, obs.ChairMu, obs.ChairSigma, obs.ChairMaxSit)
+	return obs.StillSec >= tFloorFor(obs.AreaType, obs.RoomType, obs.IsRiskTime, obs.InChair, obs.ChairMu, obs.ChairSigma, obs.ChairMaxSit, obs.BathMu, obs.BathSigma, obs.BathMaxSit)
 }
 
 // tFloorFor floor(= §I stillbox 计时器)异常阈。risktime 纯时间轴：μ,σ 不变(物理),只动风险容忍 k——
 // 白天 1.5σ(保守防 FP)/夜间也 1.5σ(用户 2026-06-27:夜间不提前兜底,防误报多致无人用)。不进 C_FN(报警阈与时辰无关)。
 //
 // 分层：
-//   bathroom 房     → bath 阈(20min)，压过一切（占用区紧阈）。
+//   bathroom 房     → clamp(max(20min 保底, μ+1.5σ 学习, maxSit 棘轮), ≤45min 硬顶)，压过一切（占用区）。
+//                      μ,σ=本浴室 14 日停留分布（洗澡/如厕整段时长，per-room 学习，无 pin）；冷启(μ≤0)=20min 保底快报。
 //   chair 区(inChair)→ tFloor = clamp(max(μ+1.5σ+10min, maxSit), ≤90min)；冷启(μ≤0)回退 90min。
 //                      μ,σ=本椅 14 日久坐分布（均值/标准差，按实测方差定上侧 6.68% 异常阈）；+10min margin 抬到习惯久坐之上；
 //                      maxSit=false_alarm+"Sit on Chair" 反馈棘轮（单调只增的、已人工确认安全的久坐时长，抗 14 日窗遗忘致复发）。
@@ -88,7 +90,7 @@ func (g *FloorGuard) Step(obs Observation) bool {
 //                      90min 硬顶=刻意守 FN 红线（真摔躺地绝不超 90min 不报）——高 σ 椅 / maxSit 单调增也不破顶。
 //   AreaLying(沙发) → sit 阈(90min) 二值（独立躺区，不并入 chair 学习）。
 //   其余            → default 阈(12min)，快报真摔。
-func tFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairSigma, chairMaxSit float64) float64 {
+func tFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairSigma, chairMaxSit, bathMu, bathSigma, bathMaxSit float64) float64 {
 	k := 1.5
 	if isRiskTime {
 		k = 1.5
@@ -97,7 +99,19 @@ func tFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairSigma
 	tSit := MuSitSec + k*SigmaSitSec
 	switch {
 	case roomType == roomBathroom:
-		return MuBathSec + k*SigmaBathSec
+		t := MuBathSec + k*SigmaBathSec // 20min 保底（冷启/学习不足；bathMu≤0）
+		if bathMu > 0 {
+			if v := bathMu + 1.5*bathSigma; v > t {
+				t = v // 学习：抬到本浴室习惯停留（洗澡/如厕）之上
+			}
+		}
+		if bathMaxSit > t {
+			t = bathMaxSit // false_alarm 反馈棘轮：抬到人工确认过的安全停留之上
+		}
+		if t > BathCapSec {
+			t = BathCapSec // 45min 硬顶：守 FN 红线
+		}
+		return t
 	case inChair:
 		if chairMu <= 0 {
 			return tSit // 冷启：声明椅学够前回退 90min
@@ -118,6 +132,6 @@ func tFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairSigma
 }
 
 // TFloorFor 导出版：供 alarm evidence / 日志记录这次 fire 实际用的 floor 阈（秒取整）。
-func TFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairSigma, chairMaxSit float64) int {
-	return int(tFloorFor(area, roomType, isRiskTime, inChair, chairMu, chairSigma, chairMaxSit))
+func TFloorFor(area, roomType int, isRiskTime, inChair bool, chairMu, chairSigma, chairMaxSit, bathMu, bathSigma, bathMaxSit float64) int {
+	return int(tFloorFor(area, roomType, isRiskTime, inChair, chairMu, chairSigma, chairMaxSit, bathMu, bathSigma, bathMaxSit))
 }

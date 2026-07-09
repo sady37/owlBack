@@ -182,7 +182,8 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 
 			AreaType: int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
 			InChair:  b.InChair, ChairMu: b.ChairMu, ChairSigma: b.ChairSigma, ChairMaxSit: b.ChairMaxSit, // chair 区久坐兜底 → floor 连续 tFloor
-			RoomType: d.roomType[roomID],  // 房型 → still CDF room×cell 保守合并(bathroom 一律 20min)
+			BathMu: b.BathMu, BathSigma: b.BathSigma, BathMaxSit: b.BathMaxSit, // bathroom 停留学习 → floor 浴室分支 tFloor
+			RoomType: d.roomType[roomID],  // 房型 → still CDF room×cell 保守合并(bathroom 保底 20min，学习抬至 ≤45min)
 			FwAreaID: b.FwAreaID,          // firmware area_id（present=本帧/lost=冻结）→ 命中床 areaId = N（在床）
 		}})
 	}

@@ -119,6 +119,10 @@ type TrackManager struct {
 	// box-start 读缓存 μ/σ/N/maxSit 喂 floor 连续 tFloor；Xsensorv1 不学不写不重算。
 	chairDwell map[string]*ChairDwell
 
+	// bathDwell：per-room 浴室停留学习态**只读**镜像（无 pin，一房一个；仅 roomType==Bathroom 用）。
+	// hydrate 自 chair_dwell_state 哨兵 object_id=bathDwellObjectID 行；Xsensorv1 不学不写不重算。
+	bathDwell *ChairDwell
+
 	lastRadarInBedMs   int64 // radar 离散 InBed **事件** ts（状态翻转权威；非每帧几何）
 	lastRadarLeftBedMs int64 // 审查㊾:radar LeftBed ts(any-source-OR bed 占用 veto)
 	// lastRadarInBedGeomMs：way3 每帧"present track 在 firmware 床区"几何续命 ts（连续在床补 InBed 事件缺失）。
@@ -257,6 +261,7 @@ func NewTrackManager(roomID string, grid *RoomGrid, bedAreaIDs []int) *TrackMana
 		bedAreaIDs:              bedAreaIDs,
 		tracks:                  make(map[trackKey]*TrackState),
 		chairDwell:              make(map[string]*ChairDwell),
+		bathDwell:               &ChairDwell{},
 		outputs:                 make(map[trackKey]*TrackOutput),
 		devRoom:                 make(map[string]*devRoomState),
 		lastRealTrackByDevice:   make(map[string]int64),
@@ -840,11 +845,28 @@ func (tm *TrackManager) HydrateChairDwell(rows []ChairDwellRead) {
 		}
 	}
 	for _, r := range rows {
+		if r.ObjectID == bathDwellObjectID { // per-room 浴室停留态：无 pin/无 layout 门控，直接灌
+			tm.bathDwell = &ChairDwell{Mu: r.Mu, Sig: r.Sig, N: r.N, MaxSit: r.MaxSit, MaxSitMs: r.MaxSitMs}
+			continue
+		}
 		if !have[r.ObjectID] {
 			continue // object 已从 layout 删除 → 不灌
 		}
 		tm.chairDwell[r.ObjectID] = &ChairDwell{Mu: r.Mu, Sig: r.Sig, N: r.N, MaxSit: r.MaxSit, MaxSitMs: r.MaxSitMs}
 	}
+}
+
+// bathDwellArgs 返回浴室 floor tFloor 三参（μ/σ/maxSit）。非 Bathroom 或冷启(窗样本<min)→μ/σ=0（tFloorFor
+// 回退 20min 保底）；maxSit 无冷启门控。只读镜像；调用方持锁 / 单线程 tick。
+func (tm *TrackManager) bathDwellArgs() (mu, sig, maxSit float64) {
+	if tm.roomType != int(card.RoomTypeBathroom) {
+		return 0, 0, 0
+	}
+	maxSit = tm.bathDwell.MaxSit
+	if tm.bathDwell.N >= DwellColdMinN {
+		mu, sig = tm.bathDwell.Mu, tm.bathDwell.Sig
+	}
+	return
 }
 
 // SetMoveSpeedCms 注入"在动"速度阈值。<=0 保留默认。
@@ -1118,6 +1140,10 @@ type TrackStatusBase struct {
 	ChairMu             float64 // 14 日久坐均值 AV
 	ChairSigma          float64 // 14 日久坐标准差
 	ChairMaxSit         float64 // false_alarm 反馈棘轮（人工确认安全久坐下限）
+	// bathroom 停留学习（per-room，无 pin）→ floor 浴室分支 tFloor=clamp(max(20min,μ+1.5σ,maxSit),≤45min)
+	BathMu              float64 // 本浴室 14 日停留均值（秒）
+	BathSigma           float64 // 本浴室 14 日停留标准差（秒）
+	BathMaxSit          float64 // 本浴室 false_alarm 反馈棘轮（秒）
 	FwAreaID            int    // firmware area_id（present=本帧；lost=冻结末值）→ adapter N 床判定
 	EnterTarget         string // 当前位置 cell.EnterTarget；非 AreaEnter 时为 ""
 	MoveActive          bool   // 本次快照是否"非静止"（StillBoxRunStart==0 OR LastObservedMs == nowMs）
@@ -1253,6 +1279,8 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			base.ChairSigma = 0
 			base.ChairMaxSit = 0
 		}
+		// Bathroom 停留学习（per-room，无 pin，与位置无关）→ floor 浴室分支 tFloor。无 box-lock：值全房恒定。
+		base.BathMu, base.BathSigma, base.BathMaxSit = tm.bathDwellArgs()
 		// lost 轨（coast）：StillBoxCellArea 锁在 box 起点(History[0]→出生帧) 可能偏离末真观测点 →
 		// floor 误判区型/漏床豁免。改用末点 raw(rawCx/rawCy) 重算；present 轨保留锁（防逐帧跨格抖动）。
 		if !base.Present && cell != nil {
