@@ -103,16 +103,15 @@ func (r *Router) RegisterRadarRoutes(h *RadarHandler) {
 
 	// 房间布局：PUT /radar-device/api/v1/radar-device/room/{roomId}/layout
 	r.Handle("/radar-device/api/v1/radar-device/room/", func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodPut {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
 		path := req.URL.Path
-		if strings.HasSuffix(path, "/layout") {
+		switch {
+		case req.Method == http.MethodPut && strings.HasSuffix(path, "/layout"):
 			h.PutRoomLayout(w, req)
-			return
+		case req.Method == http.MethodGet && strings.HasSuffix(path, "/zones/verify"):
+			h.GetRoomZonesVerify(w, req)
+		default:
+			http.NotFound(w, req)
 		}
-		http.NotFound(w, req)
 	})
 }
 
@@ -362,6 +361,22 @@ func (r *Router) RegisterAPNSRoutes(h *APNSHandler) {
 	})
 }
 
+
+// RegisterFCMRoutes 注册 Android FCM 设备 Token 路由
+// POST   /data/api/v1/auth/devices/fcm  — Android 登录后注册
+// DELETE /data/api/v1/auth/devices/fcm  — Android 登出注销
+func (r *Router) RegisterFCMRoutes(h *FCMHandler) {
+	r.Handle("/data/api/v1/auth/devices/fcm", func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case http.MethodPost:
+			h.RegisterDevice(w, req)
+		case http.MethodDelete:
+			h.UnregisterDevice(w, req)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+}
 
 // RegisterAlarmPushRoute cardagg → APNs：POST /internal/v1/push/alarm（X-Internal-Secret）
 func (r *Router) RegisterAlarmPushRoute(h *AlarmPushHandler) {

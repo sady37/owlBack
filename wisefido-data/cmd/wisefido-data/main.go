@@ -459,10 +459,20 @@ func main() {
 				apnsSender = s
 			}
 		}
+		var fcmSender *notify.FCMSender
+		if pid := strings.TrimSpace(os.Getenv("FCM_PROJECT_ID")); pid != "" {
+			f, err := notify.NewFCMSender(pid, os.Getenv("FCM_SERVICE_ACCOUNT_JSON"))
+			if err != nil {
+				logger.Warn("FCM sender init failed", zap.Error(err))
+			} else {
+				fcmSender = f
+			}
+		}
 		apnsAllowed := service.NewAllowedCardIDsProvider(kv, usersRepo, residentsRepo, db, cardRepo, logger)
 		apnsPopCounter := service.NewStaffPopPendingCounter(db, apnsAllowed)
-		apnsDeviceSvc := service.NewAPNSDeviceService(db, apnsSender, logger, apnsPopCounter)
+		apnsDeviceSvc := service.NewAPNSDeviceService(db, apnsSender, fcmSender, logger, apnsPopCounter)
 		router.RegisterAPNSRoutes(httpapi.NewAPNSHandler(apnsDeviceSvc, logger))
+		router.RegisterFCMRoutes(httpapi.NewFCMHandler(apnsDeviceSvc, logger))
 		router.RegisterAlarmPushRoute(httpapi.NewAlarmPushHandler(db, apnsDeviceSvc, logger))
 
 		// 创建 Sleepace Report Service 和 Handler
