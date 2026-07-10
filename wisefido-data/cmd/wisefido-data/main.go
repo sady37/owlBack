@@ -461,8 +461,10 @@ func main() {
 		}
 		var fcmSender *notify.FCMSender
 		if pid := strings.TrimSpace(os.Getenv("FCM_PROJECT_ID")); pid != "" {
-			f, err := notify.NewFCMSender(pid, os.Getenv("FCM_SERVICE_ACCOUNT_JSON"))
+			saJSON, err := os.ReadFile(strings.TrimSpace(os.Getenv("FCM_SERVICE_ACCOUNT_FILE")))
 			if err != nil {
+				logger.Warn("FCM service account file read failed", zap.Error(err))
+			} else if f, err := notify.NewFCMSender(pid, string(saJSON)); err != nil {
 				logger.Warn("FCM sender init failed", zap.Error(err))
 			} else {
 				fcmSender = f
