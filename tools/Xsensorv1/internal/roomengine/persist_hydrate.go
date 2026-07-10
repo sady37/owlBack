@@ -196,6 +196,8 @@ type ChairDwellRead struct {
 	N        int
 	MaxSit   float64
 	MaxSitMs int64
+	CX, CY   int // §12 影子 chair 重建 rect 用（=cx/cy ±20cm）
+	Source   int // ChairRect.Source：1=Human / 2=Learned(影子 chair，按 CX/CY 重建 rect)
 }
 
 // HydrateChairDwellFromDB 只读灌入一房各 chair 的久坐学习态到 tm.chairDwell（RegisterRoom + SetChairs 之后调）。
@@ -213,7 +215,7 @@ func (e *Engine) HydrateChairDwellFromDB(ctx context.Context, db *sql.DB, table,
 	if tm == nil {
 		return
 	}
-	q := fmt.Sprintf(`SELECT object_id, dmu, dsg, dwin, dms, dmsm FROM %s WHERE spatial_prefix = $1::INET`, table)
+	q := fmt.Sprintf(`SELECT object_id, dmu, dsg, dwin, dms, dmsm, cx, cy, src FROM %s WHERE spatial_prefix = $1::INET`, table)
 	rows, err := db.QueryContext(ctx, q, roomID)
 	if err != nil {
 		e.logger.Warn("xsensor chair dwell hydrate: load failed", zap.String("room_id", roomID), zap.Error(err))
@@ -224,7 +226,7 @@ func (e *Engine) HydrateChairDwellFromDB(ctx context.Context, db *sql.DB, table,
 	for rows.Next() {
 		var r ChairDwellRead
 		var win []byte
-		if err := rows.Scan(&r.ObjectID, &r.Mu, &r.Sig, &win, &r.MaxSit, &r.MaxSitMs); err != nil {
+		if err := rows.Scan(&r.ObjectID, &r.Mu, &r.Sig, &win, &r.MaxSit, &r.MaxSitMs, &r.CX, &r.CY, &r.Source); err != nil {
 			e.logger.Warn("xsensor chair dwell hydrate: scan failed", zap.String("room_id", roomID), zap.Error(err))
 			return
 		}

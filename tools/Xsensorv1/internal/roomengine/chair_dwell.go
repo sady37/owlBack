@@ -9,9 +9,24 @@ package roomengine
 import "owl-common/radarutils"
 
 // ChairRect layout 解析出的 chair pin（rect + object_id）。object_id = per-chair 学习态锚定 key。
+// Source（§12）：SourceHuman=layout pin/管理员授权(floor 封顶 90min)；SourceLearned=自动学习影子 chair(封顶 30min)。
 type ChairRect struct {
 	Rect     radarutils.Rect
 	ObjectID string
+	Source   int
+}
+
+const (
+	chairHumanCapSec   = 5400 // 人授权 pin floor 封顶 90min（通用 FN 天花板，§12）
+	chairLearnedCapSec = 1800 // 自动学习影子 chair floor 封顶 30min（自主降灵敏克制上限，比浴室 45min 更保守）
+)
+
+// chairCapForSource floor 分级封顶（§12）：仅 SourceLearned 影子 chair → 30min；其余（人 pin/几何/反馈）→ 90min。
+func chairCapForSource(src int) float64 {
+	if src == int(SourceLearned) {
+		return chairLearnedCapSec
+	}
+	return chairHumanCapSec
 }
 
 // DwellColdMinN dwell 分布冷启门控：样本 < 此值 → floor 回退默认阈（chair 90min / bathroom 20min，与正本一致）。
@@ -30,11 +45,13 @@ type ChairDwell struct {
 	MaxSitMs int64   // 棘轮值 as-of 时刻（只读，1:1 保字段）
 }
 
-// ChairObjectAt 命中解析（与正本同判据，电子云 halo=sitSpreadCm）：取 field 最大椅子的 object_id。无命中 → ("", false)。
-func ChairObjectAt(chairs []ChairRect, sitSpreadCm, x, y int) (string, bool) {
+// ChairMatch 命中解析（与正本同判据，电子云 halo=sitSpreadCm）：取 field 最大的那把椅子（含 Source→floor 分级封顶）。
+// 无命中 → (ChairRect{}, false)。
+func ChairMatch(chairs []ChairRect, sitSpreadCm, x, y int) (ChairRect, bool) {
 	halo := sitSpreadCm
 	bestW := 0.0
-	bestID := ""
+	var best ChairRect
+	found := false
 	for _, cr := range chairs {
 		w := 0.0
 		if d := cr.Rect.DistTo(x, y); d == 0 {
@@ -43,11 +60,17 @@ func ChairObjectAt(chairs []ChairRect, sitSpreadCm, x, y int) (string, bool) {
 			w = 1.0 - float64(d)/float64(halo)
 		}
 		if w > bestW {
-			bestW, bestID = w, cr.ObjectID
+			bestW, best, found = w, cr, true
 		}
 	}
-	if bestW <= 0 {
+	return best, found
+}
+
+// ChairObjectAt 命中解析：取 field 最大椅子的 object_id。无命中 → ("", false)。
+func ChairObjectAt(chairs []ChairRect, sitSpreadCm, x, y int) (string, bool) {
+	cr, ok := ChairMatch(chairs, sitSpreadCm, x, y)
+	if !ok {
 		return "", false
 	}
-	return bestID, true
+	return cr.ObjectID, true
 }

@@ -418,7 +418,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 				Online: false, StillSec: ts.Obs.RadarTrack.StillSec,
 				X: ts.Obs.RadarTrack.X, Y: ts.Obs.RadarTrack.Y, // 冻结末位:coast 期区型仍查此点
 				AreaAt: ts.Obs.RadarTrack.AreaAt, RoomType: ts.Obs.RadarTrack.RoomType,
-				InChair: ts.Obs.RadarTrack.InChair, ChairMu: ts.Obs.RadarTrack.ChairMu, ChairSigma: ts.Obs.RadarTrack.ChairSigma, ChairMaxSit: ts.Obs.RadarTrack.ChairMaxSit,
+				InChair: ts.Obs.RadarTrack.InChair, ChairMu: ts.Obs.RadarTrack.ChairMu, ChairSigma: ts.Obs.RadarTrack.ChairSigma, ChairMaxSit: ts.Obs.RadarTrack.ChairMaxSit, ChairCap: ts.Obs.RadarTrack.ChairCap,
 			}, fi.Sleepads, fi.Beds, fi.BedAreaIDs, r.p, fi.Census.Night)
 			logPhi = em.LogPhi(r.js, obs)
 			r.applyLeftBedOpen(cp, logPhi, obs, adapter.Gxy(ts.Obs.RadarTrack, fi.Beds, r.p), false) // ③ lost → SBlindRest（gxy 用冻结末位）

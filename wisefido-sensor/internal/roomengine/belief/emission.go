@@ -85,35 +85,6 @@ func defaultEmissionParams() emissionParams {
 // roomBathroom = card.RoomTypeBathroom（belief 不 import card，本地常量对齐）。
 const roomBathroom = 1
 
-// stillMuSigma 正常停留 (μ,σ) 秒：浴室房一律 20min 房级 override，否则按 cell area（cellMuSigma）。
-//
-//	bed/monitorbed/reflector/interfer 已在 floor.Step 豁免、到不了这里；仅 sit/lying→90min；其余(含 deny)→12min。
-func stillMuSigma(areaType, roomType int) (mu, sigma float64) {
-	if roomType == roomBathroom {
-		// 浴室一律 ~20min（占用区）：压过 cell 姿态阈——马桶/淋浴久留医学上 ~20min 即异常，
-		// 不用 max-merge（那会取 sit 的 90min = 丢紧阈）。bed/reflector 已在 floor.Step 豁免到不了这里。
-		return MuBathSec, SigmaBathSec
-	}
-	return cellMuSigma(areaType)
-}
-
-func cellMuSigma(areaType int) (mu, sigma float64) {
-	switch areaType {
-	case areaSit, areaLying:
-		// 90min：仅真休息区(椅/沙发坐躺)——人会正当久留 60~90min。其余非休息区 90min 静止本身即异常 → 不给长容忍。
-		return MuSitSec, SigmaSitSec
-	default: // 12min：unknown/active/enter/deny（bed/monitorbed/reflector/interfer 在 floor.Step 已豁免）
-		return MuDefaultSec, SigmaDefaultSec
-	}
-}
-
-func roomMuSigma(roomType int) (mu, sigma float64) {
-	if roomType == roomBathroom {
-		return MuBathSec, SigmaBathSec // bathroom 房保守下限：即使 cell 未画 toilet
-	}
-	return MuDefaultSec, SigmaDefaultSec
-}
-
 // Emission 无状态发射器（参数 + 每床 onbed 权重）。geom 长 numBeds。
 type Emission struct {
 	p    emissionParams

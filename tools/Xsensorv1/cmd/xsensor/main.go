@@ -181,7 +181,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			FrameMoveCm: float64(b.FrameMoveCm), // 帧间绝对位移 → emission 躺姿二义 SBed/SFallen 分配（仅 AreaBed 内）
 
 			AreaAt: b.AreaAt, // 区型纯查询句柄（grid.QueryAreaType）→ emission 正向压制 + floor 阈当场读坐标
-			InChair:  b.InChair, ChairMu: b.ChairMu, ChairSigma: b.ChairSigma, ChairMaxSit: b.ChairMaxSit, // chair 区久坐兜底 → floor 连续 tFloor
+			InChair:  b.InChair, ChairMu: b.ChairMu, ChairSigma: b.ChairSigma, ChairMaxSit: b.ChairMaxSit, ChairCap: b.ChairCap, // chair 区久坐兜底 → floor 连续 tFloor
 			BathMu: b.BathMu, BathSigma: b.BathSigma, BathMaxSit: b.BathMaxSit, // bathroom 停留学习 → floor 浴室分支 tFloor
 			RoomType: d.roomType[roomID],  // 房型 → still CDF room×cell 保守合并(bathroom 保底 20min，学习抬至 ≤45min)
 			FwAreaID: b.FwAreaID,          // firmware area_id（present=本帧/lost=冻结）→ 命中床 areaId = N（在床）

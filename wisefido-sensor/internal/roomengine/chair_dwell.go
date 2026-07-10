@@ -16,9 +16,24 @@ import (
 
 // ChairRect layout 解析出的 chair pin（rect + object_id）。object_id 透传自 canvas 对象 id，
 // 是 per-chair 学习态跨 layout 编辑存活的稳定 key。
+// Source（§12）：SourceHuman=layout pin/管理员授权(floor 封顶 90min)；SourceLearned=自动学习影子 chair(封顶 30min)。
 type ChairRect struct {
 	Rect     radarutils.Rect
 	ObjectID string
+	Source   int
+}
+
+const (
+	chairHumanCapSec   = 5400 // 人授权 pin floor 封顶 90min（通用 FN 天花板，§12）
+	chairLearnedCapSec = 1800 // 自动学习影子 chair floor 封顶 30min（自主降灵敏克制上限，比浴室 45min 更保守）
+)
+
+// chairCapForSource floor 分级封顶（§12）：仅 SourceLearned 影子 chair → 30min；其余（人 pin/几何/反馈）→ 90min。
+func chairCapForSource(src int) float64 {
+	if src == int(SourceLearned) {
+		return chairLearnedCapSec
+	}
+	return chairHumanCapSec
 }
 
 // DwellColdMinN 久坐窗冷启门控：窗口样本 < 此值 → floor 回退默认阈（chair 90min / bathroom 20min，学够前不误报）。

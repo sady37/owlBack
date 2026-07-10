@@ -97,7 +97,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 			StillSec: float64(b.StillBoxSec),
 			FrameMoveCm: float64(b.FrameMoveCm),
 			AreaAt: b.AreaAt,
-			InChair:  b.InChair, ChairMu: b.ChairMu, ChairSigma: b.ChairSigma, ChairMaxSit: b.ChairMaxSit,
+			InChair:  b.InChair, ChairMu: b.ChairMu, ChairSigma: b.ChairSigma, ChairMaxSit: b.ChairMaxSit, ChairCap: b.ChairCap,
 			BathMu:   b.BathMu, BathSigma: b.BathSigma, BathMaxSit: b.BathMaxSit,
 			RoomType: d.roomType[roomID],
 			FwAreaID: b.FwAreaID,

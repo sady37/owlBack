@@ -20,6 +20,7 @@ type ChairDwellRow struct {
 	MaxSit   float64
 	MaxSitMs int64
 	CX, CY   int
+	Source   int // ChairRect.Source（§12）：1=Human(layout pin) / 2=Learned(影子 chair，hydrate 按 CX/CY 重建 rect)
 }
 
 // ChairDwellPersister 抽象 chair_dwell_state 读写。实现：PostgresChairDwellPersister；nil = 不持久化。
@@ -46,7 +47,7 @@ func NewPostgresChairDwellPersister(db *sql.DB, table string) *PostgresChairDwel
 
 // LoadRoom 取回该 room 所有 chair 的久坐学习态；无记录返回空切片。
 func (p *PostgresChairDwellPersister) LoadRoom(ctx context.Context, roomID string) ([]ChairDwellRow, error) {
-	q := fmt.Sprintf(`SELECT object_id, dmu, dsg, dwin, dms, dmsm, cx, cy FROM %s WHERE spatial_prefix = $1::INET`, p.table)
+	q := fmt.Sprintf(`SELECT object_id, dmu, dsg, dwin, dms, dmsm, cx, cy, src FROM %s WHERE spatial_prefix = $1::INET`, p.table)
 	rows, err := p.db.QueryContext(ctx, q, roomID)
 	if err != nil {
 		return nil, err
@@ -56,7 +57,7 @@ func (p *PostgresChairDwellPersister) LoadRoom(ctx context.Context, roomID strin
 	for rows.Next() {
 		var r ChairDwellRow
 		var win []byte
-		if err := rows.Scan(&r.ObjectID, &r.Mu, &r.Sig, &win, &r.MaxSit, &r.MaxSitMs, &r.CX, &r.CY); err != nil {
+		if err := rows.Scan(&r.ObjectID, &r.Mu, &r.Sig, &win, &r.MaxSit, &r.MaxSitMs, &r.CX, &r.CY, &r.Source); err != nil {
 			return nil, err
 		}
 		if len(win) > 0 {
@@ -76,19 +77,19 @@ func (p *PostgresChairDwellPersister) SaveRoom(ctx context.Context, roomID strin
 		return nil
 	}
 	q := fmt.Sprintf(`
-		INSERT INTO %s (spatial_prefix, object_id, dmu, dsg, dwin, dms, dmsm, cx, cy, updated_at)
-		VALUES ($1::INET, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, NOW())
+		INSERT INTO %s (spatial_prefix, object_id, dmu, dsg, dwin, dms, dmsm, cx, cy, src, updated_at)
+		VALUES ($1::INET, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, NOW())
 		ON CONFLICT (spatial_prefix, object_id) DO UPDATE
 		SET dmu = EXCLUDED.dmu, dsg = EXCLUDED.dsg, dwin = EXCLUDED.dwin,
 		    dms = EXCLUDED.dms, dmsm = EXCLUDED.dmsm, cx = EXCLUDED.cx, cy = EXCLUDED.cy,
-		    updated_at = EXCLUDED.updated_at
+		    src = EXCLUDED.src, updated_at = EXCLUDED.updated_at
 	`, p.table)
 	for _, r := range rows {
 		win, err := json.Marshal(r.Window)
 		if err != nil {
 			return err
 		}
-		if _, err := p.db.ExecContext(ctx, q, roomID, r.ObjectID, r.Mu, r.Sig, win, r.MaxSit, r.MaxSitMs, r.CX, r.CY); err != nil {
+		if _, err := p.db.ExecContext(ctx, q, roomID, r.ObjectID, r.Mu, r.Sig, win, r.MaxSit, r.MaxSitMs, r.CX, r.CY, r.Source); err != nil {
 			return err
 		}
 	}

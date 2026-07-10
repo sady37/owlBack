@@ -230,3 +230,94 @@ g_fwSit        = fwMaxMin≥1 ? clamp(0.6 + 0.04·(fwMaxMin−1), 0, 1.5) : 0   
 
 ### 11.6 红线
 - **lost-break 永不 emit**（fall 域）；dwell<5min 永不计 Sit（→Active）；z 只正向（z=0 中性）；**Bed 永远 human-gated**（算法绝不 auto 升 Bed；bedLean 自动建议已 deferred 未实现）。
+
+## 12. AreaSit 学习接通 floor：影子 chair + 分级封顶（2026-07-09 定稿）
+
+> **病根（本次排查实测，§11 之后暴露）**：§11 的 SitScore 学习**只产出 AreaSit 标签，floor 兜底完全不消费它** → 学成 Sit 也治不了它自己的立项 case（"用户坐满 12min → floor 假摔"）。三处断裂：
+> 1. `floor.go::tFloorFor` **无 `case areaSit`** → 学到的 Sit 掉进 `default → tActive(12min)`；90min 松绑只挂 `case inChair`（几何 pin）。
+> 2. `emission.go::cellMuSigma`（返回 sit 90min μ/σ）**无任何调用方 = 死码**（floor.go 注释 §I "规划" 从未接线）；且 `radarLogS` 里 **still 时长根本不进 emission**（静止→fall 已单源到 FloorGuard）。
+> 3. `emission.go` 的 `case areaSit → 抬 SSit` 是弱 redirect，**明确不压 SFallen**。
+>
+> 而 FloorGuard 是**独立 OR 腿**（`engine.go` `fg.Step()` → `d.Fire=true`，不看 pF），12min 照火。所以在 OR 架构下，**抑制只能在 floor 抬阈实现**，belief 侧压 SFallen 全被 OR 盖过 = 无效。
+
+### 12.1 决策：learned Sit 与 pin chair 收敛成同一结构，只差 Source 与封顶
+
+| | 载体 | Source | floor 封顶 | dwell 学习 |
+|---|---|---|---|---|
+| **自动学习 Sit** | **影子 chair object**（合成 object_id） | `SourceLearned` | **30min** | μ/σ/maxSit 后台学（同 ChairDwell） |
+| **管理员 pin** | 同一 object 翻正 | `SourceHuman` | **90min** | **继承**影子已学的 μ/σ（warm-start） |
+
+tFloor 公式两档共用，只换 cap：
+```
+tFloor = min( max(chairMu + 1.5·chairSigma + 600, chairMaxSit), cap )
+cap = 1800(30min) if Source==Learned ; 5400(90min) if Source==Human
+```
+
+- **90min = 通用 FN 天花板**：现状 `tFloorFor` 已把 pin+人工 maxSit 棘轮硬顶 90min（floor.go §chair）；任何 Sit（人钉/自学）都不破 90。
+- **30min = 自主降灵敏的克制上限**：比已上线的**浴室自主学习顶 45min**（`BathCapSec`，per-room 无 pin）**更保守** → 不在新增风险类别里。
+- **顶切换只认正式 pin（Source→Human）**：护理的 false-alarm "Sit on Chair" 反馈可棘轮影子 maxSit，**但被当前 cap 夹住，绝不解锁 90**；解锁是管理员动作（doc §5.4/§10.4 一键 pin）。
+
+### 12.2 为什么保留 μ/σ（不 flat-30）：warm-start = 催办闭环的手感
+
+μ/σ 在自动档**对 30 阈是被夹平的废值，对 pin 继承不废**——两职分离：
+- **当前容忍** = 30 顶（自动档保守）；
+- **历史记录** = μ/σ 后台一直学，**只为 pin 那一刻被继承**。
+
+催办 UX 命门：若 flat-30、pin 后冷启重学几天 → "我都 pin 了怎么还在报" → 催办砸信任。保留 μ/σ 后 **pin 只把同一份已学分布的顶从 30 抬到 90 → 瞬间生效、FP 立停**。
+
+### 12.3 影子 chair：白嫖现成 chair 通道解决持久化
+
+学习区无 object_id、dwell 跨 layout 编辑/重启如何存活 —— **实现成合成 object_id 的影子 chair，整条复用 chair 机器**：
+- **mint**：`SitScore ≥ τ` 升格时，造影子 chair：rect = anchor ± `sitSpreadCm`，`Source=Learned`，合成 object_id（如 `learned_sit_<cellX>_<cellY>`）。
+- **持久化**：走**现成 `chair_dwell_state`**（object_id 锚定，[[chair_dwell_learning_migrate_to_object]] 当初就为抗 layout 编辑才迁 object_id）→ canvas 编辑不碰此表 → **影子天然存活**；新增 `source` 列。
+- **hydrate**：`chair_dwell_state` 已存 `CX/CY` → 合成 rect，不依赖 canvas。
+- **floor 读**：`InChair` 分支**按 object 的 Source 选 cap**；`ChairRect` 加 `Source` 字段。
+- **pin**：管理员一键 pin = 把影子 `Source` 翻 `Human`、cap 30→90、**dwell 原地继承**；影子 object 本身**就是催办 surface 给管理员的那个 pin 建议**。
+
+### 12.4 安全网（四重，全部现成或结构性）
+
+1. **90min 通用天花板**：任何 Sit 都不破（误学最多拖 90min，且那要先经人 pin）。
+2. **30min 自主顶**：自动档误学最多拖 30min < 浴室已上线 45min。
+3. **leak 自愈**：影子不再被坐 → `SitScore`(HL 4d)/`Belief.Confidence`(<10 降级) 衰 → 影子 chair 消失、cap 随之没。
+4. **walk-away-only（最强）**：`emitSitEpisode` lost/fall 一律 VETO 不 emit（§11.2）→ 真摔点（lost）**结构上学不进 Sit** → 影子只可能长在"真有人自走长坐"的格。
+
+### 12.5 边角
+
+- **首次长坐仍 12min**：影子要 2-3 次 walk-away 长坐才升格；某人第一次就坐>30min 时影子未生成 → floor 走 default 12min 照报（对的，全新点第一次本就该催办）。
+- **删死码**：`emission.go::cellMuSigma`/`stillMuSigma`（OR 架构下永不生效）删除。
+- **催办 vs 减扰取舍**：本次定**催办优先** → 自动档 30min 顶偏紧，长坐区早触发"去 pin"提示；不追求"尽量别烦护理"（那会松到对齐浴室 45）。
+
+### 12.6 接口（最小爆炸半径，两引擎 1:1）
+
+| 文件 | 改动 |
+|---|---|
+| `belief/floor.go::tFloorFor` | 新增 cap 参数（由 Source 决定 30/90）；`inChair` 分支按 cap 夹顶替死 `tSit`；删 `case area==areaSit` 无（走 inChair）。删 `cellMuSigma`/`stillMuSigma`。 |
+| `track_manager.go` `ChairRect` | 加 `Source` 字段（Learned/Human）。 |
+| `track_manager.go::emitSitEpisode` | `SitScore≥τ` 升格时 mint 影子 chair（合成 object_id + rect + Source=Learned）注入 `tm.chairs`+`tm.chairDwell`。 |
+| `track_manager.go` floor 喂参 | box-start/break 处 `TFloorFor` 调用按命中 chair 的 Source 传 cap。 |
+| `chair_dwell.go` / `chair_dwell_state` | 加 `source` 列；Snapshot/Hydrate 带 Source；hydrate 从 CX/CY 合成影子 rect。 |
+| pin 落地（data `handle_pin_zones` / sensor `SetChairs`） | 管理员 pin 落到既有影子 object → Source 翻 Human（cap 升 90，dwell 继承）。 |
+
+**Why（本节）**：§11 学了个花架子（AreaSit 标签无人消费）；本节让学习真正接通唯一有效的抑制层（floor OR 腿），并用"影子 chair"把 learned/pinned 收敛成一套结构、白嫖持久化、天然实现 warm-start 与催办 surface。分级封顶（30 自主 / 90 人授权）守 FN 红线，且比已上线浴室机制更保守。
+
+### 12.7 实现状态（2026-07-09）
+
+**Phase 1（已实现，两引擎 build+vet 全绿、核心逻辑 1:1）**：floor 分级封顶机构 + 影子 chair 内存 mint。
+- `belief/floor.go`：`tFloorFor`/`TFloorFor` 加 `chairCap` 参；chair 分支冷启与硬顶都用 `chairCap`（≤0/越界回退 90min）。删死码 `cellMuSigma`/`stillMuSigma`/`roomMuSigma`。
+- `ChairRect.Source`（chair_dwell.go）；`chairCapForSource`（Learned→30min / 其余→90min）；`chairHumanCapSec`/`chairLearnedCapSec` 常量。
+- `ChairMatch`/`chairMatch`（返回命中 ChairRect 含 Source）；`ChairObjectAt` 转调之。
+- `SetChairs`：layout chair 标 `SourceHuman`，layout reload 保留 `SourceLearned` 影子。
+- `mintShadowChair`：`SitScore≥τ` 升格且锚点无 chair → 造合成 object_id（`learned_sit_<col>_<row>`）影子 chair 入 `tm.chairs`（正本另灌 dwell，Xsensorv1 不灌=冷启走 30min）。
+- `ChairCap` 全层线：`StillBoxChairCap`→`TrackStatusBase.ChairCap`→`adapter.RadarTrack.ChairCap`→`Observation.ChairCap`→floor；present 经 dbn_router/main.go、lost 经 engine.go 构造。box-start 按 `chairMatch.Source` 设 cap。
+
+**行为影响**：既有 layout chair（含 feedback pin）全部保持 90min（`SourceHuman`）；仅新增自动学习影子 chair 走 30min。既有挙动不变。
+
+**持久化（已实现）**：影子 chair 直接落 `chair_dwell_state`（不搞 AreaSit-cell 派生），跨重启存活：
+- schema：`chair_dwell_state` 加 `src SMALLINT DEFAULT 1`（1=Human/2=Learned），既有行默认 Human（cap 90 不变）。migration `2026-07-09_chair_dwell_src.sql`。
+- 写：`ChairDwellRow.Source`；`SnapshotChairDwell` 从 `tm.chairs` 查 Source 落行；`SaveRoom`/`LoadRoom` 带 `src`。
+- 读/hydrate：`src=Learned` 且 layout 无此 object → 按 `cx/cy±20cm` **重建 ChairRect** 注入 `tm.chairs`（sensor `hydrateChairDwell` / Xsensorv1 `ChairDwellRead`+`HydrateChairDwell`），dwell 一并灌回。影子跨重启即恢复、不用重学。
+
+**Phase 2（未实现，待做）**：
+- 数据层 pin 适配（真 warm-start）：管理员 pin 落到既有影子 object（复用其 object_id 与 dwell）→ `Source` 翻 `Human`、cap 30→90、dwell 原地继承；`layout_parser` 解析 `source` → `SetChairs` 传 provenance。
+- 未做前：管理员 pin 走现有 `feedback_sit_<eventID>` 新对象（`SourceHuman`，冷启即 90min，FP 立停但不继承影子 dwell）。
+- 验证：按 owlBack 规则 #3 用真 learned-sit case 跑 replay 看机制（影子 mint / box-start cap=30 / hydrate 重建 / leak 降级），需具体 case。

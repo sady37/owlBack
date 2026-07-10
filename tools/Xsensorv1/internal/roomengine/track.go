@@ -115,6 +115,7 @@ type TrackState struct {
 	StillBoxChairMu     float64 // 本椅 14 日久坐均值 AV（秒）；0=冷启
 	StillBoxChairSigma  float64 // 本椅 14 日久坐标准差（秒）
 	StillBoxChairMaxSit float64 // 本椅 false_alarm 反馈棘轮（秒）
+	StillBoxChairCap    float64 // 本椅 floor 分级封顶（秒，§12）：人 pin=90min / 影子学习=30min；0=回退 90min
 	StillBoxBreakDurMs  int64   // 本帧 still-box 刚 break 的 dwell 时长（0=未 break）→ 移动块 MarkDwell 消费
 
 	// ---- AreaSit 4 通道学习累加器（sit_learning.go；StillBox run = episode，box-break = walk-away emit）----

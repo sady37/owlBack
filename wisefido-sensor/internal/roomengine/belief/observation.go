@@ -53,6 +53,7 @@ type Observation struct {
 	ChairMu     float64 // 本椅 14 日久坐均值 AV（秒）；0=冷启(样本不足)
 	ChairSigma  float64 // 本椅 14 日久坐标准差（秒）
 	ChairMaxSit float64 // 本椅 false_alarm 反馈棘轮（秒）：人工确认安全的久坐时长下限，单调只增
+	ChairCap    float64 // 本椅 floor 分级封顶（秒，§12）：人授权 pin=90min / 自动学习影子 chair=30min；0=回退 90min 通用天花板
 
 	// Bathroom 房停留学习（per-room，无 pin）：floor 浴室分支 tFloor=clamp(max(20min, BathMu+1.5·BathSigma, BathMaxSit),≤45min)。
 	// 冷启(BathMu≤0)=20min 保底。仅 RoomType==Bathroom 有意义。
