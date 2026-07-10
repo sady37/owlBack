@@ -460,11 +460,11 @@ func main() {
 			}
 		}
 		var fcmSender *notify.FCMSender
-		if pid := strings.TrimSpace(os.Getenv("FCM_PROJECT_ID")); pid != "" {
-			saJSON, err := os.ReadFile(strings.TrimSpace(os.Getenv("FCM_SERVICE_ACCOUNT_FILE")))
+		if saPath := strings.TrimSpace(os.Getenv("FCM_SERVICE_ACCOUNT_FILE")); saPath != "" {
+			saJSON, err := os.ReadFile(saPath)
 			if err != nil {
 				logger.Warn("FCM service account file read failed", zap.Error(err))
-			} else if f, err := notify.NewFCMSender(pid, string(saJSON)); err != nil {
+			} else if f, err := notify.NewFCMSender(string(saJSON)); err != nil {
 				logger.Warn("FCM sender init failed", zap.Error(err))
 			} else {
 				fcmSender = f

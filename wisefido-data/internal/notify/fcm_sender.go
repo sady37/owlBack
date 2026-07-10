@@ -67,22 +67,20 @@ type FCMSender struct {
 }
 
 type serviceAccount struct {
+	ProjectID   string `json:"project_id"`
 	ClientEmail string `json:"client_email"`
 	PrivateKey  string `json:"private_key"`
 	TokenURI    string `json:"token_uri"`
 }
 
-// NewFCMSender 从 service account JSON 全文创建发送器。
-func NewFCMSender(projectID, serviceAccountJSON string) (*FCMSender, error) {
-	if strings.TrimSpace(projectID) == "" {
-		return nil, fmt.Errorf("fcm: empty project id")
-	}
+// NewFCMSender 从 service account JSON 全文创建发送器；project_id 从 JSON 读，无需另传。
+func NewFCMSender(serviceAccountJSON string) (*FCMSender, error) {
 	var sa serviceAccount
 	if err := json.Unmarshal([]byte(serviceAccountJSON), &sa); err != nil {
 		return nil, fmt.Errorf("fcm: parse service account json: %w", err)
 	}
-	if sa.ClientEmail == "" || sa.PrivateKey == "" {
-		return nil, fmt.Errorf("fcm: service account missing client_email or private_key")
+	if sa.ProjectID == "" || sa.ClientEmail == "" || sa.PrivateKey == "" {
+		return nil, fmt.Errorf("fcm: service account missing project_id/client_email/private_key")
 	}
 	block, _ := pem.Decode([]byte(sa.PrivateKey))
 	if block == nil {
@@ -102,7 +100,7 @@ func NewFCMSender(projectID, serviceAccountJSON string) (*FCMSender, error) {
 	}
 
 	return &FCMSender{
-		projectID:   projectID,
+		projectID:   sa.ProjectID,
 		clientEmail: sa.ClientEmail,
 		tokenURI:    tokenURI,
 		privKey:     rsaKey,
