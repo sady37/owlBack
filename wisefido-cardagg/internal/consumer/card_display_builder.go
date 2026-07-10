@@ -134,46 +134,59 @@ func pickSection1DownLeft(s *card.CardStatus, cache *service.SpatialCache, cardP
 // pickSection2LeftIcon — FE 单 switch 决定 base icon；(Source, RoomType, Risk) 三维度合成。
 // 床 sub-variant 由 FE 自家从 BedState/monitor 派生，不在此处细分。
 //
-// Default 兜底：有床卡默认 BedInUse(=2)，无床卡默认 Empty(=0)；
-// 最终 icon = max(default, computed)。空闲有床卡至少保 BedInUse 不退化成 Empty，
-// 高优先级 (room risk/bathroom risk 4-7) 仍能覆盖。
+// icon 数值序即优先级：床是 floor（有床设备/床源恒保 BedInUse 不退 Empty），
+// room/bathroom 按 (risk_tier, 卫生间>房间) 取大盖过床。bedSource 不抢先压掉 room——
+// 卫生间占用(≥BathroomNormal 3)必然盖过 BedInUse(2)，risk 档再逐级压过 Normal。
 func pickSection2LeftIcon(s *card.CardStatus, bedHas, roomHas, hasBedDevice, isBathroom, bedSource bool) int {
-	defaultIcon := card.Section2IconEmpty
-	if hasBedDevice {
-		defaultIcon = card.Section2IconBedInUse
+	icon := card.Section2IconEmpty
+	if hasBedDevice || bedSource {
+		icon = card.Section2IconBedInUse
 	}
-	computed := card.Section2IconEmpty
-	switch {
-	case bedSource:
-		computed = card.Section2IconBedInUse
-	case roomHas:
-		risk := s.RoomState.RiskLevel
-		count := s.RoomState.TotalPeople
-		switch {
-		case count > 0 && risk >= card.RiskRisk:
-			if isBathroom {
-				computed = card.Section2IconBathroomRisk
-			} else {
-				computed = card.Section2IconRoomRisk
-			}
-		case count > 0 && risk == card.RiskAttention:
-			if isBathroom {
-				computed = card.Section2IconBathroomAttention
-			} else {
-				computed = card.Section2IconRoomAttention
-			}
-		case count > 0:
-			if isBathroom {
-				computed = card.Section2IconBathroomNormal
-			} else {
-				computed = card.Section2IconRoomNormal
-			}
+	if roomHas {
+		if ri := roomIconFor(isBathroom, s.RoomState.RiskLevel, s.RoomState.TotalPeople); ri > icon {
+			icon = ri
 		}
 	}
-	if computed > defaultIcon {
-		return computed
+	return icon
+}
+
+// roomIsBathroom 解析 roomID prefix 反查 cache room type == Bathroom。
+// DisplayRebuilder 选"代表房" 与此处判 isBathroom 共用，单源不 drift。
+func roomIsBathroom(cache *service.SpatialCache, roomID string) bool {
+	if cache == nil || roomID == "" {
+		return false
 	}
-	return defaultIcon
+	roomPfx, err := netip.ParsePrefix(roomID)
+	if err != nil {
+		return false
+	}
+	rm := cache.LookupRoom(roomPfx)
+	return rm != nil && rm.RoomType == card.RoomTypeBathroom
+}
+
+// roomIconFor 单房 → section2 icon 值（值序即优先级；count==0 → Empty）。
+// DisplayRebuilder 遍历选"代表房" 与 display 出图标共用此函数，优先级定义单源。
+func roomIconFor(isBathroom bool, risk, count int) int {
+	if count <= 0 {
+		return card.Section2IconEmpty
+	}
+	switch {
+	case risk >= card.RiskRisk:
+		if isBathroom {
+			return card.Section2IconBathroomRisk
+		}
+		return card.Section2IconRoomRisk
+	case risk == card.RiskAttention:
+		if isBathroom {
+			return card.Section2IconBathroomAttention
+		}
+		return card.Section2IconRoomAttention
+	default:
+		if isBathroom {
+			return card.Section2IconBathroomNormal
+		}
+		return card.Section2IconRoomNormal
+	}
 }
 
 // pickSection2LeftDown icon 底部时长 metric — 跟 RiskLevel 来源同源：

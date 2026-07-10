@@ -1,13 +1,16 @@
 // display_rebuilder.go — display 重派单一入口。
 //
-// 各层各算，无 winner proxy，无 trigger parent。sensor event 已经按 entry 精确路由到
-// 唯一 card，caller 写完 own state 后调 `Rebuild(cardID)`：读 fresh hash + 卡级 snapshot →
-// BuildCardDisplay → 写 display field。每张 card 独立派生，互不影响。
+// 每个 /88 room 的 state 独立存在自己 prefix 的 card:state（projector 按 SubjectEntity 路由，
+// 不折叠进 owning card）。room.state 到达时 projector 写完该房、再触发 owning card Rebuild。
+// Rebuild(cardID) 遍历 cache.EntryByCard 名下所有 room，按 (占用/risk/卫生间) 选"代表房"
+// 写入 status.RoomState → BuildCardDisplay → 写 display。以 cache 名册为准，不靠"谁最后上报"，
+// 消除单值 room_state 的 last-writer-wins 横跳。
 
 package consumer
 
 import (
 	"context"
+	"net/netip"
 	"time"
 
 	"go.uber.org/zap"
@@ -37,16 +40,46 @@ func (r *DisplayRebuilder) Rebuild(ctx context.Context, cardID string) {
 	if status == nil {
 		status = &card.CardStatus{CardID: cardID}
 	}
+	// 聚合：以 cache 名册遍历 card 名下所有 room，选"代表房"覆盖 status.RoomState
+	// （覆盖旧折叠值——各房独立存在自己 prefix，不再 last-writer-wins）。
+	if pfx, err := netip.ParsePrefix(cardID); err == nil {
+		status.RoomState = r.pickPriorityRoom(ctx, pfx)
+	}
 	display := BuildCardDisplay(status, r.cache)
 	if display == nil {
 		return
 	}
 	if err := r.writer.WriteCardStatus(ctx, &card.CardStatus{
-		CardID:  cardID,
-		Display: display,
+		CardID:    cardID,
+		Display:   display,
+		RoomState: status.RoomState,
 	}); err != nil {
 		r.logger.Warn("rebuild display write", zap.String("card", cardID), zap.Error(err))
 	}
+}
+
+// pickPriorityRoom 遍历 card 名下所有 /88 room（各房 state 存在自己 prefix），按 roomIconFor
+// 值序（占用卫生间 > 占用其他房 > 空房）选"代表房"，并列取 total_people 更新更晚的。
+// 无 room（纯床卡）返回 nil，display 端 floor 到床。
+func (r *DisplayRebuilder) pickPriorityRoom(ctx context.Context, cardPfx netip.Prefix) *card.RoomState {
+	var best *card.RoomState
+	bestScore := -1
+	var bestTs int64
+	for _, e := range r.cache.EntryByCard(cardPfx) {
+		if !e.IsRoom() {
+			continue
+		}
+		prev, err := r.reader.ReadCardStatus(ctx, e.Prefix.String())
+		if err != nil || prev == nil || prev.RoomState == nil {
+			continue
+		}
+		rs := prev.RoomState
+		score := roomIconFor(roomIsBathroom(r.cache, rs.RoomID), rs.RiskLevel, rs.TotalPeople)
+		if score > bestScore || (score == bestScore && rs.TotalPeopleTs > bestTs) {
+			best, bestScore, bestTs = rs, score, rs.TotalPeopleTs
+		}
+	}
+	return best
 }
 
 // RebuildAll 遍历 cards 表（cache 内）逐张 Rebuild。

@@ -109,24 +109,36 @@ func (p *SensorStateProjector) Handle(ctx context.Context, msg *owlredis.IoTStre
 			status.BedState = mergeBedStateSleepStage(prevBed, &bs)
 		}
 	case CategoryRoomState:
-		// room.state：sensor 发 /88 room prefix；entry 表精确等值反查 owning card_id。
-		if pfx, err := netip.ParsePrefix(msg.SubjectEntity); err == nil {
-			if ent := p.cache.LookupEntry(pfx); ent != nil {
-				destCardID = ent.CardID.String()
-				status.CardID = destCardID
-			} else {
-				p.logger.Warn("room.state entry not in cache", zap.String("subject", msg.SubjectEntity))
-				return nil
-			}
+		// room.state：sensor 发 /88 room prefix。各房 state 独立存自己 prefix 的 card:state，
+		// 不折叠进 owning card；写完触发 owning card 聚合（DisplayRebuilder 遍历所有房选代表房）。
+		roomPfx := msg.SubjectEntity
+		pfx, err := netip.ParsePrefix(roomPfx)
+		if err != nil {
+			return nil
+		}
+		ent := p.cache.LookupEntry(pfx)
+		if ent == nil {
+			p.logger.Warn("room.state entry not in cache", zap.String("subject", roomPfx))
+			return nil
 		}
 		var rs card.RoomState
 		if err := json.Unmarshal(payload, &rs); err != nil {
-			p.logger.Warn("room.state unmarshal", zap.String("trace_id", traceID), zap.String("cid", destCardID), zap.Error(err))
+			p.logger.Warn("room.state unmarshal", zap.String("trace_id", traceID), zap.String("cid", roomPfx), zap.Error(err))
 			return nil
 		}
-		// RoomState 字段级 merge（state-change-anchored）：值不变 ts 保 prev。
-		prevRoom := p.readPrevRoomState(ctx, destCardID)
-		status.RoomState = mergeRoomState(prevRoom, &rs)
+		if rs.RoomID == "" {
+			rs.RoomID = roomPfx
+		}
+		// 字段级 merge（state-change-anchored）：读该房自己 prefix 的 prev。
+		prevRoom := p.readPrevRoomState(ctx, roomPfx)
+		merged := mergeRoomState(prevRoom, &rs)
+		if err := p.writer.WriteCardStatusSilent(ctx, &card.CardStatus{CardID: roomPfx, RoomState: merged}); err != nil {
+			return err
+		}
+		if p.rebuilder != nil {
+			p.rebuilder.Rebuild(ctx, ent.CardID.String())
+		}
+		return nil
 	case CategoryTargetState:
 		var ts card.TargetState
 		if err := json.Unmarshal(payload, &ts); err != nil {
