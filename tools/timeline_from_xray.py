@@ -12,8 +12,10 @@ from collections import defaultdict
 case_dir = sys.argv[1].rstrip('/')
 room_pfx = sys.argv[2]
 log_path = sys.argv[3] if len(sys.argv) > 3 else '/home/wisefido/owl/log/Xsensor.log'
-# 第 4 参=本房设备 uid 后 4(逗号分隔),过滤掉同 unit 其它房的雷达;省略=全收。
+# 第 4 参=本房 radar uid 后 4(逗号分隔),过滤掉同 unit 其它房的雷达,作用于全 5 段;省略=全收。
+# Sleepad 恒保留(床支撑证据,不受 radar 白名单误滤)——见 excluded()。
 allow = set(s.upper() for s in sys.argv[4].split(',')) if len(sys.argv) > 4 else None
+FMT = '5'  # 段格式版本(改段结构/列语义必 +1):固定 5 段,缺数据标「(无数据)」,文件头 manifest 自检。
 PLACEHOLDER_TIDS = {88, 11}  # firmware 心跳/无坐标占位 track,非真人
 # 显示时区=设备所在地(epoch ms 不变,只换标签);跨时区 case 必传 CASE_TZ,否则 HH:MM:SS 错位。
 TZ = zoneinfo.ZoneInfo(os.environ.get('CASE_TZ', 'America/Denver'))
@@ -61,6 +63,10 @@ def lid_at(ts, tid):
 # ── 2) window.json 双雷达 raw track 帧 + 离散事件 ────────────────────────────
 win = json.load(open(f'{case_dir}/window.json'))
 meta = {d['device_uid']: d['device_type'] for d in json.load(open(f'{case_dir}/meta.json'))['devices']}
+dtype_by_u4 = {u[-4:].upper(): t for u, t in meta.items()}
+def excluded(u4):
+    # allow 白名单只滤跨房 radar;Sleepad 恒保留(床支撑证据,不受 radar 白名单误滤)。
+    return allow is not None and dtype_by_u4.get(u4) != 'Sleepad' and u4 not in allow
 # 只取本房雷达(room_pfx 下);用 spatial 无法在此判,改用:出现在 xray lid 的设备 + 发事件的设备都收,
 # 但 raw track 行只收 belief tick 覆盖时段内、且该设备确属本房 → 用设备清单过滤(调用方保证 case=本 unit)。
 EVT_RDR = {'EnterRoom','ExitRoom','Fall','InBed','LeftBed','Walking'}
@@ -68,7 +74,7 @@ rows = []  # (ts, prio, dev, tid, lid, pose, z, bed, event)
 for r in win:
     u4 = r['device_uid'][-4:].upper(); dtype = meta.get(r['device_uid'],'?')
     cat = r['category']; ts = r['timestamp']
-    if allow is not None and u4 not in allow: continue
+    if excluded(u4): continue
     if cat == 'track' and dtype == 'Radar':
         for t in (r['data_value'] or []):
             if not isinstance(t, dict) or 'track_id' not in t: continue
@@ -101,7 +107,7 @@ except (FileNotFoundError, json.JSONDecodeError):
 for r in sp:
     if r.get('category') != 'track': continue
     u4 = r['device_uid'][-4:].upper()
-    if allow is not None and u4 not in allow: continue
+    if excluded(u4): continue
     for t in (r['data_value'] or []):
         bs = t.get('bed_status')
         bedlab = 'InBed' if bs == 0 else ('LeftBed' if bs == 1 else f'bs{bs}')
@@ -115,7 +121,7 @@ except (FileNotFoundError, json.JSONDecodeError):
     alarms = []
 for r in alarms:
     u4 = r.get('device_uid', '????')[-4:].upper()
-    if allow is not None and u4 not in allow: continue
+    if excluded(u4): continue
     rows.append([r['timestamp'], 0, u4, 'A', '-', '-', 0, None, f"{r.get('category','alarm')}(ALARM)"])
 
 # 不漏任何一秒：覆盖秒之外,每秒补一行 held(no frame),belief 取最近 tick(冻结态)。lost 期固件无帧的空档也成行。
@@ -147,8 +153,15 @@ hdr = (f"{'time':8} {'dev.tid':8} {'lid':13} {'pose':7} {'z':4} {'bed':8} "
        f"{'event':18} {'src':4} {'pR':4} {'top':10} {'nr':3} {'still':5} {'SFall':5} {'SBed':5} {'SOpen':5} "
        f"{'SBliR':5} {'SEmpt':5} {'SLeft':5}")
 out = []
+def endblk(n0):
+    # 段自检:自 n0 起无内容 → 标「(无数据)」,再收代码块。5 段恒在,空段一眼可辨。
+    if len(out) == n0: out.append("  (无数据)")
+    out.append("```")
 fall_ts = [r['timestamp'] for r in win if r['category']=='Fall']
 out.append(f"# {case_dir.split('/')[-1]} — 每 tick belief 时间线 (room {room_pfx}, TZ {TZ.key})")
+out.append(f"<!-- timeline-format=v{FMT} sections=5 -->")
+out.append(f"**格式 v{FMT}** · 固定 5 段(缺数据标「(无数据)」): ①belief时间线 ②原始stream ③完整原始记录 ④event_log ⑤alarm_events · "
+           f"allow={','.join(sorted(allow)) if allow else '全收'}(Sleepad 恒保留)")
 out.append("")
 out.append("dev.tid=uid后4.track_id(雷达 raw track 帧,**两台雷达都出行**)。lid=引擎采用的 base track 出生身份。")
 out.append("**belief 列现为 per-track**:src=trk → 该 lid 自己的 s_marg(pR=该轨 p_real);src=room → 该行无 lid,回退房级 s_dist。")
@@ -156,6 +169,7 @@ out.append("于是「摔的那条轨自己的 SFall 是否起来」一眼可见(
 out.append("")
 out.append("```")
 out.append(hdr)
+_n0 = len(out)
 for row in rows:
     ts, prio, dev, tid, lid, pose, z, _bed, event = row
     b = belief_at(ts)
@@ -172,22 +186,23 @@ for row in rows:
             f"{sm['SFall']:.2f}  {sm['SBed']:.2f}  {sm['SOpen']:.2f}  "
             f"{sm['SBliR']:.2f}  {sm['SEmpt']:.2f}  {sm['SLeft']:.2f}")
     out.append(line)
-out.append("```")
+endblk(_n0)
 
 # ── 原始 stream 子表（每雷达逐帧 raw track;x/y/Δ 对照上方 belief 的 stillbox;tid=88 标 no-target）──
 out.append("")
 out.append("## 原始 stream（每雷达逐帧 raw track；x/y/Δ 对照上方 belief 的 stillbox）")
 out.append("```")
 out.append(f"{'time':12} {'dev.tid':9} {'pose':6} {'area':4} {'x':6} {'y':6} {'z':5} {'conf':4} {'Δcm':5}")
+_n0 = len(out)
 def hmsms(ms): return datetime.datetime.fromtimestamp(ms/1000, TZ).strftime('%H:%M:%S.%f')[:-3]
 raw_by_dev = {}
 for r in win:
     if r['category'] != 'track' or meta.get(r['device_uid'],'?') != 'Radar': continue
     u4 = r['device_uid'][-4:].upper()
-    if allow is not None and u4 not in allow: continue
+    if excluded(u4): continue
     raw_by_dev.setdefault(u4, []).append((r['timestamp'], r.get('data_value') or []))
 for u4 in sorted(raw_by_dev):
-    last = None
+    last_by_tid = {}  # Δcm 按 tid 存前帧位:同设备多轨(tid0/tid1)交织时,per-device last 会串成"轨间距"假位移
     for ts, dv in sorted(raw_by_dev[u4], key=lambda z: z[0]):
         d = dv[0] if dv else None
         tid = d.get('track_id') if d else 88
@@ -195,13 +210,14 @@ for u4 in sorted(raw_by_dev):
             out.append(f"{hmsms(ts):12} {u4+'.'+str(tid):9} {'88':6} {'-':4} {'-':6} {'-':6} {'-':5} {'-':4} {'-':5}")
             continue
         x, y = d.get('position_x'), d.get('position_y')
-        dd = str(int(((x-last[0])**2+(y-last[1])**2)**0.5)) if last and isinstance(x,int) else ''
-        if isinstance(x,int): last = (x,y)
+        lt = last_by_tid.get(tid)
+        dd = str(int(((x-lt[0])**2+(y-lt[1])**2)**0.5)) if lt and isinstance(x,int) else ''
+        if isinstance(x,int): last_by_tid[tid] = (x,y)
         out.append(f"{hmsms(ts):12} {u4+'.'+str(tid):9} {pose_name(d.get('pose',0)):6} "
                    f"{str(d.get('area_id')):4} {str(x):6} {str(y):6} {str(d.get('position_z')):5} "
                    f"{str(d.get('track_confidence')):4} {dd:5}")
     out.append("")
-out.append("```")
+endblk(_n0)
 out.append("")
 fired = sum(1 for t in ticks if t['fire'])
 out.append(f"**汇总**: xray tick {len(ticks)} | fire {fired} | Fall 事件 {len(fall_ts)} "
@@ -213,6 +229,7 @@ out.append("")
 out.append("## 完整原始记录（按时间排序，data_value 全文不删字段）")
 out.append("```")
 out.append(f"{'time':8} {'ms':14} {'device.tid':12} {'event':14} {'x':6} {'y':6} {'z':5} 原始记录")
+_n0 = len(out)
 raw_all = []  # (ts, uid4, category, item)
 for fn in ('window.json', 'window_sleepad.json', 'alarm.json'):
     p = f'{case_dir}/{fn}'
@@ -222,7 +239,7 @@ for fn in ('window.json', 'window_sleepad.json', 'alarm.json'):
         continue
     for r in recs:
         u4 = r.get('device_uid', '????')[-4:].upper()
-        if allow is not None and u4 not in allow: continue
+        if excluded(u4): continue
         dv = r.get('data_value')
         items = dv if isinstance(dv, list) else [dv]
         for it in (items or [None]):
@@ -236,35 +253,43 @@ for ts, u4, cat, it in sorted(raw_all, key=lambda z: z[0]):
     out.append(f"{hhmmss(ts):8} {ts:<14} {devtid:12} {cat:14} "
                f"{str(x) if x is not None else '-':6} {str(y) if y is not None else '-':6} "
                f"{str(z) if z is not None else '-':5} {json.dumps(it, ensure_ascii=False)}")
-out.append("```")
-
-# ── unit alarm_events（PG 权威，全 producer 含 sensor 自产，payload+evidence 全文；export 产 alarm_events.json）──
-try:
-    aev = json.load(open(f'{case_dir}/alarm_events.json'))
-except (FileNotFoundError, json.JSONDecodeError):
-    aev = []
-out.append("")
-out.append("## alarm_events（PG，unit 全设备，重放窗；payload+evidence 全文）")
-out.append("```")
-for a in sorted(aev, key=lambda z: z['ts']):
-    out.append(f"{hhmmss(a['ts'])}  {a['device_uid'][-4:]}  {a.get('event_type')}/L{a.get('alarm_level')}  "
-               f"{a.get('reason')}  producer={a.get('producer')}")
-    out.append(f"    payload={json.dumps(a.get('payload'), ensure_ascii=False)}")
-    out.append(f"    evidence={json.dumps(a.get('evidence'), ensure_ascii=False)}")
-out.append("```")
+endblk(_n0)
 
 # ── unit event_log（PG 权威离散事件表全量；export 产 event_log.json）──
+# event_log 在前:离散事件重放窗内基本恒有;alarm 未必落窗,放末段其空段不打断前面。
 try:
     elog = json.load(open(f'{case_dir}/event_log.json'))
 except (FileNotFoundError, json.JSONDecodeError):
     elog = []
 out.append("")
-out.append("## event_log（PG，unit 全设备，重放窗）")
+out.append("## event_log（PG，重放窗）")
 out.append("```")
+_n0 = len(out)
 for e in sorted(elog, key=lambda z: z['ts']):
+    if excluded(e['device_uid'][-4:].upper()): continue
     out.append(f"{hhmmss(e['ts'])}  {e['device_uid'][-4:]}  {str(e.get('event_kind')):14}  "
                f"{json.dumps(e.get('payload'), ensure_ascii=False)}")
+endblk(_n0)
+
+# ── unit alarm_events（PG 权威，全 producer 含 sensor 自产，payload+evidence 展开；export 产 alarm_events.json）──
+try:
+    aev = json.load(open(f'{case_dir}/alarm_events.json'))
+except (FileNotFoundError, json.JSONDecodeError):
+    aev = []
+out.append("")
+out.append("## alarm_events（PG，重放窗；payload+evidence 展开）")
 out.append("```")
+_n0 = len(out)
+for a in sorted(aev, key=lambda z: z['ts']):
+    if excluded(a['device_uid'][-4:].upper()): continue
+    out.append(f"{hhmmss(a['ts'])}  {a['device_uid'][-4:]}  {a.get('event_type')}/L{a.get('alarm_level')}  "
+               f"{a.get('reason')}  producer={a.get('producer')}")
+    for tag in ('payload', 'evidence'):
+        out.append(f"  {tag}:")
+        for ln in json.dumps(a.get(tag), ensure_ascii=False, indent=2).splitlines():
+            out.append(f"    {ln}")
+    out.append("")
+endblk(_n0)
 
 dst = f'{case_dir}/track_event_timeline.md'
 open(dst, 'w').write('\n'.join(out) + '\n')
