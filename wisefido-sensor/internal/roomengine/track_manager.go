@@ -1054,11 +1054,6 @@ func (tm *TrackManager) RecordRadarEvent(e RadarTrackEvent) {
 	if e.EventName == alarm.ExitRoom && e.TMs > d.exitMs {
 		d.exitMs = e.TMs
 	}
-	// Phase 1 触发点②③：enter2out / np>0 → 本设备各 tid raw 自查刷新 AreaEff（newer-covers）。
-	switch e.EventName {
-	case alarm.EnterRoom, alarm.ExitRoom, EventNameNumberPeople:
-		tm.selfCheckDeviceAreas(e.DeviceUID, e.TMs)
-	}
 }
 
 // rawLastPos 位置消费单源（area_selfcheck_and_ghost_raw_spec Phase 3）：raw History 末点（丢轨期冻结不漂，
@@ -1071,27 +1066,21 @@ func (ts *TrackState) rawLastPos() (int, int) {
 	return int(math.Round(px)), int(math.Round(py))
 }
 
-// selfCheckArea 用 raw 末点自查区型 → newer-covers 更新 ts.AreaEff（Phase 1；tsMs=触发时刻）。
-// raw 末点 = 末次真观测点：丢轨期冻结逐帧同值（等价只算一次），正是 ghost/floor 要的"最后真位"。
-func (tm *TrackManager) selfCheckArea(ts *TrackState, tsMs int64) {
+// areaAt 区型纯查询：坐标 → 区型 int（grid.QueryAreaType）。挂到 base.AreaAt 供 belief 当场读，防 belief import roomengine（环）。
+func (tm *TrackManager) areaAt(x, y int) int {
 	if tm.grid == nil {
-		return
+		return int(AreaUnknown)
 	}
-	n := len(ts.History)
-	if n == 0 {
-		return
-	}
-	p := ts.History[n-1]
-	ts.coverArea(tm.grid.QueryAreaType(p.X, p.Y), tsMs)
+	return int(tm.grid.QueryAreaType(x, y))
 }
 
-// selfCheckDeviceAreas 对某设备下所有 tid 各自 raw 末点自查（Phase 1 触发点 enter2out / np>0；np 无坐标 → 遍历）。
-func (tm *TrackManager) selfCheckDeviceAreas(deviceAddr string, tsMs int64) {
-	for _, ts := range tm.tracks {
-		if ts.DeviceAddr == deviceAddr {
-			tm.selfCheckArea(ts, tsMs)
-		}
+// tsArea 该轨 raw 末点区型（provenance/latch 当场查，不存 AreaEff）。丢轨期 rawLastPos 冻结→末真位区型。
+func (tm *TrackManager) tsArea(ts *TrackState) AreaType {
+	if tm.grid == nil {
+		return AreaUnknown
 	}
+	x, y := ts.rawLastPos()
+	return tm.grid.QueryAreaType(x, y)
 }
 
 // sleepadOccupied 任一 sleepad 报接触占用（InBed）→ true（bed provenance 用）。不苛求 vital：cd2b 根因 #5 =
@@ -1107,18 +1096,19 @@ func (tm *TrackManager) sleepadOccupied() bool {
 
 // evalProvenance real-by-provenance latch 置位（Phase 1.5，单调）。已置真直接返回（不复位；解闩只在 split 重分配）。
 // 通道：①门第-EnterRoom（**仅出生**：bornNow 时该 tid 与近窗 EnterRoom 同生=进门者本人；present 帧不看，否则
-// 会把"别人"的 EnterRoom 误安到已存在的 ghost 轨上）②门第-自查落 AreaEnter ③床 AreaEff∈{Bed,MonBed}∧sleepad 占用。
-// 调用方持锁；须在 selfCheckArea 之后（依赖 ts.AreaEff）。
+// 会把"别人"的 EnterRoom 误安到已存在的 ghost 轨上）②门第-自查落 AreaEnter ③床 raw 末点区型∈{Bed,MonBed}∧sleepad 占用。
+// 调用方持锁。
 func (tm *TrackManager) evalProvenance(ts *TrackState, nowMs int64, bornNow bool) {
 	if ts.RealProven {
 		return
 	}
-	if ts.AreaEff == AreaEnter || (bornNow && tm.hasRecentEnterRoom(nowMs)) ||
+	area := tm.tsArea(ts) // raw 末点区型当场查（替 AreaEff latch）
+	if area == AreaEnter || (bornNow && tm.hasRecentEnterRoom(nowMs)) ||
 		(tm.grid != nil && tm.grid.NearestEntryDist(ts.BirthPos.X, ts.BirthPos.Y) <= e1DoorBornCm) {
 		ts.RealProven = true
 		return
 	}
-	if (ts.AreaEff == AreaBed || ts.AreaEff == AreaMonitorBed) && tm.sleepadOccupied() {
+	if (area == AreaBed || area == AreaMonitorBed) && tm.sleepadOccupied() {
 		ts.RealProven = true
 		return
 	}
@@ -1248,7 +1238,7 @@ type TrackStatusBase struct {
 	Pose                int
 	StillBoxSec         int // still-box raw 时长：30s 滚动 50×50 方框内连续静止的秒数（抗质心抖动）→ FloorGuard 纯计时器（直立折扣已移 emission）
 	FrameMoveCm         int // 帧间绝对位移 cm(History 末两帧)；史料不足=sentinel 999 → emission 躺姿二义按 dD/40 分 SBed/SFallen
-	CellAreaType        AreaType
+	AreaAt              func(x, y int) int // 区型纯查询句柄（grid.QueryAreaType，值同 AreaType）；floor/emission 当场读坐标，不锁不派生
 	// chair 区久坐兜底（box 起点锁定）→ floor 连续 tFloor 单源（仅 chair 区）
 	InChair             bool
 	ChairMu             float64 // 14 日久坐均值 AV
@@ -1265,6 +1255,7 @@ type TrackStatusBase struct {
 	SplitConvicted      bool   // split 运动学坐实(SplitGhostSinceMs>0)→ 喂 census realness 降 PReal → nr 排此 ghost（Stage1.5）
 	RealLatchActive     bool   // Phase 1.5：real-by-provenance latch 当前生效（provenance 证真 ∧ 仍在 rest 区）；仅 eviction guard 用
 	RealProven          bool   // 反证法：出生证 latch（裸，不 confine）→ census 唯一真化通道；false=无证=ghost（ghost_disproof_birth_certificate_spec）
+	SplitProvisionalReal bool  // succession 暂持 real mantle（§6.12，逐帧可撤销）→ dbn_router OR 进 census ForceReal，与 RealProven 同占 nr
 	TraverseDelta       int    // 自上次 SnapshotTrackStatuses 累计的 traverse cells（用于 SuiteCensus 升格判定）
 	SleepadInBed        bool   // 同房间最近一帧任一 sleepad InBed 视作 true（resident 强升格判据）
 	SleepadVitalPresent bool   // 任一 sleepad 在床 + HR/RR fresh(TTL 内)→ 活体在垫,喂 belief 抬 SBed
@@ -1344,8 +1335,9 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 			RawV:                ts.LastRawV,
 			RawZ:                ts.LastRawZ,
 			Pose:                ts.LastPose,
-			RealLatchActive:     ts.realLatchActive(),
+			RealLatchActive:     ts.realLatchActive(tm.tsArea(ts)),
 			RealProven:          ts.RealProven,
+			SplitProvisionalReal: ts.SplitProvisionalReal,
 			MoveActive:          ts.StillBoxRunStart == 0 || ts.LastObservedMs == nowMs,
 			Present:             nowMs-ts.LastObservedMs < presenceCoastMs,
 			SplitConvicted:      ts.SplitGhostSinceMs > 0,
@@ -1367,9 +1359,7 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		if ts.SuspectInterferenceSinceMs > 0 || ts.FloorArtifactSinceMs > 0 || ts.InterferBornSinceMs > 0 || ts.SplitGhostSinceMs > 0 {
 			base.StillBoxSec = 0
 		}
-		// cell area 走 stillbox 锁定(box 开始那格,updateContinuousIndicators 用 raw 起点读一次)→ floor 阈 + emission
-		// redirect 单源,躲开逐帧 Kalman/raw 微动跨格(sit 区边缘被偏读成 active 致误报)。移动期不读(floor 不计时/emission 靠 pose)。
-		// EnterTarget(门方向,lost-fall 用)仍按当前 raw 位置实时取。
+		// 区型不再存字段：floor/emission 经 base.AreaAt 当场 QueryAreaType(raw 位置)。EnterTarget(门方向,lost-fall 用)按当前 raw 位置实时取。
 		rawCx, rawCy := px, py
 		if n := len(ts.History); n > 0 {
 			rawCx, rawCy = ts.History[n-1].X, ts.History[n-1].Y
@@ -1378,15 +1368,14 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		if cell != nil && cell.Belief[0].Type == AreaEnter {
 			base.EnterTarget = cell.EnterTarget
 		}
+		base.AreaAt = tm.areaAt // 区型当场查坐标（纯函数 grid.QueryAreaType，不锁不派生）
 		if ts.StillBoxRunStart != 0 {
-			base.CellAreaType = ts.StillBoxCellArea // 久静期:锁定值
-			base.InChair = ts.StillBoxInChair       // 久静期:锁定 chair 久坐兜底
+			base.InChair = ts.StillBoxInChair // 久静期:锁定 chair 久坐兜底
 			base.ChairMu = ts.StillBoxChairMu
 			base.ChairSigma = ts.StillBoxChairSigma
 			base.ChairMaxSit = ts.StillBoxChairMaxSit
 		} else {
-			base.CellAreaType = AreaUnknown // 移动期:不读（决策输入，躲逐帧跨格抖动）
-			base.InChair = false            // 移动期:不读
+			base.InChair = false // 移动期:不读
 			base.ChairMu = 0
 			base.ChairSigma = 0
 			base.ChairMaxSit = 0
@@ -1394,11 +1383,6 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		// Bathroom 停留学习（per-room，无 pin，与位置无关）→ floor 浴室分支 tFloor。无 box-lock：值全房恒定，
 		// floor 只在 still 累计计时，移动期 StillSec 不涨，喂不喂不影响。
 		base.BathMu, base.BathSigma, base.BathMaxSit = tm.bathDwellArgs()
-		// lost 轨（coast）：StillBoxCellArea 锁在 box 起点(History[0]→出生帧) 可能偏离末真观测点 →
-		// floor 误判区型/漏床豁免。改用末点 raw(rawCx/rawCy) 重算；present 轨保留锁（防逐帧跨格抖动）。
-		if !base.Present && cell != nil {
-			base.CellAreaType = tm.grid.QueryAreaType(rawCx, rawCy)
-		}
 		// LastCellArea = 当前落格 effective 区型（QueryAreaType：声明区优先 else learned；供上报/evidence/veto，
 		// 如 dbn_mode2 LastCellArea==AreaLying veto 需看声明的躺区）。-1 = 越界/无格。
 		if cell != nil {
@@ -1406,13 +1390,13 @@ func (tm *TrackManager) SnapshotTrackStatuses(nowMs int64) []TrackStatusBase {
 		} else {
 			ts.LastCellArea = -1
 		}
-		// 诊断(久静≥60s):锁定 area vs raw/Kalman 落格对比(验证锁定躲开跨格抖动)
+		// 诊断(久静≥60s):当场查区型 vs raw/Kalman 落格对比
 		if base.StillBoxSec >= 60 {
 			rcol, rrow := tm.grid.ToIndex(rawCx, rawCy)
 			pcol, prow := tm.grid.ToIndex(px, py)
 			tm.logger.Info("cell_area_read",
 				zap.Int("track_id", ts.TrackID), zap.String("logic_id", ts.LogicID),
-				zap.String("locked_area", base.CellAreaType.Name()),
+				zap.String("area", AreaType(base.AreaAt(rawCx, rawCy)).Name()),
 				zap.Int("raw_cx", rawCx), zap.Int("raw_cy", rawCy), zap.Int("raw_col", rcol), zap.Int("raw_row", rrow),
 				zap.Int("px", px), zap.Int("py", py), zap.Int("k_col", pcol), zap.Int("k_row", prow),
 				zap.Int("stillbox_sec", base.StillBoxSec))
@@ -1797,7 +1781,6 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			if ts.LogicID == "" {
 				ts.LogicID = makeLogicID(tm.devUIDHex(f.DeviceAddr), f.TrackID, f.TMs)
 			}
-			tm.selfCheckArea(ts, f.TMs)        // Phase 1 触发①：出生点 raw 自查 → AreaEff（供出生窗内 provenance 读）
 			tm.evalProvenance(ts, f.TMs, true) // Phase 1.5：门第/床+sleepad → RealProven（bornNow=进门者本人；stamp 前置证真则不软压）
 			// 孤儿 fresh 出生（无进门 + 无近邻继承 + 未 provenance 证真）= 独立伪迹签名 → 落 interfer cell 且孤立则软压。
 			// 与 split-ghost 几何互斥：interfer-born 要孤立（≥120cm），split 要贴 present 邻轨（≤80cm）。
@@ -1840,7 +1823,6 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			ts.Kalman.Predict(dt)
 			ts.Kalman.Update(float64(f.X), float64(f.Y))
 			ts.PushPoint(f.X, f.Y, f.Z, f.TMs)
-			tm.selfCheckArea(ts, f.TMs)         // Phase 1：present 帧 raw 末点自查（人移动→AreaEff 跟到当前区，newer-covers）
 			tm.evalProvenance(ts, f.TMs, false) // Phase 1.5：迟到 provenance（走到床/落 Enter 区后才满足）单调置 RealProven
 
 			// 连续指标（StillBox 静止），在 Kalman update 之后维护
@@ -1968,6 +1950,10 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			continue
 		}
 	}
+
+	// split 选错回退（§6.12）：占用 mantle 持有者=spliter silent-lost → living 组员按 DBNConfidence 重选 real（HSRP 热备）。
+	// 置于段2 之后：此时 lost/coast 处置已定，spliter 是否失场、候选是否 living 均已稳定。
+	tm.runSplitSuccession(nowMs)
 
 	// 推断型 fall（lost / silent-leftbed / z-drop）已迁出 gate-list → DBN belief shadow。
 	results := make([]TrackOutput, 0, len(tm.tracks))
@@ -2351,7 +2337,7 @@ const witnessRadiusCm = 200
 //
 // FN 闸：无耦合 ExitRoom 不动；倒地前兆/lying/sit/walking 不在白名单（真摔者、真坐者留）；dz>40 留（下坠保护）。调用方持锁。
 func (tm *TrackManager) exitCoupledLostResidual(ts *TrackState, nowMs int64) bool {
-	if ts.realLatchActive() {
+	if ts.realLatchActive(tm.tsArea(ts)) {
 		return false // Phase 1.5：provenance 证真且失锁在 rest 区（睡者churn丢轨）绝不当残迹删
 	}
 	d := tm.devRoom[ts.DeviceAddr]
@@ -2406,7 +2392,7 @@ func (tm *TrackManager) confirmedMirrorResidual(ts *TrackState, nowMs int64) boo
 	if d == nil || d.exitMs == 0 || absI64(d.exitMs-ts.LastObservedMs) > exitCoupledLostMs {
 		return false
 	}
-	if ts.realLatchActive() { // Phase 1.5：provenance 证真且失锁在 rest 区 → 受保护，不当镜像残迹删
+	if ts.realLatchActive(tm.tsArea(ts)) { // Phase 1.5：provenance 证真且失锁在 rest 区 → 受保护，不当镜像残迹删
 		return false
 	}
 	if !ts.MaxGhostSustained || ts.MaxRoomNp < 2 { // 条件2④ sustained mirror + 条件1 曾有共存源(是某真人反射)
@@ -2495,7 +2481,6 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 	if tm.witnessNearby(ts, nowMs, witnessRadiusCm) {
 		if ts.StillBoxRunStart != 0 {
 			ts.StillBoxRunStart = 0
-			ts.StillBoxCellArea = AreaUnknown
 			ts.StillBoxInChair = false
 			ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit = 0, 0, 0
 			ts.sitFwMaxMs, ts.sitFwContigStartMs, ts.sitZBest = 0, 0, 0
@@ -2511,10 +2496,6 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 			ts.StillBoxStartX = ts.History[0].X
 			ts.StillBoxStartY = ts.History[0].Y
 			ts.StillBoxStartZ = ts.History[0].Z // canvas Z（=raw Z 透传）→ floor fall PositionZ
-			// box 开始那刻用 raw 起点(History[0] canvas)读一次 effective 区型锁定（QueryAreaType：声明区优先
-			// else learned），久静期 floor/emission 单源读，躲开逐帧 Kalman/raw 微动跨格 + 声明的床/椅/躺区拿到
-			// 正确 floor 豁免（治 learned 未含人标致误报）。box-break 清回 AreaUnknown。
-			ts.StillBoxCellArea = tm.grid.QueryAreaType(ts.StillBoxStartX, ts.StillBoxStartY)
 			// chair 区久坐兜底锁定（电子云 gate=pin 几何，免疫 Belief 翻转）：读该椅 object 缓存 μ + maxSit 棘轮；
 			// 冷启(无记录/窗样本<min)锁 ChairMu=0 → floor 回退 90min（maxSit 棘轮无样本门控，有就读）。box-break 清。
 			ts.StillBoxInChair = tm.chairPinFieldW(ts.StillBoxStartX, ts.StillBoxStartY) > 0
@@ -2531,13 +2512,14 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 				}
 			}
 			if tm.logger != nil {
+				startArea := tm.grid.QueryAreaType(ts.StillBoxStartX, ts.StillBoxStartY)
 				bathMu, bathSig, bathMaxSit := tm.bathDwellArgs()
-				tfloor := belief.TFloorFor(int(ts.StillBoxCellArea), tm.roomType, IsNightTime(nowMs, tm.timezone), ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit, bathMu, bathSig, bathMaxSit)
+				tfloor := belief.TFloorFor(int(startArea), tm.roomType, IsNightTime(nowMs, tm.timezone), ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit, bathMu, bathSig, bathMaxSit)
 				tm.logger.Info("still_box_start",
 					zap.Int("track_id", f.TrackID), zap.String("logic_id", ts.LogicID),
 					zap.Int64("start_ms", ts.StillBoxRunStart),
 					zap.Int("canvas_x", ts.StillBoxStartX), zap.Int("canvas_y", ts.StillBoxStartY), zap.Int("canvas_z", ts.StillBoxStartZ),
-					zap.String("locked_area", ts.StillBoxCellArea.Name()),
+					zap.String("start_area", startArea.Name()),
 					zap.Bool("in_chair", ts.StillBoxInChair), zap.Float64("chair_mu", ts.StillBoxChairMu), zap.Float64("chair_sigma", ts.StillBoxChairSigma), zap.Float64("chair_maxsit", ts.StillBoxChairMaxSit),
 					zap.Int("tfloor_sec", tfloor))
 			}
@@ -2560,22 +2542,21 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 	} else if ts.StillBoxRunStart > 0 {
 		startMs := ts.StillBoxRunStart
 		dur := nowMs - startMs
-		lockedArea := ts.StillBoxCellArea
 		lockedInChair, lockedMu, lockedSigma, lockedMaxSit := ts.StillBoxInChair, ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit
 		ts.StillBoxBreakDurMs = dur // 暂存刚结束的 dwell 时长，供 scoreMovement 移动块 MarkDwell
 		ts.StillBoxRunStart = 0
-		ts.StillBoxCellArea = AreaUnknown // box-break：清锁，移动期不读 cell area（floor 不计时/emission 靠 pose）
-		ts.StillBoxInChair = false        // box-break：清锁 chair 久坐兜底
+		ts.StillBoxInChair = false // box-break：清锁 chair 久坐兜底
 		ts.StillBoxChairMu, ts.StillBoxChairSigma, ts.StillBoxChairMaxSit = 0, 0, 0
 		tm.emitSitEpisode(ts, dur, nowMs) // box-break=移动导致=walk-away → emit Sit episode（lost 走 ResetStillBox 不 emit）
 		if tm.logger != nil {
+			breakArea := tm.grid.QueryAreaType(ts.StillBoxStartX, ts.StillBoxStartY)
 			bathMu, bathSig, bathMaxSit := tm.bathDwellArgs()
-			tfloor := belief.TFloorFor(int(lockedArea), tm.roomType, IsNightTime(nowMs, tm.timezone), lockedInChair, lockedMu, lockedSigma, lockedMaxSit, bathMu, bathSig, bathMaxSit)
+			tfloor := belief.TFloorFor(int(breakArea), tm.roomType, IsNightTime(nowMs, tm.timezone), lockedInChair, lockedMu, lockedSigma, lockedMaxSit, bathMu, bathSig, bathMaxSit)
 			tm.logger.Debug("still_box_break",
 				zap.Int("track_id", f.TrackID), zap.String("logic_id", ts.LogicID),
 				zap.Int64("start_ms", startMs), zap.Int64("duration_ms", dur),
 				zap.Int("raw_h", f.RawH), zap.Int("raw_v", f.RawV), zap.Int("raw_z", f.RawZ),
-				zap.String("locked_area", lockedArea.Name()), zap.Int("tfloor_sec", tfloor),
+				zap.String("break_area", breakArea.Name()), zap.Int("tfloor_sec", tfloor),
 				zap.Int("disp_cm", disp), zap.Int("path_cm", path), zap.Int64("now_ms", nowMs))
 		}
 	}

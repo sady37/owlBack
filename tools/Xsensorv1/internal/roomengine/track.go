@@ -27,10 +27,10 @@ type TrackState struct {
 	PReal float64
 
 	// ---- real-by-provenance latch（Phase 1.5，doc/area_selfcheck_and_ghost_raw_spec.md）----
-	// RealProven：出生/present 帧任一时刻 provenance 满足（门第=EnterRoom 或 AreaEff==AreaEnter；
-	//   床=AreaEff∈{Bed,MonBed} ∧ sleepad 占用）→ 单调置真。挂 lid：出生 nearestAliveTrack 继承
-	//   parent.RealProven，带得过 churn（治 cd2b 重生睡者被全判 ghost）。消费端一律读 realLatchActive()
-	//   （= RealProven ∧ AreaEff∈rest 区，Option B confine），非裸读本字段。split 重分配硬清。
+	// RealProven：出生/present 帧任一时刻 provenance 满足（门第=EnterRoom 或 raw 末点区型=AreaEnter；
+	//   床=raw 末点区型∈{Bed,MonBed} ∧ sleepad 占用）→ 单调置真。挂 lid：出生 nearestAliveTrack 继承
+	//   parent.RealProven，带得过 churn（治 cd2b 重生睡者被全判 ghost）。消费端一律读 realLatchActive(area)
+	//   （= RealProven ∧ 当场查 QueryAreaType(rawLastPos)∈rest 区，Option B confine），非裸读本字段。split 重分配硬清。
 	RealProven bool
 	// MaxGhost：生涯峰值 census p_mirror（forensic/lost_fall delete §10.3-b）。
 	MaxGhost float64
@@ -86,11 +86,6 @@ type TrackState struct {
 	// LastFwAreaID firmware 直发的 area_id（present 帧更新；miss tick 不更新 = 冻结末值）。
 	// 床判定 N：命中某床 areaId → 该床占用。255=声明区外/0=无区。
 	LastFwAreaID int
-	// AreaEff/AreaEffTs：raw 末点自查按 ts newer-covers 的有效区型（Phase 1 单源）。替
-	// SnapshotTrackStatuses 每帧 QueryAreaType(Kalman位)；出生即置，供 census/ghost provenance
-	// 在出生窗内即读得到区型（floor 豁免 + real-by-provenance latch 双用途，见 coverArea）。
-	AreaEff   AreaType
-	AreaEffTs int64
 	// firmware 直发的最后一帧 raw 雷达本地坐标。仅用于 alarm/event publish 时作 parent track 原样上抛；
 	// 内部算法（grid/cell/fall）一律读 Kalman 后的画布坐标，不读这里。
 	LastRawH, LastRawV, LastRawZ int
@@ -115,8 +110,6 @@ type TrackState struct {
 	StillBoxRunStart int64
 	// still-box 单源派生（updateContinuousIndicators 同步算，cell engine 久静量读，替代旧 StillSince/StillX/StillY）：
 	StillBoxStartX, StillBoxStartY int   // box run 起点位置（=History[0] 回填点）→ MarkDwell/MarkToleratedStill 灌入 cell
-	StillBoxCellArea               AreaType // box 开始那刻 CellAt(StillBoxStart canvas) 锁定的 cell area；久静期 floor/emission 单源读，
-	//                                        避免逐帧 Kalman/raw 微动跨格抖动（sit 区边缘被偏读成 active 致误报）。box-break 清回 AreaUnknown。
 	// box 起点锁定的 chair 区久坐兜底 → floor 连续 tFloor 单源（仅 chair 区）。box-break 清。
 	StillBoxInChair     bool
 	StillBoxChairMu     float64 // 本椅 14 日久坐均值 AV（秒）；0=冷启
@@ -144,6 +137,12 @@ type TrackState struct {
 	// SplitGhostSinceMs：赖在 spliter 锚点的 ghost 软压 latch（>0 → SnapshotTrackStatuses 零其 StillBoxSec
 	// 不喂 floor）。**单调**：坐实(3-tick GLUED)置位，只由 walkout/露倒地相解除；穿过 HOLD 不清。不删轨（避免 churn）。
 	SplitGhostSinceMs int64
+	// SplitSpliterLID：本 group 的 spliter（占用 mantle 持有者/静止干扰源）身份 lid，出生时由 stampSplitGroupOnBirth 记下。
+	// succession(§6.12) 靠它反向定位"我的锚是谁"——spliter 恰不带 SplitObservingSinceMs，无此链则其 silent-lost 无人可继。
+	SplitSpliterLID string
+	// SplitProvisionalReal：succession 暂持 real mantle（HSRP standby 顶上，逐帧可撤销、非 latch）。spliter silent-lost
+	// 且 living 候选 ≥2 时，PReal 最高者置真占 nr（census ForceReal ← RealProven||此位）；跨硬门槛/living 剩 1 → 转 RealProven 清此位。
+	SplitProvisionalReal bool
 }
 
 // Track 生命周期常量
@@ -208,15 +207,6 @@ func (ts *TrackState) PushPoint(x, y, z int, tMs int64) {
 	ts.LastObservedMs = tMs
 }
 
-// coverArea newer-covers：仅被 ts 不早于当前 AreaEffTs 的自查/事件值覆盖（单调取最新）。
-// 语义：自查早于事件→后到事件覆盖；自查晚于事件→前事件是瞬态，用当前自查。
-func (ts *TrackState) coverArea(area AreaType, tsMs int64) {
-	if tsMs >= ts.AreaEffTs {
-		ts.AreaEff = area
-		ts.AreaEffTs = tsMs
-	}
-}
-
 // isRestArea rest-provenance 区：静止真人合法待着的区（床/坐/躺/门）。开阔活动区/deny/reflector/interfer
 // 非 rest → 静止可疑，latch 不豁免 ghost 判定（Option B confine）。
 func isRestArea(a AreaType) bool {
@@ -227,11 +217,11 @@ func isRestArea(a AreaType) bool {
 	return false
 }
 
-// realLatchActive real-by-provenance latch 当前是否生效（Option B）：已 provenance 证真 ∧ 当前 raw 自查区
-// 仍在 rest 区。true → 消费端强制 real / 豁免 ghost。飘出 rest 区（真摔在开阔地板 / 冒名 phantom 走开）→
-// false → ghost 检测器与 floor 照常，绝不压真摔。
-func (ts *TrackState) realLatchActive() bool {
-	return ts.RealProven && isRestArea(ts.AreaEff)
+// realLatchActive real-by-provenance latch 当前是否生效（Option B）：已 provenance 证真 ∧ 当前 raw 自查区（area
+// = QueryAreaType(rawLastPos)，调用方当场查）仍在 rest 区。true → 消费端强制 real / 豁免 ghost。飘出 rest 区
+// （真摔在开阔地板 / 冒名 phantom 走开）→ false → ghost 检测器与 floor 照常，绝不压真摔。
+func (ts *TrackState) realLatchActive(area AreaType) bool {
+	return ts.RealProven && isRestArea(area)
 }
 
 // HasHistory 是否有足够帧数做 Kalman

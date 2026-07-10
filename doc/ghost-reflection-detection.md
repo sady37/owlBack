@@ -278,6 +278,48 @@ split 的「等」不是通用技巧，而是**安全梯度上那个位置的正
 
 split 复用 teleport 的「hard PURGE + 反压重建」动作，但触发是**出生分裂 + 窗末时机**而非运动学跳变；独立 `split_ghost.go`，与 teleport/static fast-path 并存，共享 fall-precursor 闸（闸1）与出口 sink（删轨 → $N_r$ 自动减）。
 
+### 6.12 split 选错的回退：occupant lost → living 逐帧重选（succession）　【已实现·两引擎 1:1（Xsensor PReal / sensor DBNConfidence 环境差异）；Xsensor replay 验证 sole_living 出口（case-d5f7-0709）；≥2 living 暂持分支代码就位、待真 case 覆盖执行路径】
+
+6.6–6.11 治的是「分裂现场删/压 ghost」；本节补一个**反转盲区**：分裂瞬间 **ghost 先占了 occupant 位**（"ghost replace real"），真人后到、**无 EnterRoom**（房内重现）。现行设计对「被误当 occupant 的 ghost 事后 lost」**没有回退**——真人只能靠 walk-out(R≥200) 侥幸转正，没 walk-out（真人坐回去）就漏。
+
+**实证 case-d5f7-0709-09270938**（Denver-101 E598…D5F7，8x replay）：
+
+- `split_group_formed` spliter=tid0(born-ghost,`RealProven=False`)、offspring=tid1；tid0 于 09:27–09:29 独占 occupant（房态 top=Sit 由其驱动），tid1 于 09:29 **无门第**重现。
+- 09:30 tid0 lost。当前仅因 tid1 恰走 228cm 触发 `EverWalkedOut` 才救回——**tid1 若坐着即漏**。
+- 且 tid0 lost 时距唯一 ExitRoom(09:37,track_id=1)≫30s，`exitCoupledLostResidual` 的耦合窗（`|exitMs−LastObservedMs|≤exitCoupledLostMs(30s)`）落空 → 也没人 purge 它（它挂 born-ghost floor 抑制才没炸，非被清）。
+
+**规则 —— 逐帧相对重选（无硬门槛）：**
+
+```
+持 occupant/real 的 split 成员 silent lost（非 ExitRoom 走）:
+  每 frame:
+    living split-group 成员里 → ghost-score 最低者暂持 real mantle
+    （无硬门槛：纯相对最高就赢）
+  直到二选一收敛:
+    ├─ 某候选跨硬门槛 → 确认 real，锁定终止
+    └─ living 只剩 1 → 末者即 real（排除法）
+```
+
+- **无硬门槛是特性不是妥协**：succession 不是「从零把 ghost 提成 real」，而是「房里本已确立的 occupant mantle，持有者 lost 后传给 living 里最像真的那个」。加硬门槛 = 坐着的低分真人 B（无 walk-out、无门第）被挡回 → **FN**（[[split_no_tid_priority]] 的同源教训：只能行为证伪，不能靠"够不够格"卡真人）。
+- **四道硬门槛（跨任一 → 确认 real 并 latch，语义同 [[split_everwalkedout_irreversible]]）**：
+
+  | 硬门槛 | 语义 | 代码原语 |
+  |---|---|---|
+  | R≥200（离锚点净走出） | walk-out 真人 | `splitWalkOutCm=200` → `SplitEverWalkedOut` |
+  | 2-tick 净走动 >150 | 瞬时 liveness（走得快=活人；反射钉死原处 2 帧走不出 150） | `distInt(histPos(ts,2),histPos(ts,0)) > splitLiveMoveCm(150)`（新增常量；复用 `histPos`+`distInt`，无新状态）。与 R≥200 **正交**：R=离锚点空间分离、本条=瞬时速度。**标定基准 = 1 frame/sec**（2-tick≈2s → 0.75 m/s）；帧率若变，此常量须重标 |
+  | InBed 事件 | 床第 provenance | `RealProven`（AreaEff∈{Bed,MonBed}） |
+  | ExitRoom 事件 | 门第 provenance（跨门=真人） | 门第 `RealProven` |
+
+- **非 sticky 自愈**：暂持逐帧再评，选偏下一帧即纠回；**只有跨硬门槛才 latch**（不可逆），其余帧都是可撤销的暂持。
+- **fall-net 正交**（复用 6.7 真值表③ + [[realness_never_vetoes_fall]] §79）：原 lost 轨的 tFloor/lost-fall **照跑，succession 只加不减** → 一次错选也炸不出 fall FN，下游 ghost-scoring 每帧仍在跑、会把错选压回。安全性**不靠门槛**，靠「相对选择 + 逐帧自愈 + fall-net 正交」三条。
+- **触发闸（S1/S2 天然排除）**：占用者经 **ExitRoom(event==2) 走 = 真人离房（S1）**→ 不重选（残迹交 tFloor，见第九部分）；living 为空（**S2**，真人真 lost、ghost 同步 lost）→ 无候选，lost-real 照进 tFloor（摔倒网）。只有 **silent lost 且尚有 living 成员（S3=选错）** 才进重选。
+
+**实现原语已全部锚定**：四道硬门槛均映射到现有原语（见上表）。「2-tick 净走动 >150」= `distInt(histPos(ts,2),histPos(ts,0)) > splitLiveMoveCm(150)`——仅新增一个常量、复用 `histPos`+`distInt`（`split_ghost.go` 内已在用），与 R≥200（离锚点分离）**语义正交**（瞬时速度 vs 空间分离），无重复。net 直线位移在 150 阈下远高于 firmware ±5–10cm 抖动，2 样本即稳。
+
+> **校准锚：`splitLiveMoveCm=150` 的物理含义挂在「1 frame/sec」上**（已确认当前帧率）。2-tick≈2s → 150cm = 净 0.75 m/s。帧率一变，语义即翻：2s/帧 → 0.375 m/s（过松，慢漂残迹能爬到 150）；0.5s/帧 → 1.5 m/s（过严，健康老人未必过）。此依赖为隐式，改帧率时**必须**回来重标 150，否则无声回归。常量定义处须同步一行 `// 基准 1frame/s；帧率变则重标`。此门槛偏严只影响「多快确认 real」，不影响「会不会漏」——FN-safe 由另外三道门槛 + succession 暂持兜底（见上「无硬门槛是特性」）。
+
+[[split_succession_reelect]]
+
 ---
 
 ## 第七部分 · 落地路线

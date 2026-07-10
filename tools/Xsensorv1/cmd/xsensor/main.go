@@ -174,13 +174,13 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 
 	tracks := make([]adapter.TrackObs, 0, len(bases)+1)
 	for _, b := range bases {
-		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, SplitConvicted: b.SplitConvicted, ForceReal: b.RealProven, RadarTrack: adapter.RadarTrack{
+		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, SplitConvicted: b.SplitConvicted, ForceReal: b.RealProven || b.SplitProvisionalReal, RadarTrack: adapter.RadarTrack{
 			TrackID: b.TrackID, // logicID↔track_id 反查源（ExitRoom 按号反查丢轨人）
 			Online:  b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
 			StillSec: float64(b.StillBoxSec), // still-box raw 时长 → FloorGuard 纯计时器（直立折扣已移 emission 压 SFallen）
 			FrameMoveCm: float64(b.FrameMoveCm), // 帧间绝对位移 → emission 躺姿二义 SBed/SFallen 分配（仅 AreaBed 内）
 
-			AreaType: int(b.CellAreaType), // 每帧读活的 cell area（emission 正向压制 + floor 阈）
+			AreaAt: b.AreaAt, // 区型纯查询句柄（grid.QueryAreaType）→ emission 正向压制 + floor 阈当场读坐标
 			InChair:  b.InChair, ChairMu: b.ChairMu, ChairSigma: b.ChairSigma, ChairMaxSit: b.ChairMaxSit, // chair 区久坐兜底 → floor 连续 tFloor
 			BathMu: b.BathMu, BathSigma: b.BathSigma, BathMaxSit: b.BathMaxSit, // bathroom 停留学习 → floor 浴室分支 tFloor
 			RoomType: d.roomType[roomID],  // 房型 → still CDF room×cell 保守合并(bathroom 保底 20min，学习抬至 ≤45min)
@@ -193,11 +193,17 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	if g.radarLess && reading == belief.BedInBed {
 		fwArea := 0
 		if len(g.bedAreaIDs) > 0 {
-			fwArea = g.bedAreaIDs[0] // 自洽：合成 bed-track 的 area_id = 床声明 id → 命中 N → 压 SBed
+			fwArea = g.bedAreaIDs[0] // 自洽：合成 bed-track 的 area_id = 床声明 id → bedHitMask 命中 N → 压 SBed
+		}
+		bedX, bedY := 0, 0
+		if len(g.beds) > 0 {
+			bedX = (g.beds[0].X1 + g.beds[0].X2) / 2 // 合成载体放床中心 → deviceRadarInBed 几何 InRect 命中
+			bedY = (g.beds[0].Y1 + g.beds[0].Y2) / 2
 		}
 		tracks = append(tracks, adapter.TrackObs{LogicID: "sleepad-bed", RadarTrack: adapter.RadarTrack{
-			Online: true, Pose: poseLying, X: 0, Y: 0, Z: 0,
-			FwAreaID: fwArea, // sleepad-only 床占用 → N 命中 → SBed（无摔判定，sleepad 看不到姿态）
+			Online: true, Pose: poseLying, X: bedX, Y: bedY, Z: 0,
+			AreaAt:   func(int, int) int { return int(roomengine.AreaBed) }, // 合成 bed 载体在床中心 → 区型=床
+			FwAreaID: fwArea, // sleepad-only 床占用 → bedHitMask 命中 N → SBed（无摔判定，sleepad 看不到姿态）
 		}})
 	}
 
@@ -242,7 +248,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	var padAbs []roomengine.PadAbsorption
 	if d.eng != nil {
 		pads := d.eng.SnapshotSleepads(roomID, nowMs)            // sleepad 占用身份（addr/InBed/Fresh/Stale）
-		radars := roomengine.RadarBedStates(bases, g.bedAreaIDs) // 每台 radar N-in-bed（MN/FwAreaID，§9.1 raw）
+		radars := roomengine.RadarBedStates(bases) // 每台 radar 几何在床（raw 位置区型∈{Bed,MonBed}）
 		var uncovered int
 		uncovered, padAbs = roomengine.AbsorbSleepads(pads, radars, d.mm[roomID], roomengine.SamebedAbsorbThresh)
 		// P1 单 setter（契约 §3 / §9.3 裁定）：Nr 折叠 + uncovered-sleepad（撑占用，修缺陷①漏算）。
@@ -288,7 +294,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		raw = append(raw, map[string]interface{}{
 			"tid": b.TrackID, "lid": b.LogicID, "present": b.Present, "pose": b.Pose,
 			"x": b.X, "y": b.Y, "z": b.Z, "stillbox": b.StillBoxSec, "dd": b.FrameMoveCm,
-			"area": int(b.CellAreaType), "area_eff": int(b.AreaEffDbg), "raw_self_x": b.RawSelfX, "raw_self_y": b.RawSelfY, "real_proven": b.RealProven, "bf_preal": b.PReal,
+			"area": b.AreaAt(b.RawSelfX, b.RawSelfY), "raw_self_x": b.RawSelfX, "raw_self_y": b.RawSelfY, "real_proven": b.RealProven, "bf_preal": b.PReal,
 			"fw_area": b.FwAreaID, "fw_bed": fwBed(b.FwAreaID, g.bedAreaIDs), // 固件 area_id + 是否命中床区(N,抬 SBed 那条腿)
 			"vital": b.SleepadVitalPresent, // 该轨 sleepad 接触 vital(InBed+HR/RR fresh)→ couplesAnyBed 时抬 SBed
 		})

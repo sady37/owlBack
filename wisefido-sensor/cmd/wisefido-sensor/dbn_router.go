@@ -91,12 +91,12 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 
 	tracks := make([]adapter.TrackObs, 0, len(bases)+1)
 	for _, b := range bases {
-		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, SplitConvicted: b.SplitConvicted, ForceReal: b.RealProven, RadarTrack: adapter.RadarTrack{
+		tracks = append(tracks, adapter.TrackObs{LogicID: b.LogicID, SplitConvicted: b.SplitConvicted, ForceReal: b.RealProven || b.SplitProvisionalReal, RadarTrack: adapter.RadarTrack{
 			TrackID: b.TrackID,
 			Online:  b.Present, Pose: b.Pose, X: b.X, Y: b.Y, Z: b.Z,
 			StillSec: float64(b.StillBoxSec),
 			FrameMoveCm: float64(b.FrameMoveCm),
-			AreaType: int(b.CellAreaType),
+			AreaAt: b.AreaAt,
 			InChair:  b.InChair, ChairMu: b.ChairMu, ChairSigma: b.ChairSigma, ChairMaxSit: b.ChairMaxSit,
 			BathMu:   b.BathMu, BathSigma: b.BathSigma, BathMaxSit: b.BathMaxSit,
 			RoomType: d.roomType[roomID],
@@ -109,8 +109,15 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 		if len(g.bedAreaIDs) > 0 {
 			fwArea = g.bedAreaIDs[0]
 		}
+		bedX, bedY := 0, 0
+		if len(g.beds) > 0 {
+			bedX = (g.beds[0].X1 + g.beds[0].X2) / 2 // 合成载体放床中心 → deviceRadarInBed 几何 InRect 命中
+			bedY = (g.beds[0].Y1 + g.beds[0].Y2) / 2
+		}
 		tracks = append(tracks, adapter.TrackObs{LogicID: "sleepad-bed", RadarTrack: adapter.RadarTrack{
-			Online: true, Pose: poseLying, X: 0, Y: 0, Z: 0, FwAreaID: fwArea,
+			Online: true, Pose: poseLying, X: bedX, Y: bedY, Z: 0,
+			AreaAt:   func(int, int) int { return int(roomengine.AreaBed) }, // 合成 bed 载体在床中心 → 区型=床
+			FwAreaID: fwArea,
 		}})
 	}
 
@@ -150,7 +157,7 @@ func (d *dbnRouter) onRoomFrame(roomID string, bases []roomengine.TrackStatusBas
 	// P1 占用人数回注（census 折叠 + uncovered-sleepad 吸纳）→ RealPeopleInRoom（服务 zoneengine total_people）。
 	if d.eng != nil {
 		pads := d.eng.SnapshotSleepads(roomID, nowMs)
-		radars := roomengine.RadarBedStates(bases, g.bedAreaIDs)
+		radars := roomengine.RadarBedStates(bases)
 		uncovered, padAbs := roomengine.AbsorbSleepads(pads, radars, d.mm[roomID], roomengine.SamebedAbsorbThresh)
 		d.eng.SetRoomRadarPeople(roomID, fr.Decision.PeopleCount+uncovered)
 		for _, p := range padAbs {

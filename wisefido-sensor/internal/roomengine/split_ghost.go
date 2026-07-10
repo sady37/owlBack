@@ -30,6 +30,7 @@ const (
 	splitWalkOutCm       = 200   // 离锚点净距 ≥此 = WALKOUT 真人 walk → EverWalkedOut 永久 real
 	splitConvictTicks    = 3     // GLUED 连续 ≥此 tick（~6s）坐实 → SplitGhostSinceMs 单调置位（抗噪）
 	splitMinVotes        = 2     // spliter 至少 2 票（自身续 + offspring）才算 split（一源裂多轨）
+	splitLiveMoveCm      = 150   // succession 2-tick 净走动 >此 = 瞬时 liveness（反射钉死原处 2 帧走不出）。基准 1frame/s；帧率变则重标
 )
 
 func splitAbs(v int) int {
@@ -150,6 +151,7 @@ func (tm *TrackManager) stampSplitGroupOnBirth(offspring *TrackState, f TrackFra
 		}
 		ts.SplitObservingSinceMs = nowMs
 		ts.SplitSpliterX, ts.SplitSpliterY = x1, y1
+		ts.SplitSpliterLID = spliter.LogicID // succession 反向链：组员记住占用 mantle 持有者身份
 		n++
 	}
 	tm.logger.Info("split_group_formed",
@@ -214,4 +216,103 @@ func (tm *TrackManager) updateSplitGhost(ts *TrackState, f TrackFrame, nowMs int
 	default:
 		ts.splitGlueRun = 0 // HOLD：断棘轮（需重新 3 连坐实）；既有定罪 SplitGhostSinceMs 不清
 	}
+}
+
+// splitSuccessionHardGate succession 的两道瞬时硬门槛（另两道 InBed/ExitRoom 走门第/床第，已由 evalProvenance
+// 并入 RealProven，故此处只判 walkout 与 2-tick liveness）。跨任一 → 候选确认 real、latch 终止重选。
+func (tm *TrackManager) splitSuccessionHardGate(ts *TrackState) bool {
+	if ts.SplitEverWalkedOut { // R≥200 离锚点净走出
+		return true
+	}
+	x2, y2, ok2 := histPos(ts, 2)
+	x0, y0, ok0 := histPos(ts, 0)
+	return ok2 && ok0 && distInt(x2, y2, x0, y0) > splitLiveMoveCm // 2-tick 净走动（两 tick 历史齐备才判，不齐=不可判维持暂持）
+}
+
+// runSplitSuccession split 选错的回退（§6.12）：占用 mantle 持有者=spliter **silent lost**（非 ExitRoom 走）时，
+// 在 living split-group 成员里按 PReal 逐帧重选 real（HSRP 热备顶上）。收敛=跨硬门槛/living 剩 1 → RealProven latch。
+// FN-safe「只加不减」：succession-active 组内全体候选解 SplitGhost 软压 → floor 网覆盖每条（坐着的真人摔倒不漏，
+// 不依赖任何人 walk-out）。每帧调（processFrameAt 段2 之后，持 tm.mu）。
+func (tm *TrackManager) runSplitSuccession(nowMs int64) {
+	// lid → 该身份最近一次真实观测 ms（判 spliter/候选是否 living：coast 窗内=在场）
+	lastObsByLID := map[string]int64{}
+	for _, ts := range tm.tracks {
+		if ts.LastObservedMs > lastObsByLID[ts.LogicID] {
+			lastObsByLID[ts.LogicID] = ts.LastObservedMs
+		}
+	}
+	// living 组员（自身未过 coast）按 spliter 分组
+	membersBySpliter := map[string][]*TrackState{}
+	for _, ts := range tm.tracks {
+		if ts.SplitSpliterLID == "" || nowMs-ts.LastObservedMs >= presenceCoastMs {
+			continue
+		}
+		membersBySpliter[ts.SplitSpliterLID] = append(membersBySpliter[ts.SplitSpliterLID], ts)
+	}
+	for spliterLID, members := range membersBySpliter {
+		if last, ok := lastObsByLID[spliterLID]; ok && nowMs-last < presenceCoastMs {
+			continue // spliter 仍在场（coast 未过窗）→ mantle 未失，不触发
+		}
+		if _, exited := tm.hardExitedLIDs[spliterLID]; exited {
+			continue // S1：spliter 经 ExitRoom 离房 = 真人走了，不重选（残迹交 tFloor）
+		}
+		alreadyReal := false // 组内已有 latch real（walkout/门第/床）→ mantle 已定
+		for _, m := range members {
+			if m.RealProven {
+				alreadyReal = true
+			}
+		}
+		if alreadyReal {
+			for _, m := range members {
+				m.SplitProvisionalReal = false
+			}
+			continue
+		}
+		// S3：spliter silent-lost + living 候选。只加不减 → 全体解软压保 floor 网
+		for _, m := range members {
+			m.SplitGhostSinceMs = 0
+			m.splitGlueRun = 0
+		}
+		latched := false
+		for _, m := range members {
+			if tm.splitSuccessionHardGate(m) {
+				tm.promoteSuccession(m, members, nowMs, "hard_gate")
+				latched = true
+				break
+			}
+		}
+		if latched {
+			continue
+		}
+		if len(members) == 1 { // 排除法：living 剩 1 → 末者即 real
+			tm.promoteSuccession(members[0], members, nowMs, "sole_living")
+			continue
+		}
+		best := members[0] // 暂持：DBNConfidence 最高者顶 mantle（sensor 环境差异：Xsensor 用 PReal，本侧用 DBNConfidence 0-100）
+		for _, m := range members[1:] {
+			if m.DBNConfidence > best.DBNConfidence {
+				best = m
+			}
+		}
+		for _, m := range members {
+			m.SplitProvisionalReal = (m == best)
+		}
+	}
+}
+
+// promoteSuccession 收敛出口：winner latch RealProven（census 唯一真化通道）+ 解自身软压；清全组暂持位。
+func (tm *TrackManager) promoteSuccession(winner *TrackState, group []*TrackState, nowMs int64, reason string) {
+	winner.RealProven = true
+	winner.SplitGhostSinceMs = 0
+	for _, m := range group {
+		m.SplitProvisionalReal = false
+	}
+	tm.logger.Info("split_succession_promote",
+		zap.String("device_uid", winner.DeviceAddr),
+		zap.Int("track_id", winner.TrackID),
+		zap.String("logic_id", winner.LogicID),
+		zap.String("spliter_lid", winner.SplitSpliterLID),
+		zap.String("reason", reason),
+		zap.Int("dbn_conf", winner.DBNConfidence),
+	)
 }
