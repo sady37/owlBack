@@ -2601,11 +2601,11 @@ func (tm *TrackManager) updateContinuousIndicators(ts *TrackState, f TrackFrame,
 	path := ts.PathLengthWithinMs(30_000, nowMs)
 	if disp <= stillBoxCm && path <= stillPathCm && len(ts.History) >= 2 {
 		if ts.StillBoxRunStart == 0 {
-			// 起点回填到 History 最早帧（box 内最早可见点）；同步存起点位置（cell engine 久静量单源读）。
-			ts.StillBoxRunStart = ts.History[0].TMs
-			ts.StillBoxStartX = ts.History[0].X
-			ts.StillBoxStartY = ts.History[0].Y
-			ts.StillBoxStartZ = ts.History[0].Z // canvas Z（=raw Z 透传）→ floor fall PositionZ
+			// 起点=满足 box 条件当帧（第30秒，坐标最稳；砍 History 查询，代价 floor 计时从此刻起→晚 ~30s）。
+			ts.StillBoxRunStart = nowMs
+			ts.StillBoxStartX = f.X
+			ts.StillBoxStartY = f.Y
+			ts.StillBoxStartZ = f.Z // canvas Z（=raw Z 透传）→ floor fall PositionZ
 			// chair 区久坐兜底锁定（电子云 gate=pin 几何，免疫 Belief 翻转）：读该椅 object 缓存 μ + maxSit 棘轮；
 			// 冷启(无记录/窗样本<min)锁 ChairMu=0 → floor 回退 90min（maxSit 棘轮无样本门控，有就读）。box-break 清。
 			ts.StillBoxInChair = tm.chairPinFieldW(ts.StillBoxStartX, ts.StillBoxStartY) > 0
