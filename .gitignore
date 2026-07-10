@@ -68,6 +68,11 @@ kms-backup/
 **/mw.md
 vault/
 
+# FCM / push service-account credentials — never commit key material
+owl-common/app_key/
+**/*-fcm-*.json
+**/serviceAccount*.json
+
 # MQTT TLS (per-env)
 mqtt/config/*.pem
 mqtt/config/*.key
