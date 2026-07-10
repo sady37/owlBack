@@ -64,17 +64,18 @@ func (g *FloorGuard) Step(obs Observation) bool {
 		}
 	}
 	contactInBed := nearCount == 1 && nearJ < len(obs.Sleepad) && obs.Sleepad[nearJ] == BedInBed
+	at := obs.areaType()
 	switch {
-	case obs.AreaType == areaBed || obs.AreaType == areaMonitorBed:
+	case at == areaBed || at == areaMonitorBed:
 		return false // 真床/监护床：接触床区按 AreaType 豁免（无 sleepad 时几何分不清在床/床边摔，宁漏边缘 FN 不让睡眠误报）
-	case obs.AreaType == areaReflector:
+	case at == areaReflector:
 		// 镜面/金属静态反射：几何确定的反射体，整片豁免。
 		// （interfer 杂波区不再整片豁免——会漏报走进去摔倒的真人；其伪迹改在 track 出生时按身份抑制 still-box。）
 		return false
 	case contactInBed:
 		return false // 真在床
 	}
-	return obs.StillSec >= tFloorFor(obs.AreaType, obs.RoomType, obs.IsRiskTime, obs.InChair, obs.ChairMu, obs.ChairSigma, obs.ChairMaxSit, obs.BathMu, obs.BathSigma, obs.BathMaxSit)
+	return obs.StillSec >= tFloorFor(at, obs.RoomType, obs.IsRiskTime, obs.InChair, obs.ChairMu, obs.ChairSigma, obs.ChairMaxSit, obs.BathMu, obs.BathSigma, obs.BathMaxSit)
 }
 
 // tFloorFor floor(= §I stillbox 计时器)异常阈。risktime 纯时间轴：μ,σ 不变(物理),只动风险容忍 k——

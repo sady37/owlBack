@@ -8,9 +8,21 @@ replay集
 # * case-cd2b-0620-11231131  hand-off
 # * case-cd2b-0627-04270442  curtain出生，才豁免，
 # * case-cd2b-0628-02280232  fire fall in bed, 
+# * case-cd2b-0702-09240932  因为床大， Sleepad 报leftBed， ->SLeftBed 胜出，所以 Bed上的lying fire.
+# * case-cd2b-0704-04300508  Sleepad lefBed,dD 轴 = 0:整段 36 分钟 track 恒定在 xy=(-30,230)， 04：31～05：07=36min fire 床大的因素：04:24:41 sleepad 报 LeftBed(离床)→ 随后 静默 ~57 分钟 案发窗口 04:30~05:08 完全落在这段 sleepad 离床静默区 05:21:34 sleepad 报 InBed(回床)
+
+# * casse-333b-0704-10291034 201bathroom 进2人，出1人，fire. **关键发现：
+##ExitFirst = 连续进入 Enter/门口区的首帧(不等 ~5s 固件 ExitRoom 确认)。窗口:[ExitFirst, ExitFirst+60] 邻居 radar EnterRoom / [ExitFirst, ExitFirst+90] 邻居 sleepad LeftBed。
+LostFirst = 消失前坐标完全一致的首帧(冻结诞生)。窗口同样 LostFirst+60 / LostFirst+90。
+窗口内有对应邻居证据 → 判定 handoff 成立 → purge 这条 exit/lost 残迹(而非仅时间段抑制)。
 
 # * case-09e7-0620-22402242   
 # * case-09e7-6021-22162229   1room2radar,reisktime,fall2,9min fall     **success  同房在床，可能睡，不抑制fire报警
+# # case-09e7-0702-14421455   上睡的太死， 一动不动，Sleepad 检测不到压力变化，给了一个离床状态，现LeftBed 前后， 位移越小，将SFall 转给SBed的越多， dD>40 或 dZ!=0 全归SFall。 跌床，无任何位移，也是很奇怪的
+
+
+
+
 
 # * case-d523-0622-13341336   D523,椅子后80s lost, 120s 101guest sleepad inbed handoff  **success
 # * case-d523-0627-15351540   D523，重启， stillbox learn sit 持久化，避免重启丢失。 stillbox >5min后 平均数，tFloor=media*1.5

@@ -197,7 +197,7 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 		//   （frac=0 全 SBed / frac=1 全 SFallen）。两轴取大——① 帧间跳大(翻身/起身)立刻放 SFall；② 连续静止时间项线性
 		//   斜坡(封顶 maxTimeSfallFrac)使矛盾态久静 ~35min 也放 SFall 升过阈兜底(失能/医疗；正常睡眠 sleepad InBed 经 B 轴
 		//   续撑 SBed 不 fire)。闸 areaBed 是 FN 命门：床外倒地静止绝不偏 SBed，否则漏地板真摔。
-		if o.AreaType == areaBed && o.Z < zFlatCm {
+		if o.areaType() == areaBed && o.Z < zFlatCm {
 			sfallFrac := o.FrameMoveCm / ddFullFallCm // dD 轴：翻身/起身可达 1.0（全 SFall）
 			if tSec := o.StillSec; tSec > 0 {          // 时间轴：线性斜坡到 maxTimeSfallFrac（保底 1/7 SBed）
 				tFrac := maxTimeSfallFrac * tSec / ddDefenseCapSec
@@ -237,7 +237,7 @@ func (e *Emission) radarLogS(o Observation) [numStates]float64 {
 	// area_type 正向压制（每帧读活的 cell）：FN-safe 默认偏 Fallen，由位置正向证据 redirect 到对应静止态。
 	//   sit/lying→SSit(休息) / active·enter→SOpenFloor；deny·interfer·reflector·unknown 中性。床走上方 firmware N。
 	//   area 误学(如假 Sit)的真摔由 FloorGuard 总时长兜底（不靠 emission still 路径翻 area）。
-	switch o.AreaType {
+	switch o.areaType() {
 	case areaSit, areaLying:
 		addLogLk(&logS, Vector{SSit: e.p.lArea}, w, SSit)
 	case areaActive, areaEnter:

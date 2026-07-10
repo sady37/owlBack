@@ -32,7 +32,7 @@ type RadarTrack struct {
 	HR, RR   int     // 0=无信号
 	StillSec float64 // 连续静止秒（still-box 总时长）
 	FrameMoveCm float64 // 帧间绝对位移 cm（在动/史料不足=999）→ emission 躺姿二义 SBed/SFallen 分配（仅 AreaBed 内）
-	AreaType int     // track 当前 cell.Belief[0].Type（CellAreaType 透传）→ emission 正向压制 + floor per-area 阈
+	AreaAt func(x, y int) int // 纯几何查询句柄：坐标→区型 int（值同 roomengine.AreaType）；roomengine 注入 grid.QueryAreaType
 	// Chair 区久坐兜底（实时读 px,py 的 cell）→ floor 连续 tFloor 单源（仅 chair 区）
 	InChair     bool
 	ChairMu     float64 // 14 日久坐均值 AV
@@ -117,6 +117,9 @@ func distCm(x, y int, r Rect) float64 {
 	dy := maxi(maxi(r.Y1-y, y-r.Y2), 0)
 	return math.Hypot(float64(dx), float64(dy))
 }
+
+// InRect 点是否在矩形内（含边）。deviceRadarInBed 几何在床用（替 firmware FwAreaID）。
+func InRect(x, y int, r Rect) bool { return distCm(x, y, r) == 0 }
 
 func maxi(a, b int) int {
 	if a > b {
@@ -238,7 +241,9 @@ func BuildObservation(t RadarTrack, sleepads []SleepadFrame, beds []Rect, bedAre
 		HRRRPresent:         t.HR > 0 || t.RR > 0,
 		VitalSourceOnline:   vitalSrc,
 		SleepadVitalPresent: sleepadVital,
-		AreaType:            t.AreaType,
+		X:                   t.X,
+		Y:                   t.Y,
+		AreaAt:              t.AreaAt,
 		InChair:             t.InChair,
 		ChairMu:             t.ChairMu,
 		ChairSigma:          t.ChairSigma,

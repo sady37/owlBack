@@ -52,7 +52,7 @@ func main() {
 
 	var (
 		fixtureA  = flag.String("fixture", "", "case 目录（含 window.json[+window_sleepad.json][+alarm.json]+meta.json），纯文件回放")
-		speed     = flag.Float64("speed", 1.0, "重放倍速（>1 加快，<1 放慢；验 fire 行为必须 1）")
+		speed     = flag.Float64("speed", 1.0, "重放倍速（>1 加快，<1 放慢；Xsensor 计时读消息 Timestamp 虚拟时钟，加速不失真 fire/机制时序）")
 		streamSel = flag.String("streams", "monitor,event", "重放哪些流：monitor,event,alarm 逗号组合")
 		streamPfx = flag.String("stream-prefix", "", "stream 名前缀（喂 Xsensor 用 \"test:\" → 推 test:iot:*:stream；默认空=生产 iot:*）")
 		dryRun    = flag.Bool("dry-run", false, "只打印不实际 XADD")
@@ -112,9 +112,6 @@ func main() {
 	winTo := time.UnixMilli(rows[len(rows)-1].tsMs).In(loc).Format(localLayout)
 	fmt.Printf("重放 %d 条 (%s) | 设备 %d 台 | 窗口 %s~%s UTC | 倍速 %.2gx | rebase t1->now%s\n",
 		len(rows), strings.Join(streamNames, "+"), len(addrs), winFrom, winTo, *speed, dryRunTag(*dryRun))
-	if *speed != 1.0 {
-		fmt.Printf("⚠️  倍速 %.2gx ≠ 1：sensor 的 confirmMs/dwell/decay 按真实墙钟计,加速会压缩时间窗 → fire/confirm 判断失真,仅供数据流连通性冒烟。验 fire 行为必须 --speed 1。\n", *speed)
-	}
 
 	baseMs := rows[0].tsMs // 基准 t0 = 全局最早一帧（radar/sleepad 合并排序后第一条）；每条 fire 在 now + (ts−t0)/speed
 	startWall := time.Now()

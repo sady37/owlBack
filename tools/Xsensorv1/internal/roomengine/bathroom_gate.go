@@ -131,7 +131,7 @@ func (g *BathroomGate) onEntry(b *TrackStatusBase, nowMs int64) {
 		zap.String("suite_id", g.suiteID),
 		zap.String("room_id", g.roomID),
 		zap.Int("track_id", b.TrackID),
-		zap.String("birth_cell_area", areaTypeWireName(b.CellAreaType)),
+		zap.String("birth_cell_area", areaTypeWireName(AreaType(b.AreaAt(b.RawSelfX, b.RawSelfY)))),
 		zap.String("birth_enter_target", b.EnterTarget),
 		zap.Int("old_count", oldCount),
 		zap.Int("new_count", newCount),

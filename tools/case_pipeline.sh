@@ -4,7 +4,7 @@
 # 每 case replay 后**立刻**产 timeline 进 case 目录（共享 log 会被下个 replay 冲，见 [[export_case_script]] 互灌警告）。
 set -euo pipefail
 
-CASE="$1"; TZ_="$2"; DEV="$3"; ROOMPFX="$4"
+CASE="$1"; TZ_="$2"; DEV="$3"; ROOMPFX="$4"; SPEED="${5:-8}"
 ROOT="/home/wisefido/owl/owlBack"
 cd "$ROOT"
 CASE_DIR="doc/cases/$CASE"
@@ -27,8 +27,8 @@ WIN_END="$YEAR-$MM-$DD $EH:$EM:59"
 echo "▶ [1/4] export $CASE ($TZ_)"
 tools/export/export.sh "$CASE" --tz "$TZ_"
 
-echo "▶ [2/4] replay-validate (新 build xsensor + replay)"
-tools/replay-validate.sh "$CASE_DIR"
+echo "▶ [2/4] replay-validate (新 build xsensor + replay @${SPEED}x)"
+tools/replay-validate.sh "$CASE_DIR" "$SPEED"
 
 echo "▶ [3/4] timeline (立刻产出进 case 目录)"
 CASE_TZ="$TZ_" python3 tools/timeline_from_xray.py "$CASE_DIR" "$ROOMPFX"

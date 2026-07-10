@@ -11,11 +11,13 @@
 # 用法:
 #   ./run-xsensor.sh                       # 起 Xsensor（前台，Ctrl-C 停）
 #   # 另开终端喂 case:
-#   cd ../replay && go run . --fixture <case 目录> --stream-prefix test: --speed 1
+#   cd ../replay && go run . --fixture <case 目录> --stream-prefix test: --speed 8
 #   # 读 fire:
 #   tail -f /home/wisefido/owl/log/Xsensor.log | grep xsensor_dbn_fire
 #
-# 注:--speed 1 才保 fire/confirm 时序真实;加速仅数据流冒烟。
+# 注:Xsensor 的 stillbox/floor/dwell 计时读消息 Timestamp(虚拟时钟,engine.go ts:=m.Timestamp),
+#    与 replay --speed 无关,加速不失真 fire/机制时序;唯一墙钟处是 monitor consumer 6s 新鲜度门,
+#    replay 已 rebase t1→now 规避。故 replay 可放心加速。
 
 set -euo pipefail
 XSENSOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

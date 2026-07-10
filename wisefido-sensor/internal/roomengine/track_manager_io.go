@@ -409,7 +409,7 @@ func (tm *TrackManager) SetTrackConfidence(lid string, conf, roomNp int) {
 	}
 	// Phase 1.5：latch 生效（provenance 证真 ∧ 仍在 rest 区）→ 强制 real 且不累积 ghost（census 侧已 ForceReal
 	// 保 nr≥1，此处同步 DBNConfidence 并停 MaxGhost/sustained 累积，防 lost_fall delete 误定性）。
-	if ts.realLatchActive() {
+	if ts.realLatchActive(tm.tsArea(ts)) {
 		ts.DBNConfidence = 100
 		ts.ghostSustainRun = 0
 		if roomNp > ts.MaxRoomNp {

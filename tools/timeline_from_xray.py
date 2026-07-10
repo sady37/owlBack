@@ -238,6 +238,34 @@ for ts, u4, cat, it in sorted(raw_all, key=lambda z: z[0]):
                f"{str(z) if z is not None else '-':5} {json.dumps(it, ensure_ascii=False)}")
 out.append("```")
 
+# ── unit alarm_events（PG 权威，全 producer 含 sensor 自产，payload+evidence 全文；export 产 alarm_events.json）──
+try:
+    aev = json.load(open(f'{case_dir}/alarm_events.json'))
+except (FileNotFoundError, json.JSONDecodeError):
+    aev = []
+out.append("")
+out.append("## alarm_events（PG，unit 全设备，重放窗；payload+evidence 全文）")
+out.append("```")
+for a in sorted(aev, key=lambda z: z['ts']):
+    out.append(f"{hhmmss(a['ts'])}  {a['device_uid'][-4:]}  {a.get('event_type')}/L{a.get('alarm_level')}  "
+               f"{a.get('reason')}  producer={a.get('producer')}")
+    out.append(f"    payload={json.dumps(a.get('payload'), ensure_ascii=False)}")
+    out.append(f"    evidence={json.dumps(a.get('evidence'), ensure_ascii=False)}")
+out.append("```")
+
+# ── unit event_log（PG 权威离散事件表全量；export 产 event_log.json）──
+try:
+    elog = json.load(open(f'{case_dir}/event_log.json'))
+except (FileNotFoundError, json.JSONDecodeError):
+    elog = []
+out.append("")
+out.append("## event_log（PG，unit 全设备，重放窗）")
+out.append("```")
+for e in sorted(elog, key=lambda z: z['ts']):
+    out.append(f"{hhmmss(e['ts'])}  {e['device_uid'][-4:]}  {str(e.get('event_kind')):14}  "
+               f"{json.dumps(e.get('payload'), ensure_ascii=False)}")
+out.append("```")
+
 dst = f'{case_dir}/track_event_timeline.md'
 open(dst, 'w').write('\n'.join(out) + '\n')
 print(f"写出 {dst} | {len(rows)} 行 | xray tick {len(ticks)} fire {fired} | Fall {len(fall_ts)}")

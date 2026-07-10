@@ -662,6 +662,23 @@ func (s *RadarInstall) AppendFeedbackObject(ctx context.Context, spatialPrefix, 
 	return result, nil
 }
 
+// noEnterZoneWarning 提交布局缺 Enter 门口区时回客户端的提示（门口是进出/邻房 hand-off 判据的唯一锚）。
+const noEnterZoneWarning = "No Enter zone (entrance) is defined in this room. An Enter zone is required for entry/exit and neighbor hand-off tracking. The layout was saved — please add one."
+
+// canvasHasEnterZone 提交的 canvas 是否含 Enter 门口区（AreaType=4）。缺失只提示不阻挡（save 照常）。
+func canvasHasEnterZone(canvas []byte) bool {
+	var doc cvDoc
+	if json.Unmarshal(canvas, &doc) != nil {
+		return false
+	}
+	for _, o := range doc.Objects {
+		if observation.AreaType(o.AreaType) == observation.AreaEnter {
+			return true
+		}
+	}
+	return false
+}
+
 // applyDeclare canvas → 编排 declare set → 下发设备（删旧尾部 + 加新）→ 收集 warnings/下发结果。
 // 编排、16-cap、删旧、下发、失败/截断提示全在此一处（单源，3 端只画 canvas + 显示结果）。
 func (s *RadarInstall) applyDeclare(ctx context.Context, tenantID, prefix string, newCanvas []byte) *SaveRoomLayoutResult {

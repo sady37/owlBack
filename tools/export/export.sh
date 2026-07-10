@@ -57,7 +57,7 @@ PREFIX=$(PSQL -c "SELECT text(unit_id) FROM units WHERE unit_id >>= '$MAIN_ADDR'
 OUT_DIR="$ROOT_DIR/doc/cases/$CASE_NAME"
 mkdir -p "$OUT_DIR"
 # 清旧 export 产物（避免上次多/少 radar 的 stale layout 残留）；不动 test_record.txt 等非 export 文件。
-rm -f "$OUT_DIR"/room_layout*.json "$OUT_DIR"/window.json "$OUT_DIR"/window_sleepad.json "$OUT_DIR"/alarm.json "$OUT_DIR"/meta.json
+rm -f "$OUT_DIR"/room_layout*.json "$OUT_DIR"/window.json "$OUT_DIR"/window_sleepad.json "$OUT_DIR"/alarm.json "$OUT_DIR"/alarm_events.json "$OUT_DIR"/event_log.json "$OUT_DIR"/meta.json
 echo "unit prefix: $PREFIX  window: $START_MS..$END_MS -> $OUT_DIR"
 
 # ── 窗口内活跃设备（unit 全部，按 type 分） ──────────────────────────────────
@@ -133,6 +133,30 @@ WHERE a.device_addr << '$PREFIX'::inet AND (a.producer IS NULL OR a.producer != 
   AND a.triggered_at BETWEEN to_timestamp($START_MS/1000.0) AND to_timestamp($END_MS/1000.0);
 " > "$OUT_DIR/alarm.json"
 
-echo "window.json: $(wc -c < "$OUT_DIR/window.json") bytes / window_sleepad.json: $(wc -c < "$OUT_DIR/window_sleepad.json") bytes / alarm.json: $(wc -c < "$OUT_DIR/alarm.json") bytes"
+# ── alarm_events.json：unit 内全 producer（含 sensor 自产 fd00:0:fff1::1）alarm，带 payload+evidence。
+# 仅供 timeline 复盘（区别于 alarm.json：那份喂 replay 故排除 sensor 自产）。
+PSQL -c "
+SELECT COALESCE(json_agg(json_build_object(
+    'ts', (extract(epoch from a.triggered_at)*1000)::bigint,
+    'device_uid', d.device_uid, 'event_type', a.event_type, 'alarm_level', a.alarm_level,
+    'reason', a.reason, 'producer', host(a.producer), 'payload', a.payload, 'evidence', a.evidence
+  ) ORDER BY a.triggered_at),'[]'::json)::text
+FROM alarm_events a JOIN devices d ON a.device_addr=d.device_addr
+WHERE a.device_addr << '$PREFIX'::inet
+  AND a.triggered_at BETWEEN to_timestamp($START_MS/1000.0) AND to_timestamp($END_MS/1000.0);
+" > "$OUT_DIR/alarm_events.json"
+
+# ── event_log.json：unit 内 event_log 全量离散事件（权威表；window.json 已把 event 折进 monitor 流，此份保留原表全字段）。
+PSQL -c "
+SELECT COALESCE(json_agg(json_build_object(
+    'ts', (extract(epoch from e.ts)*1000)::bigint,
+    'device_uid', d.device_uid, 'event_kind', e.event_kind, 'severity', e.severity, 'payload', e.payload
+  ) ORDER BY e.ts),'[]'::json)::text
+FROM event_log e JOIN devices d ON e.device_addr=d.device_addr
+WHERE e.device_addr << '$PREFIX'::inet
+  AND e.ts BETWEEN to_timestamp($START_MS/1000.0) AND to_timestamp($END_MS/1000.0);
+" > "$OUT_DIR/event_log.json"
+
+echo "window.json: $(wc -c < "$OUT_DIR/window.json") bytes / window_sleepad.json: $(wc -c < "$OUT_DIR/window_sleepad.json") bytes / alarm.json: $(wc -c < "$OUT_DIR/alarm.json") bytes / alarm_events.json: $(wc -c < "$OUT_DIR/alarm_events.json") bytes / event_log.json: $(wc -c < "$OUT_DIR/event_log.json") bytes"
 echo "meta.json: $(echo "$ACTIVE" | tr ';' '\n' | wc -l) 设备"
 echo "Done."

@@ -39,11 +39,12 @@ type Observation struct {
 	// lost 用冻结坐标。FloorGuard 用它把"接触 InBed 豁免"收窄到**本 track 所在床**，避免同房他人
 	// 在床误豁免地板上的摔者。长 numBeds，与 Sleepad 同索引。
 	NearBedMask []bool
-	// AreaType track 当前 cell.Belief[0].Type（CellAreaType 每帧读活的，经 seam）。FN-safe **正向压制**：
-	// sit/lying 区 → 抬对应静止态压 Fallen（redirect）。权重有上限（守门1：低到 still 久静能翻，不锁死）。
-	// 值同 roomengine.AreaType：deny=1/bed=2/reflector=3/enter=4/monitorbed=5/interfer=6/sit=7/lying=8/active=9。
-	// 床(bed/monitorbed)与 reflector 在 floor.Step 豁免；bed 占用走 RadarBedHitMask(firmware N) 驱动。
-	AreaType int
+	// X,Y track 当前 raw 位置（画布系）。areaType() 用它当场 AreaAt 查区型，不存派生字段。
+	X, Y int
+	// AreaAt 纯几何查询：坐标 → 区型 int（值同 roomengine.AreaType：deny=1/bed=2/reflector=3/enter=4/
+	// monitorbed=5/interfer=6/sit=7/lying=8/active=9）。roomengine 注入 grid.QueryAreaType，belief 不 import
+	// roomengine（防环）。FN-safe 正向压制 + floor 床/reflector 豁免都当场读它。
+	AreaAt func(x, y int) int
 
 	// Chair 区久坐兜底（box 起点锁定）：floor 只对 chair 区(InChair)算连续阈
 	//   tFloor = clamp(max(ChairMu+1.5·ChairSigma+10min, ChairMaxSit), ≤90min)；冷启(ChairMu≤0)回退 90min。
@@ -82,3 +83,5 @@ type Observation struct {
 	SleepadVitalPresent bool
 	// 注（§32）：原 FloorStripXY（δ floor-strip）已删——cd2b 靠 LeftBed→B vac 经 Ψ 相容涌现，非雷达 XY 几何。
 }
+
+func (o Observation) areaType() int { return o.AreaAt(o.X, o.Y) }

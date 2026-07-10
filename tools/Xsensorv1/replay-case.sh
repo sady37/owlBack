@@ -6,7 +6,7 @@
 # 例:
 #   ./replay-case.sh ../../doc/cases/case-cabb-0616-17441802 8
 #
-# 注:speed>1 仅冒烟数据流连通性;confirmMs/dwell/decay 按真实墙钟,加速会压缩时间窗 → fire/confirm 失真。
+# 注:confirmMs/dwell/decay/stillbox 全按消息 Timestamp(数据钟,decide.go Step(nowMs)=frame ts)计,与 speed 无关,加速不失真。
 set -euo pipefail
 
 CASE_DIR="${1:?用法: ./replay-case.sh <case 目录> [speed]}"

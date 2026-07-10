@@ -28,7 +28,7 @@ go run ./replay/ --fixture ../doc/cases/case-cd2b-0606-10271037 --speed 30
 
 > `replay/` 原名 `redis-replay`，2026-06-12 改名加 `--fixture`，并删除 DB 直查模式（only 文件源，符合 export/replay 职责分离）。
 >
-> ⚠️ **`--speed` 与 fall confirm 的时间语义**：belief `Decider` 的确认窗 `confirmMs=90s` 按 frame TMs 计，而 replay 把 frame TMs 重写成灌入墙钟（`/speed` 压缩间隔）。`--speed 30` 会把 confirmMs 压成 1/30，**任何 case 加速重放都测不到 fire confirm**。**验 fire 行为必须 `--speed 1`**（默认值）；加速重放仅用于验 track / belief 演化（p_fallen 轨迹、ghost_veto），不能验 confirm。
+> **`--speed` 与虚拟时钟**：replay 保真原始 frame `Timestamp`（`Timestamp=baseMs+(ts−baseMs)=原始 ts`，非压缩；`--speed` 只加速 XADD 的墙钟发送节奏）。Xsensor 全程以消息 `Timestamp` 为数据钟：belief `Decider.Step(nowMs)` 的确认窗 `tHoldMs=90s`、stillbox/floor/dwell/decay 都用 `nowMs−startMs`（`nowMs=frame ts`），**与 speed 无关，加速不失真 fire/confirm/机制时序**。唯一墙钟处是 monitor consumer 的 6s 新鲜度门（replay 已 rebase t1→now 规避）。故加速重放对 fire 与机制均可信。
 
 ## iot-inspect
 

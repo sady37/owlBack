@@ -87,23 +87,10 @@ type PadAbsorption struct {
 //	取 0.8（同 unit_matrix.go bedResolveConf：单床确定吸、几何歧义不吸）。
 const SamebedAbsorbThresh float32 = 0.8
 
-// fwAreaIsBed MN：FwAreaID 命中声明床区（baseline type2/5）。0/255=区外。
-func fwAreaIsBed(areaID int, bedAreaIDs []int) bool {
-	if areaID == 0 || areaID == 255 {
-		return false
-	}
-	for _, id := range bedAreaIDs {
-		if id != 0 && id != 255 && areaID == id {
-			return true
-		}
-	}
-	return false
-}
-
-// RadarBedStates 从 per-radar bases 算每台 radar 设备本帧"是否在床"（N=MN/FwAreaID，§9.1 raw 固件权威，
-// **非 belief 后验** ArgmaxIsBed——防 belief 受 sleepad vital boost 又反喂吸纳=软反馈环）。
-// per-device 去重：任一在场 track 命中床区 → 该设备 InBed（带该 track lid 作吸纳归属 pad_absorbed_by）。
-func RadarBedStates(bases []TrackStatusBase, bedAreaIDs []int) []RadarBedState {
+// RadarBedStates 从 per-radar bases 算每台 radar 设备本帧"是否在床"（几何：raw 位置区型∈{Bed,MonBed}，替 firmware
+// FwAreaID 治 churn/declare-404。**非 belief 后验**——防 belief 受 sleepad vital boost 又反喂吸纳=软反馈环）。
+// per-device 去重：任一在场 track 几何在床 → 该设备 InBed（带该 track lid 作吸纳归属 pad_absorbed_by）。
+func RadarBedStates(bases []TrackStatusBase) []RadarBedState {
 	idx := map[netip.Addr]int{}
 	out := make([]RadarBedState, 0, len(bases))
 	for _, b := range bases {
@@ -111,7 +98,8 @@ func RadarBedStates(bases []TrackStatusBase, bedAreaIDs []int) []RadarBedState {
 		if err != nil {
 			continue
 		}
-		inBed := b.Present && fwAreaIsBed(b.FwAreaID, bedAreaIDs)
+		at := AreaType(b.AreaAt(b.RawSelfX, b.RawSelfY)) // 几何在床（raw 位置查区型），替 firmware FwAreaID（治 churn/declare-404）
+		inBed := b.Present && (at == AreaBed || at == AreaMonitorBed)
 		if i, ok := idx[addr]; ok {
 			if inBed && !out[i].InBed {
 				out[i].InBed, out[i].LogicID = true, b.LogicID

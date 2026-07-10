@@ -204,11 +204,11 @@ const kappaWindowMs = 15000 // ① 强化窗 K（case1/2 的 15s）
 // FwAreaID 是 M×N 冻结末值；radar 半冻结、sleepad 半实时把关：人真离床→sleepad LeftBed→agree/matched=F
 // →κ 衰减，冻结 N 不会错误维持。evicted track 不在 fi.Tracks，自然不计。
 func deviceRadarInBed(uid4 string, fi adapter.FrameInput, j int) bool {
-	if j >= len(fi.BedAreaIDs) || fi.BedAreaIDs[j] == 0 {
+	if j >= len(fi.Beds) {
 		return false
 	}
 	for _, t := range fi.Tracks {
-		if adapter.DevKey(t.LogicID) == uid4 && t.FwAreaID == fi.BedAreaIDs[j] {
+		if adapter.DevKey(t.LogicID) == uid4 && adapter.InRect(t.X, t.Y, fi.Beds[j]) { // 几何在床 j（替 firmware FwAreaID）
 			return true
 		}
 	}
@@ -412,7 +412,8 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 			//   emission still 高斯 CDF 在消失态仍喂(人摔进盲区/爬出后持续静止的异常度)。
 			obs = adapter.BuildObservation(adapter.RadarTrack{
 				Online: false, StillSec: ts.Obs.RadarTrack.StillSec,
-				AreaType: ts.Obs.RadarTrack.AreaType, RoomType: ts.Obs.RadarTrack.RoomType,
+				X: ts.Obs.RadarTrack.X, Y: ts.Obs.RadarTrack.Y, // 冻结末位:coast 期区型仍查此点
+				AreaAt: ts.Obs.RadarTrack.AreaAt, RoomType: ts.Obs.RadarTrack.RoomType,
 				InChair: ts.Obs.RadarTrack.InChair, ChairMu: ts.Obs.RadarTrack.ChairMu, ChairSigma: ts.Obs.RadarTrack.ChairSigma, ChairMaxSit: ts.Obs.RadarTrack.ChairMaxSit,
 				BathMu: ts.Obs.RadarTrack.BathMu, BathSigma: ts.Obs.RadarTrack.BathSigma, BathMaxSit: ts.Obs.RadarTrack.BathMaxSit,
 			}, fi.Sleepads, fi.Beds, fi.BedAreaIDs, r.p, fi.Census.Night)
@@ -482,7 +483,7 @@ func (r *Room) Tick(fi adapter.FrameInput, handoffL float64) Frame {
 		repeatR := 0.0
 		selfRecovered := false
 		if ts.Present {
-			early, recovered := esc.Step(fi.NowMs, ts.Obs.RadarTrack.Pose, ts.RealProven, ts.Obs.RadarTrack.AreaType)
+			early, recovered := esc.Step(fi.NowMs, ts.Obs.RadarTrack.Pose, ts.RealProven, ts.Obs.RadarTrack.AreaAt(ts.Obs.RadarTrack.X, ts.Obs.RadarTrack.Y))
 			repeatR = esc.Residual()
 			selfRecovered = recovered
 			if early {
