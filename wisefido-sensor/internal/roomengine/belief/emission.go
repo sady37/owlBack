@@ -95,24 +95,15 @@ func NewEmission(geom []BedGeom) *Emission {
 	return &Emission{p: defaultEmissionParams(), geom: geom}
 }
 
-// couplesAnyBed 本设备 covers(MM) 是否盖到任一床。否(D523 没画床)→sleepad 接触 vital 不灌进本 track SBed。
-func (e *Emission) couplesAnyBed() bool {
-	for _, g := range e.geom {
-		if g.Covers > 0 {
-			return true
-		}
-	}
-	return false
-}
-
 // LogPhi 一帧发射 → log 域 JointVector。
 func (e *Emission) LogPhi(js *JointSpace, o Observation) JointVector {
 	radarS := e.radarLogS(o)     // [numStates]：雷达轴对 S 的 log 似然
 	contactB := e.contactLogB(o) // [numBeds][numBedStates]：接触轴对各 B^j 的 log 似然
-	// sleepad 接触 vital(InBed+HR/RR fresh)→ 活体在垫,抬 SBed。独立于 radar online/NearBed(接触权威；
-	// cd2b radar 不返 vital,这是唯一 vital 印证腿)。lHR 复用(与 radar HRRR 同力度)。
-	//   门控 covers(MM)：本设备没盖任何床(D523 covers=0)→sleepad vital 不灌进此 track 的 SBed(per-device 解耦)。
-	if o.SleepadVitalPresent && e.couplesAnyBed() {
+	// sleepad 接触 vital(InBed+HR/RR fresh)→ 活体在垫,抬 SBed。**仅限本 track 在床区**(area∈{Bed,MonBed},
+	// 含 BedTolerance +30cm 冗余吃 radar 精度误差)：sleepad 抬举有界,床外的 track(同房站着的旁人)不白蹭
+	// (否则掩盖其真摔=FN)。与 evalProvenance 第③条床 provenance 同门(per-track area,非 device 级 covers)。
+	// cd2b radar 不返 vital,sleepad 是唯一 vital 印证腿;lHR 复用(与 radar HRRR 同力度)。
+	if o.SleepadVitalPresent && (o.areaType() == areaBed || o.areaType() == areaMonitorBed) {
 		radarS[SBed] += math.Log(e.p.lHR)
 	}
 	out := js.NewJointVector()
