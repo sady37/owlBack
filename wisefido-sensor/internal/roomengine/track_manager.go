@@ -784,6 +784,9 @@ func makeLogicID(uidHex string, trackID int, birthMs int64) string {
 //
 // 无候选返回 nil。调用时新 track 尚未加入 tm.tracks。
 func (tm *TrackManager) nearestAliveTrack(x, y int, deviceAddr string, nowMs int64, frameKeys map[trackKey]bool) *TrackState {
+	// renumberMaxDistCm：入选 parent 的净距上限——超此视为不同目标而非同一目标 renumber（对齐 teleport/split
+	// walkout ≥200），防远处静默 ghost 把 logicID+RealProven latch 捐给近处新生真轨（census 同号互盖漏报）。
+	const renumberMaxDistCm = 200
 	var best *TrackState
 	bestD := 1 << 30
 	for _, ts := range tm.tracks {
@@ -798,6 +801,13 @@ func (tm *TrackManager) nearestAliveTrack(x, y int, deviceAddr string, nowMs int
 			bestD = d
 			best = ts
 		}
+	}
+	if best != nil && bestD > renumberMaxDistCm {
+		tm.logger.Info("nearest_alive_reject_dist",
+			zap.String("device_uid", deviceAddr), zap.Int("cand_track_id", best.TrackID),
+			zap.String("cand_logic_id", best.LogicID), zap.Int("dist", bestD),
+			zap.Int("birth_x", x), zap.Int("birth_y", y))
+		return nil
 	}
 	return best
 }
@@ -1201,7 +1211,7 @@ func (tm *TrackManager) evalProvenance(ts *TrackState, nowMs int64, bornNow bool
 		return
 	}
 	area := tm.tsArea(ts) // raw 末点区型当场查（替 AreaEff latch）
-	if area == AreaEnter || (bornNow && tm.hasRecentEnterRoom(nowMs)) ||
+	if area == AreaEnter || (bornNow && tm.hasRecentEnterRoom(nowMs, ts.DeviceAddr)) ||
 		(tm.grid != nil && tm.grid.NearestEntryDist(ts.BirthPos.X, ts.BirthPos.Y) <= e1DoorBornCm) {
 		ts.RealProven = true
 		return
@@ -1857,7 +1867,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 			// logic_id：有 EnterRoom 配对 = 真新人进门 → 全新身份；无 enter = firmware
 			// 重用/跳变/分裂 → 继承最近存活 track 的 logic_id（跨 track_id 数据关联，
 			// 让"漂走/重编"的同一逻辑目标保持身份连续，供 ghost/lost-fall 按 logic_id 聚合）。
-			enteredRecently := tm.hasRecentEnterRoom(f.TMs)
+			enteredRecently := tm.hasRecentEnterRoom(f.TMs, f.DeviceAddr)
 			inherited := false
 			if !enteredRecently {
 				if parent := tm.nearestAliveTrack(f.X, f.Y, f.DeviceAddr, f.TMs, frameKeys); parent != nil {
@@ -2152,17 +2162,17 @@ const ThresholdNonRestMs = 12 * 60 * 1000
 // 注：仅 look-back（不 look-forward）—— 出生瞬时如 event-stream 还没到 → 判错 false ghost。
 // 修正路径：BirthFinalDeadlineMs 给 grace 缓冲（track.go::birthFinalGraceMs，默认 2s），
 // 到点用 hasRecentEnterRoomBetween([T-3s, deadline]) 重检（见 tryGraceUpgrade）。
-func (tm *TrackManager) hasRecentEnterRoom(tMs int64) bool {
-	return tm.hasRecentEnterRoomBetween(tMs-enterPairWindowMs, tMs)
+func (tm *TrackManager) hasRecentEnterRoom(tMs int64, deviceAddr string) bool {
+	return tm.hasRecentEnterRoomBetween(tMs-enterPairWindowMs, tMs, deviceAddr)
 }
 
-// hasRecentEnterRoomBetween 在显式时间窗 [fromMs, toMs] 内查 EnterRoom 事件。
-func (tm *TrackManager) hasRecentEnterRoomBetween(fromMs, toMs int64) bool {
+// hasRecentEnterRoomBetween 在显式时间窗 [fromMs, toMs] 内查本设备 EnterRoom 事件（跨雷达不互认，per-device 隔离）。
+func (tm *TrackManager) hasRecentEnterRoomBetween(fromMs, toMs int64, deviceAddr string) bool {
 	for k, e := range tm.recentRadarEvents {
 		if k < fromMs || k > toMs {
 			continue
 		}
-		if e.EventName == alarm.EnterRoom {
+		if e.DeviceUID == deviceAddr && e.EventName == alarm.EnterRoom {
 			return true
 		}
 	}
@@ -2319,25 +2329,28 @@ func (tm *TrackManager) ResetStillBox(logicID string) {
 func (tm *TrackManager) EvictTrack(logicID string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	var dev string
-	var fwTrackID int
-	found := false
+	type devTrack struct {
+		dev       string
+		fwTrackID int
+	}
+	var victims []devTrack
 	for k, ts := range tm.tracks {
 		if ts.LogicID == logicID {
-			dev, fwTrackID, found = ts.DeviceAddr, ts.TrackID, true
+			victims = append(victims, devTrack{ts.DeviceAddr, ts.TrackID})
 			delete(tm.tracks, k)
 			delete(tm.outputs, k)
-			break
+			// 不 break：同 lid 可能挂多条轨（census 最小距离碰撞，phantom 与真人共号）→ 全清，
+			// 否则残留轨续 coast 每帧重发新号 → census churn（与 ResetStillBox 同不变量）。
 		}
 	}
-	// 生命周期 purge（logicID 根治第一刀）：track 确认离场 → 连带清该（设备,track_id）的离场证据。
+	// 生命周期 purge（logicID 根治第一刀）：track 确认离场 → 连带清每条被删轨（设备,track_id）的离场证据。
 	// 否则 ExitRoom（firmware 常不带 track_id → 默认 0）+ trend 快照按 recentBufferMs(5min) 滞留，
 	// track_id 复用时（A 离房 0 / B 在床 0）被下一占用者经 ExitLogOdds 误翻 → 误抬 SLeft → churn/二义 lost-fall FN。
 	// 触发离场的那条 ExitRoom 就此被它造成的 drop 消费掉，绑 coast 生命周期而非死等 age。
 	delete(tm.lostExitInfo, logicID)
-	if found {
+	for _, v := range victims {
 		for k, e := range tm.recentRadarEvents {
-			if e.DeviceUID == dev && e.TrackID == fwTrackID {
+			if e.DeviceUID == v.dev && e.TrackID == v.fwTrackID {
 				delete(tm.recentRadarEvents, k)
 			}
 		}
