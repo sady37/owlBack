@@ -17,6 +17,7 @@ import (
 	"owl-common/alarm"
 	commoncard "owl-common/card"
 	rediscommon "owl-common/redis"
+	"owl-common/roomutil"
 
 	"go.uber.org/zap"
 )
@@ -780,30 +781,71 @@ func (s *alarmEventService) ListAlarmEvents(ctx context.Context, req ListAlarmEv
 	}, nil
 }
 
-// ratchetChairMaxSitOnSensor 读该 fall 告警的 evidence.fire（in_chair / stillbox_sec / x,y canvas），
-// 若是 chair 区误报 → 调 sensor live 端点把实际久坐时长棘轮抬进该椅 anchor maxSit。best-effort（DB/网络失败仅 warn）。
-func (s *alarmEventService) ratchetChairMaxSitOnSensor(ctx context.Context, tenantID, eventID, deviceAddr string) {
+// ratchetChairMaxSitOnSensor 读该 fall 告警的 evidence.fire + room_name，按门控调 sensor 棘轮 maxSit。
+// 门控：① 任意房 + remarks 含 "Sit on Chair" → 棘轮；② 浴室房 +（Unknown / 未选任何 Fall reason）→ 棘轮。
+// 不再要求 in_chair（浴室 AreaActive 误报也要抬 bathMaxSit）。best-effort。
+func (s *alarmEventService) ratchetChairMaxSitOnSensor(ctx context.Context, tenantID, eventID, deviceAddr, remarks string) {
 	if s.db == nil || deviceAddr == "" {
 		return
 	}
-	var inChair bool
 	var stillboxSec float64
 	var x, y int
+	var roomName string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE((evidence->'fire'->>'in_chair')::bool, false),
-		       COALESCE((evidence->'fire'->>'stillbox_sec')::numeric, 0),
+		SELECT COALESCE((evidence->'fire'->>'stillbox_sec')::numeric, 0),
 		       COALESCE((evidence->'fire'->>'x')::int, 0),
-		       COALESCE((evidence->'fire'->>'y')::int, 0)
-		FROM alarm_events WHERE event_id::text = $1`, eventID).Scan(&inChair, &stillboxSec, &x, &y)
+		       COALESCE((evidence->'fire'->>'y')::int, 0),
+		       COALESCE(room_name, '')
+		FROM alarm_events WHERE event_id::text = $1`, eventID).Scan(&stillboxSec, &x, &y, &roomName)
 	if err != nil {
 		s.logger.Warn("ratchetChairMaxSit: read evidence.fire failed (maxSit not ratcheted)",
 			zap.String("event_id", eventID), zap.Error(err))
 		return
 	}
-	if !inChair || stillboxSec <= 0 {
-		return // 非 chair 区误报 / 无久坐时长 → 不棘轮（floor 自然公式照常）
+	if stillboxSec <= 0 {
+		return
+	}
+	if !shouldRatchetMaxSit(remarks, roomName) {
+		return
 	}
 	notifySensorChairMaxSit(ctx, s.logger, deviceAddr, x, y, stillboxSec)
+}
+
+// fallRadarReasonLabels 与 FE FALL_RADAR_REASONS label 逐字对齐（未选 = remarks 不含其中任一项）。
+var fallRadarReasonLabels = []string{
+	"Sit on Chair / Short Sofa",
+	"Lying on Sofa / Recliner",
+	"BlindArea / No Fall",
+	"Enter / Door",
+	"Sit in Wheelchair",
+	"Metal / Mirror (reflection)",
+	"Curtain / Fan / Plants",
+	"Pet",
+	"Error Pose Detection",
+	"Unknown",
+}
+
+// shouldRatchetMaxSit false_alarm 棘轮门控：
+//   - Sit on Chair → 任意房
+//   - 浴室 + Unknown → 抬
+//   - 浴室 + 未勾任何 Fall reason（空 notes / 仅手写）→ 抬
+//   - 浴室 + 仅勾 Metal/Pet 等其他项 → 不抬
+func shouldRatchetMaxSit(remarks, roomName string) bool {
+	if strings.Contains(remarks, "Sit on Chair") {
+		return true
+	}
+	if !roomutil.IsBathroom(roomName) {
+		return false
+	}
+	if strings.Contains(remarks, "Unknown") {
+		return true
+	}
+	for _, label := range fallRadarReasonLabels {
+		if strings.Contains(remarks, label) {
+			return false // 勾了非 Sit/Unknown 的明确原因 → 不按浴室未选路径抬
+		}
+	}
+	return true // 未选
 }
 
 // HandleAlarmEvent 处理报警事件
@@ -907,10 +949,10 @@ func (s *alarmEventService) HandleAlarmEvent(ctx context.Context, req HandleAlar
 		zap.String("handler_id", req.CurrentUserID),
 	)
 
-	// chair tFloor 反馈棘轮：标 false_alarm + "Sit on Chair" → 把本次误报实际久坐时长抬进该椅 anchor maxSit（live 落地）。
-	// best-effort，不阻断 handle 返回（失败下次同样误报会再棘轮）。
-	if operation == "false_alarm" && strings.Contains(req.Remarks, "Sit on Chair") {
-		s.ratchetChairMaxSitOnSensor(ctx, req.TenantID, req.EventID, event.DeviceAddr)
+	// tFloor 反馈棘轮：false_alarm 后按 remarks+房型抬 maxSit（Sit on Chair 任意房；浴室 Unknown/未选也抬）。
+	// best-effort，不阻断 handle 返回。
+	if operation == "false_alarm" {
+		s.ratchetChairMaxSitOnSensor(ctx, req.TenantID, req.EventID, event.DeviceAddr, req.Remarks)
 	}
 
 	// 构建响应：包含前端和cardagg都需要的信息

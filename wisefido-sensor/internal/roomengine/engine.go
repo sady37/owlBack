@@ -199,7 +199,7 @@ type Engine struct {
 	// 用途：firmware track_id 复用场景下，SuiteCensus.AnchorTrackID 必须在 track 真正失锁后清空，
 	// 否则新 track 复用旧 trackID 会被当成"同一人活动"持续 update LastActiveMs。
 	// 判据：当前 snapshot 未含 trackID 且 (nowMs - lastSeenMs) ≥ 60s → 调 ClearAnchorOnLostTrack。
-	// 60s 偏保守（远大于 MaxMissCount=10 帧的 coast 期），避免 firmware coast 期间误清。
+	// 60s 偏保守（远大于 track coast 兜底期），避免 firmware coast 期间误清。
 	// 写者：publishTrackStatuses（per-room 串行，与 handleMessage 同 goroutine）；无锁需要。
 	trackLastSeen map[string]map[int]int64
 
@@ -232,8 +232,6 @@ type Engine struct {
 	historyRetainDays   int
 	dailyReloadHour     int
 	dailyReloadDB       *sql.DB
-	unitFirstTrackMs    map[string]int64 // suiteID → 首见 track 时戳（DBN_MODE 冷启 cap，dbn_mode.go）
-	coldStartMu         sync.Mutex
 }
 
 // RuntimeConfig 与 owlBack/tools/Xsensorv1/internal/config::RoomEngineConfig 一一对应；
@@ -298,7 +296,6 @@ func NewEngine(redisClient *redis.Client, logger *zap.Logger) *Engine {
 		dailySnapshotHour:   11,
 		dailySnapshotMinute: 50,
 		historyRetainDays:   365,
-		unitFirstTrackMs:    make(map[string]int64),
 	}
 }
 
@@ -584,8 +581,8 @@ func (e *Engine) VetoRect(deviceAddr string, rect radarutils.Rect, sticky bool) 
 	return cleared, blocked, true
 }
 
-// RatchetChairMaxSitByDevice false_alarm+"Sit on Chair" 反馈 live 落地：解析 device→room→TrackManager，
-// 在 (x,y canvas) 命中的 chair anchor 棘轮抬 maxSit。data handle 后经 HTTP 调。device 未路由 / 无命中 chair → false。
+// RatchetChairMaxSitByDevice false_alarm 反馈棘轮：device→room→TrackManager，(x,y) 命中椅抬 maxSit；浴室房抬 bathDwell。
+// data handle 后经 HTTP 调。device 未路由 / 非浴室且无椅 → false。
 func (e *Engine) RatchetChairMaxSitByDevice(deviceAddr string, x, y int, sitDurSec float64, nowMs int64) bool {
 	roomID := e.RoomForDevice(deviceAddr)
 	if roomID == "" {
@@ -787,8 +784,8 @@ func (e *Engine) SuiteHasOtherDevice(suiteID, excludeDevice string) bool {
 }
 
 // trackLostAnchorMs 失锁判定阈值：snapshot 未含某 trackID 持续 ≥ 60s → 视为真失锁，
-// 调 SuiteCensusManager.ClearAnchorOnLostTrack。偏保守的取值（MaxMissCount=10 帧 coast
-// 期之外再加足够 buffer），避免 firmware track coast 期间误清。
+// 调 SuiteCensusManager.ClearAnchorOnLostTrack。偏保守的取值（track coast 兜底期
+// 之外再加足够 buffer），避免 firmware track coast 期间误清。
 // 详见 suite_census.go ClearAnchorOnLostTrack 注释 "PR-3 wire 失锁判定建议"。
 const trackLostAnchorMs int64 = 60_000
 
@@ -884,12 +881,8 @@ func (e *Engine) routeRoomFrame(roomID string, bases []TrackStatusBase, nowMs in
 				tm.EmitTrackConfidence(lid, nowMs) // 周期发 DBN conf → cardagg ai_override → FE 透明度（治 present ghost 只写不发 gap，节流 20s）
 			}
 			// S0.c-4 fire→Publish（A·R12.3）：DBN 唯一 fire 权威在 engine 内闭环。
-			// fired → PublishAIAlarm（DBN_MODE 门控：=0 跑裁决不发=shadow；≥1 按冷启 cap 发）。
-			suiteID := e.roomSuiteID[roomID]
-			if suiteID == "" {
-				suiteID = roomID
-			}
-			fireEnabled := e.dbnSelfFireEnabledFor(suiteID, nowMs)
+			// fired → PublishAIAlarm（DBN_MODE 门控：=0 跑裁决不发=shadow；≥1 发）。
+			fireEnabled := dbnSelfFireEnabled()
 			for _, lid := range fired {
 				if fireEnabled {
 					tm.PublishDBNFall(lid, firedBands[lid], nowMs) // DBN Fallen fire → iot:alarm:stream（category=alarm.Fall）；须在 ResetStillBox 前，否则 occurred(StillBoxRunStart) 被清成 0
@@ -1385,7 +1378,7 @@ func (e *Engine) handleMessage(_ context.Context, msg rediscommon.StreamMessage)
 		}
 		frames := ParseRadarTracks(m.DataValue, addrStr, mount, ts)
 		if len(frames) == 0 {
-			// tid=88 heartbeat / 全零无效帧被 ParseRadarTracks 过滤后，仍要 tick 推进 MissCount，
+			// tid=88 heartbeat / 全零无效帧被 ParseRadarTracks 过滤后，仍要 tick 推进消失判定（NoTargetTick），
 			// 否则之前活着的 track 永不进入消失判定 → silent/lost fall pending 不会创建。
 			// NoTargetTick 标记"固件明示无目标"，触发 88-加速驱逐（治 Case2 142s 陈旧 track）。
 			tm.NoTargetTick(ts, addrStr)

@@ -141,7 +141,8 @@ type TrackManager struct {
 	recentBufferMs    int64                      // recentRadarAlarms 专用 age（5 min）
 
 	// lostExitInfo：丢轨"离房趋势"快照（track 失锁前末 2s 朝门强度），key=LogicID（身份单源,跨 evict 存活）。
-	//   track 失锁 12s 即驱逐(trackEvictMaxMs)，但 blind 窗 12-14min——趋势须丢轨时存下，
+	//   track 失锁后 coast 兜底期即消失（EvictTrack 确认离场/空 或续存到 lostStillCarryMs 上限删），
+	//   但 blind 窗 12-14min——趋势须丢轨时存下，
 	//   np/ExitRoom 后到的按 LogicID 实时查（见 ExitLogOdds）。由 age(recentBufferMs)淘汰。
 	lostExitInfo map[string]*lostExitRec
 
@@ -360,10 +361,21 @@ func (tm *TrackManager) PurgeDeviceTracks(deviceAddr string) {
 		delete(tm.tracks, k)
 		delete(tm.outputs, k)
 		delete(tm.lostExitInfo, ts.LogicID)
+		delete(tm.hardExitedLIDs, ts.LogicID)
 	}
 	for k, e := range tm.recentRadarEvents {
 		if e.DeviceUID == deviceAddr {
 			delete(tm.recentRadarEvents, k)
+		}
+	}
+	for k := range tm.confEmitMs {
+		if k.dev == deviceAddr {
+			delete(tm.confEmitMs, k)
+		}
+	}
+	for k := range tm.interferenceSuppress {
+		if k.dev == deviceAddr {
+			delete(tm.interferenceSuppress, k)
 		}
 	}
 	delete(tm.lastRealTrackByDevice, deviceAddr)
@@ -539,21 +551,21 @@ func (tm *TrackManager) bathDwellArgs() (mu, sig, maxSit float64) {
 	return
 }
 
-// RatchetChairMaxSitAt false_alarm+"Sit on Chair" 反馈 live 落地：解析 (x,y canvas) 命中的 chair object，
-// 棘轮抬其 maxSit（实际久坐 sitDurSec + margin，带衰减）。data handle 后经 HTTP 调；落 chairDwell，下次 5min 快照持久化。
-// 无命中 chair：若本房是 bathroom → 棘轮 per-room 浴室停留态（无 pin，整房一个）；否则 false（点不在任何椅 pin 内）。
+// RatchetChairMaxSitAt false_alarm 反馈棘轮 live 落地：命中椅 → 抬该椅 maxSit；浴室房 → 另抬整房 bathDwell（可与椅并存）。
+// data handle 后经 HTTP 调；落 chairDwell，下次 5min 快照持久化。非浴室且无椅命中 → false。
 func (tm *TrackManager) RatchetChairMaxSitAt(x, y int, sitDurSec float64, nowMs int64) bool {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	if id, ok := tm.chairObjectAt(x, y); ok {
+	ok := false
+	if id, hit := tm.chairObjectAt(x, y); hit {
 		tm.chairDwellFor(id).RatchetChairMaxSit(sitDurSec, nowMs)
-		return true
+		ok = true
 	}
 	if tm.roomType == int(card.RoomTypeBathroom) {
 		tm.bathDwell.RatchetChairMaxSit(sitDurSec, nowMs)
-		return true
+		ok = true
 	}
-	return false
+	return ok
 }
 
 // RecomputeChairDwell 慢周期(hourly)：对每把在学椅子的久坐态重算(衰减 maxSit + 丢>14天槽 + 聚合μ/σ)。engine 定时调。
@@ -914,13 +926,7 @@ const (
 	bedConfRadar   = 70 // radar-only InBed 降档幅度（BedOccupancyState）
 )
 
-// track 驱逐时间阈（2026-06-04，治 88 稀疏心跳下陈旧 track 拖 142s，Case2）：
-//
-//	trackEvictMaxMs：纯帧计数 MaxMissCount 之外的时间兜底——上次真观测超此值即驱逐（不受帧稀疏影响）。
-//	heartbeat88EvictMs：固件明示无目标(88 心跳)持续 ≥ 此值的加速驱逐窗（镜像 cardagg ClearDeviceTracks 6s 平滑窗）。
 const (
-	trackEvictMaxMs    = int64(12_000)
-	heartbeat88EvictMs = int64(6_000)
 	// lostStillCarryMs：lost track 冻结坐标续 still-box 的保留上限（25min，覆盖 bathroom floor 20min+余量）。
 	// 1Hz 固件下精度做不了 lost 判定，靠时长累积兜底真摔；撤销由 belief SLeft 压 floor 承担（人走了不兜底），
 	// 超此上限或固件明示无目标(88)才删 track。
@@ -1108,7 +1114,7 @@ func (tm *TrackManager) RecordRadarAlarm(a RadarFallAlarm) {
 
 // vetoFirmwareFallLying B 方案「否决固件」轴（dbn_mode=2）：固件即时 fall/坐地的 track 落躺卧面 →
 // 否决转发（沙发/躺床即时摔不报）。floor 90min 自发腿走 PublishDBNFall（Band="floor"），不经此腿、不受影响 →
-// 久躺兜底仍在。躺卧面是 layout 确定事实（非 DBN 学习判定）→ 直接 gate 全局 dbnMode，不挂冷启 cap。
+// 久躺兜底仍在。躺卧面是 layout 确定事实（非 DBN 学习判定）→ 直接 gate 全局 dbnMode。
 // 判据与 DBN 自发腿（PublishDBNFall）统一：dbnMode==2 + isLyingZoneVetoPose + isLyingVetoZone(ts.LastCellArea)
 //（读解耦后的落格真值，非 Kalman 重查/Belief[0]）。track 不在管 → 不否决（照转发，FN-safe）。调用方不持 tm.mu。
 func (tm *TrackManager) vetoFirmwareFallLying(a RadarFallAlarm) bool {
@@ -1553,7 +1559,7 @@ const sleepadVitalTTLMs = 70_000
 
 // eventBufferMs：radar 离散事件(ExitRoom/EnterRoom)记录 age = 12s,12s 后清理。
 // ≤ 所有消费窗:EnterRoom 出生关联 enterPairWindowMs(3s)+birthGrace(2s)=5s;ExitRoom claim coast 12s
-// (def5940,= trackEvictMaxMs)。治旧 5min 窗下"误发 ExitRoom(人没走)残留几分钟,后续 lost track 被翻成离房"haunt。
+// (def5940)。治旧 5min 窗下"误发 ExitRoom(人没走)残留几分钟,后续 lost track 被翻成离房"haunt。
 // (recentBufferMs 5min 仅保留给 recentRadarAlarms firmware Fall 落账。)
 const eventBufferMs = 12_000
 
@@ -2349,6 +2355,7 @@ func (tm *TrackManager) EvictTrack(logicID string) {
 	// 触发离场的那条 ExitRoom 就此被它造成的 drop 消费掉，绑 coast 生命周期而非死等 age。
 	delete(tm.lostExitInfo, logicID)
 	for _, v := range victims {
+		delete(tm.confEmitMs, trackKey{v.dev, v.fwTrackID}) // 唯一无自 GC 的 per-track map，丢轨即清防泄漏
 		for k, e := range tm.recentRadarEvents {
 			if e.DeviceUID == v.dev && e.TrackID == v.fwTrackID {
 				delete(tm.recentRadarEvents, k)

@@ -97,8 +97,7 @@ func (s *RadarInstall) detectAndNotifyFeedbackVetoes(ctx context.Context, spatia
 }
 
 // notifySensorChairMaxSit POST sensor /roomengine/chair/maxsit {device_addr, x, y, sit_dur_sec}。
-// handle(false_alarm + "Sit on Chair") 后调：把本次误报实际久坐时长棘轮抬进该椅 anchor maxSit（live 落地）。
-// 包级函数（alarmEventService 与 RadarInstall 都可调）；best-effort，失败仅 warn（下次同样误报会再棘轮）。
+// handle(false_alarm) 棘轮门控通过后调：抬椅/浴室 maxSit（live）。best-effort，失败仅 warn。
 func notifySensorChairMaxSit(ctx context.Context, logger *zap.Logger, deviceAddr string, x, y int, sitDurSec float64) {
 	body, _ := json.Marshal(map[string]interface{}{
 		"device_addr": deviceAddr, "x": x, "y": y, "sit_dur_sec": sitDurSec,

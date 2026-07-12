@@ -142,8 +142,8 @@ func startVetoHTTPServer(ctx context.Context, addr string, engine *roomengine.En
 		_ = json.NewEncoder(w).Encode(map[string]bool{"cleared": true})
 	})
 
-	// data 在 handle(false_alarm + "Sit on Chair") 后调：把本次误报实际久坐时长棘轮抬进该椅 anchor maxSit。
-	// x,y=fire 点 canvas cm（evidence.fire.x/y）；sit_dur_sec=evidence.fire.stillbox_sec。零业务判断（条件已在 data 侧判）。
+	// data 在 handle(false_alarm) 后调：棘轮抬椅/浴室 maxSit（门控在 data；本端零业务判断，浴室房无椅也成功）。
+	// x,y=fire 点 canvas cm；sit_dur_sec=evidence.fire.stillbox_sec。
 	mux.HandleFunc("/roomengine/chair/maxsit", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -156,7 +156,7 @@ func startVetoHTTPServer(ctx context.Context, addr string, engine *roomengine.En
 		}
 		ok := engine.RatchetChairMaxSitByDevice(req.DeviceAddr, req.X, req.Y, req.SitDurSec, time.Now().UnixMilli())
 		if !ok {
-			http.Error(w, "device not routed / point not in any chair pin", http.StatusNotFound)
+			http.Error(w, "device not routed / not bathroom and point not in any chair pin", http.StatusNotFound)
 			return
 		}
 		logger.Info("chair_maxsit_ratcheted",

@@ -272,7 +272,7 @@ func isLyingVetoZone(area int) bool {
 }
 
 // PublishDBNFall DBN fire 发布腿（S0.c-4，A·R12.3）：fired logicID → 构 payload → emitAIAlarm(alarm.Fall)。
-// DBN_MODE 门控在 engine 内 dbnSelfFireEnabledFor（本方法只发，调用方已判门控）。
+// DBN_MODE 门控在 engine 内 dbnSelfFireEnabled（本方法只发，调用方已判门控）。
 func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 	tm.mu.Lock()
 	ts := tm.trackByLogicID(lid)
@@ -370,7 +370,7 @@ func (tm *TrackManager) PublishDBNFall(lid, band string, nowMs int64) {
 			zap.Float64("exit_logodds", exitLO))
 		// B 方案扩展（dbn_mode≥2）：pose 驱动的固件 fall/坐地 fire 落躺卧面（沙发/躺椅/真床）→ 否决转发。
 		//   躺床/躺椅上小动作被固件误报 fall/坐地（band=repeat/report）在此拦下；floor 90min 久躺兜底（band="floor"）
-		//   不在列 → 真摔久躺安全网保留。躺卧面是 layout 确定事实，直接 gate 全局 dbnMode，不挂冷启 cap。
+		//   不在列 → 真摔久躺安全网保留。躺卧面是 layout 确定事实，直接 gate 全局 dbnMode。
 		if dbnMode == 2 && band != "floor" && isLyingZoneVetoPose(ts.LastPose) && isLyingVetoZone(ts.LastCellArea) {
 			vetoLying = true
 			tm.logger.Info("dbn_fall_vetoed_lying_zone",

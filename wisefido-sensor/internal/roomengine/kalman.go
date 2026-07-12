@@ -26,9 +26,6 @@ type KalmanFilter2D struct {
 	LastInnovY float64
 	// 残差归一化值（Mahalanobis-like），越大越异常。
 	LastResidual float64
-
-	// 预测步数（无观测时空转的次数，连续无观测可判消失）
-	MissCount int
 }
 
 // NewKalmanFilter2D 初始化：位置 (x0,y0)，速度为 0。
@@ -104,8 +101,6 @@ func (kf *KalmanFilter2D) Predict(dt float64) {
 // Update 观测更新步。返回残差大小（cm）。
 // zx, zy 为观测坐标（房间坐标 cm）。
 func (kf *KalmanFilter2D) Update(zx, zy float64) float64 {
-	kf.MissCount = 0
-
 	// 残差 (innovation)
 	innX := zx - kf.X[0]
 	innY := zy - kf.X[1]
@@ -175,7 +170,6 @@ func (kf *KalmanFilter2D) Update(zx, zy float64) float64 {
 // PredictOnly 只预测不更新（track 本帧丢失时调用）。
 func (kf *KalmanFilter2D) PredictOnly(dt float64) {
 	kf.Predict(dt)
-	kf.MissCount++
 }
 
 // Velocity 当前估计速度 (vx, vy) cm/s。

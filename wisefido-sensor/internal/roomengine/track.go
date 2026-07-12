@@ -162,7 +162,6 @@ const (
 	HistoryLen      = 30   // 滚动窗口帧数
 	MotionWindowSec = 5    // 运动学判定窗口（近 5 秒）
 	StillThreshCm   = 15   // 帧间位移 < 此值视为静止
-	MaxMissCount    = 10   // 连续丢失 > 此值 → 消失（约 10 秒）
 	LieRetractMs    = 8000 // 进入 Lie 后 < 此时长回到 Stand/Move → Retract
 	// 经验值：真跌倒 8 秒内爬起概率 < 5%；雷达固件的 fallSec 典型 10-30 秒，
 	// 8 秒远小于其最小值，确保只捕获"雷达尚未升级为 Fall 就回撤"的误报。

@@ -1,19 +1,16 @@
 package roomengine
 
-import (
-	"os"
-	"strconv"
-	"time"
-)
+import "os"
 
-// dbn_mode.go — DBN cutover 开关（S0.c-4 重建，迁自已删 belief_shadow.go 的 dbnMode 门控，B3.2/A·R3.4 单源）。
-// ⚠️ 「否决固件」轴**未实现**（forwardFirmwareFall 无条件转发，固件地板永在；本档只控 DBN 是否自发）：
-//   0 = 真 shadow（固件 floor + DBN 不自发，dbn_xray 对账）；1 = 2 = 固件 floor + DBN 自发（mode2 实质=mode1）。
-//   门控仅 dbnSelfFireEnabledFor=min(dbnMode,cap)≥1。冷启 cap 只在 mode≥1 内分档（A·R24 实测纠正，规则#1.5）。
-// 运维 .env 翻 DBN_MODE / DBN_COLD_HOURS。门控放 engine 内 publish 处（A·R12.3），=0 仍走完整裁决可 log diff。
+// dbn_mode.go — DBN cutover 门控（S0.c-4，迁自已删 belief_shadow.go 的 dbnMode，B3.2/A·R3.4 单源）。
+//   0 = shadow：DBN 不自发，固件 floor 照转发，无否决腿（dbn_xray 对账）。
+//   1 = DBN 自发，固件 floor 照转发，无否决腿。
+//   2 = DBN 自发 + 否决腿：躺卧面固件即时 fall/坐地不转发（vetoFirmwareFallLying，读全局 dbnMode）；floor 90min 兜底不受影响。
+// 自发门控 dbnSelfFireEnabled=dbnMode≥1；否决门控独立读全局 dbnMode==2。
+// 新单元冷启安全由 tFloor 默认兜底承担（chair 90min / deny 12min / bath 20min），不单设 DBN 冷启 cap。
+// 运维 .env 翻 DBN_MODE。门控放 engine 内 publish 处（A·R12.3），=0 仍走完整裁决可 log diff。
 
 var dbnMode = parseDBNMode(os.Getenv("DBN_MODE"))
-var coldGraduateMs = parseColdHours(os.Getenv("DBN_COLD_HOURS"))
 
 func parseDBNMode(s string) int {
 	switch s {
@@ -26,36 +23,7 @@ func parseDBNMode(s string) int {
 	}
 }
 
-func parseColdHours(s string) int64 {
-	const def = int64(7) * 24 * 3600 * 1000 // 默认 7d（委员会 §6 冷启毕业）
-	if s == "" {
-		return def
-	}
-	h, err := strconv.Atoi(s)
-	if err != nil || h <= 0 {
-		return def
-	}
-	return int64(h) * int64(time.Hour/time.Millisecond)
-}
-
-// unitCap 每-unit 冷启成熟度 cap：新 unit 首见 track 起 < coldGraduateMs 返 1（自发但不否决固件），
-// 毕业后返 2（可否决固件）。首次见即登记 firstTrack。
-func (e *Engine) unitCap(suiteID string, nowMs int64) int {
-	e.coldStartMu.Lock()
-	first, ok := e.unitFirstTrackMs[suiteID]
-	if !ok {
-		e.unitFirstTrackMs[suiteID] = nowMs
-		first = nowMs
-	}
-	e.coldStartMu.Unlock()
-	if nowMs-first >= coldGraduateMs {
-		return 2
-	}
-	return 1
-}
-
-// dbnSelfFireEnabledFor DBN 自发 fire 是否启用（engine 内 publish 门控，A·R12.3）。
-// effectiveMode = min(全局 dbnMode, 每-unit 冷启 cap)；≥1 = 可自发 publish。dbnMode=0 恒 false（静默）。
-func (e *Engine) dbnSelfFireEnabledFor(suiteID string, nowMs int64) bool {
-	return min(dbnMode, e.unitCap(suiteID, nowMs)) >= 1
+// dbnSelfFireEnabled DBN 自发 fire 是否启用（engine 内 publish 门控，A·R12.3）。dbnMode=0 静默。
+func dbnSelfFireEnabled() bool {
+	return dbnMode >= 1
 }
