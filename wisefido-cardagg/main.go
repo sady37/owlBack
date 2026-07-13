@@ -93,9 +93,8 @@ func main() {
 
 	displayRebuilder := consumer.NewDisplayRebuilder(spatialCache, reader, writer, logger)
 	alarmRouter := consumer.NewAlarmRouter(db, writer, reader, enablementCache, spatialCache, deviceTracker, displayRebuilder, monitorBuf, logger)
-	// TargetMerger：per-device → owning card max-merge（LastActive / Standing / WeakBio）。
+	// TargetMerger：per-entity → owning card 折叠聚合（LastActive / Standing / WeakBio）。
 	targetMerger := service.NewTargetMerger(spatialCache)
-	targetMerger.SetOnlineChecker(deviceTracker.IsOnline)
 	// BedPeopleTracker：firmware NumberPeople event → per /96 bed-bound radar device snapshot。
 	bedPeopleTracker := service.NewBedPeopleTracker(spatialCache)
 	bedPeopleTracker.SetOnlineChecker(deviceTracker.IsOnline)

@@ -1,9 +1,11 @@
-// target_merger_test.go — S3 (FU5) TargetMerger T1 单元测试。
+// target_merger_test.go — TargetMerger 单元测试。
 //
-// 覆盖 sensor v2 entity-keyed (CIDR subject) 与 v3 device-keyed (/128) 双路径，
-// + mergeForCard 字段级合并 + Standing 2min staleness + Visitor 注入。
+// 覆盖 sensor 实体 subject（/88 room / /96 bed CIDR）→ owning card 折叠聚合
+// + mergeForCard 字段级 max-merge + Standing 2min / WeakBio 30min staleness + Visitor 注入。
 //
-// metaCache 用 nil DB + 直接 seed cards map（同 package 私字段可访问）。
+// metaCache 用 nil DB + 直接 seed cards / entries map（同 package 私字段可访问）。
+// self-card（entity == card）：seed 实体 entry 指向自身，OnDeviceTarget 反查 +
+// mergeForCard 遍历 EntryByCard 都靠它。
 
 package service
 
@@ -26,6 +28,8 @@ func newTestMetaCache(t *testing.T, cardID string, deviceAddrs []string) *Spatia
 		t.Fatalf("parse cardID %q: %v", cardID, err)
 	}
 	sc.cards[cardPfx] = &CardMeta{CardID: cardPfx}
+	// self-card：实体 entry 指向自身，供 OnDeviceTarget 反查 + mergeForCard 遍历。
+	sc.entries[cardPfx] = &Entry{Prefix: cardPfx, CardID: cardPfx}
 	for _, addrStr := range deviceAddrs {
 		addr, _ := netip.ParseAddr(addrStr)
 		devPfx := netip.PrefixFrom(addr, 128)
@@ -36,7 +40,7 @@ func newTestMetaCache(t *testing.T, cardID string, deviceAddrs []string) *Spatia
 }
 
 // -----------------------------------------------------------------------------
-// OnDeviceTarget — v2 entity-keyed (CIDR subject) path
+// OnDeviceTarget — 实体 subject（CIDR）→ owning card 反查
 // -----------------------------------------------------------------------------
 
 func TestOnDeviceTarget_CIDRSubject_TreatsAsCardID(t *testing.T) {
@@ -96,7 +100,7 @@ func TestMergeForCard_EntityKeyed_LastActiveAndWeakBio(t *testing.T) {
 	ts := &card.TargetState{LastActiveTs: now - 10_000, WeakBiometricSignal: 75, UpdatedAt: now}
 	m.OnDeviceTarget(context.Background(), cardID, ts)
 
-	merged := m.mergeForCard(context.Background(), cardID, visitorFields{})
+	merged := m.mergeForCard(cardID, visitorFields{})
 	if merged.LastActiveTs != now-10_000 {
 		t.Errorf("LastActiveTs = %d, want %d", merged.LastActiveTs, now-10_000)
 	}
@@ -114,7 +118,7 @@ func TestMergeForCard_EntityKeyed_StandingFreshApplies(t *testing.T) {
 	ts := &card.TargetState{StandingContinuousMin: 5, UpdatedAt: now - 30_000} // 30s 内 fresh
 	m.OnDeviceTarget(context.Background(), cardID, ts)
 
-	merged := m.mergeForCard(context.Background(), cardID, visitorFields{})
+	merged := m.mergeForCard(cardID, visitorFields{})
 	if merged.StandingContinuousMin != 5 {
 		t.Errorf("fresh standing should apply, got %d want 5", merged.StandingContinuousMin)
 	}
@@ -129,7 +133,7 @@ func TestMergeForCard_EntityKeyed_StandingStaleFiltered(t *testing.T) {
 	ts := &card.TargetState{StandingContinuousMin: 5, UpdatedAt: now - 3*60*1000} // 3min stale > 2min 阈值
 	m.OnDeviceTarget(context.Background(), cardID, ts)
 
-	merged := m.mergeForCard(context.Background(), cardID, visitorFields{})
+	merged := m.mergeForCard(cardID, visitorFields{})
 	if merged.StandingContinuousMin != 0 {
 		t.Errorf("stale standing should be filtered to 0, got %d", merged.StandingContinuousMin)
 	}
@@ -178,7 +182,7 @@ func TestMergeForCard_EntityKeyed_WeakBioStaleFiltered(t *testing.T) {
 	ts := &card.TargetState{WeakBiometricSignal: 85, UpdatedAt: now - 31*60*1000} // 31min stale > 30min 阈值
 	m.OnDeviceTarget(context.Background(), cardID, ts)
 
-	merged := m.mergeForCard(context.Background(), cardID, visitorFields{})
+	merged := m.mergeForCard(cardID, visitorFields{})
 	if merged.WeakBiometricSignal != 0 {
 		t.Errorf("stale WeakBio (31min) should be filtered to 0, got %d", merged.WeakBiometricSignal)
 	}
@@ -193,7 +197,7 @@ func TestMergeForCard_EntityKeyed_WeakBioFreshApplies(t *testing.T) {
 	ts := &card.TargetState{WeakBiometricSignal: 85, UpdatedAt: now - 25*60*1000} // 25min fresh < 30min
 	m.OnDeviceTarget(context.Background(), cardID, ts)
 
-	merged := m.mergeForCard(context.Background(), cardID, visitorFields{})
+	merged := m.mergeForCard(cardID, visitorFields{})
 	if merged.WeakBiometricSignal != 85 {
 		t.Errorf("fresh WeakBio (25min) should apply 85, got %d", merged.WeakBiometricSignal)
 	}

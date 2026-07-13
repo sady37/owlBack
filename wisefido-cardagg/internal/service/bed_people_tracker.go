@@ -24,6 +24,10 @@ import (
 	"sync"
 )
 
+// DeviceOnlineChecker main wiring 注入 closure，返回 device 是否在线。
+// 签名接收 device addr canonical IPv6 string；避免 service → consumer 反向导入。
+type DeviceOnlineChecker func(deviceAddr string) bool
+
 type BedPeopleTracker struct {
 	cache  *SpatialCache
 	online DeviceOnlineChecker

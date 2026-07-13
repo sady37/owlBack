@@ -367,9 +367,7 @@ func parseIncidentTsMs(data map[string]interface{}) int64 {
 	return 0
 }
 
-// writeAlarmState 写 AlarmState 的同时合并 prev 状态重算 Display，单次 WriteCardStatus 落两块。
-// Display 由 BuildCardDisplay 从 AlarmState.PopAlarm 派生 Section1DownRight 简称。
-// writeAlarmState 写 alarm state，display + 父卡重算交给 picker.RebuildDisplay。
+// writeAlarmState 写 AlarmState 后触发 rebuilder.Rebuild 重派 display（含父卡聚合）。
 func (r *AlarmRouter) writeAlarmState(ctx context.Context, cardID string, cas *card.CardAlarmState) error {
 	if cas == nil {
 		return nil

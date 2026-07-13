@@ -1,37 +1,25 @@
-// target_merger.go — per-device TargetState → per-card max-merge holder。
+// target_merger.go — per-entity TargetState → per-card 折叠聚合 holder。
 //
 // 背景（doc/card_display.md §4.3, §9）：
-//   - sensor 按 /128 device 发 target.state（msg.SubjectEntity = device IPv6 canonical 字符串）
-//   - 同 card（/88 room 或 /96 bed）下多 radar 各发各的 TargetState
-//   - cardagg 需把 owning card 下所有 device 的 TargetState max-merge 写单 card:state.target
+//   - sensor 按 spatial 实体发 target.state（msg.SubjectEntity = /88 room 或 /96 bed CIDR）
+//   - 一张 card 底下可挂多个实体（整户 /80 卡下多个 /88 房 + /96 床；self-card 时 card_id == 实体）
+//   - cardagg 把 owning card 名下所有实体的 TargetState max-merge 成单 card:state.target
+//     （与 room.state 的 pickPriorityRoom、bed.state 的 LookupEntry 同源：实体存自己 prefix、
+//      折到 owning card 展示）
 //
-// 合并字段（max-merge across owning card 的 devices）：
+// 合并字段（max-merge across owning card 名下实体）：
 //   LastActiveTs / StandingContinuousMin / WeakBiometricSignal
 //
-// **LastActiveTs 的 device-offline 过滤**：device 离线后 snapshot 永不更新，max-merge
-// 还会让 "Active 24h ago" 一直显示——这是误导（不知道 device 是失联还是真的没活动）。
-// merger 注入 `DeviceOnlineChecker`（cardagg DeviceStatusTracker），offline device 的
-// snapshot **不参与 LastActiveTs max**。
+// **Standing / WeakBio 的 snapshot staleness 过滤**：standing 是瞬时状态（人坐下后 sensor
+// 必须 reset 0），任何 stale snapshot 都会直接造成 risk_evaluator false-positive → 误报 alarm。
+// snapshot UpdatedAt 老于阈值（standing 2min / weakBio 30min）视为该实体 push 异常，对应字段
+// 不参与 max。LastActiveTs 不做 staleness 过滤——它是"最后活动时刻"历史戳，人走/雷达离线后
+// 仍应显示 "Active Xm ago"（无人 ≠ 无最后活动）。
 //
-// **StandingContinuousMin 的双重过滤**：
-//   1) offline 过滤（同 LastActive）—— device 失联不参与
-//   2) **snapshot UpdatedAt 短窗 staleness**（2min）—— device 在线但 snapshot 老于 2min
-//      视为该 device push 异常 / 进程卡住，不参与 max
-//
-// 双重必要：standing 是瞬时状态（人坐下后 sensor 必须 reset 0），任何 stale snapshot
-// 都会直接造成 risk_evaluator false-positive Attention/Risk → 误报 alarm。IsOnline
-// 兜不住 "device 网络通但 sensor 进程卡住" 的边界，必须靠 UpdatedAt 短窗补防。
-//
-// **契约**：sensor handleMonitorFrame 实施时（P3-FollowUp-4）必须保证每分钟心跳 push
-// 一次 standing 值（即使无变化），否则 2min 阈值会误判正常持续站立为 stale。
-//
-// WeakBio 暂保持原 max（独立 staleness 议题 follow-up）。
-//
-// Visitor 三字段不在此合并 —— 由 VisitorDeriver 直接写 /88 room card.target，
-// 经由 ApplyVisitor() 注入到 TargetMerger 的 ownerView 后参与下次写入。
+// Visitor 三字段由 VisitorDeriver 按 owning card_id 注入 cardVisitor，写 target 时合入。
 //
 // 单 owner 不破：本 holder 是 nullable 状态持有者；最终唯一 Hash writer 仍是
-// SensorStateProjector（target.state 分支）和 VisitorDeriver（visitor 字段）。
+// SensorStateProjector（target.state 分支）和 VisitorDeriver（午夜 reset）。
 
 package service
 
@@ -45,7 +33,7 @@ import (
 )
 
 // StandingSnapshotStaleMs Standing 字段允许的最大 snapshot 静默间隔（2min）。
-// 超过此窗口的 snapshot 视为该 device 异常（进程卡住 / push 持续丢），其 standing 不参与 max。
+// 超过此窗口的 snapshot 视为该实体异常（进程卡住 / push 持续丢），其 standing 不参与 max。
 // 跟 sensor 端 standing 每分钟心跳 push 契约耦合（FollowUp-4）：1 push 容错。
 const StandingSnapshotStaleMs int64 = 2 * 60 * 1000
 
@@ -59,39 +47,17 @@ const StandingSnapshotStaleMs int64 = 2 * 60 * 1000
 //   - 等效"如果 30min 内无新 vital alarm，FE 横条应回 None"
 const WeakBioSnapshotStaleMs int64 = 30 * 60 * 1000
 
-// DeviceOnlineChecker main wiring 注入 closure，返回 device 是否在线。
-// 避免 service → consumer 反向导入；签名接收 device addr canonical IPv6 string。
-type DeviceOnlineChecker func(deviceAddr string) bool
-
-// TargetMerger 维护 per-device TargetState snapshot + per-card visitor 注入，
-// 给 SensorStateProjector target.state 分支用：传入 device-level TargetState 返回
-// owning cardID + merged card.TargetState（合并该 card 下所有 device 的快照）。
+// TargetMerger 维护 per-entity TargetState snapshot + per-card visitor 注入。
+// OnDeviceTarget 传入实体 TargetState，反查 owning card 后返回折叠聚合的 card.TargetState
+// （合并该 card 名下所有实体的最新 snapshot）。
 type TargetMerger struct {
-	cache  *SpatialCache
-	online DeviceOnlineChecker // nil 时退化为 "总在线"（兼容老测试 / 未 wire 阶段）
+	cache *SpatialCache
 
 	mu sync.Mutex
-	// deviceAddr canonical IPv6 string → 最近 sensor 发的 device-level TargetState
-	deviceSnapshots map[string]*card.TargetState
-	// cardID → VisitorDeriver 注入的 visitor 三字段（写 card.target 时合进去）
+	// 实体 CIDR string（/88 room 或 /96 bed）→ 最近 sensor 发的该实体 TargetState
+	entitySnapshots map[string]*card.TargetState
+	// owning card_id → VisitorDeriver 注入的 visitor 三字段（写 card.target 时合进去）
 	cardVisitor map[string]visitorFields
-}
-
-// SetOnlineChecker main wiring 注入 device 在线判定 callback。
-// 未注入时所有 device 视为在线，LastActive merge 不过滤。
-func (m *TargetMerger) SetOnlineChecker(fn DeviceOnlineChecker) {
-	if m == nil {
-		return
-	}
-	m.online = fn
-}
-
-// isDeviceOnline 判断 device 是否在线。nil checker 时 fallback true（兼容未 wire 场景）。
-func (m *TargetMerger) isDeviceOnline(deviceAddr string) bool {
-	if m == nil || m.online == nil {
-		return true
-	}
-	return m.online(deviceAddr)
 }
 
 // visitorFields VisitorDeriver 注入的字段（card.TargetState 子集）。
@@ -100,86 +66,50 @@ type visitorFields struct {
 	hasVisitorToday bool
 }
 
-// NewTargetMerger 构造。cache 必填（device→card 反查 + 列同 card devices）。
+// NewTargetMerger 构造。cache 必填（实体→owning card 反查 + 列同 card 名下实体）。
 func NewTargetMerger(cache *SpatialCache) *TargetMerger {
 	return &TargetMerger{
 		cache:           cache,
-		deviceSnapshots: make(map[string]*card.TargetState),
+		entitySnapshots: make(map[string]*card.TargetState),
 		cardVisitor:     make(map[string]visitorFields),
 	}
 }
 
-// OnDeviceTarget 收到 sensor 派的 TargetState；返回 owning cardID + max-merge 后的 card.TargetState；
-// cardID 空 → caller 跳过（unbound）。
-//
-// subject 双形态（v2/v3 演进）：
-//   - v2 entity-keyed (当前)：subject 是 CIDR（/96 bed 或 /88 room）；entity IS card_id；
-//     单 snapshot per entity，无跨 device max-merge（cards.card_id 上的所有 device 共享一份）
-//   - v3 device-keyed (未来 [[target_state_per_device]])：subject 是 /128 device IPv6；
-//     需 LookupCardByDeviceAddr 反查 owning card；max-merge 同 card 下多 device snapshot
-//
-// deviceSnapshots map 统一存 (subject 字符串 → snapshot)，subject 可能是 CIDR 或 /128；
-// mergeForCard 会同时遍历 (a) meta.Devices 下 /128 keyed (v3) 和 (b) cardID 自身 keyed (v2)。
-//
-// 若 subject 解析失败或 device 未绑卡，返回 ("", nil)。
-func (m *TargetMerger) OnDeviceTarget(ctx context.Context, subject string, ts *card.TargetState) (string, *card.TargetState) {
+// OnDeviceTarget 收到 sensor 派的实体 TargetState（subject = /88 room 或 /96 bed CIDR）；
+// 经 entry 表反查 owning card_id，返回 (owning cardID, 折叠聚合后的 card.TargetState)。
+// subject 非法 / 未注册 entry（schema 缺对应实体行）→ 返回 ("", nil)，caller drop。
+func (m *TargetMerger) OnDeviceTarget(_ context.Context, subject string, ts *card.TargetState) (string, *card.TargetState) {
 	if subject == "" || ts == nil {
 		return "", nil
 	}
-	var cardID string
-	if _, err := netip.ParsePrefix(subject); err == nil {
-		// v2 path: subject is CIDR (entity prefix); entity itself IS the cardID
-		cardID = subject
-	} else {
-		// v3 path: subject is /128 device addr; reverse-lookup owning card
-		addr, err := netip.ParseAddr(subject)
-		if err != nil {
-			return "", nil
-		}
-		ownerCard := m.cache.LookupCardByDevice(addr)
-		if !ownerCard.IsValid() {
-			return "", nil
-		}
-		cardID = ownerCard.String()
+	pfx, err := netip.ParsePrefix(subject)
+	if err != nil {
+		return "", nil
 	}
+	ent := m.cache.LookupEntry(pfx)
+	if ent == nil {
+		return "", nil
+	}
+	cardID := ent.CardID.String()
 
 	m.mu.Lock()
-	m.deviceSnapshots[subject] = ts
+	m.entitySnapshots[subject] = ts
 	visitor := m.cardVisitor[cardID]
 	m.mu.Unlock()
 
-	merged := m.mergeForCard(ctx, cardID, visitor)
-	return cardID, merged
+	return cardID, m.mergeForCard(cardID, visitor)
 }
 
-// ApplyVisitor 由 VisitorDeriver 调用：注入某 /88 room card 的 visitor 三字段
-// 到 owner view + 返回该 card 当前 merged TargetState（写 Hash 用）。
-func (m *TargetMerger) ApplyVisitor(ctx context.Context, cardID string, v visitorFields) *card.TargetState {
+// ApplyVisitor 由 VisitorDeriver 调用：注入某 card 的 visitor 三字段（cardID = owning card_id）
+// 到 owner view + 返回该 card 当前折叠聚合的 TargetState（写 Hash 用）。
+func (m *TargetMerger) ApplyVisitor(_ context.Context, cardID string, v visitorFields) *card.TargetState {
 	if cardID == "" {
 		return nil
 	}
 	m.mu.Lock()
 	m.cardVisitor[cardID] = v
 	m.mu.Unlock()
-	return m.mergeForCard(ctx, cardID, v)
-}
-
-// CurrentVisitor 读 VisitorDeriver 累积态（segment reset 用，避免重复触发午夜清理）。
-func (m *TargetMerger) CurrentVisitor(cardID string) (int64, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	v := m.cardVisitor[cardID]
-	return v.visitorStartTs, v.hasVisitorToday
-}
-
-// ForgetDevice 解绑 / Cleanup 时清 device snapshot。
-func (m *TargetMerger) ForgetDevice(deviceAddr string) {
-	if deviceAddr == "" {
-		return
-	}
-	m.mu.Lock()
-	delete(m.deviceSnapshots, deviceAddr)
-	m.mu.Unlock()
+	return m.mergeForCard(cardID, v)
 }
 
 // ForgetCard cardChange 删卡时调（清 visitor 累积）。
@@ -192,7 +122,7 @@ func (m *TargetMerger) ForgetCard(cardID string) {
 	m.mu.Unlock()
 }
 
-// ResetAllVisitor reset 事件触发：清所有卡的 visitor 累积（device snapshot 不动）。
+// ResetAllVisitor reset 事件触发：清所有卡的 visitor 累积（实体 snapshot 不动）。
 func (m *TargetMerger) ResetAllVisitor() {
 	if m == nil {
 		return
@@ -202,77 +132,49 @@ func (m *TargetMerger) ResetAllVisitor() {
 	m.mu.Unlock()
 }
 
-// mergeForCard 取 cardID 下所有 device 的最新 snapshot，max-merge 三字段 +
-// 叠加 visitor 注入，得到写 card:state.target 的最终 payload。
+// mergeForCard 遍历 owning card 名下所有 room/bed 实体，max-merge 各实体最新 snapshot 三字段
+// + 叠加 visitor，得到写 card:state.target 的最终 payload。
 //
-// UpdatedAt 取参与合并字段的最大 ts（不强制 now，让下游 anchor 计算可重现）。
-func (m *TargetMerger) mergeForCard(ctx context.Context, cardID string, v visitorFields) *card.TargetState {
+// UpdatedAt 取参与合并实体的最大 ts（不强制 now，让下游 anchor 计算可重现）；
+// SpatialAnchor 跟最新 UpdatedAt 的实体走（target 物理位置跟最新 event）。
+func (m *TargetMerger) mergeForCard(cardID string, v visitorFields) *card.TargetState {
 	pfx, err := netip.ParsePrefix(cardID)
 	if err != nil {
 		return nil
 	}
-	devices := m.cache.DevicesByCard(pfx)
-
 	out := &card.TargetState{
 		VisitorStartTs:  v.visitorStartTs,
 		HasVisitorToday: v.hasVisitorToday,
 	}
-
 	nowMs := time.Now().UnixMilli()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// SpatialAnchor 跟最新 UpdatedAt 的 snapshot 走（target 物理位置跟最新 event）
 	var anchorWinnerTs int64
-	// v3 path: /128 device-keyed snapshots（同 card 下多 radar max-merge）
-	for _, dm := range devices {
-		addr := dm.DeviceAddr.String()
-		ts := m.deviceSnapshots[addr]
+	for _, e := range m.cache.EntryByCard(pfx) {
+		if !e.IsRoom() && !e.IsBed() {
+			continue
+		}
+		ts := m.entitySnapshots[e.Prefix.String()]
 		if ts == nil {
 			continue
 		}
-		online := m.isDeviceOnline(addr)
-		// LastActiveTs：offline device 的 snapshot 不参与 max（避免"Active 24h ago"误显）。
-		if online && ts.LastActiveTs > out.LastActiveTs {
+		// LastActiveTs：历史戳，无 staleness 过滤（无人/离线仍显示 "Active Xm ago"）。
+		if ts.LastActiveTs > out.LastActiveTs {
 			out.LastActiveTs = ts.LastActiveTs
 		}
-		// Standing：offline 过滤 + snapshot UpdatedAt 短窗 staleness。
-		standingFresh := online && ts.UpdatedAt > 0 && nowMs-ts.UpdatedAt <= StandingSnapshotStaleMs
-		if standingFresh && ts.StandingContinuousMin > out.StandingContinuousMin {
+		if ts.UpdatedAt > 0 && nowMs-ts.UpdatedAt <= StandingSnapshotStaleMs && ts.StandingContinuousMin > out.StandingContinuousMin {
 			out.StandingContinuousMin = ts.StandingContinuousMin
 		}
-		// WeakBio: offline 过滤 + 30min UpdatedAt staleness。
-		weakBioFresh := online && ts.UpdatedAt > 0 && nowMs-ts.UpdatedAt <= WeakBioSnapshotStaleMs
-		if weakBioFresh && ts.WeakBiometricSignal > out.WeakBiometricSignal {
+		if ts.UpdatedAt > 0 && nowMs-ts.UpdatedAt <= WeakBioSnapshotStaleMs && ts.WeakBiometricSignal > out.WeakBiometricSignal {
 			out.WeakBiometricSignal = ts.WeakBiometricSignal
 		}
 		if ts.UpdatedAt > out.UpdatedAt {
 			out.UpdatedAt = ts.UpdatedAt
 		}
-		if online && ts.UpdatedAt > anchorWinnerTs && ts.SpatialAnchor != "" {
+		if ts.UpdatedAt > anchorWinnerTs && ts.SpatialAnchor != "" {
 			anchorWinnerTs = ts.UpdatedAt
 			out.SpatialAnchor = ts.SpatialAnchor
-		}
-	}
-	// v2 path: entity-keyed snapshot（cardID 自身 prefix CIDR）；当 sensor v2 按 entity 聚合发 target.state 时进
-	// 这里 — 单 source per card 无 max-merge 含义，但 Standing/WeakBio staleness 仍按各自阈值守护。
-	if entityTs := m.deviceSnapshots[cardID]; entityTs != nil {
-		if entityTs.LastActiveTs > out.LastActiveTs {
-			out.LastActiveTs = entityTs.LastActiveTs
-		}
-		entityStandingFresh := entityTs.UpdatedAt > 0 && nowMs-entityTs.UpdatedAt <= StandingSnapshotStaleMs
-		if entityStandingFresh && entityTs.StandingContinuousMin > out.StandingContinuousMin {
-			out.StandingContinuousMin = entityTs.StandingContinuousMin
-		}
-		entityWeakBioFresh := entityTs.UpdatedAt > 0 && nowMs-entityTs.UpdatedAt <= WeakBioSnapshotStaleMs
-		if entityWeakBioFresh && entityTs.WeakBiometricSignal > out.WeakBiometricSignal {
-			out.WeakBiometricSignal = entityTs.WeakBiometricSignal
-		}
-		if entityTs.UpdatedAt > out.UpdatedAt {
-			out.UpdatedAt = entityTs.UpdatedAt
-		}
-		if entityTs.UpdatedAt > anchorWinnerTs && entityTs.SpatialAnchor != "" {
-			out.SpatialAnchor = entityTs.SpatialAnchor
 		}
 	}
 	return out

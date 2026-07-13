@@ -110,7 +110,8 @@ type visitorSegment struct {
 }
 
 // NewVisitorDeriver 构造。interval=0 走默认 60s。store/writer/picker=nil 时退化（兼容测试）。
-// 非午夜场景 hash 字段沿用 sensor target.state 自然带的路径；writer/picker 仅午夜跨日 reset 时主动写。
+// writer/picker 在 visitor 达阈值上升沿 + 午夜跨日 reset 时主动写 hash + rebuild；
+// 其余 tick 靠 merger 注入 + 下次 sensor target.state 自然冲刷。
 func NewVisitorDeriver(
 	metaCache visitorMetaSource,
 	reader visitorCardStatusReader,
@@ -283,16 +284,16 @@ func (v *VisitorDeriver) tickCard(ctx context.Context, cardID string, peopleCoun
 		}
 	}
 
-	// 注入 TargetMerger（非午夜场景：visitor 字段沿用 sensor target.state 自然带的路径，
-	// ~60s 内自然刷新到 hash；活动事件源源不断时延迟可忽略）。
-	// 午夜跨日例外：凌晨可能无 activity event 推送，sensor target.state 不发，hash 会卡
-	// 昨日 hasToday=true / visitorStartTs 数小时不变 —— 主动写一次 hash 清残留。
+	// 注入 TargetMerger + 在 visitor 显示翻转点即时落 hash（不等下次 sensor target.state 冲刷）：
+	//   - 上升沿 openStartedAt>0：segment 首次跨 5min 阈值，visitor None→Today 即刻反映到 UI
+	//   - 午夜 midnightHappened：清零（凌晨可能无 activity event，sensor target.state 不发，
+	//     hash 会卡昨日 hasToday=true / visitorStartTs 数小时不变）
 	if v.merger != nil {
 		merged := v.merger.ApplyVisitor(ctx, cardID, service.MakeVisitorFields(visitorStartTs, hasToday))
-		if midnightHappened && merged != nil && v.writer != nil {
+		if merged != nil && v.writer != nil && (openStartedAt > 0 || midnightHappened) {
 			status := &card.CardStatus{CardID: cardID, Target: merged}
 			if err := v.writer.WriteCardStatus(ctx, status); err != nil {
-				v.logger.Warn("visitor_deriver: midnight hash write failed",
+				v.logger.Warn("visitor_deriver: hash write failed",
 					zap.String("cid", cardID), zap.Error(err))
 			} else if v.picker != nil {
 				v.picker.Rebuild(ctx, cardID)
