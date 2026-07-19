@@ -127,20 +127,18 @@ func (tm *TrackManager) RoomLedgerEmpty() bool {
 // realDisplayFloor：proven 轨发到 FE 的最低显示 conf（=FE CONFIDENCE_HIGH_MIN，≥此=全显）。
 const realDisplayFloor = 80
 
-// applyEmitConf 由 DBNConfidence 派生单向显示值 EmitConf（Q_B：PReal 单向除 split）：
-// proven 轨棘轮 max-hold 且不低于 real 档 floor（区漂移 100↔80 不回落、churn 已继承 parent.EmitConf）；
-// 未证 ghost 轨如实反映当前（可淡出/掉档）。仅影响 FE 透明度，不碰门控/occupancy/forensic 的 DBNConfidence。
+// applyEmitConf 由 DBNConfidence 派生单向显示值 EmitConf（Q_B：PReal 单向 max-hold）：
+// EmitConf 一律单调只增（走动时 pR 冲高即锁，之后静止/pR 回落不下拉）——firmware 透明度基线本就 80，Sensor 的
+// override 是唯一下拉手，静止真人 pR≈0.5 不该把它拉到 50。proven 轨额外托底到 real 档 floor（区漂移 100↔80 不回落）。
+// churn 已继承 parent.EmitConf。仅影响 FE 透明度，不碰门控/occupancy/forensic 的 DBNConfidence；被 drop 的 ghost
+// 走独立 verdict 覆盖，其 DBNConfidence 全程低→max-hold 也低，不泄漏。
 func (ts *TrackState) applyEmitConf() {
-	if ts.RealProven {
-		if ts.DBNConfidence > ts.EmitConf {
-			ts.EmitConf = ts.DBNConfidence
-		}
-		if ts.EmitConf < realDisplayFloor {
-			ts.EmitConf = realDisplayFloor
-		}
-		return
+	if ts.DBNConfidence > ts.EmitConf {
+		ts.EmitConf = ts.DBNConfidence
 	}
-	ts.EmitConf = ts.DBNConfidence
+	if ts.RealProven && ts.EmitConf < realDisplayFloor {
+		ts.EmitConf = realDisplayFloor
+	}
 }
 
 func (tm *TrackManager) payloadFromTrack(ts *TrackState) AIPayload {
