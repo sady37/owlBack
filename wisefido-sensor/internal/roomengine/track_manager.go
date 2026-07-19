@@ -1216,6 +1216,12 @@ func (tm *TrackManager) evalProvenance(ts *TrackState, nowMs int64, bornNow bool
 	if ts.RealProven {
 		return
 	}
+	// 峰值净距单调 max-hold（走出去再走回 pin 不回落）——R walkout 判据的真"最远净距"。
+	if n := len(ts.History); n > 0 {
+		if d := distInt(ts.History[n-1].X, ts.History[n-1].Y, ts.BirthPos.X, ts.BirthPos.Y); d > ts.MaxExcursionFromBirth {
+			ts.MaxExcursionFromBirth = d
+		}
+	}
 	area := tm.tsArea(ts) // raw 末点区型当场查（替 AreaEff latch）
 	if area == AreaEnter || (bornNow && tm.hasRecentEnterRoom(nowMs, ts.DeviceAddr)) ||
 		(tm.grid != nil && tm.grid.NearestEntryDist(ts.BirthPos.X, ts.BirthPos.Y) <= e1DoorBornCm) {
@@ -1227,12 +1233,10 @@ func (tm *TrackManager) evalProvenance(ts *TrackState, nowMs int64, bornNow bool
 		return
 	}
 	// R walkout（ghost_disproof_birth_certificate_spec）：离 born 最远净距 ≥walkoutCm = 自主位移=活体 → 补证。
-	// 纯距离（非速度）；teleport 帧（≥200cm/s）已由 teleport 轴先 purge，喂不到 History → 不污染 R。
-	if n := len(ts.History); n > 0 {
-		p := ts.History[n-1]
-		if distInt(p.X, p.Y, ts.BirthPos.X, ts.BirthPos.Y) >= walkoutCm {
-			ts.RealProven = true
-		}
+	// 读峰值（非当前点）：无 split 的孤轨走出 2m 再走回 pin，当前净距归 0 也已 latch。纯距离（非速度）；
+	// teleport 帧（≥200cm/s）已由 teleport 轴先 purge，喂不到 History → 不污染峰值。
+	if ts.MaxExcursionFromBirth >= walkoutCm {
+		ts.RealProven = true
 	}
 }
 
@@ -1882,6 +1886,7 @@ func (tm *TrackManager) processFrameAt(frames []TrackFrame, nowMs int64) []Track
 					// tid 交换=同一逻辑身份延续 → ghost 历史 + real-provenance latch 跟随 lid（churn 延续，
 					// 否则每次重生清零 → cd2b 睡者被全判 ghost / MaxGhostSustained 让 ghost 逃判据）。
 					ts.RealProven = parent.RealProven // 继承 provenance latch（Option B：解闩靠 confine 非 churn）
+					ts.MaxExcursionFromBirth = parent.MaxExcursionFromBirth // 继承走动峰值（治走一半被重编轨 birth 归零攒不满 200）
 					ts.EmitConf = parent.EmitConf     // 继承单向显示值（Q_B：churn 非 split，显示不回落到 ghost）
 					ts.MaxGhost = parent.MaxGhost
 					ts.MaxGhostSustained = parent.MaxGhostSustained

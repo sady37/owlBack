@@ -32,6 +32,10 @@ type TrackState struct {
 	//   parent.RealProven，带得过 churn（治 cd2b 重生睡者被全判 ghost）。消费端一律读 realLatchActive(area)
 	//   （= RealProven ∧ 当场查 QueryAreaType(rawLastPos)∈rest 区，Option B confine），非裸读本字段。split 重分配硬清。
 	RealProven bool
+	// MaxExcursionFromBirth：生涯峰值「当前点离 BirthPos 净距」（单调 max-hold）。R walkout 判据读此峰值而非当前点，
+	//   故走出去 ≥walkoutCm 再走回原处仍 latch real（无 split 的孤轨唯一走动证真通道）。churn 随 parent 继承（birth
+	//   重置时累积不清零，治"走一半被固件重编轨"永远攒不满 200）。
+	MaxExcursionFromBirth int
 	// MaxGhost：生涯峰值 census p_mirror（forensic/lost_fall delete §10.3-b）。
 	MaxGhost float64
 	// ghostSustainRun：当前连续 p_mirror≥0.8 的 tick 数（断则清零）。
