@@ -284,13 +284,131 @@ owlFront 下无 `.env` 文件；扫 `src/` 无真实硬编码凭据
 
 ---
 
-## 6. 遗留待办
+## 6. 监控：owl-watchdog 黑盒探活 + 自愈
+
+### 动机
+
+本日四次故障（nginx 停机 4 天、certbot 连挂 3 张证书、acme.sh 死循环、
+ota-ql PID 耗尽）**全部零告警**，靠人工发现网页打不开。
+
+关键认识：**问题不是"检测不到"，是"有信号但没人看"** ——
+
+```
+systemd 知道  nginx.service inactive
+systemd 知道  certbot.service Failed with result 'exit-code'   ← 连报 4 天
+docker  知道  ota-ql (unhealthy)
+acme.sh 写了  /var/log/ota-wisefido-acme-renew.log 几十条 Error
+```
+
+信号齐全，缺的是送达。
+
+### 部署
+
+| | |
+|---|---|
+| 脚本 | `/usr/local/bin/owl-watchdog.sh`（版本管理副本见 `scripts/owl-watchdog.sh`） |
+| 调度 | root cron `*/2 * * * *`，`flock -n /run/owl-watchdog.lock` 防重叠 |
+| 日志 | `/var/log/owl-watchdog.log`（超 5MB 自截半） |
+| 状态 | `/var/lib/owl-watchdog/*.state` |
+
+覆盖 **16 项**：4 站点 HTTP 探活（pilot/www/ota/demo）+ 4 systemd 单元
+（nginx/owlback/owlback.qinglan/owlfront）+ 4 容器（ota-ql/mqtt/redis/postgresql）
++ 4 证书到期（<14 天告警）。
+
+### 四个设计决定（均由本日故障反推）
+
+1. **自愈优先于告警** —— 凌晨三点没人看告警。探活失败先拉起 nginx。
+   但 `nginx -t` 先校验，**配置坏则拒绝自动拉起转人工**，避免把坏配置反复推上线。
+   09-25 那次若有此机制，4 天可缩到一个探测周期。
+2. **状态机只在翻转时记一条** —— acme.sh 死循环 4 天里失败几十次，
+   每次都记会淹没真信号。实测稳定态日志零增长。
+3. **自愈节流**（10min 内最多 2 次）—— 防对着起不来的服务无限重启。
+4. **容器 `running` 但 `unhealthy` 只告警不重启** —— 专门针对 ota-ql 那类：
+   进程在、端口通，但健康检查持续失败。盲目重启可能丢状态，需人工判断。
+
+`notify()` 是预留的通知出口，当前仅落日志。以后接钉钉/Telegram/webhook
+**只改这一个函数**，16 项检查逻辑一行不用动。
+
+### 验证（真停一次 nginx）
+
+```
+[CRIT] http:pilot   故障: HTTP 000
+[HEAL] nginx        检测到 inactive(由 pilot 触发)，已自动拉起
+[OK  ] http:pilot   已恢复: HTTP 200
+```
+
+完整故障-自愈-恢复闭环，稳定后不再新增。
+
+### 排查中修掉的一个 bug
+
+初版漏了 mqtt/redis/postgresql 三个容器——它们的实际名带 compose 前缀哈希
+（`a2437c59f1e9_owl-mqtt`），匹配写成了 `_mqtt$` 而实际是 `_owl-mqtt`。
+靠核对状态文件清单发现（只生成 1 个容器状态而非 4 个）。
+**若只看"脚本跑通、退出码 0"就上线，这三个容器会永远处于监控盲区而毫无迹象。**
+
+---
+
+## 7. certbot.timer：恢复并固定触发时段
+
+### 问题
+
+早前为避开续期时的服务重启临时 `stop` 了 timer，但它仍是 `enabled`，
+机器重启会自己回来 —— 属半停不停、行为不一致的状态。
+
+发行版默认 `OnCalendar=*-*-* 00,12:00:00` 且 **`RandomizedDelaySec=43200`
+（12 小时随机）**，实际触发点完全随机（09-29 那两次落在 05:10 与 18:33）。
+
+续期本身无害（走 dns-01 不碰 nginx），但 `app.wisefido.com` 那张证书续期会经
+deploy hook 重启 owlback / owlback.qinglan / owl-mqtt（该证书是这三个服务实际
+加载的），随机时刻重启对 7x24 监护业务不可控。
+
+### 变更
+
+`/etc/systemd/system/certbot.timer.d/override.conf`（drop-in，certbot 升级不丢）：
+
+```ini
+[Timer]
+OnCalendar=
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=30m
+```
+
+**空 `OnCalendar=` 是必须的** —— systemd 中该指令可累加，不先清空会变成
+"原随机时间 + 04:00" 两组都触发。
+
+现状：`active` + `enabled`，下次触发 10-01 04:25。
+
+### 效果
+
+| 时间 | 行为 |
+|---|---|
+| 每天 04:00±30min | 检查续期；证书未到期则秒退，无副作用 |
+| **~10-26** | app 证书续期 → **会重启 owlback/qinglan/mqtt**，但落在凌晨 4 点 |
+| ~11-28 | 另三张续期 → 仅 reload nginx，**不重启服务**（§3 lineage 过滤之功） |
+
+### 一个非预期副作用
+
+`Persistent=true` 使 timer 一启动就判定"错过了今天 04:00"，**立即补跑一次**。
+本次无害（证书均未到期，`Finished certbot.service` 秒退，服务 uptime 未变），
+但若启动 timer 时恰有证书处于续期窗口内，**它会立刻续期并触发服务重启**，
+不会等到凌晨。
+
+### 可选优化（未做）
+
+`owlback` 代码中无 SIGHUP 处理，**不支持热重载**，必须重启才能加载新证书。
+但 **mosquitto 支持 SIGHUP 重载证书**，可把 hook 里的 `docker restart` 改为
+`docker kill -s HUP`，**设备不会断连重连**，把重启面从三个缩到两个。
+
+---
+
+## 8. 遗留待办
 
 | 项 | 说明 |
 |---|---|
-| `certbot.timer` 仍 `inactive` | 为避开续期时的服务重启临时停的；仍是 `enabled`，机器重启会自己回来，属半停不停状态。证书已续到 12-29，恢复它现在比之前安全（走 dns-01 不依赖 nginx）。 |
-| owlFront 源码仍公网可下载 | `/src/*`、`/node_modules/*`。nginx 拦不了 —— dev 模式下 `index.html` 直接 `<script src="/src/main.ts">`，封了站点就打不开。根治 = `npm run build` + nginx serve `dist/` + 停 `owlfront.service`，代价是把 `vite.config.ts` 的 **13 条 proxy 规则**迁到 nginx（当前 nginx 只有 `/auth/api/`、`/admin/api/`、`/data/` 三条）。风险中等：前端代码本就下发浏览器，dev 模式只是未压缩、带注释、原文件名，降低攻击门槛但无直接凭据。 |
-| 监控缺位 | 本次两个故障（nginx 躺 4 天、acme.sh 刷错误日志）均零告警，靠人工发现网页打不开。建议补 2 分钟 curl 探活 + 自动拉起。 |
+| owlFront 源码仍公网可下载 | `/src/*`、`/node_modules/*`。nginx 拦不了 —— dev 模式下 `index.html` 直接 `<script src="/src/main.ts">`，封了站点就打不开。根治 = `npm run build` + nginx serve `dist/` + 停 `owlfront.service`。**迁移工作量比初估小得多**：nginx 已有 11 条 API location（`/auth/api/`、`/admin/api/`、`/data/`、`/radar-device/`、`/qinglan/`、`/ota/`、`/settings/api/`、`/device/api/`、`/sleepace/api/`、`/api/`、`/internal/`），已覆盖前端源码实际用到的绝大部分前缀，仅需核实 `/sleepad/api`、`/sleepace` 等少数边界是否对齐。风险中等：前端代码本就下发浏览器，dev 模式只是未压缩、带注释、原文件名，降低攻击门槛但无直接凭据。 |
+| 监控 Layer 2：systemd `OnFailure` | 零成本，用原生机制覆盖定时任务类失败（certbot 那次 systemd 早知道但没人接）。写一个 `notify@.service` 模板，各 unit 加一行 `OnFailure=notify@%n.service` 即可。当前 watchdog 不查 `certbot.service` 退出码。 |
+| 监控：反向心跳 | watchdog 自己挂了无人知晓。解法是 dead man's switch——定期向外部上报"我还活着"，超时未收到才告警（如 healthchecks.io 或自建）。 |
+| mqtt 改 SIGHUP | 见 §7 可选优化，可消除证书续期时的设备断连重连。 |
 | `ota.wisefido.work` DNS 记录 | 托管在 Dynadot（非 Cloudflare，现有凭据够不着）。域名 9-30 过期后自然消失，无需处理。 |
 
 ---
@@ -304,3 +422,5 @@ owlFront 下无 `.env` 文件；扫 `src/` 无真实硬编码凭据
 | deploy hooks | `/root/renewal-hooks-backup-20260930090952/` |
 | pilot vhost | `/etc/nginx/sites-available/pilot.wisefido.com.bak.20260930094402` |
 | ota-ql 旧容器 | Docker 容器 `ota-ql-broken-20260930`（已停，未删） |
+| owl-watchdog | 新增无需回滚；停用 = 删 root crontab 中 `# OWL-WATCHDOG` 行 |
+| certbot.timer 时段 | 新增 drop-in；回滚 = 删 `/etc/systemd/system/certbot.timer.d/override.conf` 后 `daemon-reload`（恢复发行版默认的 12h 随机） |
